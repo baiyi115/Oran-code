@@ -1,0 +1,176 @@
+import type { TranscriptMessage, VerificationMessage } from "../types.js";
+import { renderMarkdown, type MarkdownRenderer } from "./markdown-renderer.js";
+import { renderToolMessage } from "./tool-message.js";
+import { stripTerminalMarkup, truncateVisible, wrapDisplayText } from "../text-width.js";
+import { ANSI } from "../theme.js";
+import { spinnerFrame } from "../status-indicator.js";
+
+export interface MessageRenderContext {
+  markdownRenderer?: MarkdownRenderer;
+  liveTick?: number;
+}
+
+export function renderMessage(message: TranscriptMessage, width: number, context: MessageRenderContext = {}): string[] {
+  if (message.kind === "tool") return withMessageSpacing(renderToolMessage(message, width, context.liveTick));
+  if (message.kind === "verification") return withMessageSpacing(renderVerification(message, width));
+  if (message.kind === "thought") return withMessageSpacing(renderThought(message, width, context.liveTick));
+  if (message.kind === "assistant" && !message.text.trim()) return [];
+
+  const prefix = prefixFor(message.kind);
+  const prefixWidth = prefixVisibleWidth(message.kind);
+  const text = message.kind === "user" && message.queued ? `[Queued] ${message.text}` : message.text;
+  const markdownOptions = { streaming: message.kind === "assistant" && Boolean(message.streaming) };
+  const content = message.kind === "assistant" || message.kind === "plan"
+    ? context.markdownRenderer
+      ? context.markdownRenderer.render(text, Math.max(1, width - prefixWidth), markdownOptions)
+      : renderMarkdown(text, Math.max(1, width - prefixWidth), markdownOptions)
+    : wrapDisplayText(stripTerminalMarkup(text).trimEnd(), Math.max(1, width - prefixWidth));
+
+  let lines: string[];
+  if (!content.length) lines = [prefix.trimEnd()];
+  else lines = content.map((line, index) => `${index === 0 ? prefix : " ".repeat(prefixWidth)}${line}`);
+  return withMessageSpacing(lines);
+}
+
+function withMessageSpacing(lines: string[]): string[] {
+  if (!lines.length) return lines;
+  // Trailing blank line keeps turns from packing against the next block/composer.
+  if (lines[lines.length - 1] === "") return lines;
+  return [...lines, ""];
+}
+
+function prefixFor(kind: TranscriptMessage["kind"]): string {
+  switch (kind) {
+    case "user":
+      return `${ANSI.orangeBold}>${ANSI.reset} `;
+    case "assistant":
+      return "  ";
+    case "thought":
+      return "+ ";
+    case "plan":
+      return `${ANSI.amberBold}plan${ANSI.reset}  `;
+    case "tool":
+      return "tool  ";
+    case "verification":
+      return "check ";
+    case "error":
+      return `${ANSI.redBold}error${ANSI.reset} `;
+    case "system":
+      return "      ";
+  }
+}
+
+function prefixVisibleWidth(kind: TranscriptMessage["kind"]): number {
+  switch (kind) {
+    case "assistant":
+    case "user":
+      return 2;
+    case "error":
+      return 6;
+    case "plan":
+      return 6;
+    default:
+      return prefixFor(kind).replace(/\u001b\[[0-9;]*m/g, "").length;
+  }
+}
+
+function renderThought(message: Extract<TranscriptMessage, { kind: "thought" }>, width: number, liveTick = 0): string[] {
+  const body = stripTerminalMarkup(message.text).trim();
+  // No body and not actively streaming => hide. Models without reasoning never show a row.
+  if (!body && !message.streaming) return [];
+
+  const label = thoughtLabel(message);
+  const contentWidth = Math.max(1, width - 2);
+
+  if (message.streaming) {
+    const lines = [styleThoughtLabel(`${spinnerFrame(liveTick)} ${label}`)];
+    if (body) {
+      // Live preview stays short so the answer stream remains the focus.
+      for (const line of thoughtPreviewLines(body, contentWidth, 3)) {
+        lines.push(styleThought(`  ${line}`));
+      }
+    }
+    return lines;
+  }
+
+  if (message.expanded) {
+    const lines = [styleThoughtLabel(`◆ ${label}`)];
+    lines.push(...wrapDisplayText(body, contentWidth).map((line) => styleThought(`  ${line}`)));
+    return lines;
+  }
+
+  // Collapsed finished thoughts:
+  // - short chain => one-sentence summary
+  // - long chain  => bounded preview; Ctrl+O expands the full text
+  const summary = summarizeThought(body);
+  if (isShortThought(body)) {
+    const heading = `◆ ${label}`;
+    const separator = " · ";
+    const summaryWidth = Math.max(1, width - stripTerminalMarkup(heading).length - separator.length);
+    return [`${styleThoughtLabel(heading)}${ANSI.gray}${separator}${truncateVisible(summary, summaryWidth)}${ANSI.reset}`];
+  }
+
+  const preview = truncateVisible(body.replace(/\s+/g, " ").trim(), 240);
+  const lines = [styleThoughtLabel(`◆ ${label}`)];
+  for (const line of wrapDisplayText(preview, contentWidth).slice(0, 3)) {
+    lines.push(styleThought(`  ${line}`));
+  }
+  return lines;
+}
+
+function thoughtLabel(message: Extract<TranscriptMessage, { kind: "thought" }>): string {
+  if (message.streaming) return "Thinking...";
+  if (message.durationMs !== undefined) return `Thought for ${formatDuration(message.durationMs)}`;
+  return "Thought";
+}
+
+/** Short enough to collapse into a single summary line. */
+function isShortThought(body: string): boolean {
+  const normalized = body.replace(/\s+/g, " ").trim();
+  const lines = body.replace(/\r\n/g, "\n").split("\n").filter((line) => line.trim()).length;
+  return normalized.length <= 600 && lines <= 6;
+}
+
+function summarizeThought(body: string): string {
+  const normalized = body.replace(/\s+/g, " ").trim();
+  if (!normalized) return "";
+  const sentences = normalized.split(/(?<=[。！？.!?])\s+/).filter(Boolean);
+  return truncateVisible((sentences[0] ?? normalized).trim(), 240);
+}
+
+function thoughtPreviewLines(body: string, width: number, maxLines: number): string[] {
+  const wrapped = wrapDisplayText(body, width);
+  if (wrapped.length <= maxLines) return wrapped;
+  return [...wrapped.slice(0, maxLines - 1), "…"];
+}
+
+function styleThought(value: string): string {
+  return `${ANSI.gray}${ANSI.italic}${value}\u001b[23m${ANSI.reset}`;
+}
+
+function styleThoughtLabel(value: string): string {
+  return `${ANSI.amberBold}${value}${ANSI.reset}`;
+}
+
+function renderVerification(message: VerificationMessage, width: number): string[] {
+  const lines = [`${ANSI.toolBold}check${ANSI.reset}`];
+  for (const result of message.results) {
+    const status = result.passed ? "passed" : "failed";
+    const statusColor = result.passed ? ANSI.greenBold : ANSI.redBold;
+    lines.push(...wrapDisplayText(
+      `  ${ANSI.tool}${result.command}${ANSI.reset} ${statusColor}${status}${ANSI.reset}${ANSI.gray} · ${formatDuration(result.durationMs)}${ANSI.reset}`,
+      width,
+    ));
+    if (result.output.trim()) {
+      lines.push(...wrapDisplayText(
+        `  ${ANSI.gray}│ ${result.output.trim().split(/\r?\n/)[0] ?? ""}${ANSI.reset}`,
+        width,
+      ));
+    }
+  }
+  return lines;
+}
+
+function formatDuration(value: number): string {
+  return value >= 1000 ? `${(value / 1000).toFixed(1)}s` : `${Math.max(0, Math.round(value))}ms`;
+}
