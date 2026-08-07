@@ -1,0 +1,17 @@
+{
+  "name": "oran-code-workspace",
+  "private": true,
+  "type": "module",
+  "packageManager": "pnpm@10.30.3",
+  "engines": {
+    "node": ">=22.5"
+  },
+  "scripts": {
+    "dev": "node dev.mjs",
+    "build": "pnpm --filter @oran-code/cli build",
+    "start": "node packages/oran-code/dist/cli.js",
+    "test": "pnpm --filter @oran-code/cli test",
+    "typecheck": "pnpm --filter @oran-code/cli typecheck",
+    "dev:node": "node dev.mjs"
+  }
+}
