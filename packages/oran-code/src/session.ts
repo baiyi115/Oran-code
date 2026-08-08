@@ -1,7 +1,7 @@
 import { createInterface, type CompleterResult, type Interface } from "node:readline";
 import { exec } from "node:child_process";
 import { existsSync } from "node:fs";
-import { mkdir, readFile, readdir, writeFile } from "node:fs/promises";
+import { appendFile, mkdir, readFile, readdir, writeFile } from "node:fs/promises";
 import { promisify } from "node:util";
 import { dirname, resolve } from "node:path";
 import { legacyUserHistoryPath, loadConfig, loadConfigFile, resolveModelConfig, saveConfig, userConfigReadPath, userHistoryPath } from "./config.js";
@@ -16,7 +16,7 @@ import { PERMISSION_MODES, createTask } from "./types.js";
 import { isPlanModeTool, registerBuiltinTools, ToolRegistry } from "./tools.js";
 import { InkTuiApp as TuiApp } from "./tui/ink-app.js";
 import { displaySessionName, firstConversationPrompt, isAutomaticSessionName, SessionStore, truncateSessionName, type StoredSession } from "./session-store.js";
-import type { ApprovalResponse, Message, ModelConfig, ModelProvider, ModelReference, OptionalSystemPromptModules, PermissionMode, ReasoningEffort, RuntimeEvent, RuntimeEventPayloads, SessionTitleMode, Task, ToolCall, UserConfig, WorkMode } from "./types.js";
+import type { ApprovalResponse, Message, ModelConfig, ModelProvider, ModelReference, OptionalSystemPromptModules, PermissionMode, ReasoningEffort, RuntimeEvent, RuntimeEventPayloads, SessionTitleMode, Task, ToolCall, ToolResult, UserConfig, WorkMode } from "./types.js";
 import type { SessionOption, SessionView } from "./tui/types.js";
 import { WorkspaceFileIndex } from "./tui/composer/file-completion.js";
 import { formatErrorMessage } from "./error-format.js";
@@ -26,7 +26,9 @@ import { assertSkillTools, registerSkillCommands, renderSkillPrompt, SkillLoader
 import { loadProjectInstructions } from "./project-instructions.js";
 import { MemoryManager } from "./memory-manager.js";
 import { MemoryExtractor } from "./memory-extractor.js";
-import { CLI_NAME, PRODUCT_NAME, projectStateRoot } from "./paths.js";
+import { createHookEngine, type HookEngine, type HookNoticeQueue } from "./hook/index.js";
+import { CLI_NAME, ensureProjectStateRoot, PRODUCT_NAME, projectStateRoot } from "./paths.js";
+import { McpManager } from "./mcp/manager.js";
 
 const execAsync = promisify(exec);
 const HISTORY_FILE = userHistoryPath();
@@ -90,6 +92,8 @@ export class TerminalSession {
   private shellAbortController: AbortController | undefined;
   private compactPromise: Promise<void> | undefined;
   private compactAbortController: AbortController | undefined;
+  private previousToolHistory: ToolCall[] = [];
+  private previousReadonlyResults?: ReadonlyMap<string, ToolResult>;
   private contextEventSequence = 0;
   private pendingApproval: PendingApproval | undefined;
   private workMode: WorkMode;
@@ -103,6 +107,7 @@ export class TerminalSession {
   private pendingPlanExecute: { sessionId: string; plan: string; prompt: string } | undefined;
   private queuePaused = false;
   private sessionSave: Promise<void> = Promise.resolve();
+  private debugLogTail: Promise<void> = Promise.resolve();
   private sessionPersistTimer: ReturnType<typeof setTimeout> | undefined;
   private readonly titleJobs = new Set<Promise<void>>();
   private readonly titleAbortControllers = new Set<AbortController>();
@@ -129,6 +134,12 @@ export class TerminalSession {
   private commandUsage: CommandUsageTracker | undefined;
   private commandIntegrationPromise: Promise<void> | undefined;
   private latestUsage: Record<string, number> = {};
+  private hookEngine: HookEngine | undefined;
+  private hookNotices: HookNoticeQueue | undefined;
+  private hookWarningsShown = false;
+  private mcpManager: McpManager | undefined;
+  private mcpReady: Promise<void> | undefined;
+  private mcpFailuresShown = false;
 
   constructor(options: SessionOptions, input: NodeJS.ReadableStream = process.stdin, output: NodeJS.WriteStream = process.stdout) {
     this.workspace = resolve(options.workspace);
@@ -156,6 +167,7 @@ export class TerminalSession {
 
   async run(): Promise<void> {
     if (!existsSync(this.workspace)) throw new Error(`workspace does not exist: ${this.workspace}`);
+    await ensureProjectStateRoot(this.workspace);
     await this.initializeCommandIntegrations();
     await this.openTrace();
     await this.openSessionStore();
@@ -188,6 +200,7 @@ export class TerminalSession {
     this.setPrompt();
     this.renderer.status(`${PRODUCT_NAME} ${this.modelLabel()} | ${this.workspace}`, "boldCyan");
     this.renderer.status("Type / for commands or !command for a shell command.");
+    this.startMcpConnections();
     this.prompt();
 
     try {
@@ -206,9 +219,11 @@ export class TerminalSession {
 
   async runOnce(prompt: string): Promise<Task> {
     if (!existsSync(this.workspace)) throw new Error(`workspace does not exist: ${this.workspace}`);
+    await ensureProjectStateRoot(this.workspace);
     await this.initializeCommandIntegrations();
     await this.openTrace();
     await this.openSessionStore();
+    this.startMcpConnections();
     try {
       return await this.startTask(prompt, false);
     } finally {
@@ -260,6 +275,35 @@ export class TerminalSession {
     }
   }
 
+  /** 首次需要时构造 Hook 引擎。 */
+  private async ensureHookEngine(): Promise<HookEngine | undefined> {
+    if (this.hookEngine) return this.hookEngine;
+    try {
+      const built = await createHookEngine(this.workspace, {
+        defaultCommandTimeoutMs: 60_000,
+        log: (message) => { try { this.renderer.status(message); } catch { /* ignore */ } },
+      });
+      this.hookEngine = built.engine;
+      this.hookNotices = built.notices;
+      // 校验错误聚合后通过会话系统提示一次性呈现
+      if (!this.hookWarningsShown && built.errors.length) {
+        this.hookWarningsShown = true;
+        const lines = built.errors.map((e) => `Hook 配置警告：#${e.index}${e.id ? ` (${e.id})` : ""} ${e.message}`);
+        this.renderer.error(lines.join("\n"));
+        // 校验错误通过会话内系统提示消息呈现给模型，前缀固定为 "Hook 配置警告："。
+        this.conversation.push({
+          role: "system",
+          content: lines.join("\n"),
+          metadata: { promptBlock: "hook-warning", contextManaged: true },
+        });
+      }
+      return this.hookEngine;
+    } catch (error) {
+      this.renderer.error(`Hook 引擎初始化失败：${formatErrorMessage(error)}`);
+      return undefined;
+    }
+  }
+
   private async startTask(prompt: string, printErrors: boolean, isolated = false, derivedSkill?: SkillDefinition): Promise<Task> {
     if (this.shellRunning()) throw new Error("finish the current shell command before starting a task");
     if (this.compactRunning()) throw new Error("wait for or cancel context compaction before starting a task");
@@ -270,8 +314,10 @@ export class TerminalSession {
       throw error;
     }
     if (!isolated) await this.persistQueuedUserMessage(prompt);
+    await this.ensureMcpReady();
     const registry = new ToolRegistry();
     registerBuiltinTools(registry, this.workspace);
+    this.registerMcpTools(registry);
     this.registerSkillSystemTools(registry);
     if (derivedSkill) assertSkillTools(derivedSkill, registry.list().map((tool) => tool.name));
     const selectedModel = derivedSkill?.model
@@ -286,6 +332,11 @@ export class TerminalSession {
     const sessionGeneration = this.sessionGeneration;
     const taskGeneration = this.taskGeneration;
     const derivedConversation = derivedSkill ? this.derivedSkillConversation(derivedSkill) : [];
+    const hookEngine = await this.ensureHookEngine();
+    if (hookEngine) {
+      // HTTP 动作请求体固定为上下文 JSON 序列化；注入实时会话消息回调
+      (hookEngine as unknown as { setSessionMessages?: (fn: () => readonly Message[]) => void }).setSessionMessages?.(() => this.conversation);
+    }
     const controller = new TaskController({
       config: runtimeConfig,
       provider: this.providerFactory(requestModel),
@@ -308,9 +359,17 @@ export class TerminalSession {
       runtimeReminders: () => derivedSkill
         ? [this.formatActiveSkillReminder(derivedSkill.name, renderSkillPrompt(derivedSkill))]
         : this.activeSkillReminders(),
-      toolFilter: (tool) => derivedSkill
-        ? derivedSkill.allowedTools.length === 0 || derivedSkill.allowedTools.includes(tool.name)
-        : this.isToolAllowedByActiveSkills(tool.name),
+      toolFilter: (tool) => {
+        if (this.mcpManager?.isMcpTool(tool.name) && !this.mcpManager.isActivated(tool.name)) return false;
+        return derivedSkill
+          ? derivedSkill.allowedTools.length === 0 || derivedSkill.allowedTools.includes(tool.name)
+          : this.isToolAllowedByActiveSkills(tool.name);
+      },
+      ...(hookEngine ? { hookEngine } : {}),
+      hookUserPrompt: prompt,
+      previousToolCalls: this.previousToolHistory,
+      ...(this.previousReadonlyResults !== undefined ? { previousReadonlyResults: this.previousReadonlyResults } : {}),
+      debugLogger: (message) => this.writeDebugLog(message),
     });
     this.controller = controller;
     let completed = false;
@@ -328,6 +387,8 @@ export class TerminalSession {
     } finally {
       if (this.controller === controller) this.controller = undefined;
       const conversationSnapshot = controller.conversationSnapshot();
+      this.previousToolHistory = controller.toolCallHistory;
+      this.previousReadonlyResults = controller.readonlyResultSnapshot;
       if (!isolated) this.conversation = conversationSnapshot;
       this.taskGeneration += 1;
       await this.persistTuiSession();
@@ -529,6 +590,9 @@ export class TerminalSession {
 
   private async restoreStoredSession(stored: StoredSession, restoreModel: boolean): Promise<void> {
     this.sessionGeneration += 1;
+    // 重新挂载会话时清空 once 集合，并丢弃上一任务遗留的通知。
+    this.hookEngine?.resetOnce();
+    this.hookEngine?.drainNotices();
     this.currentSession = structuredClone(stored);
     this.permissionMode = stored.permissionMode
       ?? (stored.workMode === "plan" ? "plan" : configuredPermissionMode(this.config, this.approveAll));
@@ -566,7 +630,11 @@ export class TerminalSession {
     if (!this.model || !this.conversation.length) return;
     const registry = new ToolRegistry();
     registerBuiltinTools(registry, this.workspace);
-    const tools = this.workMode === "plan" ? registry.schemas(isPlanModeTool) : registry.schemas();
+    if (this.mcpManager) {
+      await this.ensureMcpReady();
+      this.registerMcpTools(registry);
+    }
+    const tools = this.toolSchemasForCurrentMode(registry);
     const requestModel: ModelConfig = { ...this.model, reasoningEffort: this.reasoningEffort };
     const contextWindow = manager.resolveContextWindow(requestModel);
     if (!manager.shouldAutoCompact(this.conversation, contextWindow, tools)) return;
@@ -751,6 +819,9 @@ export class TerminalSession {
     this.currentSession = stored;
     this.sessionGeneration += 1;
     this.conversation = [];
+    // 新建并挂载会话时清空 once 集合，同时清空通知队列残留。
+    this.hookEngine?.resetOnce();
+    this.hookEngine?.drainNotices();
     await this.refreshSessionKnowledge();
     this.contextManagers.delete(stored.id);
     this.currentContextManager();
@@ -782,6 +853,17 @@ export class TerminalSession {
 
   private async onEvent(event: RuntimeEvent): Promise<void> {
     if (event.type === "assistant_end") this.latestUsage = { ...event.usage };
+    if (event.type === "context_compaction") {
+      this.writeDebugLog(JSON.stringify({
+        event: "context_compaction",
+        phase: event.phase,
+        reason: event.reason,
+        beforeTokens: event.beforeTokens,
+        afterTokens: event.afterTokens,
+        replacementCount: event.replacementCount,
+        message: event.message,
+      }));
+    }
     if (event.type === "plan_complete") {
       const sessionId = this.currentSession?.id ?? "session-current";
       this.pendingPlanExecute = {
@@ -989,16 +1071,20 @@ export class TerminalSession {
         return `${usage}\n${target.description}\nAliases: ${aliases}\nType: ${target.kind}`;
       }
       case "/status": {
+        await this.ensureMcpReady();
         const usage = this.tui?.snapshot().session.usage;
         const inputTokens = usage?.inputTokens ?? tokenValue(this.latestUsage, "input_tokens", "inputTokens");
         const outputTokens = usage?.outputTokens ?? tokenValue(this.latestUsage, "output_tokens", "outputTokens");
         const registry = new ToolRegistry();
         registerBuiltinTools(registry, this.workspace);
+        this.registerMcpTools(registry);
+        const servers = this.mcpManager?.connectedServers() ?? [];
         return [
           `permission: ${this.permissionMode}`,
           `tokens.input: ${inputTokens}`,
           `tokens.output: ${outputTokens}`,
-          `tools: ${registry.schemas().length}`,
+          `tools: ${this.toolSchemasForCurrentMode(registry).length}`,
+          `mcp: ${servers.length} servers, ${this.mcpManager?.toolCount ?? 0} tools`,
           `memory.entries: ${countPromptEntries(this.stablePromptModules.longTermMemory)}`,
           `model: ${this.modelLabel()}`,
           `workspace: ${this.workspace}`,
@@ -1030,8 +1116,21 @@ export class TerminalSession {
       }
       case "/code-review":
         return "No local code-review team runtime is configured. Use /review to run an Agent review in the current session.";
-      case "/mcp":
-        return "No external extension servers are connected; tool count: 0.";
+      case "/mcp": {
+        await this.ensureMcpReady();
+        const servers = this.mcpManager?.connectedServers() ?? [];
+        const failures = this.mcpManager?.failures() ?? [];
+        if (!servers.length) {
+          return failures.length
+            ? ["No MCP servers are connected.", ...failures.map((item) => `- ${item.name}: ${item.error}`)].join("\n")
+            : "No MCP servers are connected.";
+        }
+        return [
+          ...servers.map((server) => `- ${server.name}: ${server.toolCount} tools`),
+          `Total: ${servers.length} servers, ${this.mcpManager?.toolCount ?? 0} tools`,
+          ...(failures.length ? ["Failed:", ...failures.map((item) => `- ${item.name}: ${item.error}`)] : []),
+        ].join("\n");
+      }
       default:
         return command.handler ? await command.handler(argument) : `Command ${command.name} has no local handler configured.`;
     }
@@ -1045,8 +1144,10 @@ export class TerminalSession {
       return;
     }
 
+    await this.ensureMcpReady();
     const registry = new ToolRegistry();
     registerBuiltinTools(registry, this.workspace);
+    this.registerMcpTools(registry);
     this.registerSkillSystemTools(registry);
     try {
       assertSkillTools(skill, registry.list().map((tool) => tool.name));
@@ -1145,6 +1246,93 @@ export class TerminalSession {
         }
       },
     });
+  }
+
+  private registerMcpTools(registry: ToolRegistry): void {
+    if (!this.mcpManager) return;
+    for (const definition of this.mcpManager.toolDefinitions()) {
+      if (!registry.has(definition.name)) registry.register(definition);
+    }
+    if (this.mcpManager.toolCount === 0) return;
+    const search = this.mcpManager.searchToolDefinition();
+    if (!registry.has(search.name)) registry.register(search);
+  }
+
+  private toolSchemasForCurrentMode(registry: ToolRegistry): Record<string, unknown>[] {
+    return registry.schemas((tool) => {
+      if (this.workMode === "plan" && !isPlanModeTool(tool)) return false;
+      return !this.mcpManager?.isMcpTool(tool.name) || this.mcpManager.isActivated(tool.name);
+    });
+  }
+
+  private startMcpConnections(): void {
+    if (this.mcpManager) return;
+    this.mcpManager = new McpManager(this.config.mcpServers ?? {}, this.workspace);
+    this.mcpReady = this.mcpManager.connect().then(() => {
+      this.injectMcpSystemMessages();
+      this.refreshTui();
+    });
+  }
+
+  private async ensureMcpReady(): Promise<void> {
+    this.startMcpConnections();
+    await this.mcpReady;
+    this.injectMcpSystemMessages();
+  }
+
+  private injectMcpSystemMessages(): void {
+    const manager = this.mcpManager;
+    if (!manager) return;
+    let changed = false;
+    for (const instruction of manager.instructions()) {
+      const exists = this.conversation.some((message) => (
+        message.metadata?.promptBlock === "mcp-instructions"
+        && message.metadata.mcpServer === instruction.server
+      ));
+      if (exists) continue;
+      this.conversation.push({
+        role: "system",
+        content: `MCP server ${instruction.server} instructions:\n${instruction.text}`,
+        metadata: { promptBlock: "mcp-instructions", mcpServer: instruction.server, contextManaged: true },
+      });
+      changed = true;
+    }
+    const reminder = manager.discoveryReminder();
+    const discoveryIndex = this.conversation.findIndex((message) => message.metadata?.promptBlock === "mcp-discovery");
+    if (reminder && discoveryIndex < 0) {
+      this.conversation.push({
+        role: "system",
+        content: reminder,
+        metadata: { promptBlock: "mcp-discovery", contextManaged: true },
+      });
+      changed = true;
+    } else if (reminder && this.conversation[discoveryIndex]?.content !== reminder) {
+      this.conversation[discoveryIndex] = {
+        role: "system",
+        content: reminder,
+        metadata: { promptBlock: "mcp-discovery", contextManaged: true },
+      };
+      changed = true;
+    } else if (!reminder && discoveryIndex >= 0) {
+      this.conversation.splice(discoveryIndex, 1);
+      changed = true;
+    }
+    const failures = manager.failures();
+    const hasFailureMessage = this.conversation.some((message) => message.metadata?.promptBlock === "mcp-failure");
+    if (failures.length && !hasFailureMessage) {
+      const content = ["Some MCP servers failed to connect:", ...failures.map((item) => `- ${item.name}: ${item.error}`)].join("\n");
+      this.conversation.push({
+        role: "system",
+        content,
+        metadata: { promptBlock: "mcp-failure", contextManaged: true },
+      });
+      changed = true;
+      if (!this.mcpFailuresShown) {
+        this.mcpFailuresShown = true;
+        this.renderer.error(content);
+      }
+    }
+    if (changed) void this.persistTuiSession();
   }
 
   private activeSkillReminders(): readonly string[] {
@@ -1268,14 +1456,14 @@ export class TerminalSession {
       return;
     }
 
+    await this.ensureMcpReady();
     const sessionId = this.currentSession?.id;
     const sessionGeneration = this.sessionGeneration;
     const manager = this.currentContextManager();
     const registry = new ToolRegistry();
     registerBuiltinTools(registry, this.workspace);
-    const tools = this.workMode === "plan"
-      ? registry.schemas(isPlanModeTool)
-      : registry.schemas();
+    this.registerMcpTools(registry);
+    const tools = this.toolSchemasForCurrentMode(registry);
     const requestModel: ModelConfig = { ...this.model, reasoningEffort: this.reasoningEffort };
     const contextWindow = manager.resolveContextWindow(requestModel);
     const beforeTokens = manager.estimateTokens(this.conversation, tools);
@@ -1416,6 +1604,7 @@ export class TerminalSession {
     });
     this.tui = tui;
     this.renderer = tui.renderer;
+    this.startMcpConnections();
     try {
       await tui.run();
     } finally {
@@ -1673,7 +1862,19 @@ export class TerminalSession {
   }
 
   private async openTrace(): Promise<void> {
-    this.trace = await SqliteTraceStore.open(resolve(projectStateRoot(this.workspace), "trace.db"));
+    this.trace = await SqliteTraceStore.open(resolve(projectStateRoot(this.workspace), "trace.db"), this.workspace);
+  }
+
+  private writeDebugLog(message: string): void {
+    const enabled = /^(1|true|yes)$/i.test(process.env.ORAN_DEBUG ?? "");
+    if (!enabled) return;
+    const path = resolve(projectStateRoot(this.workspace), "debug", "agent.jsonl");
+    this.debugLogTail = this.debugLogTail
+      .then(async () => {
+        await mkdir(dirname(path), { recursive: true });
+        await appendFile(path, `${JSON.stringify({ timestamp: new Date().toISOString(), data: message })}\n`, "utf8");
+      })
+      .catch(() => undefined);
   }
 
   private async closeTrace(): Promise<void> {
@@ -1690,6 +1891,7 @@ export class TerminalSession {
     await this.persistTuiSession();
     await Promise.allSettled([...this.titleJobs]);
     await this.memoryExtractor?.waitForIdle();
+    await this.mcpManager?.close();
     const tui = this.tui;
     tui?.destroy();
     if (this.tui === tui) this.tui = undefined;
