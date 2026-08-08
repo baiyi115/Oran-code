@@ -325,13 +325,26 @@ function findMatchingRule(
   return undefined;
 }
 
-function matchesPattern(pattern: string, value: string): boolean {
+export function matchesPattern(pattern: string, value: string): boolean {
   if (!/[?*]/.test(pattern)) return value === pattern;
   let source = "";
-  for (const character of pattern) {
-    if (character === "*") source += "[^/\\\\]*";
-    else if (character === "?") source += "[^/\\\\]";
-    else source += character.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+  for (let index = 0; index < pattern.length;) {
+    const character = pattern[index] ?? "";
+    if (character === "*" && pattern[index + 1] === "*") {
+      // ** 匹配跨目录任意字符（gitignore 语义），* 保持单段不跨分隔符。
+      source += ".*";
+      index += 2;
+      while (pattern[index] === "*") index += 1; // 吞掉多余的星号
+    } else if (character === "*") {
+      source += "[^/\\\\]*";
+      index += 1;
+    } else if (character === "?") {
+      source += "[^/\\\\]";
+      index += 1;
+    } else {
+      source += character.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+      index += 1;
+    }
   }
   try {
     return new RegExp(`^${source}$`, "i").test(value);
