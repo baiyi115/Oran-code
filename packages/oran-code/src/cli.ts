@@ -2,7 +2,8 @@
 import { existsSync } from "node:fs";
 import { readFile } from "node:fs/promises";
 import { resolve } from "node:path";
-import { pathToFileURL } from "node:url";
+import { fileURLToPath, pathToFileURL } from "node:url";
+import { realpathSync } from "node:fs";
 import {
   ensureUserConfig,
   loadConfig,
@@ -20,7 +21,7 @@ import { SqliteTraceStore } from "./trace.js";
 import { registerBuiltinTools, ToolRegistry } from "./tools.js";
 import type { UserConfig } from "./types.js";
 import { formatErrorDetail } from "./error-format.js";
-import { CLI_NAME, PRODUCT_NAME, PROJECT_STATE_DIRECTORY, projectStateRoot, USER_DATA_DIRECTORY } from "./paths.js";
+import { CLI_NAME, ensureProjectStateRoot, PRODUCT_NAME, PROJECT_STATE_DIRECTORY, projectStateRoot, USER_DATA_DIRECTORY } from "./paths.js";
 
 const VERSION = "0.1.0";
 
@@ -36,6 +37,7 @@ export async function main(argv = process.argv.slice(2)): Promise<void> {
 
   const workspace = await resolveWorkspace(valueAfter(argv, "--workspace", "-w"));
   if (!existsSync(workspace)) throw new Error(`workspace does not exist: ${workspace}`);
+  await ensureProjectStateRoot(workspace);
 
   const command = argv[0];
   if (command === "inspect") {
@@ -137,7 +139,7 @@ function listTasks(workspace: string, limit: number): void {
     console.log(`No task trace at ${path}`);
     return;
   }
-  const trace = new SqliteTraceStore(path);
+  const trace = new SqliteTraceStore(path, workspace);
   try {
     for (const task of trace.listTasks(Math.max(1, limit))) {
       console.log(`${task.id}  ${task.state.padEnd(16)} ${task.updatedAt.slice(0, 19)}`);
@@ -151,7 +153,7 @@ function listTasks(workspace: string, limit: number): void {
 function showTask(workspace: string, taskId: string): void {
   const path = resolve(projectStateRoot(workspace), "trace.db");
   if (!existsSync(path)) throw new Error(`no task trace at ${path}`);
-  const trace = new SqliteTraceStore(path);
+  const trace = new SqliteTraceStore(path, workspace);
   try {
     console.log(JSON.stringify(trace.exportTrace(taskId), null, 2));
   } finally {
@@ -332,6 +334,15 @@ export async function runCli(argv = process.argv.slice(2)): Promise<void> {
   }
 }
 
-if (process.argv[1] && import.meta.url === pathToFileURL(resolve(process.argv[1])).href) {
-  void runCli();
+// 兼容 npm/pnpm 全局 link 的软链入口：realpath 双向比较。
+if (process.argv[1]) {
+  try {
+    const entryReal = realpathSync(process.argv[1]);
+    const selfReal = realpathSync(fileURLToPath(import.meta.url));
+    if (entryReal === selfReal || pathToFileURL(entryReal).href === import.meta.url) {
+      void runCli();
+    }
+  } catch {
+    // 入口缺失时 realpath 可能抛错，不应阻断 CLI 启动。
+  }
 }

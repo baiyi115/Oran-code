@@ -1,11 +1,12 @@
 import { randomBytes } from "node:crypto";
 import { existsSync } from "node:fs";
-import { appendFile, mkdir, readFile, readdir, rename, stat, unlink } from "node:fs/promises";
+import { appendFile, mkdir, readFile, readdir, rename, stat, unlink, utimes, writeFile } from "node:fs/promises";
 import { dirname, extname, resolve } from "node:path";
 import type { TranscriptMessage } from "./tui/types.js";
 import type { Message, ModelReference, SessionTitleMode } from "./types.js";
 import { isPermissionMode, isReasoningEffort, type PermissionMode, type ReasoningEffort, type WorkMode } from "./types.js";
-import { projectStateRoot } from "./paths.js";
+import { ensureProjectStateRoot, projectStateRoot } from "./paths.js";
+import { repairToolMessagePairs } from "./message-utils.js";
 
 export type SessionTitleSource = "local" | "model" | "manual";
 export interface StoredSession {
@@ -44,6 +45,7 @@ export class SessionStore {
   }
 
   async open(): Promise<void> {
+    await ensureProjectStateRoot(this.workspace);
     await this.migrateLegacyStore();
     let names: string[];
     try { names = await readdir(this.directory); } catch { this.sessions = []; this.mtimes.clear(); return; }
@@ -81,7 +83,7 @@ export class SessionStore {
       ...(defaults.modelReference !== undefined ? { modelReference: { ...defaults.modelReference } } : {}),
       ...(defaults.conversation !== undefined ? { conversation: cloneMessages(defaults.conversation) } : {}),
     };
-    await this.appendRecords(id, [stateRecord(session, now), ...messageRecords(session.conversation ?? [], now)]);
+    await this.persistRecordsAndState(id, [stateRecord(session, now), ...messageRecords(session.conversation ?? [], now)], session, now);
     this.sessions.push(session);
     await this.refreshMtime(id);
     return cloneSession(session);
@@ -116,7 +118,7 @@ export class SessionStore {
     const changes: SessionJsonlRecord[] = patch.conversation === undefined ? []
       : isMessagePrefix(before, after) ? messageRecords(after.slice(before.length), now)
         : [compactionBoundaryRecord(after, now) ?? { type: "session-reset", role: "system", timestamp: now, content: { messages: cloneMessages(after) } }];
-    await this.appendRecords(id, [...changes, stateRecord(next, now)]);
+    await this.persistRecordsAndState(id, [...changes, stateRecord(next, now)], next, now);
     next.archiveMessageCount = (existing.archiveMessageCount ?? countArchiveMessages(before))
       + changes.filter((record) => record.type === "message").length;
     if (!next.archiveTitle) {
@@ -141,7 +143,7 @@ export class SessionStore {
       const title = archivePrompt(message.content);
       if (title) next.archiveTitle = title;
     }
-    await this.appendRecords(id, messageRecords([message], timestamp));
+    await this.persistRecordsAndState(id, messageRecords([message], timestamp), next, timestamp);
     try { next.archiveSize = (await stat(this.archivePath(id))).size; } catch { /* size is optional derived metadata */ }
     this.sessions[this.sessions.indexOf(existing)] = next;
     await this.refreshMtime(id);
@@ -152,6 +154,7 @@ export class SessionStore {
     const index = this.sessions.findIndex((item) => item.id === id && normalizeWorkspace(item.workspace) === normalizeWorkspace(this.workspace));
     if (index < 0) return false;
     await unlink(this.archivePath(id));
+    try { await unlink(this.statePath(id)); } catch { /* legacy sessions may not have a sidecar */ }
     this.sessions.splice(index, 1);
     this.mtimes.delete(id);
     return true;
@@ -169,6 +172,7 @@ export class SessionStore {
         if ((await stat(path)).mtimeMs >= cutoff) continue;
         await unlink(path);
         const id = name.slice(0, -6);
+        try { await unlink(this.statePath(id)); } catch { /* legacy sessions may not have a sidecar */ }
         this.sessions = this.sessions.filter((item) => item.id !== id);
         this.mtimes.delete(id);
         removed += 1;
@@ -182,11 +186,53 @@ export class SessionStore {
     return resolve(this.directory, `${id}.jsonl`);
   }
 
-  private async appendRecords(id: string, records: readonly SessionJsonlRecord[]): Promise<void> {
-    if (!records.length) return;
-    const path = this.archivePath(id);
-    const text = `${records.map((record) => JSON.stringify(record)).join("\n")}\n`;
-    const operation = this.writeTail.then(async () => { await mkdir(dirname(path), { recursive: true }); await appendFile(path, text, "utf8"); });
+  private statePath(id: string): string {
+    if (!isSafeSessionId(id)) throw new Error(`invalid session id: ${id}`);
+    return resolve(this.directory, `${id}.state.json`);
+  }
+
+  private async persistRecordsAndState(
+    id: string,
+    records: readonly SessionJsonlRecord[],
+    session: StoredSession,
+    timestamp: string,
+  ): Promise<void> {
+    const archivePath = this.archivePath(id);
+    const statePath = this.statePath(id);
+    const archiveText = records.length ? `${records.map((record) => JSON.stringify(record)).join("\n")}\n` : "";
+    const stateText = `${JSON.stringify(stateSnapshotRecord(session, timestamp))}\n`;
+    const operation = this.writeTail.then(async () => {
+      await mkdir(dirname(archivePath), { recursive: true });
+      // Write the replaceable snapshot first. If the append fails, retrying cannot
+      // duplicate semantic records because the sidecar contains no conversation.
+      await replaceTextFile(statePath, stateText);
+      if (archiveText) await appendFile(archivePath, archiveText, "utf8");
+    });
+    this.writeTail = operation.catch(() => undefined);
+    await operation;
+  }
+
+  private async persistLoadedState(
+    id: string,
+    session: StoredSession,
+    timestamp: string,
+    records: readonly SessionJsonlRecord[],
+    compactArchive: boolean,
+  ): Promise<void> {
+    const archivePath = this.archivePath(id);
+    const statePath = this.statePath(id);
+    const stateText = `${JSON.stringify(stateSnapshotRecord(session, timestamp))}\n`;
+    const compactedRecords = compactArchive
+      ? [stateRecord(session, timestamp), ...records.filter((record) => record.type !== "state")]
+      : [];
+    const archiveText = compactArchive
+      ? `${compactedRecords.map((record) => JSON.stringify(record)).join("\n")}\n`
+      : undefined;
+    const operation = this.writeTail.then(async () => {
+      await mkdir(dirname(archivePath), { recursive: true });
+      await replaceTextFile(statePath, stateText);
+      if (archiveText !== undefined) await replaceTextFile(archivePath, archiveText);
+    });
     this.writeTail = operation.catch(() => undefined);
     await operation;
   }
@@ -196,12 +242,30 @@ export class SessionStore {
     catch { this.mtimes.set(id, Date.now()); }
   }
 
+  private async readStateSnapshot(id: string): Promise<SessionStateRecord | undefined> {
+    try {
+      const parsed = JSON.parse((await readFile(this.statePath(id), "utf8")).trim()) as unknown;
+      return isSessionJsonlRecord(parsed) && parsed.type === "state" && parsed.session.id === id
+        ? parsed
+        : undefined;
+    } catch { return undefined; }
+  }
+
   private async readArchive(path: string, fileId: string): Promise<{ session: StoredSession; mtimeMs: number } | undefined> {
     try {
-      const [contents, details] = await Promise.all([readFile(path, "utf8"), stat(path)]);
+      const [contents, initialDetails, snapshot] = await Promise.all([
+        readFile(path, "utf8"),
+        stat(path),
+        this.readStateSnapshot(fileId),
+      ]);
       const records = parseSessionJsonl(contents);
       const conversation = rebuildConversation(records);
-      const latest = records.filter((record): record is SessionStateRecord => record.type === "state").at(-1)?.session;
+      const stateRecords = records.filter((record): record is SessionStateRecord => record.type === "state");
+      const archiveState = stateRecords.at(-1);
+      const latestRecord = snapshot && (!archiveState || snapshot.timestamp >= archiveState.timestamp)
+        ? snapshot
+        : archiveState;
+      const latest = latestRecord?.session;
       const base: StoredSession | undefined = latest && isStoredSessionState(latest) && latest.id === fileId
         ? { ...structuredClone(latest), conversation }
         : conversation.length
@@ -211,14 +275,35 @@ export class SessionStore {
               autoNamed: true,
               titleSource: "local",
               workspace: this.workspace,
-              createdAt: details.birthtime.toISOString(),
-              updatedAt: details.mtime.toISOString(),
+              createdAt: initialDetails.birthtime.toISOString(),
+              updatedAt: initialDetails.mtime.toISOString(),
               messages: [],
               history: [],
               conversation,
             }
           : undefined;
       if (!base) return undefined;
+
+      const compactArchive = stateRecords.length > 1 || stateRecords.some(hasInlineTuiState);
+      const refreshSnapshot = !snapshot || latestRecord !== snapshot;
+      let details = initialDetails;
+      if (compactArchive || refreshSnapshot) {
+        try {
+          await this.persistLoadedState(
+            fileId,
+            base,
+            latestRecord?.timestamp ?? base.updatedAt,
+            records,
+            compactArchive,
+          );
+          if (compactArchive) {
+            // Vacuuming is maintenance, not user activity; preserve session ordering.
+            await utimes(path, initialDetails.atime, initialDetails.mtime);
+            details = await stat(path);
+          }
+        } catch { /* loading remains valid even if best-effort migration fails */ }
+      }
+
       const archiveTitle = firstArchiveTitle(records);
       return {
         session: {
@@ -247,7 +332,7 @@ export class SessionStore {
         if (existsSync(destination)) continue;
         const timestamp = session.updatedAt || new Date().toISOString();
         const records: SessionJsonlRecord[] = [stateRecord(session, timestamp), ...messageRecords(session.conversation ?? [], timestamp)];
-        await appendFile(destination, `${records.map((record) => JSON.stringify(record)).join("\n")}\n`, "utf8");
+        await this.persistRecordsAndState(session.id, records, session, timestamp);
       }
       await rename(this.path, `${this.path}.migrated`);
     } catch { /* retain the legacy file so migration can be retried */ }
@@ -289,30 +374,7 @@ export function rebuildConversation(records: readonly SessionJsonlRecord[]): Mes
     const message = recordMessage(records[index]);
     if (message) rebuilt.push(message);
   }
-  return truncateIncompleteToolChain(rebuilt);
-}
-
-function truncateIncompleteToolChain(messages: readonly Message[]): Message[] {
-  const output: Message[] = [];
-  let pending: Set<string> | undefined;
-  let start = -1;
-  for (const message of messages) {
-    if (pending?.size && message.role !== "tool") return output.slice(0, start);
-    if (message.role === "assistant" && message.toolCalls?.length) {
-      const ids = message.toolCalls.map((call) => call.id).filter((id): id is string => Boolean(id));
-      if (ids.length !== message.toolCalls.length) return output;
-      start = output.length; pending = new Set(ids); output.push(structuredClone(message)); continue;
-    }
-    if (message.role === "tool") {
-      if (!pending?.size) return output;
-      if (!message.toolCallId || !pending.has(message.toolCallId)) return output.slice(0, start);
-      output.push(structuredClone(message)); pending.delete(message.toolCallId);
-      if (!pending.size) { pending = undefined; start = -1; }
-      continue;
-    }
-    output.push(structuredClone(message));
-  }
-  return pending?.size ? output.slice(0, start) : output;
+  return repairToolMessagePairs(rebuilt);
 }
 
 function recordMessage(record: SessionJsonlRecord | undefined): Message | undefined {
@@ -324,6 +386,19 @@ function recordMessage(record: SessionJsonlRecord | undefined): Message | undefi
 }
 
 function stateRecord(session: StoredSession, timestamp: string): SessionStateRecord {
+  const state = storedSessionState(session);
+  return {
+    type: "state",
+    timestamp,
+    // The append-only archive only needs a lightweight metadata checkpoint.
+    // The latest full TUI transcript is overwritten in the sidecar instead.
+    session: { ...state, messages: [], history: [] },
+  };
+}
+function stateSnapshotRecord(session: StoredSession, timestamp: string): SessionStateRecord {
+  return { type: "state", timestamp, session: storedSessionState(session) };
+}
+function storedSessionState(session: StoredSession): StoredSessionState {
   const {
     conversation: _conversation,
     archiveMessageCount: _archiveMessageCount,
@@ -331,7 +406,20 @@ function stateRecord(session: StoredSession, timestamp: string): SessionStateRec
     archiveSize: _archiveSize,
     ...state
   } = cloneSession(session);
-  return { type: "state", timestamp, session: state };
+  return state;
+}
+function hasInlineTuiState(record: SessionStateRecord): boolean {
+  return record.session.messages.length > 0 || record.session.history.length > 0;
+}
+async function replaceTextFile(path: string, contents: string): Promise<void> {
+  const temporary = `${path}.${process.pid}-${randomBytes(4).toString("hex")}.tmp`;
+  await writeFile(temporary, contents, "utf8");
+  try {
+    await rename(temporary, path);
+  } catch (error) {
+    try { await unlink(temporary); } catch { /* best-effort cleanup */ }
+    throw error;
+  }
 }
 function messageRecords(messages: readonly Message[], timestamp: string): SessionMessageRecord[] {
   return messages.map((message) => ({ type: "message", timestamp, ...structuredClone(message), content: message.content ?? "" }));

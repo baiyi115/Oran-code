@@ -78,8 +78,10 @@ export class InMemoryTraceStore implements TraceStore {
 
 export class SqliteTraceStore implements TraceStore {
   private readonly db: InstanceType<typeof DatabaseSync>;
+  private readonly workspace: string | undefined;
 
-  constructor(path: string) {
+  constructor(path: string, workspace?: string) {
+    this.workspace = workspace;
     this.db = new DatabaseSync(path);
     this.db.exec(`
       PRAGMA foreign_keys = ON;
@@ -124,12 +126,15 @@ export class SqliteTraceStore implements TraceStore {
     `);
   }
 
-  static async open(path: string): Promise<SqliteTraceStore> {
+  static async open(path: string, workspace?: string): Promise<SqliteTraceStore> {
     await mkdir(dirname(path), { recursive: true });
-    return new SqliteTraceStore(path);
+    return new SqliteTraceStore(path, workspace);
   }
 
   saveTask(task: Task): void {
+    if (this.workspace && task.workspace !== this.workspace) {
+      throw new Error(`trace workspace mismatch: expected ${this.workspace}, received ${task.workspace}`);
+    }
     this.db.prepare(`
       INSERT INTO tasks (id, workspace, prompt, state, plan, model, result, created_at, updated_at)
       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
@@ -139,12 +144,16 @@ export class SqliteTraceStore implements TraceStore {
   }
 
   getTask(taskId: string): Task | undefined {
-    const row = this.db.prepare("SELECT * FROM tasks WHERE id = ?").get(taskId);
+    const row = this.workspace
+      ? this.db.prepare("SELECT * FROM tasks WHERE id = ? AND workspace = ?").get(taskId, this.workspace)
+      : this.db.prepare("SELECT * FROM tasks WHERE id = ?").get(taskId);
     return row ? taskFromRow(row) : undefined;
   }
 
   listTasks(limit = 50): Task[] {
-    const rows = this.db.prepare("SELECT * FROM tasks ORDER BY created_at DESC LIMIT ?").all(limit);
+    const rows = this.workspace
+      ? this.db.prepare("SELECT * FROM tasks WHERE workspace = ? ORDER BY created_at DESC LIMIT ?").all(this.workspace, limit)
+      : this.db.prepare("SELECT * FROM tasks ORDER BY created_at DESC LIMIT ?").all(limit);
     return rows.map(taskFromRow);
   }
 
