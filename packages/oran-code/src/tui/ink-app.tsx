@@ -13,6 +13,7 @@ import { composerCursorOffset, cursorVisualPosition, deleteBackward, deleteForwa
 import { TranscriptView } from "./transcript/transcript-view.js";
 import { footerLines, workSummaryLine } from "./footer.js";
 import { approvalDialogLines } from "./approval-dialog.js";
+import type { SubagentOrigin } from "../subagent/types.js";
 import { modelSelectorLines } from "./model-selector.js";
 import { commandPaletteLines } from "./command-palette.js";
 import { ANSI, COLORS, horizontalRule } from "./theme.js";
@@ -106,7 +107,7 @@ export class InkTuiApp {
       },
     };
     this.renderer = new TuiTranscriptRenderer(layout, this.state);
-    this.renderer.setApprovalHandler((call, level, description) => this.openApproval(call, level, description));
+    this.renderer.setApprovalHandler((call, level, description, origin) => this.openApproval(call, level, description, origin));
     this.renderer.setApprovalCancelHandler(() => this.cancelApproval());
   }
 
@@ -784,10 +785,10 @@ export class InkTuiApp {
     }
   }
 
-  private openApproval(call: ToolCall, level: number, description: string): Promise<ApprovalResponse> {
+  private openApproval(call: ToolCall, level: number, description: string, origin: SubagentOrigin): Promise<ApprovalResponse> {
     // Replace any previous unresolved approval promise so callers never hang.
     this.cancelApproval();
-    this.state.overlay = { kind: "approval", approval: { call, level, description, workspace: this.options.getWorkspace() }, selectedIndex: 0 };
+    this.state.overlay = { kind: "approval", approval: { call, level, description, workspace: this.options.getWorkspace(), origin }, selectedIndex: 0 };
     this.state.session.status = "approval required";
     this.invalidate();
     return new Promise<ApprovalResponse>((resolve) => {
@@ -1387,6 +1388,7 @@ function renderOverlayLines(state: TuiState, commandLines: string[], width: numb
         state.overlay.approval.level,
         state.overlay.approval.description,
         state.overlay.approval.workspace,
+        state.overlay.approval.origin,
         state.overlay.selectedIndex,
         width,
       );

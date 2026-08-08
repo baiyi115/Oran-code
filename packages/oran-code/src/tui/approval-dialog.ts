@@ -2,6 +2,7 @@ import type { ToolCall } from "../types.js";
 import { redactSecretText, redactSecrets } from "./interaction.js";
 import { highlightSelection } from "./overlay/select-list.js";
 import { visibleWidth, wrapDisplayText } from "./text-width.js";
+import { subagentOriginLabel, type SubagentOrigin } from "../subagent/types.js";
 
 export const APPROVAL_OPTIONS = ["Allow once", "Always allow", "Reject"] as const;
 
@@ -10,11 +11,12 @@ export function approvalDialogLines(
   level: number,
   description: string,
   workspace: string,
+  origin: SubagentOrigin,
   selectedIndex: number,
   width = 80,
 ): string[] {
   const details = redactSecrets(call.arguments) as Record<string, unknown>;
-  const lines = ["Permission required", "", `Tool: ${call.name}`];
+  const lines = ["Permission required", "", `Source: ${subagentOriginLabel(origin)}`, `Tool: ${call.name}`];
   if (typeof details.command === "string") lines.push(`Command: ${redactSecretText(details.command)}`);
   if (typeof details.path === "string") lines.push(`Path: ${redactSecretText(details.path)}`);
   lines.push(`Directory: ${workspace}`, `Permission level: ${level}`);

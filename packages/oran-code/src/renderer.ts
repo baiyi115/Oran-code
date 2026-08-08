@@ -1,6 +1,7 @@
 import { clearLine, cursorTo } from "node:readline";
 import type { Writable } from "node:stream";
 import type { ApprovalResponse, RuntimeEvent, ToolCall, ToolResult, VerificationResult } from "./types.js";
+import { subagentOriginLabel, type SubagentOrigin } from "./subagent/types.js";
 
 export interface PromptOutputHooks {
   before: () => void;
@@ -23,7 +24,7 @@ export interface SessionRenderer {
   markdown(title: string, content: string): void;
   error(message: string): void;
   clearTranscript(): void;
-  approval(call: ToolCall, level: number, description: string): Promise<ApprovalResponse> | void;
+  approval(call: ToolCall, level: number, description: string, origin: SubagentOrigin): Promise<ApprovalResponse> | void;
   cancelApproval?(): void;
 }
 
@@ -145,10 +146,11 @@ export class TerminalRenderer implements SessionRenderer {
     this.status(`[retry ${nextAttempt}/${maxRetries}] retrying...`, "yellow");
   }
 
-  approval(call: ToolCall, level: number, description: string): void {
+  approval(call: ToolCall, level: number, description: string, origin: SubagentOrigin): void {
     const args = JSON.stringify(call.arguments, undefined, 2);
     this.block(
       `${paint("Approval required", "yellow", this.colorEnabled)}: ${call.name} (L${level})\n` +
+      `Source: ${subagentOriginLabel(origin)}\n` +
       `${description}\n${truncate(args, 1200)}\n` +
       "Reply y to allow once, a to always allow this exact tool request, or n to reject.\n",
     );

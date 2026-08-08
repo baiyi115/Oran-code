@@ -191,9 +191,14 @@ export interface McpServerConfig {
   transport?: "sse";
 }
 
+export interface SubagentSettings {
+  forkWaitTimeoutMs?: number;
+}
+
 export interface UserConfig {
   providers: Record<string, ProviderProfile>;
   agent?: AgentSettings;
+  subagent?: SubagentSettings;
   sessionTitles?: SessionTitleSettings;
   mcpServers?: Record<string, McpServerConfig>;
   hooks?: HookRule[];
@@ -229,6 +234,9 @@ export interface RuntimeConfig {
   permissionMode: PermissionMode;
   loop: LoopConfig;
   permissions: PermissionConfig;
+  subagent: {
+    forkWaitTimeoutMs: number;
+  };
   skipVerify: boolean;
   approveAll: boolean;
   traceDb?: string;

@@ -97,7 +97,8 @@ async function executeSubAgent(
   if (!deps.subAgentExecutor) {
     return { output: errorPrefix("subagent executor not registered"), ok: false, intercept };
   }
-  return deps.subAgentExecutor(prompt ?? command ?? "", ctx);
+  const result = await deps.subAgentExecutor(prompt ?? command ?? "", ctx);
+  return { ...result, intercept };
 }
 
 export function errorPrefix(message: string): string {

@@ -1,9 +1,10 @@
 import type { TuiState } from "./types.js";
 import type { ApprovalResponse, RuntimeEvent, ToolCall } from "../types.js";
 import type { PromptOutputHooks } from "../renderer.js";
+import type { SubagentOrigin } from "../subagent/types.js";
 import { appendSystemMessage, appendUserMessage, reduceRuntimeEvent } from "./message-reducer.js";
 
-export type ApprovalHandler = (call: ToolCall, level: number, description: string) => Promise<ApprovalResponse>;
+export type ApprovalHandler = (call: ToolCall, level: number, description: string, origin: SubagentOrigin) => Promise<ApprovalResponse>;
 export type ApprovalCancelHandler = () => void;
 
 export interface TuiRendererLayout {
@@ -75,9 +76,9 @@ export class TuiTranscriptRenderer {
     this.redraw();
   }
 
-  approval(call: ToolCall, level: number, description: string): Promise<ApprovalResponse> | void {
+  approval(call: ToolCall, level: number, description: string, origin: SubagentOrigin): Promise<ApprovalResponse> | void {
     this.state.session.status = "approval required";
-    return this.approvalHandler?.(call, level, description);
+    return this.approvalHandler?.(call, level, description, origin);
   }
 
   redraw(): void {

@@ -4,7 +4,7 @@ import { existsSync } from "node:fs";
 import { readFile } from "node:fs/promises";
 import { resolve } from "node:path";
 import { parse } from "yaml";
-import type { HookConfig, HookEngineDeps, HookValidationError } from "./types.js";
+import type { HookConfig, HookEngineDeps, HookSubAgentExecutor, HookValidationError } from "./types.js";
 import { HookEngine, type HookEngineOptions } from "./engine.js";
 import { HookNoticeQueue } from "./notify-queue.js";
 import { userConfigPath } from "../config.js";
@@ -100,6 +100,8 @@ export function createHookEngineDeps(options: {
   notices: HookNoticeQueue;
   log?: (message: string) => void;
   workspace: string;
+  subAgentExecutor?: HookSubAgentExecutor;
+  sessionMessages?: HookEngineDeps["sessionMessages"];
 }): HookEngineDeps {
   const deps: HookEngineDeps = {
     notices: options.notices,
@@ -141,16 +143,28 @@ export function createHookEngineDeps(options: {
     },
   };
   if (options.log) deps.log = options.log;
+  if (options.subAgentExecutor) deps.subAgentExecutor = options.subAgentExecutor;
+  if (options.sessionMessages) deps.sessionMessages = options.sessionMessages;
   return deps;
 }
 
 export async function createHookEngine(workspace: string, options: {
   defaultCommandTimeoutMs: number;
   log?: (message: string) => void;
+  subAgentExecutor?: HookSubAgentExecutor;
+  sessionMessages?: HookEngineDeps["sessionMessages"];
 }): Promise<{ engine: HookEngine; notices: HookNoticeQueue; errors: readonly HookValidationError[] }> {
   const notices = new HookNoticeQueue();
-  const depsOptions: { notices: HookNoticeQueue; workspace: string; log?: (message: string) => void } = { notices, workspace };
+  const depsOptions: {
+    notices: HookNoticeQueue;
+    workspace: string;
+    log?: (message: string) => void;
+    subAgentExecutor?: HookSubAgentExecutor;
+    sessionMessages?: HookEngineDeps["sessionMessages"];
+  } = { notices, workspace };
   if (options.log) depsOptions.log = options.log;
+  if (options.subAgentExecutor) depsOptions.subAgentExecutor = options.subAgentExecutor;
+  if (options.sessionMessages) depsOptions.sessionMessages = options.sessionMessages;
   const deps = createHookEngineDeps(depsOptions);
   const { configs, loadErrors } = await loadAllHooks(workspace);
   const engine = new HookEngine(configs, {

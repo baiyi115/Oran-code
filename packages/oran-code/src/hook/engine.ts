@@ -89,8 +89,12 @@ export class HookEngine {
     return this.deps.notices.drain();
   }
 
-  setSessionMessages(fn: () => import("../types.js").Message[]): void {
+  setSessionMessages(fn: () => readonly import("../types.js").Message[]): void {
     this.deps.sessionMessages = fn;
+  }
+
+  setSubAgentExecutor(executor: HookSubAgentExecutor): void {
+    this.deps.subAgentExecutor = executor;
   }
 
   resetOnce(): void {

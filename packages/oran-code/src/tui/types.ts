@@ -1,5 +1,6 @@
 import type { ApprovalResponse, Message, ModelReference, PermissionMode, ReasoningEffort, RuntimeEvent, TaskState, ToolCall, VerificationResult, WorkMode } from "../types.js";
 import type { SlashCommand } from "../commands.js";
+import type { SubagentOrigin } from "../subagent/types.js";
 
 export interface TuiAppOptions {
   input: NodeJS.ReadableStream;
@@ -164,6 +165,7 @@ export interface ApprovalDetails {
   level: number;
   description: string;
   workspace: string;
+  origin: SubagentOrigin;
 }
 
 export type OverlayState =
@@ -230,5 +232,5 @@ export interface TuiEventSink {
   markdown(title: string, content: string): void;
   error(message: string): void;
   clearTranscript(): void;
-  approval(call: ToolCall, level: number, description: string): Promise<ApprovalResponse> | void;
+  approval(call: ToolCall, level: number, description: string, origin: SubagentOrigin): Promise<ApprovalResponse> | void;
 }

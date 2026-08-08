@@ -12,6 +12,7 @@ export const DEFAULT_NO_PROGRESS_LIMIT = 3;
 export const DEFAULT_TOKEN_BUDGET = 1_000_000;
 export const DEFAULT_UNKNOWN_TOOL_LIMIT = 3;
 export const DEFAULT_READONLY_CONCURRENCY = 4;
+export const DEFAULT_FORK_WAIT_TIMEOUT_MS = 600_000;
 
 export function createRuntimeConfig(
   workspace: string,
@@ -50,8 +51,19 @@ export function createRuntimeConfig(
       readonlyConcurrency: DEFAULT_READONLY_CONCURRENCY,
     },
     permissions,
+    subagent: {
+      forkWaitTimeoutMs: normalizeForkWaitTimeout(config.subagent?.forkWaitTimeoutMs),
+    },
     skipVerify: config.agent?.skipVerify === true,
     approveAll,
     traceDb,
   };
+}
+
+function normalizeForkWaitTimeout(value: number | undefined): number {
+  if (value === undefined) return DEFAULT_FORK_WAIT_TIMEOUT_MS;
+  if (!Number.isFinite(value) || value < 0) {
+    throw new Error("subagent.forkWaitTimeoutMs must be a finite non-negative number");
+  }
+  return value;
 }

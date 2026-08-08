@@ -1,10 +1,16 @@
-import type { AgentEvent, AgentOptions, Task } from "./types.js";
+import type { AgentEvent, AgentOptions, Message, ModelConfig, Task } from "./types.js";
 import { createModelProvider } from "./provider.js";
 import { registerBuiltinTools, ToolRegistry } from "./tools.js";
 import { createRuntimeConfig } from "./runtime.js";
 import { createTask } from "./types.js";
 import { InMemoryTraceStore } from "./trace.js";
 import { TaskController } from "./controller.js";
+import { BackgroundAgentTaskManager } from "./subagent/background.js";
+import { SubagentCoordinator } from "./subagent/coordinator.js";
+import { AgentDefinitionLoader } from "./subagent/roles.js";
+import { SubagentRunner } from "./subagent/runner.js";
+import { StructuredSubagentScope } from "./subagent/scope.js";
+import { TeamManager } from "./subagent/team.js";
 
 export async function runTask(options: AgentOptions, registry: ToolRegistry): Promise<void> {
   await executeWithController(options, registry, { skipVerify: true });
@@ -21,7 +27,7 @@ export async function runTask(options: AgentOptions, registry: ToolRegistry): Pr
 export async function runTaskWithController(
   options: AgentOptions,
   configOverrides: { skipVerify?: boolean } = {},
-): Promise<import("./types.js").Task> {
+): Promise<Task> {
   const registry = new ToolRegistry();
   registerBuiltinTools(registry, options.workspace);
   return executeWithController(options, registry, configOverrides);
@@ -32,7 +38,6 @@ async function executeWithController(
   registry: ToolRegistry,
   configOverrides: { skipVerify?: boolean } = {},
 ): Promise<Task> {
-  const provider = createModelProvider(options.model);
   const config = createRuntimeConfig(
     options.workspace,
     options.model,
@@ -46,17 +51,81 @@ async function executeWithController(
     options.approveAll,
   );
   const trace = new InMemoryTraceStore();
-  const onEvent = options.onEvent;
-  const controller = new TaskController({
-    config,
-    provider,
+  const roles = new AgentDefinitionLoader(options.workspace);
+  await roles.scan();
+  const background = new BackgroundAgentTaskManager();
+  const teams = new TeamManager();
+  let conversation: Message[] = [];
+  const resolveModel = (reference: string): ModelConfig => resolveNonInteractiveModel(reference, options.model);
+  const runner = new SubagentRunner({
+    workspace: options.workspace,
     registry,
     trace,
+    baseConfig: config,
+    baseModel: options.model,
+    providerFactory: createModelProvider,
+    resolveModel,
+    ...(options.approve ? {
+      approvalCallback: async (call, level) => options.approve?.(call, level) ?? false,
+    } : {}),
+    ...(options.onEvent ? {
+      eventCallback: (event) => {
+        if (event.runtimeEvent) forwardRuntimeEvent(event.runtimeEvent, options.onEvent as (event: AgentEvent) => void);
+      },
+    } : {}),
+    parentToolFilter: () => true,
+    isMcpTool: () => false,
+  });
+  const scope = new StructuredSubagentScope(runner, config.subagent.forkWaitTimeoutMs);
+  new SubagentCoordinator({
+    roles,
+    runner,
+    background,
+    teams,
+    parentConversation: () => conversation,
+    scope,
+    resolveModel,
+    callerOrigin: { kind: "main" },
+  }).registerTools(registry);
+  const controller = new TaskController({
+    config,
+    provider: createModelProvider(options.model),
+    registry,
+    trace,
+    conversation,
+    conversationCallback: (messages) => {
+      conversation = structuredClone([...messages]);
+    },
     ...(options.approve ? { approvalCallback: async (call, level) => options.approve?.(call, level) ?? false } : {}),
-    ...(onEvent ? { eventCallback: (event) => forwardRuntimeEvent(event, onEvent) } : {}),
+    ...(options.onEvent ? { eventCallback: (event) => forwardRuntimeEvent(event, options.onEvent as (event: AgentEvent) => void) } : {}),
     ...(options.stablePromptModules ? { stablePromptModules: options.stablePromptModules } : {}),
   });
-  return controller.execute(createTask(options.workspace, options.prompt));
+  try {
+    const task = await controller.execute(createTask(options.workspace, options.prompt));
+    await scope.waitForChildren(config.subagent.forkWaitTimeoutMs);
+    const summary = scope.summary();
+    if (summary) {
+      task.result = task.result?.trim()
+        ? `${task.result.trim()}\n\n${summary}`
+        : summary;
+    }
+    return task;
+  } finally {
+    scope.cancelAll();
+    background.cancelAll();
+    await Promise.allSettled(scope.list().map((task) => task.promise));
+    await teams.shutdown();
+    await background.waitForIdle();
+  }
+}
+
+function resolveNonInteractiveModel(reference: string, current: ModelConfig): ModelConfig {
+  const normalized = reference.trim();
+  if (normalized === current.model || normalized === `${current.provider}/${current.model}`) return current;
+  throw new Error(
+    `Model override ${reference} is not configured in the non-interactive AgentOptions. ` +
+    `Only ${current.provider}/${current.model} is available.`,
+  );
 }
 
 function forwardRuntimeEvent(event: import("./types.js").RuntimeEvent, emit: (event: AgentEvent) => void): void {

@@ -16,7 +16,7 @@ import { PERMISSION_MODES, createTask } from "./types.js";
 import { isPlanModeTool, registerBuiltinTools, ToolRegistry } from "./tools.js";
 import { InkTuiApp as TuiApp } from "./tui/ink-app.js";
 import { displaySessionName, firstConversationPrompt, isAutomaticSessionName, SessionStore, truncateSessionName, type StoredSession } from "./session-store.js";
-import type { ApprovalResponse, Message, ModelConfig, ModelProvider, ModelReference, OptionalSystemPromptModules, PermissionMode, ReasoningEffort, RuntimeEvent, RuntimeEventPayloads, SessionTitleMode, Task, ToolCall, ToolResult, UserConfig, WorkMode } from "./types.js";
+import type { ApprovalResponse, Message, ModelConfig, ModelProvider, ModelReference, OptionalSystemPromptModules, PermissionMode, ReasoningEffort, RuntimeEvent, RuntimeEventPayloads, SessionTitleMode, Task, ToolCall, ToolDefinition, ToolResult, UserConfig, WorkMode } from "./types.js";
 import type { SessionOption, SessionView } from "./tui/types.js";
 import { WorkspaceFileIndex } from "./tui/composer/file-completion.js";
 import { formatErrorMessage } from "./error-format.js";
@@ -26,9 +26,16 @@ import { assertSkillTools, registerSkillCommands, renderSkillPrompt, SkillLoader
 import { loadProjectInstructions } from "./project-instructions.js";
 import { MemoryManager } from "./memory-manager.js";
 import { MemoryExtractor } from "./memory-extractor.js";
-import { createHookEngine, type HookEngine, type HookNoticeQueue } from "./hook/index.js";
+import { createHookEngine, type HookEngine, type HookNoticeQueue, type HookSubAgentExecutor } from "./hook/index.js";
 import { CLI_NAME, ensureProjectStateRoot, PRODUCT_NAME, projectStateRoot } from "./paths.js";
 import { McpManager } from "./mcp/manager.js";
+import { backgroundTaskNotification, BackgroundAgentTaskManager } from "./subagent/background.js";
+import { SubagentCoordinator } from "./subagent/coordinator.js";
+import { AgentDefinitionLoader } from "./subagent/roles.js";
+import { SubagentRunner } from "./subagent/runner.js";
+import { StructuredSubagentScope } from "./subagent/scope.js";
+import { TeamManager } from "./subagent/team.js";
+import type { SubagentOrigin } from "./subagent/types.js";
 
 const execAsync = promisify(exec);
 const HISTORY_FILE = userHistoryPath();
@@ -59,7 +66,11 @@ interface PendingApproval {
   readonly call: ToolCall;
   readonly level: number;
   readonly description: string;
+  readonly requestId: string;
+  readonly origin: SubagentOrigin;
   readonly resolve: (response: ApprovalResponse) => void;
+  presented: boolean;
+  settled: boolean;
 }
 
 interface ActiveSkill {
@@ -95,7 +106,7 @@ export class TerminalSession {
   private previousToolHistory: ToolCall[] = [];
   private previousReadonlyResults?: ReadonlyMap<string, ToolResult>;
   private contextEventSequence = 0;
-  private pendingApproval: PendingApproval | undefined;
+  private readonly pendingApprovals: PendingApproval[] = [];
   private workMode: WorkMode;
   private permissionMode: PermissionMode;
   private reasoningEffort: ReasoningEffort;
@@ -137,9 +148,14 @@ export class TerminalSession {
   private hookEngine: HookEngine | undefined;
   private hookNotices: HookNoticeQueue | undefined;
   private hookWarningsShown = false;
+  private readonly hookSubagentAbortControllers = new Set<AbortController>();
+  private readonly hookSubagentJobs = new Set<Promise<void>>();
   private mcpManager: McpManager | undefined;
   private mcpReady: Promise<void> | undefined;
   private mcpFailuresShown = false;
+  private readonly agentDefinitionLoader: AgentDefinitionLoader;
+  private readonly backgroundAgents: BackgroundAgentTaskManager;
+  private readonly teams: TeamManager;
 
   constructor(options: SessionOptions, input: NodeJS.ReadableStream = process.stdin, output: NodeJS.WriteStream = process.stdout) {
     this.workspace = resolve(options.workspace);
@@ -161,6 +177,9 @@ export class TerminalSession {
     this.stablePromptModules = { ...this.configuredStablePromptModules };
     this.memoryManager = new MemoryManager(this.workspace);
     this.skillLoader = new SkillLoader(this.workspace);
+    this.agentDefinitionLoader = new AgentDefinitionLoader(this.workspace);
+    this.backgroundAgents = new BackgroundAgentTaskManager(() => this.flushBackgroundNotifications());
+    this.teams = new TeamManager();
     this.configuredActiveSkills = options.stablePromptModules?.activeSkills;
     options.onCommandReloadReady?.(() => this.reloadCommands());
   }
@@ -225,7 +244,7 @@ export class TerminalSession {
     await this.openSessionStore();
     this.startMcpConnections();
     try {
-      return await this.startTask(prompt, false);
+      return await this.startTask(prompt, false, false, undefined, true);
     } finally {
       await this.shutdown();
     }
@@ -251,7 +270,7 @@ export class TerminalSession {
   }
 
   private async submitUserPrompt(input: string): Promise<void> {
-    if (this.pendingApproval) {
+    if (this.hasPendingApprovals()) {
       if (isApprovalAnswer(input)) this.resolveApproval(input);
       else if (input.startsWith("!")) this.renderer.error("finish or cancel the current task before running a shell command");
       else this.enqueueFollowUp(input);
@@ -275,13 +294,45 @@ export class TerminalSession {
     }
   }
 
-  /** 首次需要时构造 Hook 引擎。 */
-  private async ensureHookEngine(): Promise<HookEngine | undefined> {
-    if (this.hookEngine) return this.hookEngine;
+  /** 首次需要时构造 Hook 引擎，并为当前任务绑定 Subagent Runner。 */
+  private async ensureHookEngine(runner: SubagentRunner): Promise<HookEngine | undefined> {
+    const subAgentExecutor: HookSubAgentExecutor = async (prompt, context) => {
+      const definition = this.agentDefinitionLoader.get("general");
+      const abortController = new AbortController();
+      this.hookSubagentAbortControllers.add(abortController);
+      const run = runner.run({
+        description: `hook-${context.event}`,
+        prompt,
+        origin: { kind: "hook", name: context.event },
+        ...(definition ? { definition } : {}),
+        customDeniedTools: ["agent"],
+        abortController,
+      });
+      const job = run.then(() => undefined, () => undefined);
+      this.hookSubagentJobs.add(job);
+      try {
+        const result = await run;
+        return {
+          output: result.output,
+          ok: result.status === "completed",
+          intercept: false,
+        };
+      } finally {
+        this.hookSubagentAbortControllers.delete(abortController);
+        this.hookSubagentJobs.delete(job);
+      }
+    };
+    if (this.hookEngine) {
+      this.hookEngine.setSessionMessages(() => this.conversation);
+      this.hookEngine.setSubAgentExecutor(subAgentExecutor);
+      return this.hookEngine;
+    }
     try {
       const built = await createHookEngine(this.workspace, {
         defaultCommandTimeoutMs: 60_000,
         log: (message) => { try { this.renderer.status(message); } catch { /* ignore */ } },
+        sessionMessages: () => this.conversation,
+        subAgentExecutor,
       });
       this.hookEngine = built.engine;
       this.hookNotices = built.notices;
@@ -304,7 +355,13 @@ export class TerminalSession {
     }
   }
 
-  private async startTask(prompt: string, printErrors: boolean, isolated = false, derivedSkill?: SkillDefinition): Promise<Task> {
+  private async startTask(
+    prompt: string,
+    printErrors: boolean,
+    isolated = false,
+    derivedSkill?: SkillDefinition,
+    joinStructuredForks = false,
+  ): Promise<Task> {
     if (this.shellRunning()) throw new Error("finish the current shell command before starting a task");
     if (this.compactRunning()) throw new Error("wait for or cancel context compaction before starting a task");
     this.taskGeneration += 1;
@@ -332,11 +389,49 @@ export class TerminalSession {
     const sessionGeneration = this.sessionGeneration;
     const taskGeneration = this.taskGeneration;
     const derivedConversation = derivedSkill ? this.derivedSkillConversation(derivedSkill) : [];
-    const hookEngine = await this.ensureHookEngine();
-    if (hookEngine) {
-      // HTTP 动作请求体固定为上下文 JSON 序列化；注入实时会话消息回调
-      (hookEngine as unknown as { setSessionMessages?: (fn: () => readonly Message[]) => void }).setSessionMessages?.(() => this.conversation);
-    }
+    const parentToolFilter = (tool: ToolDefinition): boolean => {
+      if (this.mcpManager?.isMcpTool(tool.name) && !this.mcpManager.isActivated(tool.name)) return false;
+      return derivedSkill
+        ? derivedSkill.allowedTools.length === 0 || derivedSkill.allowedTools.includes(tool.name)
+        : this.isToolAllowedByActiveSkills(tool.name);
+    };
+    const runner = new SubagentRunner({
+      workspace: this.workspace,
+      registry,
+      trace,
+      baseConfig: runtimeConfig,
+      baseModel: requestModel,
+      providerFactory: this.providerFactory,
+      resolveModel: (reference) => resolveModelConfig(this.config, reference),
+      approvalCallback: (call, level, description, requestId, origin) => (
+        this.requestApproval(call, level, description, origin, requestId)
+      ),
+      approvalCancellationCallback: (origin) => this.cancelApprovalsForOrigin(origin),
+      parentToolFilter,
+      isMcpTool: (name) => this.mcpManager?.isMcpTool(name) === true,
+      hookFactory: async (messages) => {
+        const built = await createHookEngine(this.workspace, {
+          defaultCommandTimeoutMs: 60_000,
+          sessionMessages: messages,
+        });
+        return built.engine;
+      },
+    });
+    const structuredScope = joinStructuredForks
+      ? new StructuredSubagentScope(runner, runtimeConfig.subagent.forkWaitTimeoutMs)
+      : undefined;
+    new SubagentCoordinator({
+      roles: this.agentDefinitionLoader,
+      runner,
+      background: this.backgroundAgents,
+      teams: this.teams,
+      parentConversation: () => isolated ? derivedConversation : this.conversation,
+      ...(structuredScope ? { scope: structuredScope } : {}),
+      resolveModel: (reference) => resolveModelConfig(this.config, reference),
+      callerOrigin: { kind: "main" },
+    }).registerTools(registry);
+    const hookEngine = await this.ensureHookEngine(runner);
+    const consumedBackgroundNotifications: string[] = [];
     const controller = new TaskController({
       config: runtimeConfig,
       provider: this.providerFactory(requestModel),
@@ -346,7 +441,9 @@ export class TerminalSession {
       contextManager: isolated
         ? new ContextManager({ workspace: this.workspace, conversation: derivedConversation })
         : this.currentContextManager(),
-      approvalCallback: (call, level, description) => this.requestApproval(call, level, description),
+      approvalCallback: (call, level, description, requestId) => (
+        this.requestApproval(call, level, description, { kind: "main" }, requestId)
+      ),
       eventCallback: (event) => this.onEvent(event),
       ...(!isolated ? {
         conversationCallback: (messages: readonly Message[]) => {
@@ -356,15 +453,15 @@ export class TerminalSession {
         },
       } : {}),
       stablePromptModules: this.stablePromptModules,
-      runtimeReminders: () => derivedSkill
-        ? [this.formatActiveSkillReminder(derivedSkill.name, renderSkillPrompt(derivedSkill))]
-        : this.activeSkillReminders(),
-      toolFilter: (tool) => {
-        if (this.mcpManager?.isMcpTool(tool.name) && !this.mcpManager.isActivated(tool.name)) return false;
-        return derivedSkill
-          ? derivedSkill.allowedTools.length === 0 || derivedSkill.allowedTools.includes(tool.name)
-          : this.isToolAllowedByActiveSkills(tool.name);
+      runtimeReminders: () => {
+        const reminders = derivedSkill
+          ? [this.formatActiveSkillReminder(derivedSkill.name, renderSkillPrompt(derivedSkill))]
+          : this.activeSkillReminders();
+        const notifications = this.backgroundAgents.drainNotifications().map(backgroundTaskNotification);
+        consumedBackgroundNotifications.push(...notifications);
+        return [...reminders, ...notifications];
       },
+      toolFilter: parentToolFilter,
       ...(hookEngine ? { hookEngine } : {}),
       hookUserPrompt: prompt,
       previousToolCalls: this.previousToolHistory,
@@ -375,8 +472,17 @@ export class TerminalSession {
     let completed = false;
     try {
       const task = await controller.execute(createTask(this.workspace, prompt));
+      if (structuredScope) {
+        await structuredScope.waitForChildren(runtimeConfig.subagent.forkWaitTimeoutMs);
+        const summary = structuredScope.summary();
+        if (summary) {
+          task.result = task.result?.trim()
+            ? `${task.result.trim()}\n\n${summary}`
+            : summary;
+        }
+      }
       completed = task.state === "completed";
-      if (task.state === "completed") this.renderer.status(`Task completed.`, "green");
+      if (task.state === "completed") this.renderer.status("Task completed.", "green");
       else if (task.state !== "cancelled") this.renderer.status(`Task ${task.state}.`, "yellow");
       return task;
     } catch (error) {
@@ -385,8 +491,22 @@ export class TerminalSession {
       if (printErrors && !this.tui) this.renderer.error(formatErrorMessage(error));
       throw error;
     } finally {
+      if (structuredScope) {
+        structuredScope.cancelAll();
+        await Promise.allSettled(structuredScope.list().map((task) => task.promise));
+      }
       if (this.controller === controller) this.controller = undefined;
       const conversationSnapshot = controller.conversationSnapshot();
+      consumedBackgroundNotifications.push(
+        ...this.backgroundAgents.drainNotifications().map(backgroundTaskNotification),
+      );
+      for (const notification of consumedBackgroundNotifications) {
+        conversationSnapshot.push({
+          role: "system",
+          content: notification,
+          metadata: { promptBlock: "task-notification", contextManaged: true },
+        });
+      }
       this.previousToolHistory = controller.toolCallHistory;
       this.previousReadonlyResults = controller.readonlyResultSnapshot;
       if (!isolated) this.conversation = conversationSnapshot;
@@ -464,7 +584,7 @@ export class TerminalSession {
   }
 
   private async drainFollowUps(): Promise<void> {
-    if (this.queuePaused || this.taskRunning() || this.pendingApproval || this.quitRequested) return;
+    if (this.queuePaused || this.taskRunning() || this.hasPendingApprovals() || this.quitRequested) return;
     const sessionId = this.currentSession?.id ?? "session-current";
     let next: FollowUpItem | undefined;
     while (this.followUps.length) {
@@ -492,6 +612,7 @@ export class TerminalSession {
     if (!this.commandIntegrationPromise) {
       this.commandIntegrationPromise = (async () => {
         this.commandUsage = await CommandUsageTracker.load(this.workspace);
+        await this.agentDefinitionLoader.scan();
         await this.loadCommandRegistry();
       })();
     }
@@ -764,7 +885,7 @@ export class TerminalSession {
   }
 
   private async selectSessionUnlocked(id: string): Promise<SessionView | undefined> {
-    if (this.interactionRunning() || this.pendingApproval) {
+    if (this.interactionRunning() || this.hasPendingApprovals()) {
       this.cancelTask();
       await this.waitForInteraction();
     }
@@ -780,7 +901,7 @@ export class TerminalSession {
   }
 
   private async deleteSession(id: string): Promise<SessionView | undefined> {
-    if (this.sessionSelection || this.interactionRunning() || this.pendingApproval) return undefined;
+    if (this.sessionSelection || this.interactionRunning() || this.hasPendingApprovals()) return undefined;
     await this.persistTuiSession();
     const activeId = this.currentSession?.id;
     const removed = await this.sessionStore.remove(id);
@@ -807,7 +928,7 @@ export class TerminalSession {
   }
 
   private async createSession(name?: string): Promise<SessionView | undefined> {
-    if (this.sessionSelection || this.interactionRunning() || this.pendingApproval) return undefined;
+    if (this.sessionSelection || this.interactionRunning() || this.hasPendingApprovals()) return undefined;
     await this.persistTuiSession();
     const stored = await this.sessionStore.create(name, {
       workMode: this.workMode,
@@ -836,7 +957,7 @@ export class TerminalSession {
   }
 
   private async renameSession(id: string, name: string): Promise<SessionView | undefined> {
-    if (this.interactionRunning() || this.pendingApproval) return undefined;
+    if (this.interactionRunning() || this.hasPendingApprovals()) return undefined;
     await this.persistTuiSession();
     const stored = await this.sessionStore.update(id, { name, autoNamed: false, titleSource: "manual" });
     if (!stored) return undefined;
@@ -886,6 +1007,22 @@ export class TerminalSession {
     }, 250);
   }
 
+  private async flushBackgroundNotifications(): Promise<void> {
+    if (this.taskRunning()) return;
+    const notifications = this.backgroundAgents.drainNotifications().map(backgroundTaskNotification);
+    if (!notifications.length) return;
+    for (const notification of notifications) {
+      this.conversation.push({
+        role: "system",
+        content: notification,
+        metadata: { promptBlock: "task-notification", contextManaged: true },
+      });
+      this.renderer.markdown("Background task", notification);
+    }
+    await this.persistTuiSession();
+    this.refreshTui();
+  }
+
   private loadFollowUpOptions(): import("./tui/types.js").FollowUpOption[] {
     const sessionId = this.currentSession?.id ?? "session-current";
     return this.followUps
@@ -902,34 +1039,83 @@ export class TerminalSession {
     return true;
   }
 
-  private requestApproval(call: ToolCall, level: number, description: string): Promise<ApprovalResponse> {
-    const rendered = this.renderer.approval(call, level, description);
+  private hasPendingApprovals(): boolean {
+    return this.pendingApprovals.length > 0;
+  }
+
+  private requestApproval(
+    call: ToolCall,
+    level: number,
+    description: string,
+    origin: SubagentOrigin,
+    requestId: string,
+  ): Promise<ApprovalResponse> {
     return new Promise<ApprovalResponse>((resolveApproval) => {
-      const pending = { call, level, description, resolve: resolveApproval };
-      this.pendingApproval = pending;
-      if (rendered && typeof rendered.then === "function") {
-        void rendered.then((response) => {
-          if (this.pendingApproval !== pending) return;
-          this.pendingApproval = undefined;
-          resolveApproval(response);
-        });
-      }
+      this.pendingApprovals.push({
+        call,
+        level,
+        description,
+        requestId,
+        origin,
+        resolve: resolveApproval,
+        presented: false,
+        settled: false,
+      });
+      this.presentNextApproval();
     });
   }
 
+  private presentNextApproval(): void {
+    const pending = this.pendingApprovals[0];
+    if (!pending || pending.presented || pending.settled) return;
+    pending.presented = true;
+    const rendered = this.renderer.approval(
+      pending.call,
+      pending.level,
+      pending.description,
+      pending.origin,
+    );
+    if (rendered && typeof rendered.then === "function") {
+      void rendered.then((response) => this.settleApproval(pending, response));
+    }
+  }
+
+  private settleApproval(pending: PendingApproval, response: ApprovalResponse): void {
+    if (pending.settled) return;
+    const index = this.pendingApprovals.indexOf(pending);
+    if (index < 0) return;
+    pending.settled = true;
+    const wasHead = index === 0;
+    this.pendingApprovals.splice(index, 1);
+    pending.resolve(response);
+    if (wasHead) this.presentNextApproval();
+  }
+
+  private cancelApprovalsForOrigin(origin: SubagentOrigin): void {
+    const head = this.pendingApprovals[0];
+    const cancelled = this.pendingApprovals.filter((pending) => sameApprovalOrigin(pending.origin, origin));
+    if (!cancelled.length) return;
+    const cancelledHead = head !== undefined && cancelled.includes(head);
+    for (const pending of cancelled) {
+      pending.settled = true;
+      const index = this.pendingApprovals.indexOf(pending);
+      if (index >= 0) this.pendingApprovals.splice(index, 1);
+      pending.resolve(false);
+    }
+    if (cancelledHead) this.renderer.cancelApproval?.();
+    this.presentNextApproval();
+  }
+
   private resolveApproval(value: string): void {
-    const pending = this.pendingApproval;
+    const pending = this.pendingApprovals[0];
     if (!pending) return;
     const answer = value.toLowerCase();
     if (answer === "y" || answer === "yes") {
-      this.pendingApproval = undefined;
-      pending.resolve(true);
+      this.settleApproval(pending, true);
     } else if (answer === "a" || answer === "always") {
-      this.pendingApproval = undefined;
-      pending.resolve("always");
+      this.settleApproval(pending, "always");
     } else if (answer === "n" || answer === "no" || answer === "esc" || answer === "") {
-      this.pendingApproval = undefined;
-      pending.resolve(false);
+      this.settleApproval(pending, false);
     } else {
       this.renderer.status("Please answer y, a, or n.", "yellow");
     }
@@ -960,7 +1146,7 @@ export class TerminalSession {
       return;
     }
     if (command.kind === "isolated-skill") {
-      if (this.interactionRunning() || this.pendingApproval) {
+      if (this.interactionRunning() || this.hasPendingApprovals()) {
         this.renderer.status("finish or cancel the current interaction before running an isolated skill", "yellow");
         return;
       }
@@ -1020,7 +1206,7 @@ export class TerminalSession {
         await this.runManualCompaction();
         return;
       case "clear":
-        if (this.interactionRunning() || this.pendingApproval) {
+        if (this.interactionRunning() || this.hasPendingApprovals()) {
           this.renderer.status("finish or cancel the current task before clearing the transcript", "yellow");
           return;
         }
@@ -1158,7 +1344,7 @@ export class TerminalSession {
 
     const prompt = renderSkillPrompt(skill, argument);
     if (skill.mode === "derived") {
-      if (this.interactionRunning() || this.pendingApproval) {
+      if (this.interactionRunning() || this.hasPendingApprovals()) {
         this.renderer.status("finish or cancel the current interaction before running a derived skill", "yellow");
         return;
       }
@@ -1371,7 +1557,7 @@ export class TerminalSession {
   }
 
   private async changePermissionMode(mode: PermissionMode): Promise<boolean> {
-    if (this.interactionRunning() || this.pendingApproval) {
+    if (this.interactionRunning() || this.hasPendingApprovals()) {
       this.renderer.status("finish or cancel the current task before changing permission mode", "yellow");
       return false;
     }
@@ -1385,7 +1571,7 @@ export class TerminalSession {
   }
 
   private async handleModel(argument: string): Promise<boolean> {
-    if (this.interactionRunning() || this.pendingApproval) {
+    if (this.interactionRunning() || this.hasPendingApprovals()) {
       this.renderer.status("finish or cancel the current task before changing the model", "yellow");
       return false;
     }
@@ -1428,7 +1614,7 @@ export class TerminalSession {
       else this.renderer.error(`Session not found: ${id}`);
       return;
     }
-    if (this.interactionRunning() || this.pendingApproval) {
+    if (this.interactionRunning() || this.hasPendingApprovals()) {
       this.renderer.status("finish or cancel the current task before switching sessions", "yellow");
       return;
     }
@@ -1443,7 +1629,7 @@ export class TerminalSession {
   }
 
   private async runManualCompaction(): Promise<void> {
-    if (this.interactionRunning() || this.pendingApproval) {
+    if (this.interactionRunning() || this.hasPendingApprovals()) {
       this.renderer.status("finish or cancel the current interaction before compacting context", "yellow");
       return;
     }
@@ -1537,7 +1723,7 @@ export class TerminalSession {
   }
 
   private async runTui(history: readonly string[]): Promise<void> {
-    const isRunning = (): boolean => this.interactionRunning() || this.pendingApproval !== undefined;
+    const isRunning = (): boolean => this.interactionRunning() || this.hasPendingApprovals();
     const tui = new TuiApp({
       input: this.input,
       output: this.output,
@@ -1569,7 +1755,7 @@ export class TerminalSession {
       getWorkMode: () => this.workMode,
       getPermissionMode: () => this.permissionMode,
       onWorkModeChanged: async (mode) => {
-        if (this.interactionRunning() || this.pendingApproval) return false;
+        if (this.interactionRunning() || this.hasPendingApprovals()) return false;
         this.workMode = mode;
         if (mode === "plan") {
           this.permissionMode = "plan";
@@ -1581,7 +1767,7 @@ export class TerminalSession {
         return true;
       },
       onPermissionModeChanged: async (mode) => {
-        if (this.interactionRunning() || this.pendingApproval) return false;
+        if (this.interactionRunning() || this.hasPendingApprovals()) return false;
         this.permissionMode = mode;
         this.workMode = workModeForPermission(mode);
         await this.persistTuiSession();
@@ -1589,7 +1775,7 @@ export class TerminalSession {
       },
       getReasoningEffort: () => this.reasoningEffort,
       onReasoningEffortChanged: (effort) => {
-        if (this.interactionRunning() || this.pendingApproval) return false;
+        if (this.interactionRunning() || this.hasPendingApprovals()) return false;
         this.reasoningEffort = effort;
         return true;
       },
@@ -1598,7 +1784,7 @@ export class TerminalSession {
         ? this.modelReference(this.model)
         : this.currentSession?.modelReference,
       getModelWarning: () => this.modelWarning,
-      isInteractionBlocked: () => this.interactionRunning() || this.pendingApproval !== undefined,
+      isInteractionBlocked: () => this.interactionRunning() || this.hasPendingApprovals(),
       history: this.currentSession?.history ?? history,
       ...(this.currentSession ? { initialSession: this.toSessionView(this.currentSession) } : {}),
     });
@@ -1622,7 +1808,7 @@ export class TerminalSession {
       this.renderer.error("plan mode is read-only; shell commands are disabled");
       return;
     }
-    if (this.interactionRunning() || this.pendingApproval) {
+    if (this.interactionRunning() || this.hasPendingApprovals()) {
       this.renderer.error("finish or cancel the current task before running a shell command");
       return;
     }
@@ -1659,7 +1845,7 @@ export class TerminalSession {
   }
 
   cancel(): void {
-    const hadWork = this.interactionRunning() || this.pendingApproval !== undefined;
+    const hadWork = this.interactionRunning() || this.hasPendingApprovals();
     this.cancelTask();
     if (hadWork) return;
     // Prefer the TUI exit owner so Ctrl+C confirmation stays single-shot.
@@ -1674,13 +1860,11 @@ export class TerminalSession {
   }
 
   private cancelTask(): void {
-    if (this.taskRunning() || this.pendingApproval) this.queuePaused = true;
-    const pending = this.pendingApproval;
-    if (pending) {
-      this.pendingApproval = undefined;
-      this.renderer.cancelApproval?.();
-      pending.resolve(false);
+    if (this.taskRunning() || this.pendingApprovals.some((pending) => pending.origin.kind === "main")) {
+      this.queuePaused = true;
     }
+    this.cancelApprovalsForOrigin({ kind: "main" });
+    for (const abortController of this.hookSubagentAbortControllers) abortController.abort();
     this.controller?.cancel();
     this.shellAbortController?.abort();
     this.compactAbortController?.abort();
@@ -1888,6 +2072,11 @@ export class TerminalSession {
     for (const controller of this.titleAbortControllers) controller.abort();
     await this.waitForTask();
     await this.waitForCompaction();
+    this.backgroundAgents.cancelAll();
+    for (const abortController of this.hookSubagentAbortControllers) abortController.abort();
+    await this.teams.shutdown();
+    await this.backgroundAgents.waitForIdle();
+    await Promise.allSettled([...this.hookSubagentJobs]);
     await this.persistTuiSession();
     await Promise.allSettled([...this.titleJobs]);
     await this.memoryExtractor?.waitForIdle();
@@ -1924,6 +2113,16 @@ function requiresPaintBarrier(event: RuntimeEvent): boolean {
     default:
       return false;
   }
+}
+
+function sameApprovalOrigin(left: SubagentOrigin, right: SubagentOrigin): boolean {
+  if (left.kind !== right.kind) return false;
+  if (left.kind === "main" || right.kind === "main") return true;
+  if (left.taskId && right.taskId) return left.taskId === right.taskId;
+  if (left.kind === "teammate" && right.kind === "teammate") {
+    return left.teamName === right.teamName && left.name === right.name;
+  }
+  return left.name === right.name;
 }
 
 function configuredPermissionMode(config: UserConfig, approveAll: boolean): PermissionMode {

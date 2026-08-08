@@ -14,6 +14,7 @@ import type {
   ProviderProfile,
   ReasoningEffort,
   SessionTitleSettings,
+  SubagentSettings,
   UserConfig,
 } from "./types.js";
 
@@ -82,6 +83,7 @@ async function readConfig(path: string): Promise<UserConfig> {
       ...value,
       providers: normalizeProviders(value.providers),
       ...(value.agent ? { agent: value.agent } : {}),
+      ...(value.subagent ? { subagent: value.subagent } : {}),
       ...(value.sessionTitles ? { sessionTitles: value.sessionTitles } : {}),
       ...(value.mcpServers ? { mcpServers: value.mcpServers } : {}),
     };
@@ -99,6 +101,8 @@ function normalizeConfig(value: unknown): UserConfig {
   const result: UserConfig = { providers: normalizeProviders(item.providers) };
   const agent = normalizeAgentSettings(item.agent);
   if (agent) result.agent = agent;
+  const subagent = normalizeSubagentSettings(item.subagent);
+  if (subagent) result.subagent = subagent;
   const sessionTitles = normalizeSessionTitleSettings(item.sessionTitles);
   if (sessionTitles) result.sessionTitles = sessionTitles;
   const mcpServers = normalizeMcpServers(item.mcpServers);
@@ -132,6 +136,18 @@ function normalizeConfig(value: unknown): UserConfig {
     }
   }
   return result;
+}
+
+function normalizeSubagentSettings(value: unknown): SubagentSettings | undefined {
+  if (value === undefined) return undefined;
+  if (!value || typeof value !== "object" || Array.isArray(value)) {
+    throw new Error("subagent must be an object");
+  }
+  const forkWaitTimeoutMs = (value as Record<string, unknown>).forkWaitTimeoutMs;
+  if (forkWaitTimeoutMs !== undefined && (typeof forkWaitTimeoutMs !== "number" || !Number.isFinite(forkWaitTimeoutMs) || forkWaitTimeoutMs < 0)) {
+    throw new Error("subagent.forkWaitTimeoutMs must be a finite non-negative number");
+  }
+  return forkWaitTimeoutMs === undefined ? {} : { forkWaitTimeoutMs };
 }
 
 function normalizeSessionTitleSettings(value: unknown): SessionTitleSettings | undefined {
@@ -336,6 +352,7 @@ function merge(base: UserConfig, override: UserConfig): UserConfig {
   return {
     providers,
     ...(base.agent || override.agent ? { agent: { ...base.agent, ...override.agent } } : {}),
+    ...(base.subagent || override.subagent ? { subagent: { ...base.subagent, ...override.subagent } } : {}),
     ...(base.sessionTitles || override.sessionTitles
       ? { sessionTitles: { ...base.sessionTitles, ...override.sessionTitles } }
       : {}),
@@ -390,6 +407,7 @@ function toFileShape(config: UserConfig): Record<string, unknown> {
   return {
     providers,
     ...(config.agent ? { agent: config.agent } : {}),
+    ...(config.subagent ? { subagent: config.subagent } : {}),
     ...(config.sessionTitles ? { sessionTitles: config.sessionTitles } : {}),
     ...(config.mcpServers ? { mcpServers: config.mcpServers } : {}),
   };
