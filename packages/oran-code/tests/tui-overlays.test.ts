@@ -36,7 +36,7 @@ describe("TUI overlays", () => {
   });
 
   it("renders the approval choices without leaking secrets", () => {
-    const text = approvalDialogLines(call, 3, "Run the test suite", "D:\\Programming\\project\\LiteAgent", 0).join("\n");
+    const text = approvalDialogLines(call, 3, "Run the test suite", "D:\\Programming\\project\\LiteAgent", { kind: "main" }, 0).join("\n");
     expect(text).toContain("Permission required");
     expect(text).toContain("Tool: run_command");
     expect(text).not.toContain("Tool: run_command (L3)");

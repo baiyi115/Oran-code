@@ -84,7 +84,7 @@ describe("TerminalRenderer", () => {
     const renderer = new TerminalRenderer(captured.output);
     renderer.toolStart(call, 0);
     renderer.toolResult(call, { ok: true, output: "README contents", summary: "read completed", durationMs: 12 });
-    renderer.approval({ ...call, name: "apply_patch" }, 2, "Modify a tracked file");
+    renderer.approval({ ...call, name: "apply_patch" }, 2, "Modify a tracked file", { kind: "main" });
     renderer.verify([{ command: "pnpm test", exitCode: 0, output: "passed", durationMs: 20, passed: true }]);
 
     const text = captured.text();
