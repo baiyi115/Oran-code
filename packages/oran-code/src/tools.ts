@@ -4,6 +4,7 @@ import { promisify } from "node:util";
 import { dirname, isAbsolute, relative, resolve, sep } from "node:path";
 import type { ToolCall, ToolDefinition, ToolExecutionContext, ToolResult } from "./types.js";
 import { projectStateRoot } from "./paths.js";
+import { registerWorktreeTools } from "./worktree/tools.js";
 
 const execAsync = promisify(exec);
 const execFileAsync = promisify(execFile);
@@ -32,6 +33,7 @@ const DEFAULT_SEARCH_LIMIT = 200;
 
 export class ToolRegistry {
   private readonly tools = new Map<string, ToolDefinition>();
+  private readonly activated = new Set<string>();
 
   register(tool: ToolDefinition): void {
     if (this.tools.has(tool.name)) throw new Error(`tool already registered: ${tool.name}`);
@@ -52,8 +54,32 @@ export class ToolRegistry {
     return [...this.tools.values()];
   }
 
+  /** Deferred tools are hidden until explicitly activated via search_tools. */
+  isDeferred(tool: ToolDefinition): boolean {
+    return tool.deferred === true;
+  }
+
+  isExposed(name: string): boolean {
+    const tool = this.tools.get(name);
+    if (!tool) return false;
+    return !this.isDeferred(tool) || this.activated.has(name);
+  }
+
+  /** Unlock a deferred tool by name. Returns undefined when the name is unknown or not deferred. */
+  activate(name: string): ToolDefinition | undefined {
+    const tool = this.tools.get(name);
+    if (!tool || !this.isDeferred(tool)) return undefined;
+    this.activated.add(name);
+    return tool;
+  }
+
+  listExposed(): ToolDefinition[] {
+    return [...this.tools.values()].filter((tool) => this.isExposed(tool.name));
+  }
+
   schemas(filter?: (tool: ToolDefinition) => boolean): Record<string, unknown>[] {
-    const tools = filter ? [...this.tools.values()].filter(filter) : [...this.tools.values()];
+    const all = [...this.tools.values()].filter((tool) => this.isExposed(tool.name));
+    const tools = filter ? all.filter(filter) : all;
     return tools.map((tool) => ({
       type: "function",
       function: { name: tool.name, description: tool.description, parameters: tool.parameters },
@@ -62,6 +88,9 @@ export class ToolRegistry {
 
   async invoke(call: ToolCall, context?: ToolExecutionContext): Promise<ToolResult> {
     const tool = this.get(call.name);
+    if (this.isDeferred(tool) && !this.activated.has(call.name)) {
+      return { ok: false, output: "", error: `tool is not activated: ${call.name}; discover it with search_tools first`, summary: "not activated" };
+    }
     return tool.invoke(call, context);
   }
 }
@@ -427,12 +456,13 @@ export function registerBuiltinTools(registry: ToolRegistry, workspace: string):
 
   register({
     name: "run_command",
-    description: "Run a shell command inside the workspace with a timeout. Prefer dedicated file/search/edit tools when they provide the needed operation. Returns stdout, stderr, and exit summary.",
+    description: "Run a shell command with a timeout. Prefer dedicated file/search/edit tools when they provide the needed operation. Returns stdout, stderr, and exit summary.",
     parameters: {
       type: "object",
       properties: {
         command: { type: "string", description: "Shell command to execute." },
         timeout: { type: "number", description: "Timeout in seconds. Defaults to 60.", default: 60 },
+        cwd: { type: "string", description: "Optional working directory, relative or absolute, that must remain inside the workspace root. Defaults to the workspace root." },
       },
       required: ["command"],
     },
@@ -442,8 +472,9 @@ export function registerBuiltinTools(registry: ToolRegistry, workspace: string):
     invoke: async (call, context) => {
       const timeout = Math.max(1, numberArg(call.arguments.timeout, 60)) * 1000;
       try {
+        const cwd = await resolveCommandCwd(root, call.arguments.cwd);
         const result = await execAsync(String(call.arguments.command), {
-          cwd: root,
+          cwd,
           timeout,
           maxBuffer: 2 * 1024 * 1024,
           windowsHide: true,
@@ -455,7 +486,10 @@ export function registerBuiltinTools(registry: ToolRegistry, workspace: string):
         if (context?.signal?.aborted || isAbortError(error)) {
           return { ok: false, output: "", error: "command cancelled", summary: "cancelled", metadata: { cancelled: true } };
         }
-        const item = error as { stdout?: string; stderr?: string; code?: unknown; killed?: boolean };
+        const item = error as { stdout?: string; stderr?: string; code?: unknown; killed?: boolean; cmd?: string };
+        if (!item.cmd) {
+          return { ok: false, output: "", error: errorMessage(error), summary: "invalid arguments" };
+        }
         const result: ToolResult = {
           ok: false,
           output: `${item.stdout ?? ""}${item.stderr ?? ""}`,
@@ -467,6 +501,61 @@ export function registerBuiltinTools(registry: ToolRegistry, workspace: string):
       }
     },
   });
+
+  registerSearchTools(registry);
+  registerWorktreeTools(registry, root);
+}
+
+/** 按需工具发现：搜索未激活的 deferred 工具，或用 select:<name> 精确解锁（F19）。 */
+function registerSearchTools(registry: ToolRegistry): void {
+  registry.register({
+    name: "search_tools",
+    description:
+      "Search inactive deferred tools by keyword. Use query select:<tool-name> to activate a tool and return its schema.",
+    parameters: {
+      type: "object",
+      properties: {
+        query: { type: "string", description: "Keywords, or select:<tool-name> for exact activation." },
+        limit: { type: "integer", description: "Maximum search results, default 20." },
+      },
+      required: ["query"],
+    },
+    permissionLevel: 0,
+    system: true,
+    kind: "readonly",
+    maxOutputChars: 16_000,
+    invoke: async (call) => {
+      const query = typeof call.arguments.query === "string" ? call.arguments.query.trim() : "";
+      if (!query) {
+        return { ok: false, output: "", error: "query is required", summary: "invalid arguments" };
+      }
+      if (query.toLowerCase().startsWith("select:")) {
+        const name = query.slice("select:".length).trim();
+        const tool = registry.activate(name);
+        if (!tool) {
+          return { ok: false, output: "", error: `tool not found or not discoverable: ${name}`, summary: "tool not found" };
+        }
+        return {
+          ok: true,
+          output: JSON.stringify({ name: tool.name, description: tool.description, parameters: tool.parameters }, null, 2),
+          summary: `activated ${tool.name}`,
+        };
+      }
+      const limit = Math.min(100, Math.max(1, intArg(call.arguments.limit, 20)));
+      const terms = query.toLowerCase().split(/\s+/).filter(Boolean);
+      const matches = registry
+        .list()
+        .filter((tool) => registry.isDeferred(tool) && !registry.isExposed(tool.name))
+        .filter((tool) => terms.every((term) => `${tool.name} ${tool.description}`.toLowerCase().includes(term)))
+        .slice(0, limit)
+        .map((tool) => ({ name: tool.name, description: tool.description }));
+      return {
+        ok: true,
+        output: matches.length ? JSON.stringify(matches, null, 2) : "No inactive tools matched the query.",
+        summary: `${matches.length} tools found`,
+      };
+    },
+  });
 }
 
 export function isWriteToolName(name: string): boolean {
@@ -474,7 +563,7 @@ export function isWriteToolName(name: string): boolean {
 }
 
 export function isMutatingToolName(name: string): boolean {
-  return isWriteToolName(name) || name === "run_command";
+  return isWriteToolName(name) || name === "run_command" || name === "enter_worktree" || name === "exit_worktree";
 }
 
 export function isPlanModeTool(tool: ToolDefinition): boolean {
@@ -572,6 +661,22 @@ function resolveWorkspacePath(root: string, raw: unknown): string {
   }
   if (candidate !== root && !candidate.startsWith(root + sep) && !candidate.startsWith(root + "/")) {
     throw new Error(`path escapes workspace: ${String(raw)}`);
+  }
+  return candidate;
+}
+
+/** 解析 run_command 的可选 cwd：词法包含 + symlink 物理包含双重防护。 */
+async function resolveCommandCwd(root: string, raw: unknown): Promise<string> {
+  if (raw === undefined || raw === null || raw === "") return root;
+  if (typeof raw !== "string") throw new Error("cwd must be a string path relative to the workspace root");
+  const candidate = resolveWorkspacePath(root, raw);
+  const [physicalRoot, physicalCandidate] = await Promise.all([
+    resolvePhysicalCandidate(root),
+    resolvePhysicalCandidate(candidate),
+  ]);
+  if (!physicalRoot || !physicalCandidate) throw new Error(`cwd could not be resolved safely: ${String(raw)}`);
+  if (!isWithinPath(physicalRoot, physicalCandidate)) {
+    throw new Error(`cwd escapes workspace through a symbolic link: ${String(raw)}`);
   }
   return candidate;
 }

@@ -125,7 +125,7 @@ function parseAgentDefinition(raw: string, scope: AgentDefinitionScope, filePath
   if (permissionModeValue !== undefined && !isPermissionMode(permissionModeValue)) return undefined;
   const forceBackgroundValue = metadata.forceBackground ?? metadata["force-background"];
   if (forceBackgroundValue !== undefined && typeof forceBackgroundValue !== "boolean") return undefined;
-  const isolationModeValue = metadata.isolationMode ?? metadata["isolation-mode"];
+  const isolationModeValue = metadata.isolation ?? metadata.isolationMode ?? metadata["isolation-mode"];
   if (isolationModeValue !== undefined && isolationModeValue !== "shared-workspace" && isolationModeValue !== "worktree") return undefined;
   const skills = optionalStringArray(metadata.skills);
   const mcpServers = optionalStringArray(metadata.mcpServers ?? metadata["mcp-servers"]);

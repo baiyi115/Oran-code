@@ -265,6 +265,9 @@ export interface ToolDefinition {
   system?: boolean;
   /** Safety class used by loop batching and plan-mode tool injection. */
   kind?: ToolKind;
+  /** On-demand tools are hidden from the initial tool list until activated via search_tools. */
+  deferred?: boolean;
+
   maxOutputChars: number;
   invoke: (call: ToolCall, context?: ToolExecutionContext) => Promise<ToolResult>;
 }

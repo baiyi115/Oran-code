@@ -31,6 +31,9 @@ export const BACKGROUND_SUBAGENT_ALLOWED_TOOLS = new Set([
   "search_code",
   "run_command",
   "activate_skill",
+  "search_tools",
+  "enter_worktree",
+  "exit_worktree",
 ]);
 
 export interface SubagentToolFilterOptions {
