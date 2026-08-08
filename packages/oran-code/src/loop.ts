@@ -1,15 +1,26 @@
 import type { LoopConfig, ToolCall } from "./types.js";
 
+export interface NoProgressDiagnostic {
+  call: ToolCall;
+  repeatCount: number;
+  limit: number;
+}
+
+export function toolCallSignature(call: ToolCall): string {
+  return `${call.name}:${stableStringify(call.arguments)}`;
+}
+
 export class AgentLoop {
   readonly config: LoopConfig;
   steps = 0;
   turns = 0;
   tokensUsed = 0;
   consecutiveUnknownTools = 0;
-  readonly toolCalls: ToolCall[] = [];
+  readonly toolCalls: ToolCall[];
 
-  constructor(config: LoopConfig) {
+  constructor(config: LoopConfig, seedCalls: readonly ToolCall[] = []) {
     this.config = config;
+    this.toolCalls = [...seedCalls];
   }
 
   canContinue(): boolean {
@@ -66,14 +77,61 @@ export class AgentLoop {
     return limit > 0 && this.consecutiveUnknownTools >= limit;
   }
 
-  hasNoProgress(): boolean {
+  noProgressWarning(): NoProgressDiagnostic | undefined {
+    const diagnostic = this.currentNoProgressRun();
+    if (!diagnostic || diagnostic.limit <= 1) return undefined;
+    const warningAt = Math.max(2, diagnostic.limit - 1);
+    return diagnostic.repeatCount >= warningAt && diagnostic.repeatCount < diagnostic.limit
+      ? diagnostic
+      : undefined;
+  }
+
+  noProgressDiagnostic(): NoProgressDiagnostic | undefined {
+    const diagnostic = this.currentNoProgressRun();
+    return diagnostic && diagnostic.repeatCount >= diagnostic.limit ? diagnostic : undefined;
+  }
+
+  /** 检查下一批工具调用是否已达重复上限（尚未执行时判断）。 */
+  noProgressDiagnosticForNextCalls(calls: readonly ToolCall[]): NoProgressDiagnostic | undefined {
     const limit = this.config.noProgressLimit;
-    if (limit <= 0 || this.toolCalls.length < limit) return false;
-    const recent = this.toolCalls.slice(-limit).map((call) => signature(call));
-    for (let period = 1; period < recent.length; period += 1) {
-      if (recent.every((value, index) => index < period || value === recent[index - period])) return true;
+    if (limit <= 0 || !calls.length) return undefined;
+    const priorCalls: ToolCall[] = [];
+    for (const call of calls) {
+      const target = toolCallSignature(call);
+      let repeatCount = 0;
+      for (let index = this.toolCalls.length - 1; index >= 0; index -= 1) {
+        const previous = this.toolCalls[index];
+        if (!previous || toolCallSignature(previous) !== target) break;
+        repeatCount += 1;
+      }
+      for (let index = priorCalls.length - 1; index >= 0; index -= 1) {
+        const previous = priorCalls[index];
+        if (!previous || toolCallSignature(previous) !== target) break;
+        repeatCount += 1;
+      }
+      repeatCount += 1;
+      if (repeatCount >= limit) return { call, repeatCount, limit };
+      priorCalls.push(call);
     }
-    return new Set(recent).size === 1;
+    return undefined;
+  }
+
+  hasNoProgress(): boolean {
+    return this.noProgressDiagnostic() !== undefined;
+  }
+
+  private currentNoProgressRun(): NoProgressDiagnostic | undefined {
+    const limit = this.config.noProgressLimit;
+    const last = this.toolCalls[this.toolCalls.length - 1];
+    if (limit <= 0 || !last) return undefined;
+    const target = toolCallSignature(last);
+    let repeatCount = 0;
+    for (let index = this.toolCalls.length - 1; index >= 0; index -= 1) {
+      const call = this.toolCalls[index];
+      if (!call || toolCallSignature(call) !== target) break;
+      repeatCount += 1;
+    }
+    return { call: last, repeatCount, limit };
   }
 }
 
@@ -82,6 +140,16 @@ function usageValue(value: unknown): number | undefined {
   return Math.max(0, Math.trunc(value));
 }
 
-function signature(call: ToolCall): string {
-  return `${call.name}:${JSON.stringify(call.arguments, Object.keys(call.arguments).sort())}`;
+function stableStringify(value: unknown): string {
+  return JSON.stringify(sortJsonValue(value));
+}
+
+function sortJsonValue(value: unknown): unknown {
+  if (Array.isArray(value)) return value.map((item) => sortJsonValue(item));
+  if (!value || typeof value !== "object") return value;
+  return Object.fromEntries(
+    Object.entries(value as Record<string, unknown>)
+      .sort(([left], [right]) => left.localeCompare(right))
+      .map(([key, item]) => [key, sortJsonValue(item)]),
+  );
 }

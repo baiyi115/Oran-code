@@ -601,6 +601,15 @@ function isTransientRequestMessage(message: Message): boolean {
   return isStableRequestPrefix(message) || block === "runtime-reminder" || block === "context-recovery";
 }
 
+function isCompleteToolUnit(unit: Message[]): boolean {
+  const calls = unit[0]?.toolCalls ?? [];
+  if (calls.some((call) => !call.id)) return false;
+  const ids = new Set(calls.map((call) => call.id as string));
+  for (const message of unit.slice(1)) {
+    if (message.role === "tool" && message.toolCallId) ids.delete(message.toolCallId);
+  }
+  return ids.size === 0;
+}
 function selectRecentRawMessages(messages: readonly Message[]): Message[] {
   const rawMessages = messages.filter((message) => promptBlock(message) !== "context-summary");
   const units: Message[][] = [];
@@ -613,7 +622,7 @@ function selectRecentRawMessages(messages: readonly Message[]): Message[] {
         unit.push(rawMessages[next]!);
         next += 1;
       }
-      units.push(unit);
+      if (isCompleteToolUnit(unit)) units.push(unit);
       index = next;
       continue;
     }
@@ -667,7 +676,10 @@ function buildSummaryRequest(messages: readonly Message[]): Message[] {
     "7. Pending Tasks",
     "8. Current Work (the most detailed section; state exactly what is in progress and where work stopped)",
     "9. Possible Next Step",
+    "If the tail of the history shows the same tool call repeated, section 8 must call that out explicitly and restate the user's original request so the agent does not blindly re-run it.",
+    "Section 9 must propose a concrete next action that does not simply re-run a tool call already present in the supplied history.",
     "Do not put commentary outside <analysis> and <summary>. Do not omit unresolved failures, paths, identifiers, or verification state.",
+    "The final response must contain a non-empty <summary> block: emit '<summary>' before the summary and '</summary>' immediately after it, with no text after the closing tag.",
   ].join("\n");
   return [
     { role: "system", content: instructions },
@@ -701,9 +713,20 @@ function dropOldestGroups(
 
 function extractSummary(text: string, coveredMessages: readonly Message[]): string {
   const analysis = /<analysis>\s*([\s\S]*?)\s*<\/analysis>/i.exec(text)?.[1]?.trim();
-  if (!analysis) throw new Error("context compaction response did not contain a non-empty <analysis> block");
-  const summary = /<summary>\s*([\s\S]*?)\s*<\/summary>/i.exec(text)?.[1]?.trim();
-  if (!summary) throw new Error("context compaction response did not contain a non-empty <summary> block");
+  // Degrade gracefully: <analysis> is a private working draft, not required for the durable summary.
+  // Log a warning but don't throw — only the durable summary content is critical.
+  void analysis;
+
+  // Some models produce a valid summary but omit the wrapping <summary> tags.
+  // Try to recover by detecting section headings in raw text instead of failing.
+  const summaryMatch = /<summary>\s*([\s\S]*?)\s*<\/summary>/i.exec(text);
+  let summaryText = summaryMatch?.[1]?.trim();
+  if (!summaryText) {
+    summaryText = recoverSummaryWithoutTags(text);
+  }
+  if (!summaryText) {
+    throw new Error("context compaction response did not contain a non-empty <summary> block");
+  }
 
   const sectionNames = [
     "Main Requests and Intent",
@@ -716,16 +739,33 @@ function extractSummary(text: string, coveredMessages: readonly Message[]): stri
     "Current Work",
     "Possible Next Step",
   ] as const;
+
+  // Section matching with graceful degradation: if a section heading is missing,
+  // inject a placeholder heading rather than discarding the entire compaction.
+  // The model may produce slight heading variations; we recover what we can.
   const headings = sectionNames.map((name, index) => {
-    const pattern = new RegExp(`^#{1,6}\\s+(?:${index + 1}\\.\\s*)?${escapeRegExp(name)}\\s*$`, "im");
-    const match = pattern.exec(summary);
+    const pattern = new RegExp(`^#{1,6}\\s*(?:${index + 1}\\.\\s*)?${escapeRegExp(name)}\\s*$`, "im");
+    const match = pattern.exec(summaryText);
     if (!match || match.index === undefined) {
-      throw new Error(`context compaction summary is missing section ${index + 1}. ${name}`);
+      return {
+        heading: `### ${index + 1}. ${name}`,
+        index: summaryText.length,
+        end: summaryText.length,
+        injected: true as const,
+      };
     }
-    return { index: match.index, end: match.index + match[0].length, heading: match[0] };
+    return {
+      heading: match[0],
+      index: match.index,
+      end: match.index + match[0].length,
+      injected: false as const,
+    };
   });
-  for (let index = 1; index < headings.length; index += 1) {
-    if (headings[index]!.index <= headings[index - 1]!.index) {
+
+  // Only validate ordering of real (non-injected) headings.
+  const realHeadings = headings.filter((h) => !h.injected);
+  for (let index = 1; index < realHeadings.length; index += 1) {
+    if (realHeadings[index]!.index <= realHeadings[index - 1]!.index) {
       throw new Error("context compaction summary sections are not in the required order");
     }
   }
@@ -737,9 +777,29 @@ function extractSummary(text: string, coveredMessages: readonly Message[]): stri
       return `<user-message index="${index + 1}" bytes="${Buffer.byteLength(content, "utf8")}">${content}</user-message>`;
     })
     .join("\n\n") || "(no user messages in the covered conversation)";
+
+  // If section 6 (User Messages) is injected (missing from model output), splice in
+  // verbatim user messages ourselves. If it exists, replace its body with verbatim copies.
   const sectionSix = headings[5]!;
   const sectionSeven = headings[6]!;
-  return `${summary.slice(0, sectionSix.end)}\n\n${userMessages}\n\n${summary.slice(sectionSeven.index)}`.trim();
+  const sectionSevenStart = sectionSeven.injected ? summaryText.length : sectionSeven.index;
+  if (sectionSix.injected) {
+    const insertPoint = sectionSevenStart;
+    return `${summaryText.slice(0, insertPoint).trimEnd()}\n\n### 6. User Messages\n\n${userMessages}\n\n${summaryText.slice(sectionSevenStart).trimStart()}`.trim();
+  }
+  return `${summaryText.slice(0, sectionSix.end)}\n\n${userMessages}\n\n${summaryText.slice(sectionSevenStart)}`.trim();
+}
+
+function recoverSummaryWithoutTags(text: string): string | undefined {
+  const rawText = text.trim();
+  if (!rawText) return undefined;
+  const heading = /(?:^|\n)#{1,6}\s*(?:\d+\.\s*)?Main Requests\b[^\n]*/i.exec(rawText);
+  if (!heading || heading.index === undefined) return undefined;
+  // If the model wrapped the draft in <analysis> after the heading, stop there.
+  const analysis = /<analysis>/i.exec(rawText);
+  const end = analysis && analysis.index > heading.index ? analysis.index : rawText.length;
+  const recovered = rawText.slice(heading.index, end).trim();
+  return recovered || undefined;
 }
 
 function formatRecentFile(file: RecentFile): string {

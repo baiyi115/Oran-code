@@ -1,7 +1,7 @@
 import { createHash } from "node:crypto";
 import { readdir, readFile, stat } from "node:fs/promises";
 import { resolve, relative, sep } from "node:path";
-import { AgentLoop } from "./loop.js";
+import { AgentLoop, toolCallSignature, type NoProgressDiagnostic } from "./loop.js";
 import { ContextManager } from "./context-manager.js";
 import { PermissionPolicy, structuredPermissionDenial, type ApprovalDecision } from "./security.js";
 import { discoverWorkspace } from "./workspace.js";
@@ -22,10 +22,15 @@ import type {
   ToolKind,
   ToolResult,
   OptionalSystemPromptModules,
+  HookEnginePort,
+  HookEventPortContext,
 } from "./types.js";
 import { transitionTask } from "./types.js";
 import { formatErrorMessage } from "./error-format.js";
+import { repairToolMessagePairs } from "./message-utils.js";
+import { ModelRequestError } from "./provider.js";
 import { isCasualConversationPrompt } from "./prompt-intent.js";
+import { PRODUCT_VERSION } from "./paths.js";
 import { isMutatingToolName, isPlanModeTool, isWriteToolName, type ToolRegistry } from "./tools.js";
 import {
   buildEnvironmentPrompt,
@@ -52,11 +57,21 @@ export interface TaskControllerOptions {
   eventCallback?: RuntimeEventCallback;
   conversationCallback?: ConversationCallback;
   logger?: RuntimeLogger;
+  /** Detailed request/response diagnostics. Disabled by default. */
+  debugLogger?: RuntimeLogger;
   conversation?: Message[];
   contextManager?: ContextManager;
   stablePromptModules?: OptionalSystemPromptModules;
   runtimeReminders?: () => readonly string[];
   toolFilter?: (tool: ToolDefinition) => boolean;
+  /** Hook 引擎端口。缺省时不启用任何 Hook 事件。 */
+  hookEngine?: HookEnginePort;
+  /** 最近一条用户提示文本，供 Hook 条件/命令使用。 */
+  hookUserPrompt?: string;
+  /** 上一任务已执行的调用历史，用于跨任务延续的重复调用守卫。 */
+  previousToolCalls?: ToolCall[];
+  /** 上一任务只读工具的成功结果缓存，重复模型调用直接回填，不重复执行。 */
+  previousReadonlyResults?: ReadonlyMap<string, ToolResult>;
 }
 
 /** Explicit plan-complete markers the model may emit to finish plan mode. */
@@ -66,6 +81,11 @@ const PLAN_COMPLETE_MARKERS = [
   "<plan_complete>",
   "</plan_complete>",
 ] as const;
+
+const BUDGET_COMPACTION_MIN_REQUEST_TOKENS = 32_000;
+const BUDGET_COMPACTION_HEADROOM = 1.5;
+const BUDGET_COMPACTION_GROWTH_FACTOR = 1.25;
+const BUDGET_COMPACTION_COOLDOWN_TURNS = 3;
 
 export class TaskController {
   private readonly config: RuntimeConfig;
@@ -78,14 +98,23 @@ export class TaskController {
   private readonly eventCallback: RuntimeEventCallback;
   private readonly conversationCallback: ConversationCallback;
   private readonly logger: RuntimeLogger;
+  private readonly debugLogger: RuntimeLogger;
   private readonly contextManager: ContextManager;
   private readonly stablePromptModules: OptionalSystemPromptModules;
   private readonly runtimeReminders: () => readonly string[];
   private readonly toolFilter: (tool: ToolDefinition) => boolean;
+  private readonly hookEngine: HookEnginePort | undefined;
+  private hookUserPrompt: string;
+  private readonly previousToolCalls: readonly ToolCall[];
+  private readonly readonlyCache = new Map<string, ToolResult>();
+  private loop: AgentLoop | undefined;
   private abortController: AbortController | undefined;
   private activeTask: Task | undefined;
   private sequence = 0;
   private turnSequence = 0;
+  private modelResponseStepId: number | undefined;
+  private lastContextCompactionTurn = Number.NEGATIVE_INFINITY;
+  private contextCompactionFloorTokens = 0;
   private conversation: Message[];
 
   constructor(options: TaskControllerOptions) {
@@ -100,6 +129,7 @@ export class TaskController {
     this.eventCallback = options.eventCallback ?? (() => undefined);
     this.conversationCallback = options.conversationCallback ?? (() => undefined);
     this.logger = options.logger ?? (() => undefined);
+    this.debugLogger = options.debugLogger ?? (() => undefined);
     this.conversation = cloneMessages(options.conversation ?? []);
     this.contextManager = options.contextManager ?? new ContextManager({
       workspace: options.config.workspace,
@@ -108,6 +138,12 @@ export class TaskController {
     this.stablePromptModules = { ...options.stablePromptModules };
     this.runtimeReminders = options.runtimeReminders ?? (() => []);
     this.toolFilter = options.toolFilter ?? (() => true);
+    this.hookEngine = options.hookEngine;
+    this.hookUserPrompt = options.hookUserPrompt ?? "";
+    this.previousToolCalls = options.previousToolCalls ?? [];
+    if (options.previousReadonlyResults) {
+      for (const [key, value] of options.previousReadonlyResults) this.readonlyCache.set(key, value);
+    }
   }
 
   cancel(): void {
@@ -118,13 +154,27 @@ export class TaskController {
     return cloneMessages(this.conversation);
   }
 
+  get toolCallHistory(): ToolCall[] {
+    return this.loop?.toolCalls.slice() ?? [];
+  }
+
+  get readonlyResultSnapshot(): ReadonlyMap<string, ToolResult> {
+    return new Map(this.readonlyCache);
+  }
+
   async execute(task: Task): Promise<Task> {
     if (this.activeTask) throw new Error("task controller is already executing");
     this.activeTask = task;
     this.abortController = new AbortController();
     this.sequence = 0;
     this.turnSequence = 0;
-    const loop = new AgentLoop(this.config.loop);
+    this.modelResponseStepId = undefined;
+    this.lastContextCompactionTurn = Number.NEGATIVE_INFINITY;
+    this.contextCompactionFloorTokens = 0;
+    const loop = new AgentLoop(this.config.loop, this.previousToolCalls);
+    this.loop = loop;
+    this.hookUserPrompt = task.prompt;
+    await this.fireHook({ event: "session_start", workspace: task.workspace, model: this.config.model.model, userPrompt: task.prompt });
     try {
       return await this.executeTask(task, loop);
     } catch (error) {
@@ -141,8 +191,11 @@ export class TaskController {
       await this.emit("error", { message: formatErrorMessage(error) });
       throw error;
     } finally {
+      // 会话结束：确保异常路径也能触发
+      await this.fireHook({ event: "session_end", workspace: task.workspace, model: this.config.model.model });
       this.activeTask = undefined;
       this.abortController = undefined;
+      this.loop = undefined;
     }
   }
 
@@ -174,7 +227,7 @@ export class TaskController {
         workspace: task.workspace,
         model: this.config.model,
         snapshot,
-        appVersion: "0.1.0",
+        appVersion: PRODUCT_VERSION,
       })),
       ...turnConversation,
     ];
@@ -185,11 +238,26 @@ export class TaskController {
       this.throwIfCancelled();
       loop.recordTurn();
       const finalTurn = loop.isFinalTurn();
+      const hookNotices = this.hookEngine ? this.hookEngine.drainNotices() : [];
+      const noProgressWarning = loop.noProgressWarning();
       const reminders = [
         taskModeReminder(planMode, loop.turns),
         loopBudgetReminder(loop.remainingTurns(), finalTurn),
         ...this.runtimeReminders(),
+        ...hookNotices.map((notice) => `[hook:${notice.event}] ${notice.text}`),
       ];
+      if (noProgressWarning) {
+        const { call, repeatCount, limit } = noProgressWarning;
+        const argSummary = Object.entries(call.arguments)
+          .map(([key, value]) => `${key}=${typeof value === "string" ? value : JSON.stringify(value)}`)
+          .join(" ");
+        reminders.push(
+          `Heads up: the previous ${repeatCount} call(s) to ${call.name}(${argSummary}) look identical. ` +
+            `If this is not intentional, approach the task differently. Repeating ${limit} times will pause the task.`,
+        );
+      }
+      // 轮次开始：通知队列已并入本轮系统提醒后派发
+      await this.fireHook({ event: "turn_start", workspace: task.workspace, model: this.config.model.model, userPrompt: task.prompt });
       const tools = finalTurn || casualConversation ? [] : this.toolSchemasForMode();
       const request = await this.requestWithContext(
         messages,
@@ -215,6 +283,7 @@ export class TaskController {
               index,
               { ok: false, output: "", error: "tool cancelled", summary: "cancelled", metadata: { cancelled: true } },
               0,
+              { executed: false },
             );
           }
         }
@@ -236,6 +305,7 @@ export class TaskController {
               summary: "not run",
             },
             0,
+            { executed: false },
           );
         }
         transitionTask(task, "failed");
@@ -276,6 +346,19 @@ export class TaskController {
         return task;
       }
       if (response.toolCalls.length) {
+        const preExecutionNoProgress = loop.noProgressDiagnosticForNextCalls(response.toolCalls);
+        if (preExecutionNoProgress) {
+          this.recordNoProgressBlock(task, response.toolCalls, preExecutionNoProgress);
+          await this.reconcileToolCalls(
+            task,
+            messages,
+            response.toolCalls,
+            "repeated identical tool call blocked before execution",
+            false,
+          );
+          await this.pauseForNoProgress(task, preExecutionNoProgress);
+          return task;
+        }
         try {
           workspaceMutated ||= await this.runTools(task, messages, response.toolCalls, loop);
         } catch (error) {
@@ -335,19 +418,22 @@ export class TaskController {
         transitionTask(task, "executing");
         await this.persist(task);
       }
-      if (loop.hasNoProgress()) {
-        transitionTask(task, "paused");
-        await this.persist(task);
-        await this.emit("log", { message: "No progress detected; task paused for review." });
+      // 轮次结束：本轮工具结果已写回对话之后
+      await this.fireHook({ event: "turn_end", workspace: task.workspace, model: this.config.model.model, userPrompt: task.prompt });
+      const noProgress = loop.noProgressDiagnostic();
+      if (noProgress) {
+        await this.pauseForNoProgress(task, noProgress);
         return task;
       }
+    }
+    if (loop.tokenBudgetReached()) {
+      await this.pauseForTokenBudget(task, loop);
+      return task;
     }
     transitionTask(task, "failed");
     await this.persist(task);
     await this.emit("error", {
-      message: loop.tokenBudgetReached()
-        ? tokenBudgetMessage(loop, this.config.loop.tokenBudget)
-        : `Reached the ${this.config.loop.maxSteps}-iteration limit before the task completed.`,
+      message: `Reached the ${this.config.loop.maxSteps}-iteration limit before the task completed.`,
     });
     return task;
   }
@@ -360,11 +446,14 @@ export class TaskController {
     source: string,
     tools: Record<string, unknown>[],
   ): Promise<{ messages: Message[]; response: ModelResponse }> {
-    let managedMessages = await this.prepareContext(messages, reminders, tools);
+    let managedMessages = repairToolMessagePairs(await this.prepareContext(messages, reminders, tools, loop));
+    this.syncConversation(managedMessages);
     let requestMessages = withRuntimeReminders(managedMessages, reminders);
+    await this.fireHook({ event: "before_model_request", workspace: this.config.workspace, model: this.config.model.model, userPrompt: this.hookUserPrompt });
     try {
       const response = await this.streamWithRetry(requestMessages, loop, step, source, tools);
       this.contextManager.recordUsage(response.usage, usageAnchorMessages(requestMessages, response), tools);
+      await this.fireHook({ event: "after_model_response", workspace: this.config.workspace, model: this.config.model.model, assistantText: response.text });
       return { messages: managedMessages, response };
     } catch (error) {
       if (isAbortError(error) || this.abortController?.signal.aborted) throw error;
@@ -388,7 +477,7 @@ export class TaskController {
           reason: "emergency",
           ...(this.abortController?.signal ? { signal: this.abortController.signal } : {}),
         });
-        managedMessages = compacted.messages;
+        managedMessages = repairToolMessagePairs(compacted.messages);
         this.syncConversation(managedMessages);
         await this.emit("context_compaction", {
           phase: "completed",
@@ -420,6 +509,7 @@ export class TaskController {
     messages: Message[],
     reminders: readonly string[],
     tools: Record<string, unknown>[],
+    loop: AgentLoop,
   ): Promise<Message[]> {
     let managedMessages = messages;
     const beforeOffload = this.contextManager.estimateTokens(withRuntimeReminders(managedMessages, reminders), tools);
@@ -442,14 +532,34 @@ export class TaskController {
 
     const requestMessages = withRuntimeReminders(managedMessages, reminders);
     const contextWindow = this.contextManager.resolveContextWindow(this.config.model);
-    if (!this.contextManager.shouldAutoCompact(requestMessages, contextWindow, tools)) return managedMessages;
-
     const beforeTokens = this.contextManager.estimateTokens(requestMessages, tools);
+    const compactForContextWindow = this.contextManager.shouldAutoCompact(requestMessages, contextWindow, tools);
+
+    const tokenBudget = loop.config.tokenBudget;
+    const remainingBudget = Math.max(0, tokenBudget - loop.tokensUsed);
+    const remainingRequests = Math.max(1, loop.remainingTurns() + 1);
+    const sustainableRequestTokens = remainingBudget / remainingRequests;
+    const budgetCompactionThreshold = Math.max(
+      BUDGET_COMPACTION_MIN_REQUEST_TOKENS,
+      sustainableRequestTokens * BUDGET_COMPACTION_HEADROOM,
+      this.contextCompactionFloorTokens * BUDGET_COMPACTION_GROWTH_FACTOR,
+    );
+    const compactForTokenBudget = tokenBudget > 0
+      && remainingBudget > 0
+      && loop.turns - this.lastContextCompactionTurn >= BUDGET_COMPACTION_COOLDOWN_TURNS
+      && beforeTokens >= budgetCompactionThreshold;
+    if (!compactForContextWindow && !compactForTokenBudget) return managedMessages;
+
+    const budgetMessage = compactForTokenBudget && !compactForContextWindow
+      ? "Compacting early to keep the remaining model iterations within the task token budget."
+      : undefined;
+    this.lastContextCompactionTurn = loop.turns;
     await this.emit("context_compaction", {
       phase: "started",
       reason: "auto",
       beforeTokens,
       replacementCount: 0,
+      ...(budgetMessage ? { message: budgetMessage } : {}),
     });
     try {
       const compacted = await this.contextManager.compact({
@@ -461,6 +571,7 @@ export class TaskController {
         ...(this.abortController?.signal ? { signal: this.abortController.signal } : {}),
       });
       managedMessages = compacted.messages;
+      this.contextCompactionFloorTokens = Math.max(1, compacted.afterTokens);
       this.syncConversation(managedMessages);
       await this.emit("context_compaction", {
         phase: "completed",
@@ -468,6 +579,7 @@ export class TaskController {
         beforeTokens: compacted.beforeTokens,
         afterTokens: compacted.afterTokens,
         replacementCount: compacted.replacementCount,
+        ...(budgetMessage ? { message: budgetMessage } : {}),
       });
     } catch (error) {
       if (isAbortError(error) || this.abortController?.signal.aborted) throw error;
@@ -499,6 +611,7 @@ export class TaskController {
       } catch (error) {
         if (isAbortError(error) || this.abortController?.signal.aborted) throw error;
         if (this.contextManager.isPromptTooLongError(error)) throw error;
+        if (error instanceof ModelRequestError && !isRetryableModelStatus(error.status)) throw error;
         lastError = error;
         const message = formatErrorMessage(error);
         if (attempt >= this.config.loop.maxRetries) {
@@ -514,6 +627,22 @@ export class TaskController {
           maxRetries: this.config.loop.maxRetries,
           message,
         });
+        this.appendDiagnosticStep("model_retry", {
+          step,
+          source,
+          attempt,
+          nextAttempt: attempt + 1,
+          message,
+        });
+        this.debugLogger(JSON.stringify({
+          event: "model_retry",
+          taskId: this.activeTask?.id,
+          step,
+          source,
+          attempt,
+          nextAttempt: attempt + 1,
+          message,
+        }));
         this.logger(`Retrying ${source} response (${attempt + 1}/${this.config.loop.maxRetries}): ${message}`);
       }
     }
@@ -530,17 +659,49 @@ export class TaskController {
   ): Promise<ModelResponse> {
     const turnId = `turn-${++this.turnSequence}`;
     const startedAt = Date.now();
+    this.modelResponseStepId = undefined;
     // Thought rows are model-adaptive: only open a thought bubble once the provider
     // actually streams reasoning. Many chat models never send reasoning at all.
     let thoughtStarted = false;
     await this.emit("assistant_start", { step, source, attempt, model: this.config.model.model }, turnId);
     const textParts: string[] = [];
-    const toolCalls: ToolCall[] = [];
+    // Providers may emit toolCalls as a complete snapshot on every chunk rather
+    // than as deltas. Keep the latest snapshot instead of appending snapshots
+    // together, otherwise one model response can execute the same call multiple times.
+    let latestToolCalls: ToolCall[] = [];
+    let toolCallChunkCount = 0;
     const usage: Record<string, number> = {};
     const reasoningParts: string[] = [];
     let streamed = false;
     let finishReason: string | undefined;
     try {
+      const requestFingerprint = fingerprintRequest(messages);
+      const estimatedRequestTokens = this.contextManager.estimateTokens(messages, tools);
+      this.appendDiagnosticStep("model_request", {
+        turnId,
+        step,
+        source,
+        attempt,
+        requestFingerprint,
+        estimatedRequestTokens,
+        taskTokensUsed: loop.tokensUsed,
+        messageCount: messages.length,
+        toolResultCount: messages.filter((message) => message.role === "tool").length,
+      });
+      this.debugLogger(JSON.stringify({
+        event: "model_request",
+        taskId: this.activeTask?.id,
+        turnId,
+        step,
+        source,
+        attempt,
+        requestFingerprint,
+        estimatedRequestTokens,
+        taskTokensUsed: loop.tokensUsed,
+        messageCount: messages.length,
+        toolResultCount: messages.filter((message) => message.role === "tool").length,
+        tail: summarizeMessageTail(messages),
+      }));
       const providerOptions = this.abortController?.signal
         ? { signal: this.abortController.signal }
         : undefined;
@@ -558,12 +719,15 @@ export class TaskController {
           textParts.push(chunk.text);
           await this.emit("assistant_delta", { step, source, attempt, text: chunk.text }, turnId);
         }
-        if (chunk.toolCalls?.length) toolCalls.push(...chunk.toolCalls);
+        if (chunk.toolCalls?.length) {
+          latestToolCalls = chunk.toolCalls.map(cloneToolCall);
+          toolCallChunkCount += 1;
+        }
         if (chunk.usage) Object.assign(usage, chunk.usage);
         if (chunk.finishReason !== undefined) finishReason = chunk.finishReason;
       }
       loop.recordUsage(usage);
-      const normalizedCalls = toolCalls.map((call) => normalizeCallId(call, this.contextManager));
+      const normalizedCalls = latestToolCalls.map((call) => normalizeCallId(call, this.contextManager));
       const response: ModelResponse = {
         text: textParts.join(""),
         ...(reasoningParts.length ? { reasoning: reasoningParts.join("") } : {}),
@@ -573,6 +737,32 @@ export class TaskController {
         streamed,
         ...(finishReason !== undefined ? { finishReason } : {}),
       };
+      this.modelResponseStepId = this.appendDiagnosticStep("model_response", {
+        turnId,
+        step,
+        source,
+        attempt,
+        toolCallChunkCount,
+        toolCalls: summarizeToolCalls(normalizedCalls),
+        responseFingerprint: fingerprintResponse(response),
+        finishReason,
+        usage,
+        taskTokensUsed: loop.tokensUsed,
+      });
+      this.debugLogger(JSON.stringify({
+        event: "model_response",
+        taskId: this.activeTask?.id,
+        turnId,
+        step,
+        source,
+        attempt,
+        toolCallChunkCount,
+        toolCalls: summarizeToolCalls(normalizedCalls),
+        responseFingerprint: fingerprintResponse(response),
+        finishReason,
+        usage,
+        taskTokensUsed: loop.tokensUsed,
+      }));
       if (thoughtStarted) {
         await this.emit("thought_end", {
           step,
@@ -597,10 +787,10 @@ export class TaskController {
       }
       const aborted = isAbortError(error) || this.abortController?.signal.aborted;
       await this.emit("assistant_abort", { step, source, attempt, message: formatErrorMessage(error), ...(finishReason !== undefined ? { finishReason } : {}) }, turnId);
-      if (aborted && (textParts.length || toolCalls.length || reasoningParts.length)) {
+      if (aborted && (textParts.length || latestToolCalls.length || reasoningParts.length)) {
         // Preserve partial assistant output so conversation history stays usable after cancel.
         loop.recordUsage(usage);
-        const normalizedCalls = toolCalls.map((call) => normalizeCallId(call, this.contextManager));
+        const normalizedCalls = latestToolCalls.map((call) => normalizeCallId(call, this.contextManager));
         return {
           text: textParts.join(""),
           ...(reasoningParts.length ? { reasoning: reasoningParts.join("") } : {}),
@@ -648,13 +838,18 @@ export class TaskController {
       if (batch.length === 1 && !this.registry.has(batch[0]!.call.name)) {
         const { index, call } = batch[0]!;
         await this.emit("tool_start", { call, index, permissionLevel: 4 });
+        const hookBlock = await this.checkBeforeToolHook(task, call);
+        if (hookBlock) {
+          await this.recordTool(task, messages, call, index, hookBlock, 0, { executed: false });
+          continue;
+        }
         if (this.config.workMode === "plan") {
-          await this.recordTool(task, messages, call, index, planModeDeniedResult(call), 0);
+          await this.recordTool(task, messages, call, index, planModeDeniedResult(call), 0, { executed: false });
           continue;
         }
         const denied = await this.authorizeTool(task, call, 4, "command", "Unknown tool requested by the model.");
         if (denied) {
-          await this.recordTool(task, messages, call, index, denied, 0);
+          await this.recordTool(task, messages, call, index, denied, 0, { executed: false });
           continue;
         }
         const result: ToolResult = {
@@ -664,7 +859,7 @@ export class TaskController {
           summary: "unknown tool",
         };
         loop.recordUnknownTool(call);
-        await this.recordTool(task, messages, call, index, result, 0);
+        await this.recordTool(task, messages, call, index, result, 0, { executed: false });
         this.logger(`Tool ${call.name}: unknown tool`);
         if (loop.shouldStopForUnknownTools()) return workspaceMutated;
         continue;
@@ -683,6 +878,11 @@ export class TaskController {
         const tool = this.registry.get(call.name);
         const kind = tool.kind ?? inferToolKind(call.name);
         await this.emit("tool_start", { call, index, permissionLevel: tool.permissionLevel });
+        const hookBlock = await this.checkBeforeToolHook(task, call);
+        if (hookBlock) {
+          prepared.push({ index, call, skip: hookBlock });
+          continue;
+        }
         if (!this.isToolVisible(tool)) {
           prepared.push({ index, call, skip: toolUnavailableResult(call) });
           continue;
@@ -698,6 +898,28 @@ export class TaskController {
           prepared.push({ index, call, skip: denied });
           continue;
         }
+        const cacheKey = kind === "readonly" ? toolCallSignature(call) : undefined;
+        if (cacheKey && this.readonlyCache.has(cacheKey)) {
+          const cached = this.readonlyCache.get(cacheKey)!;
+          this.debugLogger(JSON.stringify({
+            event: "tool_cached_duplicate",
+            taskId: task.id,
+            turn: this.turnSequence,
+            index,
+            tool: call.name,
+            arguments: summarizeArguments(call.arguments),
+          }));
+          loop.record(call);
+          prepared.push({
+            index,
+            call,
+            skip: {
+              ...cached,
+              metadata: { ...cached.metadata, cached: true },
+            },
+          });
+          continue;
+        }
         loop.record(call);
         prepared.push({ index, call });
       }
@@ -709,6 +931,15 @@ export class TaskController {
         const slice = executable.slice(offset, offset + concurrency);
         await Promise.all(slice.map(async (item) => {
           const started = Date.now();
+          this.debugLogger(JSON.stringify({
+            event: "tool_execute_start",
+            taskId: task.id,
+            turn: this.turnSequence,
+            index: item.index,
+            callId: item.call.id,
+            tool: item.call.name,
+            arguments: summarizeArguments(item.call.arguments),
+          }));
           const beforeWorkspace = isPotentiallyMutating(item.call) ? await workspaceFingerprint(task.workspace) : undefined;
           const before = await fileHash(task.workspace, item.call);
           let result: ToolResult;
@@ -731,19 +962,25 @@ export class TaskController {
           if (before && after && before.hash !== after.hash) {
             this.trace.appendFileChange(task.id, before.path, before.hash, after.hash);
           }
-          results.set(item.index, { call: item.call, result: { ...result, durationMs: duration }, duration, mutated });
+          const executedResult = { ...result, durationMs: duration };
+          if (result.ok && (this.registry.get(item.call.name)?.kind ?? inferToolKind(item.call.name)) === "readonly") {
+            const cacheKey = toolCallSignature(item.call);
+            this.readonlyCache.set(cacheKey, { ...executedResult, metadata: { ...executedResult.metadata, cached: false } });
+          }
+          results.set(item.index, { call: item.call, result: executedResult, duration, mutated });
         }));
       }
 
       // Write back in original model order (skipped + executed).
       for (const item of prepared) {
         if (item.skip) {
-          await this.recordTool(task, messages, item.call, item.index, item.skip, 0);
+          await this.recordTool(task, messages, item.call, item.index, item.skip, 0, { executed: false });
           continue;
         }
         const entry = results.get(item.index);
         if (!entry) continue;
         if (entry.mutated) workspaceMutated = true;
+        if (entry.result.ok && isPotentiallyMutating(entry.call)) this.readonlyCache.clear();
         if (entry.result.ok && entry.call.name === "read_file") {
           await this.trackSuccessfulFileRead(task.workspace, entry.call);
         }
@@ -767,6 +1004,7 @@ export class TaskController {
         .filter((message) => message.role === "tool" && message.toolCallId)
         .map((message) => message.toolCallId!),
     );
+    const blockedBeforeExecution = !cancelled && reason.includes("blocked before execution");
     for (const [index, call] of calls.entries()) {
       const id = ensureCallId(call, this.contextManager);
       if (pairedIds.has(id)) continue;
@@ -774,9 +1012,17 @@ export class TaskController {
         ok: false,
         output: "",
         error: reason,
-        summary: cancelled ? "cancelled" : "not completed",
-        metadata: { ...(cancelled ? { cancelled: true } : {}), reconciled: true },
-      }, 0);
+        summary: cancelled
+          ? "cancelled"
+          : blockedBeforeExecution
+            ? "blocked before execution"
+            : "not completed",
+        metadata: {
+          ...(cancelled ? { cancelled: true } : {}),
+          ...(blockedBeforeExecution ? { blockedBeforeExecution: true } : {}),
+          reconciled: true,
+        },
+      }, 0, { executed: false });
       pairedIds.add(id);
     }
   }
@@ -828,12 +1074,99 @@ export class TaskController {
     });
   }
 
-  private async recordTool(task: Task, messages: Message[], call: ToolCall, index: number, result: ToolResult, duration: number): Promise<void> {
+  private async recordTool(
+    task: Task,
+    messages: Message[],
+    call: ToolCall,
+    index: number,
+    result: ToolResult,
+    duration: number,
+    options: { executed?: boolean } = {},
+  ): Promise<void> {
+    const executed = options.executed ?? true;
     const output = result.output || result.error || "";
-    this.trace.appendToolCall(task.id, call.name, call.arguments, output, result.ok, duration);
+    this.trace.appendToolCall(task.id, call.name, call.arguments, output, result.ok, duration, this.modelResponseStepId);
     await this.emit("tool_result", { call, index, result: { ...result, durationMs: duration } });
+    if (executed) {
+      await this.fireHook({ event: "after_tool_call", workspace: task.workspace, model: this.config.model.model, tool: call, filePath: extractToolFilePath(call) });
+    }
     messages.push({ role: "tool", content: output || "(empty result)", toolCallId: call.id ?? `call_${call.name}`, name: call.name });
     this.syncConversation(messages);
+    this.appendDiagnosticStep("tool_result", {
+      step: this.turnSequence,
+      index,
+      callId: call.id,
+      tool: call.name,
+      arguments: summarizeArguments(call.arguments),
+      ok: result.ok,
+      outputBytes: Buffer.byteLength(output, "utf8"),
+      resultAppended: true,
+      executed,
+      metadata: result.metadata,
+    });
+    this.debugLogger(JSON.stringify({
+      event: "tool_result",
+      taskId: task.id,
+      turn: this.turnSequence,
+      index,
+      callId: call.id,
+      tool: call.name,
+      arguments: summarizeArguments(call.arguments),
+      ok: result.ok,
+      outputBytes: Buffer.byteLength(output, "utf8"),
+      resultAppended: true,
+      executed,
+      metadata: result.metadata,
+    }));
+  }
+
+  private recordNoProgressBlock(task: Task, calls: readonly ToolCall[], diagnostic: NoProgressDiagnostic): void {
+    const { call, repeatCount, limit } = diagnostic;
+    const payload = {
+      turn: this.turnSequence,
+      blockedCall: {
+        id: call.id,
+        name: call.name,
+        arguments: summarizeArguments(call.arguments),
+        repeatCount,
+        limit,
+      },
+      batch: summarizeToolCalls(calls),
+      reason: "repeated identical tool call blocked before execution",
+    };
+    this.appendDiagnosticStep("tool_call_blocked", payload);
+    this.debugLogger(JSON.stringify({
+      event: "tool_call_blocked",
+      taskId: task.id,
+      ...payload,
+    }));
+  }
+
+  private async pauseForNoProgress(task: Task, diagnostic: NoProgressDiagnostic): Promise<void> {
+    const { call, repeatCount } = diagnostic;
+    const argSummary = Object.entries(call.arguments)
+      .map(([key, value]) => `${key}=${typeof value === "string" ? value : JSON.stringify(value)}`)
+      .join(" ");
+    transitionTask(task, "paused");
+    await this.persist(task);
+    await this.emit("log", {
+      message: `No progress detected; task paused before executing a repeated tool call. Repeated ${call.name}(${argSummary}) ${repeatCount} time(s).`,
+    });
+  }
+
+  private async pauseForTokenBudget(task: Task, loop: AgentLoop): Promise<void> {
+    const budget = this.config.loop.tokenBudget;
+    transitionTask(task, "paused");
+    await this.persist(task);
+    await this.emit("log", {
+      message: `${tokenBudgetMessage(loop, budget)} Send "继续" to resume with a fresh budget.`,
+    });
+  }
+
+  private appendDiagnosticStep(kind: string, payload: Record<string, unknown>): number | undefined {
+    const taskId = this.activeTask?.id;
+    if (!taskId) return undefined;
+    return this.trace.appendStep(taskId, kind, payload);
   }
 
   private syncConversation(messages: readonly Message[]): void {
@@ -899,6 +1232,44 @@ export class TaskController {
     return tool.system === true || this.toolFilter(tool);
   }
 
+  private async fireHook(ctx: HookEventPortContext): Promise<void> {
+    if (!this.hookEngine) return;
+    try {
+      await this.hookEngine.dispatch(ctx);
+    } catch (error) {
+      // Hook 自身失败只记日志，绝不中断主流程
+      this.logger(`hook ${ctx.event} dispatch failed: ${error instanceof Error ? error.message : String(error)}`);
+    }
+  }
+
+  /** 工具调用前派发，命中拦截即返回拒绝结果（带前缀「被 Hook 拒绝：<原因>」）。 */
+  private async checkBeforeToolHook(task: Task, call: ToolCall): Promise<ToolResult | undefined> {
+    if (!this.hookEngine) return undefined;
+    try {
+      const outcome = await this.hookEngine.dispatchBeforeTool({
+        event: "before_tool_call",
+        workspace: task.workspace,
+        model: this.config.model.model,
+        tool: call,
+        filePath: extractToolFilePath(call),
+        userPrompt: this.hookUserPrompt,
+      });
+      if (outcome.intercepted) {
+        const reason = outcome.interceptReason ?? "blocked by hook";
+        return {
+          ok: false,
+          output: `被 Hook 拒绝：${reason}`,
+          error: reason,
+          summary: `hook blocked: ${reason}`,
+          metadata: { hookBlocked: true },
+        };
+      }
+    } catch (error) {
+      this.logger(`hook before_tool_call dispatch failed: ${error instanceof Error ? error.message : String(error)}`);
+    }
+    return undefined;
+  }
+
   private throwIfCancelled(): void {
     if (this.abortController?.signal.aborted) throw new DOMException("operation aborted", "AbortError");
   }
@@ -933,6 +1304,10 @@ function toolUnavailableResult(call: ToolCall): ToolResult {
   };
 }
 
+function isRetryableModelStatus(status: number): boolean {
+  return status === 408 || status === 429 || status >= 500;
+}
+
 function isAbortError(error: unknown): boolean {
   return error instanceof DOMException && error.name === "AbortError";
 }
@@ -942,6 +1317,15 @@ function ensureCallId(call: ToolCall, contextManager: ContextManager): string {
   const id = contextManager.claimToolCallId();
   call.id = id;
   return id;
+}
+
+/** 从工具参数中提取文件路径，供 Hook 条件匹配与环境变量注入。 */
+function extractToolFilePath(call: ToolCall): string {
+  for (const key of ["path", "file_path", "target_path"]) {
+    const value = call.arguments[key];
+    if (typeof value === "string" && value.trim()) return value.trim().replaceAll("\\\\", "/");
+  }
+  return "";
 }
 
 function normalizeCallId(call: ToolCall, contextManager: ContextManager): ToolCall {
@@ -963,14 +1347,15 @@ function tokenBudgetMessage(loop: AgentLoop, budget: number): string {
   return [
     `Token budget reached after ${loop.turns} model iteration(s): ${loop.tokensUsed.toLocaleString("en-US")} / ${budget.toLocaleString("en-US")} task tokens.`,
     "Oran code preserved the completed response and stopped before another model request.",
-    "Start a new session or use /clear to reduce prior context, lower the reasoning effort, or increase agent.tokenBudget.",
+    "Start a new session or use /compact (preferred) or /clear to reduce prior context, lower the reasoning effort, or increase agent.tokenBudget.",
   ].join(" ");
 }
 
 function withRuntimeReminders(messages: readonly Message[], reminders: readonly string[]): Message[] {
   const copy = cloneMessages(messages);
-  const insertionIndex = copy.findIndex((message) => message.role !== "system");
-  copy.splice(insertionIndex < 0 ? copy.length : insertionIndex, 0, systemReminderMessage(reminders));
+  // 运行时提醒追加到请求末尾（而非插在对话之前）：每轮变化的提醒文本不再击穿
+  // 稳定前缀 [system + 对话] 的字节一致性，DeepSeek/OpenAI 前缀缓存可覆盖整段对话。
+  if (reminders.length) copy.push(systemReminderMessage(reminders));
   return copy;
 }
 
@@ -979,6 +1364,83 @@ function usageAnchorMessages(messages: readonly Message[], response: ModelRespon
     ...messages,
     { role: "assistant", content: response.text, toolCalls: response.toolCalls },
   ];
+}
+
+function cloneToolCall(call: ToolCall): ToolCall {
+  return {
+    ...call,
+    arguments: structuredClone(call.arguments),
+  };
+}
+
+function summarizeArguments(argumentsValue: Record<string, unknown>): Record<string, unknown> {
+  return Object.fromEntries(
+    Object.entries(argumentsValue).map(([key, value]) => [key, summarizeValue(value)]),
+  );
+}
+
+function summarizeToolCalls(calls: readonly ToolCall[]): Array<Record<string, unknown>> {
+  return calls.map((call) => ({
+    id: call.id,
+    name: call.name,
+    arguments: summarizeArguments(call.arguments),
+  }));
+}
+
+function summarizeMessageTail(messages: readonly Message[]): Array<Record<string, unknown>> {
+  return messages.slice(-6).map((message) => ({
+    role: message.role,
+    name: message.name,
+    toolCallId: message.toolCallId,
+    toolCalls: message.toolCalls?.length ?? 0,
+    contentBytes: Buffer.byteLength(message.content ?? "", "utf8"),
+  }));
+}
+
+function fingerprintRequest(messages: readonly Message[]): string {
+  return createHash("sha256")
+    .update(JSON.stringify(messages.map((message) => ({
+      role: message.role,
+      name: message.name,
+      toolCallId: message.toolCallId,
+      content: message.content ?? "",
+      toolCalls: message.toolCalls?.map((call) => ({
+        id: call.id,
+        name: call.name,
+        arguments: call.arguments,
+      })),
+    }))))
+    .digest("hex")
+    .slice(0, 16);
+}
+
+function fingerprintResponse(response: ModelResponse): string {
+  return createHash("sha256")
+    .update(JSON.stringify({
+      text: response.text,
+      reasoning: response.reasoning ?? "",
+      toolCalls: response.toolCalls.map((call) => ({
+        id: call.id,
+        name: call.name,
+        arguments: call.arguments,
+      })),
+      finishReason: response.finishReason,
+    }))
+    .digest("hex")
+    .slice(0, 16);
+}
+
+function summarizeValue(value: unknown): unknown {
+  if (typeof value === "string") return value.length > 200 ? `${value.slice(0, 200)}…` : value;
+  if (Array.isArray(value)) return value.slice(0, 20).map((item) => summarizeValue(item));
+  if (value && typeof value === "object") {
+    return Object.fromEntries(
+      Object.entries(value as Record<string, unknown>)
+        .slice(0, 20)
+        .map(([key, item]) => [key, summarizeValue(item)]),
+    );
+  }
+  return value;
 }
 
 async function fileHash(workspace: string, call: ToolCall): Promise<{ path: string; hash: string | null } | undefined> {
