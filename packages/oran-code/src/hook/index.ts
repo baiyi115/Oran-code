@@ -1,4 +1,4 @@
-/** Hook 模块对外门面，主流程只通过此文件导入。 */
+/** Public facade for the hook module. */
 export type {
   HookAction,
   HookActionType,

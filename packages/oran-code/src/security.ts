@@ -331,10 +331,10 @@ export function matchesPattern(pattern: string, value: string): boolean {
   for (let index = 0; index < pattern.length;) {
     const character = pattern[index] ?? "";
     if (character === "*" && pattern[index + 1] === "*") {
-      // ** 匹配跨目录任意字符（gitignore 语义），* 保持单段不跨分隔符。
+      // ** crosses directory boundaries (gitignore); * stays within one segment.
       source += ".*";
       index += 2;
-      while (pattern[index] === "*") index += 1; // 吞掉多余的星号
+      while (pattern[index] === "*") index += 1;
     } else if (character === "*") {
       source += "[^/\\\\]*";
       index += 1;

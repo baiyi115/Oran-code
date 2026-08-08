@@ -15,20 +15,16 @@ import {
 const VALID_EVENTS = new Set<string>(HOOK_EVENTS);
 const VALID_ACTION_TYPES = new Set<string>(HOOK_ACTION_TYPES);
 
-/** 校验后的单条规则缓存（避免每次派发重解析条件）。 */
 interface CompiledRule {
   config: HookConfig;
   condition: ReturnType<typeof parseCondition>;
-  /** 缺省 id 时用于 once 去重的键。 */
   onceKey: string;
-  /** 运行时拦截语义，校验层已排除拦截与异步互斥。 */
   intercept: boolean;
   async: boolean;
   onError: NonNullable<HookConfig["onError"]>;
 }
 
 export interface HookEngineOptions extends HookEngineDeps {
-  /** 命令动作的默认超时（继承自 loop.commandTimeout）。 */
   defaultCommandTimeoutMs: number;
 }
 
@@ -50,42 +46,31 @@ export class HookEngine {
     }
   }
 
-  /** 聚合校验错误，供会话挂载时一次性呈现。 */
   getErrors(): readonly HookValidationError[] {
     return this.validationErrors;
   }
 
-  /** 是否有任何已加载的合法规则。 */
   get hasRules(): boolean {
     return this.rules.length > 0;
   }
 
-  /**
-   * 通用事件派发（非 before_tool_call）。
-   * 同步执行命中规则，输出入通知队列；异步规则后台执行后回流队列。
-   * 返回结果列表供调用方观察（主流程一般不消费）。
-   */
   async dispatch(ctx: HookEventContext): Promise<HookResult[]> {
     const results: HookResult[] = [];
     for (const rule of this.matchingRules(ctx)) {
       const result = await this.runRule(rule, ctx, rule.intercept);
       if (!result) continue;
-      // 非工具前事件不消费拦截信号；但其输出仍按非空写入通知队列。
+      // Non-tool events do not consume interception; output still reaches the notice queue.
       this.collectOutput(rule, result, ctx);
       if (!rule.async) results.push(result);
     }
     return results;
   }
 
-  /**
-   * 工具调用前专用派发。
-   * 命中拦截即中断后续 Hook；异步规则视为放行。
-   */
   async dispatchBeforeTool(ctx: HookEventContext): Promise<HookDispatchResult> {
     const results: HookResult[] = [];
     for (const rule of this.matchingRules(ctx)) {
       if (rule.async) {
-        // 异步视为放行，不参与拦截；后台执行后输出回流队列。
+        // Async rules never intercept; results flow back through the notice queue.
         void this.runAsync(rule, ctx, false);
         continue;
       }
@@ -93,7 +78,6 @@ export class HookEngine {
       if (!result) continue;
       this.collectOutput(rule, result, ctx);
       results.push(result);
-      // 拦截规则命中即阻止工具执行；无论动作成功与否都返回拒绝。
       if (result.intercept) {
         return { intercepted: true, interceptReason: result.output, results };
       }
@@ -101,22 +85,19 @@ export class HookEngine {
     return { intercepted: false, results };
   }
 
-  /** 通知队列取出全部，主循环每轮顶部调用。 */
   drainNotices(): { event: string; text: string }[] {
     return this.deps.notices.drain();
   }
 
-  /** 注入实时会话消息回调（HTTP 请求体序列化用）。 */
   setSessionMessages(fn: () => import("../types.js").Message[]): void {
     this.deps.sessionMessages = fn;
   }
 
-  /** 重置 once 集合（重新挂载会话时清空）。 */
   resetOnce(): void {
     this.onceFired.clear();
   }
 
-  // ---- 内部 ----
+  // ---- Internals ----
 
   private *matchingRules(ctx: HookEventContext): Iterable<CompiledRule> {
     for (const rule of this.rules) {
@@ -152,7 +133,6 @@ export class HookEngine {
     }
   }
 
-  /** 依据错误策略决定结果是否进入列表 / 拦截。返回 undefined 表示不进入结果列表。 */
   private applyErrorPolicy(rule: CompiledRule, result: HookResult): HookResult | undefined {
     if (result.ok) return result;
     switch (rule.onError) {
@@ -167,7 +147,6 @@ export class HookEngine {
     }
   }
 
-  /** 同步路径下非空输出主动写入通知队列。 */
   private collectOutput(rule: CompiledRule, result: HookResult, ctx: HookEventContext): void {
     if (result.output && !rule.async) {
       this.deps.notices.append({ event: ctx.event, text: result.output });
@@ -177,10 +156,10 @@ export class HookEngine {
   private log(message: string): void {
     try {
       this.deps.log?.(message);
-    } catch { /* 日志失败忽略 */ }
+    } catch { /* Logging failures are intentionally ignored. */ }
   }
 
-  // ---- 校验 ----
+  // ---- Validation ----
 
   private compile(index: number, config: HookConfig): CompiledRule | undefined {
     const errors: string[] = [];
@@ -213,8 +192,6 @@ export class HookEngine {
     if (config.intercept && config.async) {
       errors.push("intercept and async are mutually exclusive");
     }
-    // 拦截仅在 before_tool_call 有意义；其它事件下仅副作用。这里不强制配置，
-    // 但记录一条警告级错误以便用户感知。
     const intercept = config.intercept === true;
     const asyncFlag = config.async === true;
     const onError = config.onError ?? "ignore";
@@ -231,7 +208,8 @@ export class HookEngine {
         if (config.id) entry.id = config.id;
         this.validationErrors.push(entry);
       }
-      return undefined; // 单条出错不阻塞其它 Hook
+      // A single bad rule must not block the remaining hooks.
+      return undefined;
     }
 
     const onceKey = config.id?.trim() || `${config.event}:${config.action.type}`;

@@ -11,17 +11,15 @@ import {
 
 const OPERATORS = new Set<HookOperator>(["==", "!=", "=~", "glob"]);
 
-/** 把单行表达式解析为结构化条件。解析失败返回 undefined（调用方聚合为校验错误）。 */
 export function parseCondition(expression: string): HookCondition | undefined {
   const trimmed = expression.trim();
   if (!trimmed) return undefined;
 
-  // 先按 && 与 || 切分，记录分隔符，据此推断 logic 并禁止混用。
   const tokens = splitLogical(trimmed);
   if (!tokens) return undefined;
 
   const clauses = tokens.parts.map((part) => parseClause(part.trim())).filter((c): c is HookConditionClause => c !== undefined);
-  if (clauses.length !== tokens.parts.length) return undefined; // 有子句解析失败
+  if (clauses.length !== tokens.parts.length) return undefined;
   if (clauses.length === 0) return undefined;
 
   return { logic: tokens.logic, clauses };
@@ -32,11 +30,9 @@ interface SplitResult {
   parts: string[];
 }
 
-/** 按顶层 && / || 切分；混合或嵌套非法。token 内不含括号，所以无需处理优先级。 */
 function splitLogical(expression: string): SplitResult | undefined {
-  // 用零宽切分保留分隔符
+  // Capturing the separators yields [part, sep, part, sep, ...].
   const pieces = expression.split(/\s*(\&{2}|\|{2})\s*/);
-  // pieces 形如 [part, sep, part, sep, part, ...]
   const parts: string[] = [];
   const seps: string[] = [];
   for (let i = 0; i < pieces.length; i += 1) {
@@ -50,15 +46,14 @@ function splitLogical(expression: string): SplitResult | undefined {
   }
   if (parts.length === 0) return undefined;
   if (seps.length === 0) {
-  return { logic: "all", parts };
+    return { logic: "all", parts };
   }
   const first = seps[0];
   if (!first) return undefined;
-  if (seps.some((s) => s !== first)) return undefined; // 混合 && || 非法
+  if (seps.some((s) => s !== first)) return undefined;
   return { logic: first === "&&" ? "all" : "any", parts };
 }
 
-/** 解析单条子句：field op value 或 !field op value。 */
 function parseClause(text: string): HookConditionClause | undefined {
   if (!text) return undefined;
   let negate = false;
@@ -76,13 +71,6 @@ function parseClause(text: string): HookConditionClause | undefined {
   return { field, operator, negate, value };
 }
 
-/**
- * 在给定事件上下文下求值条件。
- * 返回 true 表示命中（触发动作）。
- *
- * 正则非法时静默视为不匹配。
- * 条件缺省（undefined）视为无条件命中。
- */
 export function evaluateCondition(condition: HookCondition | undefined, ctx: HookEventContext): boolean {
   if (!condition) return true;
   if (condition.clauses.length === 0) return true;
@@ -105,7 +93,7 @@ function evaluateClause(clause: HookConditionClause, ctx: HookEventContext): boo
       try {
         matched = new RegExp(clause.value, "i").test(left);
       } catch {
-        // 正则非法静默视为不匹配
+        // Treat an invalid regex as no match.
         matched = false;
       }
       break;
@@ -118,7 +106,6 @@ function evaluateClause(clause: HookConditionClause, ctx: HookEventContext): boo
   return clause.negate ? !matched : matched;
 }
 
-/** 从上下文取出字段的字符串值用于匹配。未知字段返回空串（视为不匹配）。 */
 function fieldValue(field: string, ctx: HookEventContext): string {
   switch (field) {
     case "event":
@@ -142,7 +129,7 @@ function fieldValue(field: string, ctx: HookEventContext): string {
     case "model":
       return ctx.model ?? "";
     default:
-  if (ctx.tool && field in ctx.tool.arguments) {
+      if (ctx.tool && field in ctx.tool.arguments) {
         const v = (ctx.tool.arguments as Record<string, unknown>)[field];
         return typeof v === "string" ? v : v === undefined ? "" : JSON.stringify(v);
       }

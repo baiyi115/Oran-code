@@ -57,19 +57,15 @@ function normalizeHookConfig(value: unknown): HookConfig {
   return config;
 }
 
-/** 三层叠加合并 hooks：用户全局 → 项目级 → 项目本地 YAML。 */
 export async function loadAllHooks(workspace: string): Promise<{ configs: HookConfig[]; loadErrors: string[] }> {
   const collected: HookConfig[] = [];
   const loadErrors: string[] = [];
 
-  // 用户全局（JSON）
   collected.push(...(await loadHooksFromJsonFile(userConfigPath(), loadErrors)));
 
-  // 项目级（JSON）
   const projectJson = resolve(projectStateRoot(workspace), "config.json");
   collected.push(...(await loadHooksFromJsonFile(projectJson, loadErrors)));
 
-  // 项目本地覆盖（YAML）
   const projectYaml = resolve(projectStateRoot(workspace), "hooks.local.yaml");
   collected.push(...(await loadHooksFromYamlFile(projectYaml, loadErrors)));
 
@@ -148,7 +144,6 @@ export function createHookEngineDeps(options: {
   return deps;
 }
 
-/** 一次性构造引擎 + 通知队列，返回校验错误便于会话层呈现。 */
 export async function createHookEngine(workspace: string, options: {
   defaultCommandTimeoutMs: number;
   log?: (message: string) => void;
