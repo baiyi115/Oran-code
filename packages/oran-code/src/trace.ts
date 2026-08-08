@@ -1,6 +1,6 @@
 import { mkdir } from "node:fs/promises";
 import { createRequire } from "node:module";
-import { dirname } from "node:path";
+import { dirname, isAbsolute, relative, resolve, sep } from "node:path";
 import type { Task, TaskState } from "./types.js";
 
 // Load the Node built-in at runtime so Vite/Vitest does not try to bundle it.
@@ -88,6 +88,7 @@ export class SqliteTraceStore implements TraceStore {
       CREATE TABLE IF NOT EXISTS tasks (
         id TEXT PRIMARY KEY,
         workspace TEXT NOT NULL,
+        root_workspace TEXT NOT NULL,
         prompt TEXT NOT NULL,
         state TEXT NOT NULL,
         plan TEXT,
@@ -124,6 +125,11 @@ export class SqliteTraceStore implements TraceStore {
         created_at TEXT NOT NULL
       );
     `);
+    const columns = this.db.prepare("PRAGMA table_info(tasks)").all() as Array<Record<string, unknown>>;
+    if (!columns.some((column) => column.name === "root_workspace")) {
+      this.db.exec("ALTER TABLE tasks ADD COLUMN root_workspace TEXT");
+      this.db.exec("UPDATE tasks SET root_workspace = workspace WHERE root_workspace IS NULL");
+    }
   }
 
   static async open(path: string, workspace?: string): Promise<SqliteTraceStore> {
@@ -132,27 +138,29 @@ export class SqliteTraceStore implements TraceStore {
   }
 
   saveTask(task: Task): void {
-    if (this.workspace && task.workspace !== this.workspace) {
+    const rootWorkspace = task.rootWorkspace ?? task.workspace;
+    if (this.workspace && (!samePath(rootWorkspace, this.workspace) || !isOwnedExecutionWorkspace(this.workspace, task.workspace))) {
       throw new Error(`trace workspace mismatch: expected ${this.workspace}, received ${task.workspace}`);
     }
     this.db.prepare(`
-      INSERT INTO tasks (id, workspace, prompt, state, plan, model, result, created_at, updated_at)
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
-      ON CONFLICT(id) DO UPDATE SET state = excluded.state, plan = excluded.plan,
+      INSERT INTO tasks (id, workspace, root_workspace, prompt, state, plan, model, result, created_at, updated_at)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      ON CONFLICT(id) DO UPDATE SET workspace = excluded.workspace, root_workspace = excluded.root_workspace,
+        state = excluded.state, plan = excluded.plan,
         model = excluded.model, result = excluded.result, updated_at = excluded.updated_at
-    `).run(task.id, task.workspace, task.prompt, task.state, task.plan ?? null, task.model ?? null, task.result ?? null, task.createdAt, task.updatedAt);
+    `).run(task.id, task.workspace, rootWorkspace, task.prompt, task.state, task.plan ?? null, task.model ?? null, task.result ?? null, task.createdAt, task.updatedAt);
   }
 
   getTask(taskId: string): Task | undefined {
     const row = this.workspace
-      ? this.db.prepare("SELECT * FROM tasks WHERE id = ? AND workspace = ?").get(taskId, this.workspace)
+      ? this.db.prepare("SELECT * FROM tasks WHERE id = ? AND root_workspace = ?").get(taskId, this.workspace)
       : this.db.prepare("SELECT * FROM tasks WHERE id = ?").get(taskId);
     return row ? taskFromRow(row) : undefined;
   }
 
   listTasks(limit = 50): Task[] {
     const rows = this.workspace
-      ? this.db.prepare("SELECT * FROM tasks WHERE workspace = ? ORDER BY created_at DESC LIMIT ?").all(this.workspace, limit)
+      ? this.db.prepare("SELECT * FROM tasks WHERE root_workspace = ? ORDER BY created_at DESC LIMIT ?").all(this.workspace, limit)
       : this.db.prepare("SELECT * FROM tasks ORDER BY created_at DESC LIMIT ?").all(limit);
     return rows.map(taskFromRow);
   }
@@ -199,6 +207,7 @@ function taskFromRow(row: Record<string, unknown>): Task {
   const task: Task = {
     id: String(row.id),
     workspace: String(row.workspace),
+    rootWorkspace: typeof row.root_workspace === "string" ? row.root_workspace : String(row.workspace),
     prompt: String(row.prompt),
     state: String(row.state) as TaskState,
     createdAt: String(row.created_at),
@@ -208,4 +217,17 @@ function taskFromRow(row: Record<string, unknown>): Task {
   if (typeof row.model === "string") task.model = row.model;
   if (typeof row.result === "string") task.result = row.result;
   return task;
+}
+
+function isOwnedExecutionWorkspace(rootWorkspace: string, workspace: string): boolean {
+  if (samePath(rootWorkspace, workspace)) return true;
+  const worktreeRoot = resolve(rootWorkspace, ".oran", "worktrees");
+  const rel = relative(worktreeRoot, resolve(workspace));
+  return rel !== "" && !isAbsolute(rel) && rel !== ".." && !rel.startsWith(`..${sep}`);
+}
+
+function samePath(left: string, right: string): boolean {
+  const a = resolve(left).replace(/[\\/]+$/, "");
+  const b = resolve(right).replace(/[\\/]+$/, "");
+  return process.platform === "win32" ? a.toLowerCase() === b.toLowerCase() : a === b;
 }

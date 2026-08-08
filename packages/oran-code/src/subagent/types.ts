@@ -10,6 +10,7 @@ import type {
 export type AgentDefinitionScope = "builtin" | "user" | "project";
 export type AgentIsolationMode = "shared-workspace" | "worktree";
 export type StructuredSubagentStatus = "running" | "completed" | "failed" | "cancelled" | "timed_out";
+export type PersistedSubagentStatus = StructuredSubagentStatus | "interrupted";
 
 export interface AgentDefinition {
   readonly name: string;
@@ -52,6 +53,14 @@ export function subagentOriginLabel(origin: SubagentOrigin): string {
   }
 }
 
+export interface SubagentWorktreeLease {
+  readonly slug: string;
+  readonly path: string;
+  readonly branch: string;
+  readonly baseline: string;
+  readonly repoRoot: string;
+}
+
 export interface SubagentRunOptions {
   readonly description: string;
   readonly prompt: string;
@@ -66,6 +75,10 @@ export interface SubagentRunOptions {
   readonly signal?: AbortSignal;
   readonly taskId?: string;
   readonly abortController?: AbortController;
+  /** Reuse a retained worktree instead of creating a new one. */
+  readonly worktreeLease?: SubagentWorktreeLease;
+  /** Persist lease changes while the task is still running for crash recovery. */
+  readonly worktreeLeaseCallback?: (lease: SubagentWorktreeLease | undefined) => void | Promise<void>;
 }
 
 export interface SubagentEvent {
@@ -91,6 +104,8 @@ export interface SubagentRunResult {
   readonly startedAt: string;
   readonly endedAt: string;
   readonly conversation: readonly Message[];
+  readonly workspace: string;
+  readonly worktreeLease?: SubagentWorktreeLease;
 }
 
 export interface StructuredSubagentTask {
@@ -113,13 +128,18 @@ export interface BackgroundAgentTask {
   readonly origin: SubagentOrigin;
   readonly startedAt: string;
   endedAt?: string;
-  status: StructuredSubagentStatus;
+  status: PersistedSubagentStatus;
   output?: string;
   error?: string;
   usage: Readonly<Record<string, number>>;
   notified: boolean;
-  readonly abortController: AbortController;
-  readonly promise: Promise<SubagentRunResult>;
+  readonly prompt: string;
+  readonly definitionName?: string;
+  readonly modelReference?: string;
+  worktreeLease?: SubagentWorktreeLease;
+  readonly retryOf?: string;
+  readonly abortController?: AbortController;
+  readonly promise?: Promise<SubagentRunResult>;
 }
 
 export interface AgentToolArguments {
@@ -139,7 +159,7 @@ export interface UnsupportedSubagentOperation {
 
 export interface TeamMemberSnapshot {
   readonly name: string;
-  readonly status: "idle" | "running" | "stopped" | "failed";
+  readonly status: "idle" | "running" | "stopped" | "failed" | "interrupted";
   readonly queuedMessages: number;
   readonly toolCount: number;
   readonly lastOutput?: string;

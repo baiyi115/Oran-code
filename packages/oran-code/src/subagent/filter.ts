@@ -6,6 +6,7 @@ export const GLOBAL_SUBAGENT_DENIED_TOOLS = new Set([
   "task_stop",
   "task_cancel",
   "task_send",
+  "task_retry",
   "ask_user",
   "request_user_input",
   "enter_plan_mode",
@@ -16,6 +17,7 @@ export const GLOBAL_SUBAGENT_DENIED_TOOLS = new Set([
   "team_send",
   "team_list",
   "team_delete",
+  "team_resume",
 ]);
 
 export const CUSTOM_SUBAGENT_DENIED_TOOLS = new Set(GLOBAL_SUBAGENT_DENIED_TOOLS);

@@ -22,15 +22,22 @@ export class SubagentCoordinator {
   constructor(private readonly options: SubagentCoordinatorOptions) {}
 
   registerTools(registry: ToolRegistry): void {
+    this.options.teams.attachRuntime({
+      runner: this.options.runner,
+      resolveDefinition: (name) => this.options.roles.get(name),
+      resolveModel: this.options.resolveModel,
+    });
     registry.register(this.agentTool());
     registry.register(this.teamCreateTool());
     registry.register(this.teamSpawnTool());
     registry.register(this.teamSendTool());
     registry.register(this.teamListTool());
     registry.register(this.teamDeleteTool());
+    registry.register(this.teamResumeTool());
     registry.register(this.taskListTool());
     registry.register(this.taskDetailTool());
     registry.register(this.taskStopTool());
+    registry.register(this.taskRetryTool());
   }
 
   private agentTool(): ToolDefinition {
@@ -172,6 +179,15 @@ export class SubagentCoordinator {
     });
   }
 
+  private teamResumeTool(): ToolDefinition {
+    return simpleTool("team_resume", "Resume an interrupted teammate and replay only its interrupted prompt.", {
+      team_name: { type: "string" }, member_name: { type: "string" },
+    }, ["team_name", "member_name"], async (args) => {
+      const result = this.options.teams.resume(stringArg(args.team_name), stringArg(args.member_name));
+      return result.ok ? success(result.output) : failed(result.output);
+    });
+  }
+
   private taskListTool(): ToolDefinition {
     return simpleTool("task_list", "List one-shot background subagent tasks.", {}, [], async () => success(JSON.stringify(
       this.options.background.list().map(({ promise: _promise, abortController: _abortController, ...task }) => task), null, 2,
@@ -193,6 +209,31 @@ export class SubagentCoordinator {
       return this.options.background.cancel(taskId)
         ? success(`Cancellation requested for ${taskId}.`)
         : failed(`Task ${taskId} is unknown or already finished.`);
+    });
+  }
+
+  private taskRetryTool(): ToolDefinition {
+    return simpleTool("task_retry", "Retry a finished or interrupted background task as a new task.", {
+      task_id: { type: "string" },
+    }, ["task_id"], async (args) => {
+      const taskId = stringArg(args.task_id);
+      const previous = this.options.background.get(taskId);
+      if (!previous) return failed(`Unknown background task ${taskId}.`);
+      const definition = previous.definitionName ? this.options.roles.get(previous.definitionName) : undefined;
+      if (previous.definitionName && !definition) return failed(`Agent definition is not available: ${previous.definitionName}.`);
+      let model: ModelConfig | undefined;
+      try {
+        model = previous.modelReference ? this.options.resolveModel(previous.modelReference) : undefined;
+      } catch (error) {
+        return failed(error instanceof Error ? error.message : String(error));
+      }
+      const retried = this.options.background.retry(taskId, this.options.runner, {
+        ...(definition ? { definition } : {}),
+        ...(model ? { model } : {}),
+      });
+      return retried
+        ? success(`Retried ${taskId} as ${retried.id}.`)
+        : failed(`Task ${taskId} is still running and cannot be retried.`);
     });
   }
 

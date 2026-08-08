@@ -34,6 +34,8 @@ export const TERMINAL_TASK_STATES: readonly TaskState[] = ["completed", "failed"
 export interface Task {
   id: string;
   workspace: string;
+  /** Root workspace that owns this task when execution happens in a worktree. */
+  rootWorkspace?: string;
   prompt: string;
   state: TaskState;
   plan?: string;
@@ -53,6 +55,7 @@ export function createTask(workspace: string, prompt: string): Task {
   return {
     id: `task-${randomUUID()}`,
     workspace,
+    rootWorkspace: workspace,
     prompt,
     state: "created",
     createdAt: now,

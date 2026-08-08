@@ -1,4 +1,5 @@
-import { randomUUID } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
+import { resolve } from "node:path";
 import { ContextManager } from "../context-manager.js";
 import { TaskController } from "../controller.js";
 import { PermissionPolicy } from "../security.js";
@@ -16,8 +17,9 @@ import type {
 } from "../types.js";
 import { createTask } from "../types.js";
 import type { ToolRegistry } from "../tools.js";
+import { cleanupWorktree, ensureWorktree, hasChanges, worktreePromptText } from "../worktree/lifecycle.js";
 import { createSubagentToolFilter } from "./filter.js";
-import type { SubagentEvent, SubagentOrigin, SubagentRunOptions, SubagentRunResult } from "./types.js";
+import type { SubagentEvent, SubagentOrigin, SubagentRunOptions, SubagentRunResult, SubagentWorktreeLease } from "./types.js";
 
 export const FORK_BOILERPLATE_TAG = "<oran-fork-subagent-rules>";
 export const FORK_REPORT_PREFIX = "Fork result:";
@@ -51,7 +53,7 @@ export interface SubagentRunnerDependencies {
   readonly approvalCancellationCallback?: (origin: SubagentOrigin) => void;
   readonly parentToolFilter?: (tool: ToolDefinition) => boolean;
   readonly isMcpTool?: (name: string) => boolean;
-  readonly hookFactory?: (messages: () => readonly Message[]) => Promise<HookEnginePort | undefined>;
+  readonly hookFactory?: (workspace: string, messages: () => readonly Message[]) => Promise<HookEnginePort | undefined>;
 }
 
 export class SubagentRunner {
@@ -68,17 +70,31 @@ export class SubagentRunner {
     const baseConversation = options.parentConversation ?? options.conversation ?? [];
     let conversation = structuredClone([...baseConversation]);
     let controller: TaskController | undefined;
+    let executionWorkspace = this.deps.workspace;
+    let worktreeLease = options.worktreeLease;
     const abort = (): void => controller?.cancel();
     abortController.signal.addEventListener("abort", abort, { once: true });
     options.signal?.addEventListener("abort", abort, { once: true });
     try {
+      if (options.definition?.isolationMode === "worktree" || worktreeLease) {
+        const ensured = await ensureWorktree(this.deps.workspace, worktreeLease?.slug ?? worktreeSlug(taskId));
+        executionWorkspace = ensured.info.path;
+        worktreeLease = {
+          slug: worktreeLease?.slug ?? worktreeSlug(taskId),
+          path: ensured.info.path,
+          branch: ensured.info.branch,
+          baseline: worktreeLease?.baseline ?? ensured.info.head,
+          repoRoot: ensured.info.repoRoot,
+        };
+        await notifyWorktreeLease(options, worktreeLease);
+      }
       const model = options.model ?? (options.definition?.model
         ? this.deps.resolveModel(options.definition.model)
         : this.deps.baseModel);
-      const config = subagentRuntimeConfig(this.deps.baseConfig, model, options);
+      const config = subagentRuntimeConfig(this.deps.baseConfig, model, options, executionWorkspace);
       const permission = new PermissionPolicy(config.permissions);
       permission.registerTools(this.deps.registry.list());
-      const contextManager = new ContextManager({ workspace: this.deps.workspace, conversation });
+      const contextManager = new ContextManager({ workspace: executionWorkspace, conversation });
       const filter = createSubagentToolFilter({
         ...(options.definition ? { definition: options.definition } : {}),
         background: options.background === true,
@@ -87,7 +103,8 @@ export class SubagentRunner {
         isMcpTool: this.deps.isMcpTool ?? (() => false),
         ...(this.deps.parentToolFilter ? { parentFilter: this.deps.parentToolFilter } : {}),
       });
-      const hookEngine = await this.deps.hookFactory?.(() => conversation);
+      const hookEngine = await this.deps.hookFactory?.(executionWorkspace, () => conversation);
+      const customInstructions = subagentInstructions(options, worktreeLease);
       controller = new TaskController({
         config,
         provider: this.deps.providerFactory(model),
@@ -97,8 +114,8 @@ export class SubagentRunner {
         conversation,
         contextManager,
         toolFilter: filter,
-        ...(options.definition ? {
-          stablePromptModules: { customInstructions: options.definition.prompt },
+        ...(customInstructions ? {
+          stablePromptModules: { customInstructions },
         } : {}),
         ...(hookEngine ? { hookEngine } : {}),
         approvalCallback: (call, level, description, requestId) => (
@@ -125,9 +142,15 @@ export class SubagentRunner {
         hookUserPrompt: options.prompt,
       });
       if (abortController.signal.aborted || options.signal?.aborted) controller.cancel();
-      const task = await controller.execute(createTask(this.deps.workspace, options.prompt));
+      const createdTask = createTask(executionWorkspace, options.prompt);
+      createdTask.id = taskId;
+      createdTask.rootWorkspace = this.deps.workspace;
+      const task = await controller.execute(createdTask);
       const status = task.state === "cancelled" ? "cancelled" : task.state === "completed" ? "completed" : "failed";
-      const output = task.result?.trim() || assistantText.join("\n\n").trim() || stableEmptyResult(status);
+      worktreeLease = await settleWorktree(worktreeLease);
+      await notifyWorktreeLease(options, worktreeLease);
+      const baseOutput = task.result?.trim() || assistantText.join("\n\n").trim() || stableEmptyResult(status);
+      const output = appendWorktreeSummary(baseOutput, worktreeLease);
       const result: SubagentRunResult = {
         taskId,
         name,
@@ -139,22 +162,29 @@ export class SubagentRunner {
         startedAt,
         endedAt: new Date().toISOString(),
         conversation: controller.conversationSnapshot(),
+        workspace: executionWorkspace,
+        ...(worktreeLease ? { worktreeLease } : {}),
       };
       await this.emitTerminal(result);
       return result;
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
+      worktreeLease = await settleWorktree(worktreeLease);
+      await notifyWorktreeLease(options, worktreeLease);
+      const output = appendWorktreeSummary(message || "Subagent failed without an error message.", worktreeLease);
       const result: SubagentRunResult = {
         taskId,
         name,
         origin,
         status: abortController.signal.aborted || options.signal?.aborted ? "cancelled" : "failed",
-        output: message || "Subagent failed without an error message.",
+        output,
         ...(message ? { error: message } : {}),
         usage: { ...usage },
         startedAt,
         endedAt: new Date().toISOString(),
         conversation: controller?.conversationSnapshot() ?? conversation,
+        workspace: executionWorkspace,
+        ...(worktreeLease ? { worktreeLease } : {}),
       };
       await this.emitTerminal(result);
       return result;
@@ -195,11 +225,12 @@ export function forkPrompt(prompt: string): string {
   return `${FORK_BOILERPLATE}\n\nAssigned task:\n${prompt.trim()}`;
 }
 
-function subagentRuntimeConfig(base: RuntimeConfig, model: ModelConfig, options: SubagentRunOptions): RuntimeConfig {
+function subagentRuntimeConfig(base: RuntimeConfig, model: ModelConfig, options: SubagentRunOptions, workspace: string): RuntimeConfig {
   const permissionMode = options.definition?.permissionMode ?? base.permissionMode;
   const workMode = options.definition?.workMode ?? (permissionMode === "plan" ? "plan" : base.workMode);
   return {
     ...base,
+    workspace,
     model: { ...model },
     permissionMode,
     workMode,
@@ -209,12 +240,58 @@ function subagentRuntimeConfig(base: RuntimeConfig, model: ModelConfig, options:
     },
     permissions: {
       ...base.permissions,
+      workspace,
       mode: permissionMode,
       workMode,
-      allowedRoots: [...base.permissions.allowedRoots],
+      allowedRoots: base.permissions.allowedRoots.map((root) => samePath(root, base.workspace) ? workspace : root),
     },
     skipVerify: true,
   };
+}
+
+function worktreeSlug(taskId: string): string {
+  return `agent-${createHash("sha256").update(taskId).digest("hex").slice(0, 20)}`;
+}
+
+async function settleWorktree(lease: SubagentWorktreeLease | undefined): Promise<SubagentWorktreeLease | undefined> {
+  if (!lease) return undefined;
+  if (await hasChanges(lease.path, lease.baseline)) return lease;
+  const cleanup = await cleanupWorktree(lease.repoRoot, lease.path, lease.branch);
+  return cleanup.ok ? undefined : lease;
+}
+
+async function notifyWorktreeLease(options: SubagentRunOptions, lease: SubagentWorktreeLease | undefined): Promise<void> {
+  try {
+    await options.worktreeLeaseCallback?.(lease);
+  } catch {
+    // Persistence observers cannot change the subagent terminal state.
+  }
+}
+
+function subagentInstructions(options: SubagentRunOptions, lease: SubagentWorktreeLease | undefined): string | undefined {
+  const instructions = [
+    options.definition?.prompt?.trim(),
+    lease ? worktreePromptText(lease.path, lease.repoRoot) : undefined,
+  ].filter((item): item is string => Boolean(item));
+  return instructions.length ? instructions.join("\n\n") : undefined;
+}
+
+function appendWorktreeSummary(output: string, lease: SubagentWorktreeLease | undefined): string {
+  if (!lease) return output;
+  return [
+    output,
+    "",
+    "Worktree retained because it contains changes or cleanup did not complete:",
+    `- Path: ${lease.path}`,
+    `- Branch: ${lease.branch}`,
+    `- Baseline: ${lease.baseline}`,
+  ].join("\n");
+}
+
+function samePath(left: string, right: string): boolean {
+  const a = resolve(left).replace(/[\\/]+$/, "");
+  const b = resolve(right).replace(/[\\/]+$/, "");
+  return process.platform === "win32" ? a.toLowerCase() === b.toLowerCase() : a === b;
 }
 
 function withTaskId(origin: SubagentOrigin, taskId: string): SubagentOrigin {

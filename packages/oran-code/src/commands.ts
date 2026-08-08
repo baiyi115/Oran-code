@@ -1,7 +1,7 @@
 import type { ModelConfig } from "./types.js";
 
 export type SlashCommandAction = "clear" | "compact" | "do" | "exit" | "model" | "new"
-  | "permission" | "plan" | "rename" | "rollback" | "session" | "skills";
+  | "permission" | "plan" | "rename" | "session" | "skills" | "undo";
 
 export interface SlashCommand {
   readonly name: string;
@@ -29,7 +29,7 @@ export const DEFAULT_COMMANDS: readonly SlashCommand[] = [
   { name: "/permission", description: "set advanced permission policy", argumentHint: "MODE", kind: "ui", action: "permission", hidden: true },
   { name: "/plan", description: "enter plan mode", kind: "ui", action: "plan" },
   { name: "/rename", description: "rename current session", argumentHint: "NAME", kind: "ui", action: "rename" },
-  { name: "/rollback", description: "show available file snapshots", kind: "ui", action: "rollback", hidden: true },
+  { name: "/undo", aliases: ["/rollback"], description: "undo the latest Agent file change batch", kind: "ui", action: "undo" },
   { name: "/session", description: "list or resume a session", usage: "/session [ID]", argumentHint: "ID", kind: "ui", action: "session" },
   { name: "/skills", description: "show available skills", kind: "local", action: "skills" },
   { name: "/status", description: "show current agent status", kind: "local" },

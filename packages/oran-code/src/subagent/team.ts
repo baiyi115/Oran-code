@@ -1,20 +1,25 @@
-import type { Message } from "../types.js";
+import type { Message, ModelConfig } from "../types.js";
 import type { SubagentRunner } from "./runner.js";
-import type { AgentDefinition, SubagentRunOptions, TeamSnapshot } from "./types.js";
+import type { AgentStateStore, PersistedTeam, PersistedTeamMember } from "./state-store.js";
+import type { AgentDefinition, SubagentRunOptions, SubagentWorktreeLease, TeamSnapshot } from "./types.js";
+
+type TeamMemberStatus = "idle" | "running" | "stopped" | "failed" | "interrupted";
 
 interface TeamMember {
   readonly name: string;
-  status: "idle" | "running" | "stopped" | "failed";
+  status: TeamMemberStatus;
   conversation: readonly Message[];
   readonly mailbox: string[];
+  currentPrompt?: string;
   lock: Promise<void>;
+  processing: boolean;
   currentAbort?: AbortController;
   toolCount: number;
   lastOutput?: string;
   lastError?: string;
-  readonly definition?: AgentDefinition;
-  readonly model?: SubagentRunOptions["model"];
-  readonly runner: SubagentRunner;
+  readonly definitionName?: string;
+  readonly modelReference?: string;
+  worktreeLease?: SubagentWorktreeLease;
 }
 
 interface Team {
@@ -22,13 +27,52 @@ interface Team {
   readonly members: Map<string, TeamMember>;
 }
 
+interface TeamRuntime {
+  readonly runner: SubagentRunner;
+  readonly resolveDefinition: (name: string) => AgentDefinition | undefined;
+  readonly resolveModel: (reference: string) => ModelConfig;
+}
+
 export class TeamManager {
   private readonly teams = new Map<string, Team>();
+  private runtime: TeamRuntime | undefined;
+
+  constructor(private readonly stateStore?: AgentStateStore) {}
+
+  async restore(): Promise<void> {
+    if (!this.stateStore) return;
+    const state = await this.stateStore.load();
+    for (const persisted of state.teams) {
+      const team: Team = { name: persisted.name, members: new Map() };
+      for (const item of persisted.members) {
+        team.members.set(item.name, {
+          ...structuredClone(item),
+          status: item.status === "running" ? "interrupted" : item.status,
+          mailbox: [...item.mailbox],
+          lock: Promise.resolve(),
+          processing: false,
+        });
+      }
+      this.teams.set(team.name, team);
+    }
+    await this.persist();
+  }
+
+  attachRuntime(runtime: TeamRuntime): void {
+    this.runtime = runtime;
+    for (const team of this.teams.values()) {
+      for (const member of team.members.values()) {
+        if (member.status === "idle" && member.mailbox.length) this.schedule(team, member);
+      }
+    }
+  }
+
   create(name: string): { ok: boolean; output: string } {
     const normalized = normalizeTeamName(name);
     if (!normalized) return { ok: false, output: "team name must contain letters, digits, or hyphens" };
     if (this.teams.has(normalized)) return { ok: false, output: `team already exists: ${normalized}` };
     this.teams.set(normalized, { name: normalized, members: new Map() });
+    void this.persist();
     return { ok: true, output: `Created team ${normalized}.` };
   }
 
@@ -48,12 +92,20 @@ export class TeamManager {
       conversation: [],
       mailbox: [],
       lock: Promise.resolve(),
+      processing: false,
       toolCount: 0,
-      runner,
-      ...(options.definition ? { definition: options.definition } : {}),
-      ...(options.model ? { model: options.model } : {}),
+      ...(options.definition ? { definitionName: options.definition.name } : {}),
+      ...(options.model ? { modelReference: modelReference(options.model) } : {}),
     };
     team.members.set(memberName, member);
+    this.runtime = this.runtime ?? {
+      runner,
+      resolveDefinition: (name) => options.definition?.name === name ? options.definition : undefined,
+      resolveModel: (reference) => {
+        if (options.model && modelReference(options.model) === reference) return options.model;
+        throw new Error(`model is not available: ${reference}`);
+      },
+    };
     this.enqueue(team, member, prompt);
     return { ok: true, output: `Spawned teammate ${team.name}/${memberName}; work has started.`, memberName };
   }
@@ -65,6 +117,20 @@ export class TeamManager {
     if (member.status === "stopped") return { ok: false, output: `Teammate ${team.name}/${member.name} is stopped.` };
     this.enqueue(team, member, prompt);
     return { ok: true, output: `Message queued for ${team.name}/${member.name}.` };
+  }
+
+  resume(teamName: string, memberName: string): { ok: boolean; output: string } {
+    const team = this.teams.get(normalizeTeamName(teamName) ?? "");
+    const member = team?.members.get(normalizeMemberName(memberName));
+    if (!team || !member) return { ok: false, output: `Unknown teammate ${teamName}/${memberName}.` };
+    if (member.status !== "interrupted") return { ok: false, output: `Teammate ${team.name}/${member.name} is not interrupted.` };
+    if (member.currentPrompt) member.mailbox.unshift(member.currentPrompt);
+    delete member.currentPrompt;
+    member.status = "idle";
+    delete member.lastError;
+    void this.persist();
+    this.schedule(team, member);
+    return { ok: true, output: `Resumed teammate ${team.name}/${member.name}.` };
   }
 
   list(): readonly TeamSnapshot[] {
@@ -88,67 +154,130 @@ export class TeamManager {
     for (const member of team.members.values()) {
       member.status = "stopped";
       member.mailbox.splice(0);
+      delete member.currentPrompt;
       member.currentAbort?.abort();
     }
     await Promise.allSettled([...team.members.values()].map((member) => member.lock));
     this.teams.delete(team.name);
+    await this.persist();
     return { ok: true, output: `Deleted team ${team.name} and stopped ${team.members.size} teammate(s).` };
   }
 
   async shutdown(): Promise<void> {
-    await Promise.all([...this.teams.keys()].map((name) => this.delete(name)));
+    for (const team of this.teams.values()) {
+      for (const member of team.members.values()) {
+        if (member.status !== "running") continue;
+        member.status = "interrupted";
+        member.currentAbort?.abort();
+      }
+    }
+    await this.persist();
+    await Promise.allSettled([...this.teams.values()].flatMap((team) => [...team.members.values()].map((member) => member.lock)));
+  }
+
+  async flush(): Promise<void> {
+    await this.persist();
   }
 
   private enqueue(team: Team, member: TeamMember, prompt: string): void {
     const message = prompt.trim();
     if (!message) return;
     member.mailbox.push(message);
+    void this.persist();
+    if (member.status === "idle") this.schedule(team, member);
+  }
+
+  private schedule(team: Team, member: TeamMember): void {
+    if (member.processing || !this.runtime || member.status !== "idle") return;
+    member.processing = true;
     member.lock = member.lock.then(async () => {
-      while (member.mailbox.length && member.status !== "stopped") {
+      while (member.mailbox.length && member.status === "idle") {
         const next = member.mailbox.shift();
         if (!next) continue;
+        member.currentPrompt = next;
         member.status = "running";
         const abortController = new AbortController();
         member.currentAbort = abortController;
+        await this.persist();
         const previousToolCount = countToolMessages(member.conversation);
-        const result = await member.runner.run({
-          description: `${team.name}/${member.name}`,
-          prompt: next,
-          origin: { kind: "teammate", teamName: team.name, name: member.name },
-          conversation: member.conversation,
-          abortController,
-          ...(member.definition ? { definition: member.definition } : {}),
-          ...(member.model ? { model: member.model } : {}),
-          customDeniedTools: ["agent"],
-        });
-        member.conversation = result.conversation;
-        member.toolCount += Math.max(0, countToolMessages(result.conversation) - previousToolCount);
-        member.lastOutput = result.output;
-        if (result.status === "failed") {
-          member.status = "failed";
-          member.lastError = result.error ?? result.output;
-        } else if (result.status === "cancelled" && isMemberStopped(member)) {
-          break;
-        } else {
-          member.status = "idle";
-          delete member.lastError;
+        try {
+          const definition = member.definitionName ? this.runtime?.resolveDefinition(member.definitionName) : undefined;
+          if (member.definitionName && !definition) throw new Error(`agent definition is not available: ${member.definitionName}`);
+          const model = member.modelReference ? this.runtime?.resolveModel(member.modelReference) : undefined;
+          const result = await this.runtime!.runner.run({
+            description: `${team.name}/${member.name}`,
+            prompt: next,
+            origin: { kind: "teammate", teamName: team.name, name: member.name },
+            conversation: member.conversation,
+            abortController,
+            ...(definition ? { definition } : {}),
+            ...(model ? { model } : {}),
+            ...(member.worktreeLease ? { worktreeLease: member.worktreeLease } : {}),
+            worktreeLeaseCallback: async (lease) => {
+              if (lease) member.worktreeLease = lease;
+              else delete member.worktreeLease;
+              await this.persist();
+            },
+            customDeniedTools: ["agent"],
+          });
+          if (isInterrupted(member)) {
+            if (result.worktreeLease) member.worktreeLease = result.worktreeLease;
+            else delete member.worktreeLease;
+            break;
+          }
+          member.conversation = result.conversation;
+          member.toolCount += Math.max(0, countToolMessages(result.conversation) - previousToolCount);
+          member.lastOutput = result.output;
+          if (result.worktreeLease) member.worktreeLease = result.worktreeLease;
+          else delete member.worktreeLease;
+          delete member.currentPrompt;
+          if (result.status === "failed") {
+            member.status = "failed";
+            member.lastError = result.error ?? result.output;
+          } else {
+            member.status = "idle";
+            delete member.lastError;
+          }
+        } catch (error) {
+          if (!isInterrupted(member)) {
+            member.status = "failed";
+            member.lastError = error instanceof Error ? error.message : String(error);
+          }
+        } finally {
+          delete member.currentAbort;
+          await this.persist();
         }
-        delete member.currentAbort;
       }
-    }).catch((error) => {
-      member.status = "failed";
-      member.lastError = error instanceof Error ? error.message : String(error);
-      delete member.currentAbort;
+    }).finally(() => {
+      member.processing = false;
+      if (member.status === "idle" && member.mailbox.length) this.schedule(team, member);
     });
+  }
+
+  private async persist(): Promise<void> {
+    await this.stateStore?.saveTeams([...this.teams.values()].map(serializeTeam));
   }
 }
 
-function isMemberStopped(member: TeamMember): boolean {
-  return member.status === "stopped";
+function isInterrupted(member: TeamMember): boolean {
+  return (member.status as TeamMemberStatus) === "interrupted";
+}
+
+function serializeTeam(team: Team): PersistedTeam {
+  return { name: team.name, members: [...team.members.values()].map(serializeMember) };
+}
+
+function serializeMember(member: TeamMember): PersistedTeamMember {
+  const { lock: _lock, processing: _processing, currentAbort: _currentAbort, ...persisted } = member;
+  return { ...persisted, mailbox: [...persisted.mailbox], conversation: structuredClone([...persisted.conversation]) };
 }
 
 function countToolMessages(messages: readonly Message[]): number {
   return messages.reduce((count, message) => count + (message.role === "tool" ? 1 : 0), 0);
+}
+
+function modelReference(model: ModelConfig): string {
+  return `${model.provider}/${model.model}`;
 }
 
 function normalizeTeamName(value: string): string | undefined {

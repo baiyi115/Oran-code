@@ -36,6 +36,8 @@ import { SubagentRunner } from "./subagent/runner.js";
 import { StructuredSubagentScope } from "./subagent/scope.js";
 import { TeamManager } from "./subagent/team.js";
 import type { SubagentOrigin } from "./subagent/types.js";
+import { SnapshotStore } from "./snapshot.js";
+import { AgentStateStore } from "./subagent/state-store.js";
 
 const execAsync = promisify(exec);
 const HISTORY_FILE = userHistoryPath();
@@ -156,6 +158,9 @@ export class TerminalSession {
   private readonly agentDefinitionLoader: AgentDefinitionLoader;
   private readonly backgroundAgents: BackgroundAgentTaskManager;
   private readonly teams: TeamManager;
+  private readonly snapshotStore: SnapshotStore;
+  private readonly agentStateStore: AgentStateStore;
+  private agentStateRestore: Promise<void> | undefined;
 
   constructor(options: SessionOptions, input: NodeJS.ReadableStream = process.stdin, output: NodeJS.WriteStream = process.stdout) {
     this.workspace = resolve(options.workspace);
@@ -178,8 +183,10 @@ export class TerminalSession {
     this.memoryManager = new MemoryManager(this.workspace);
     this.skillLoader = new SkillLoader(this.workspace);
     this.agentDefinitionLoader = new AgentDefinitionLoader(this.workspace);
-    this.backgroundAgents = new BackgroundAgentTaskManager(() => this.flushBackgroundNotifications());
-    this.teams = new TeamManager();
+    this.agentStateStore = new AgentStateStore(this.workspace);
+    this.backgroundAgents = new BackgroundAgentTaskManager(this.agentStateStore, () => this.flushBackgroundNotifications());
+    this.teams = new TeamManager(this.agentStateStore);
+    this.snapshotStore = new SnapshotStore(this.workspace);
     this.configuredActiveSkills = options.stablePromptModules?.activeSkills;
     options.onCommandReloadReady?.(() => this.reloadCommands());
   }
@@ -187,6 +194,7 @@ export class TerminalSession {
   async run(): Promise<void> {
     if (!existsSync(this.workspace)) throw new Error(`workspace does not exist: ${this.workspace}`);
     await ensureProjectStateRoot(this.workspace);
+    await this.ensureAgentStateRestored();
     await this.initializeCommandIntegrations();
     await this.openTrace();
     await this.openSessionStore();
@@ -239,6 +247,7 @@ export class TerminalSession {
   async runOnce(prompt: string): Promise<Task> {
     if (!existsSync(this.workspace)) throw new Error(`workspace does not exist: ${this.workspace}`);
     await ensureProjectStateRoot(this.workspace);
+    await this.ensureAgentStateRestored();
     await this.initializeCommandIntegrations();
     await this.openTrace();
     await this.openSessionStore();
@@ -409,8 +418,8 @@ export class TerminalSession {
       approvalCancellationCallback: (origin) => this.cancelApprovalsForOrigin(origin),
       parentToolFilter,
       isMcpTool: (name) => this.mcpManager?.isMcpTool(name) === true,
-      hookFactory: async (messages) => {
-        const built = await createHookEngine(this.workspace, {
+      hookFactory: async (workspace, messages) => {
+        const built = await createHookEngine(workspace, {
           defaultCommandTimeoutMs: 60_000,
           sessionMessages: messages,
         });
@@ -467,6 +476,7 @@ export class TerminalSession {
       previousToolCalls: this.previousToolHistory,
       ...(this.previousReadonlyResults !== undefined ? { previousReadonlyResults: this.previousReadonlyResults } : {}),
       debugLogger: (message) => this.writeDebugLog(message),
+      ...(sessionId ? { snapshotStore: this.snapshotStore, snapshotSessionId: sessionId } : {}),
     });
     this.controller = controller;
     let completed = false;
@@ -1227,13 +1237,23 @@ export class TerminalSession {
         else this.renderer.error("cannot rename the active session while a task is running");
         return;
       }
-      case "rollback": {
-        const snapshotRoot = resolve(projectStateRoot(this.workspace), "snapshots");
-        const snapshots = await readdir(snapshotRoot, { withFileTypes: true }).catch(() => []);
-        const names = snapshots.filter((entry) => entry.isDirectory() || entry.isFile()).map((entry) => entry.name).sort();
-        this.renderer.markdown("/rollback", names.length
-          ? `Available snapshots:\n${names.map((item) => `- ${item}`).join("\n")}\n\nInteractive rollback is not configured.`
-          : "No file snapshots are available; rollback is not configured for this workspace.");
+      case "undo": {
+        if (argument) {
+          this.renderer.error(`${name} does not accept arguments`);
+          return;
+        }
+        if (this.interactionRunning() || this.hasPendingApprovals()) {
+          this.renderer.status("finish or cancel the current task before undoing files", "yellow");
+          return;
+        }
+        const sessionId = this.currentSession?.id;
+        if (!sessionId) {
+          this.renderer.error("No active session is available for undo.");
+          return;
+        }
+        const result = await this.snapshotStore.undoLatest(sessionId);
+        if (result.ok) this.renderer.status(result.output, "cyan");
+        else this.renderer.error(result.output);
         return;
       }
       case "exit":
@@ -2049,6 +2069,14 @@ export class TerminalSession {
     this.trace = await SqliteTraceStore.open(resolve(projectStateRoot(this.workspace), "trace.db"), this.workspace);
   }
 
+  private async ensureAgentStateRestored(): Promise<void> {
+    this.agentStateRestore ??= Promise.all([
+      this.backgroundAgents.restore(),
+      this.teams.restore(),
+    ]).then(() => undefined);
+    await this.agentStateRestore;
+  }
+
   private writeDebugLog(message: string): void {
     const enabled = /^(1|true|yes)$/i.test(process.env.ORAN_DEBUG ?? "");
     if (!enabled) return;
@@ -2072,10 +2100,13 @@ export class TerminalSession {
     for (const controller of this.titleAbortControllers) controller.abort();
     await this.waitForTask();
     await this.waitForCompaction();
-    this.backgroundAgents.cancelAll();
+    this.backgroundAgents.interruptAll();
     for (const abortController of this.hookSubagentAbortControllers) abortController.abort();
     await this.teams.shutdown();
     await this.backgroundAgents.waitForIdle();
+    await this.backgroundAgents.flush();
+    await this.teams.flush();
+    await this.agentStateStore.flush();
     await Promise.allSettled([...this.hookSubagentJobs]);
     await this.persistTuiSession();
     await Promise.allSettled([...this.titleJobs]);

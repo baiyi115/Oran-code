@@ -32,6 +32,7 @@ import { ModelRequestError } from "./provider.js";
 import { isCasualConversationPrompt } from "./prompt-intent.js";
 import { PRODUCT_VERSION } from "./paths.js";
 import { isMutatingToolName, isPlanModeTool, isWriteToolName, type ToolRegistry } from "./tools.js";
+import type { SnapshotStorePort } from "./snapshot.js";
 import {
   buildEnvironmentPrompt,
   assembleStableSystemPrompt,
@@ -72,6 +73,9 @@ export interface TaskControllerOptions {
   previousToolCalls?: ToolCall[];
   /** 上一任务只读工具的成功结果缓存，重复模型调用直接回填，不重复执行。 */
   previousReadonlyResults?: ReadonlyMap<string, ToolResult>;
+  /** Optional per-session file checkpoint store used by /undo. */
+  snapshotStore?: SnapshotStorePort;
+  snapshotSessionId?: string;
 }
 
 /** Explicit plan-complete markers the model may emit to finish plan mode. */
@@ -107,6 +111,8 @@ export class TaskController {
   private hookUserPrompt: string;
   private readonly previousToolCalls: readonly ToolCall[];
   private readonly readonlyCache = new Map<string, ToolResult>();
+  private readonly snapshotStore: SnapshotStorePort | undefined;
+  private readonly snapshotSessionId: string | undefined;
   private loop: AgentLoop | undefined;
   private abortController: AbortController | undefined;
   private activeTask: Task | undefined;
@@ -141,6 +147,8 @@ export class TaskController {
     this.hookEngine = options.hookEngine;
     this.hookUserPrompt = options.hookUserPrompt ?? "";
     this.previousToolCalls = options.previousToolCalls ?? [];
+    this.snapshotStore = options.snapshotStore;
+    this.snapshotSessionId = options.snapshotSessionId;
     if (options.previousReadonlyResults) {
       for (const [key, value] of options.previousReadonlyResults) this.readonlyCache.set(key, value);
     }
@@ -193,6 +201,11 @@ export class TaskController {
     } finally {
       // 会话结束：确保异常路径也能触发
       await this.fireHook({ event: "session_end", workspace: task.workspace, model: this.config.model.model });
+      try {
+        await this.snapshotStore?.finalize(task);
+      } catch (error) {
+        this.debugLogger(JSON.stringify({ event: "snapshot_finalize_failed", taskId: task.id, error: formatErrorMessage(error) }));
+      }
       this.activeTask = undefined;
       this.abortController = undefined;
       this.loop = undefined;
@@ -925,6 +938,13 @@ export class TaskController {
       }
 
       const executable = prepared.filter((item) => !item.skip);
+      if (this.snapshotStore && this.snapshotSessionId && executable.some((item) => isPotentiallyMutating(item.call))) {
+        try {
+          await this.snapshotStore.begin(this.snapshotSessionId, task);
+        } catch (error) {
+          this.debugLogger(JSON.stringify({ event: "snapshot_begin_failed", taskId: task.id, error: formatErrorMessage(error) }));
+        }
+      }
       const results = new Map<number, { call: ToolCall; result: ToolResult; duration: number; mutated: boolean }>();
       for (let offset = 0; offset < executable.length; offset += concurrency) {
         this.throwIfCancelled();
