@@ -22,7 +22,6 @@
     "dev:node": "node --import tsx src/cli.ts"
   },
   "devDependencies": {
-    "@types/blessed": "^0.1.27",
     "@types/node": "^22.10.0",
     "@types/react": "^18.3.18",
     "tsx": "^4.19.2",
@@ -30,7 +29,8 @@
     "vitest": "^2.1.8"
   },
   "dependencies": {
-    "blessed": "^0.1.81",
+    "@modelcontextprotocol/client": "^2.0.0",
+    "@modelcontextprotocol/sdk": "1.30.0",
     "ink": "^5.2.0",
     "react": "^18.3.1",
     "yaml": "^2.9.0"
