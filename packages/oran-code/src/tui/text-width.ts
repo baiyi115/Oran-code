@@ -1,6 +1,6 @@
 const ANSI_PATTERN = /\u001b\[[0-?]*[ -/]*[@-~]/g;
 export function stripTerminalMarkup(value: string): string {
-  return value.replace(ANSI_PATTERN, "").replace(BLESSED_TAG_PATTERN, "");
+  return value.replace(ANSI_PATTERN, "").replace(INK_TAG_PATTERN, "");
 }
 
 export function graphemes(value: string): string[] {
@@ -132,4 +132,6 @@ function isWide(code: number): boolean {
       || (code >= 0x1f300 && code <= 0x1faff));
 }
 
-const BLESSED_TAG_PATTERN = /\{\/?[a-zA-Z0-9_#= -]+\}/g;
+// `{inverse}...{/inverse}` selection tags are produced by overlay selectors and
+// parsed by the Ink renderer; strip them here so width math ignores tag markup.
+const INK_TAG_PATTERN = /\{\/?[a-zA-Z0-9_#= -]+\}/g;

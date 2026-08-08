@@ -41,7 +41,7 @@ export function renderToolMessage(message: ToolMessage, width: number, liveTick 
     const preview = output.split(/\r?\n/).filter(Boolean);
     const limit = 12;
     lines.push(...preview.slice(0, limit).flatMap((line) => wrapDisplayText(`  \u2502 ${line}`, width)));
-    if (preview.length > limit) lines.push(`  \u2502 ... ${preview.length - limit} more lines (collapsed)`);
+    if (preview.length > limit) lines.push(`${ANSI.gray}  \u2502 ... ${preview.length - limit} more lines (Ctrl+O to expand)${ANSI.reset}`);
   } else if (output && message.status !== "success" && output.trim() !== detail.trim()) {
     const error = truncateVisible(output.replace(/\s+/g, " ").trim(), Math.max(40, width * 2));
     lines.push(...wrapDisplayText(`  \u2502 ${error}`, width).slice(0, 2));
@@ -70,11 +70,22 @@ function toolDisplayName(name: string): string {
 }
 
 function toolArgumentSummary(message: ToolMessage): string {
+  if (message.name === "read_file") {
+    const path = typeof message.arguments.path === "string" ? message.arguments.path.trim() : "";
+    const offset = integerArgument(message.arguments.offset, 1);
+    const limit = integerArgument(message.arguments.limit, 200);
+    const range = limit > 0 ? `L${offset}\u2013${offset + limit - 1}` : `L${offset}`;
+    if (path) return truncateVisible(`${path} ${range}`, 72);
+  }
   for (const key of ["path", "command", "pattern", "glob", "old_string", "workspace"]) {
     const value = message.arguments[key];
     if (typeof value === "string" && value.trim()) return truncateVisible(value.replace(/\s+/g, " ").trim(), 72);
   }
   return "";
+}
+
+function integerArgument(value: unknown, fallback: number): number {
+  return typeof value === "number" && Number.isFinite(value) ? Math.max(1, Math.trunc(value)) : fallback;
 }
 
 function shouldShowSuccessSummary(detail: string): boolean {

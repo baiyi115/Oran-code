@@ -1,6 +1,41 @@
 import type { ApprovalResponse, Message, ModelReference, PermissionMode, ReasoningEffort, RuntimeEvent, TaskState, ToolCall, VerificationResult, WorkMode } from "../types.js";
 import type { SlashCommand } from "../commands.js";
 
+export interface TuiAppOptions {
+  input: NodeJS.ReadableStream;
+  output: NodeJS.WriteStream;
+  getWorkspace: () => string;
+  getModelLabel: () => string;
+  getSessionName?: () => string;
+  getApprovalPolicy?: () => "ask" | "all";
+  getFollowUpCount?: () => number;
+  onInput: (value: string) => Promise<void>;
+  onCancel: () => boolean;
+  loadModels: () => Promise<string[]>;
+  onModelSelected: (reference: string) => Promise<boolean | void>;
+  loadSessions?: () => Promise<SessionOption[]>;
+  onSessionSelected?: (id: string) => Promise<SessionView | undefined>;
+  onSessionCreated?: (name?: string) => Promise<SessionView | undefined>;
+  onSessionDeleted?: (id: string) => Promise<SessionView | undefined>;
+  loadFollowUps?: () => Promise<FollowUpOption[]> | FollowUpOption[];
+  onFollowUpCancelled?: (id: string) => Promise<boolean> | boolean;
+  loadFiles?: (query: string) => Promise<string[]>;
+  onSessionChanged?: (view: SessionView) => void | Promise<void>;
+  initialSession?: SessionView;
+  getWorkMode?: () => WorkMode;
+  onWorkModeChanged?: (mode: WorkMode) => boolean | Promise<boolean>;
+  getPermissionMode?: () => PermissionMode;
+  onPermissionModeChanged?: (mode: PermissionMode) => boolean | Promise<boolean>;
+  getReasoningEffort?: () => ReasoningEffort;
+  onReasoningEffortChanged?: (effort: ReasoningEffort) => boolean | Promise<boolean>;
+  getContextWindow?: () => number | undefined;
+  getModelReference?: () => ModelReference | undefined;
+  getModelWarning?: () => string | undefined;
+  isInteractionBlocked?: () => boolean;
+  history?: readonly string[];
+  getCommands?: () => readonly SlashCommand[];
+}
+
 export type TuiOverlay = "none" | "commands" | "models" | "sessions" | "session-delete-confirm" | "follow-ups" | "files" | "approval";
 
 export interface CursorPosition {

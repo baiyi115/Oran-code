@@ -5,10 +5,9 @@ import { REASONING_EFFORTS, type WorkMode } from "../types.js";
 import { formatErrorMessage } from "../error-format.js";
 import { commandCandidates } from "./command-palette.js";
 import { approvalResponse, moveSelection, navigateHistory } from "./interaction.js";
-import type { TuiAppOptions } from "./app.js";
 import { TuiTranscriptRenderer } from "./renderer.js";
 import { composerValue, createTuiState, setComposerValue, setOverlay } from "./state.js";
-import type { SessionOption, SessionView, TuiState, TranscriptMessage } from "./types.js";
+import type { SessionOption, SessionView, TuiAppOptions, TuiState, TranscriptMessage } from "./types.js";
 import { appendSystemMessage } from "./message-reducer.js";
 import { composerCursorOffset, cursorVisualPosition, deleteBackward, deleteForward, insertText, moveCursor, moveToLineEdge, visualLines } from "./composer.js";
 import { TranscriptView } from "./transcript/transcript-view.js";
@@ -19,7 +18,7 @@ import { commandPaletteLines } from "./command-palette.js";
 import { ANSI, COLORS, horizontalRule } from "./theme.js";
 import { highlightSelection } from "./overlay/select-list.js";
 import { graphemes, truncateVisible, visibleWidth } from "./text-width.js";
-import { scrollTranscript, syncTranscriptScroll } from "./scroll-controller.js";
+import { scrollPercent, scrollTranscript, syncTranscriptScroll } from "./scroll-controller.js";
 import { currentSessionLine, sessionOptionLabel } from "./session-list.js";
 import { isSessionBusy, workingIndicatorLine } from "./status-indicator.js";
 
@@ -63,9 +62,9 @@ export class InkTuiApp {
   private modelIndex = 0;
   private sessionIndex = 0;
   private lastCancelAt = 0;
-  /** When set, real terminal cursor is parked on the composer for Windows IME. */
   /** True while the real caret is parked on the composer via DECSC/DECRC. */
   private parkedComposerCursor = false;
+  private lastEscapeCancelAt = 0;
   private followUpBusy = false;
   private deletingSession = false;
   private selectingSession = false;
@@ -222,11 +221,18 @@ export class InkTuiApp {
       this.requestExit();
       return;
     }
-    // Esc cancels the active agent turn (Agent Loop F7). Overlay handlers still
-    // own Esc when a menu/dialog is open; composer clear only applies when idle.
+    // Esc 取消当前任务：连按两次（1.2s 内）才真正取消，第一次仅提示确认。
+    // 菜单/弹窗打开时 Esc 仍归对应 handler；空闲时 Esc 仅清空输入框。
     if (key.escape && this.state.overlay.kind === "none" && (this.isBlocked() || isSessionBusy(this.state))) {
-      this.options.onCancel();
-      if (!this.state.session.status) this.state.session.status = "cancelling...";
+      const now = Date.now();
+      if (now - this.lastEscapeCancelAt < 1200) {
+        this.options.onCancel();
+        if (!this.state.session.status) this.state.session.status = "cancelling...";
+        this.lastEscapeCancelAt = 0;
+      } else {
+        this.state.session.status = "press Esc again to cancel";
+        this.lastEscapeCancelAt = now;
+      }
       this.invalidate();
       return;
     }
@@ -1204,7 +1210,7 @@ function InkRoot({ app, revision }: { app: InkTuiApp; revision: number }): React
   const welcomeLines = state.transcript.length === 0 && state.overlay.kind === "none"
     ? oranWelcomeLines(state, width)
     : [];
-  const showScrollStatus = false;
+  const showScrollStatus = state.transcriptScroll.offsetFromBottom > 0;
   const summaryLine = summary;
   const baseChromeLines = 4
     + welcomeLines.length
@@ -1242,7 +1248,9 @@ function InkRoot({ app, revision }: { app: InkTuiApp; revision: number }): React
   const visibleTranscriptLines = transcriptLines
     .slice(viewportStart, viewportStart + viewportLines)
     .map((line) => line.text);
-  const scrollStatusLine: string | undefined = undefined;
+  const scrollStatusLine = showScrollStatus
+    ? `↑ History · ${Math.round(scrollPercent(state.transcriptScroll.offsetFromBottom, transcriptLines.length, viewportLines))}% · PageDown to return`
+    : undefined;
 
   // After Ink paints (~32ms throttle), park the real cursor on the composer caret so
   // Windows IME candidate/pinyin UI anchors to the input line. Skip while busy: the

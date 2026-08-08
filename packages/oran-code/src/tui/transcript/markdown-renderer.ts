@@ -317,9 +317,11 @@ function parseTableRow(value: string): string[] {
 function renderTable(rows: readonly string[][], width: number, streaming: boolean): string[] {
   const columnCount = Math.max(1, ...rows.map((row) => row.length));
   const available = width - (columnCount * 3) - 1;
-  if (available < columnCount * 3) {
+  // Narrow terminals: render as a definition list instead of a cramped table.
+  // Each row becomes "header · value · value ...", header bolded.
+  if (available < columnCount * 6) {
     return rows.flatMap((row, rowIndex) => wrapInlineSegments(withStyle(
-      parseInline(row.join(" · "), streaming),
+      parseInline(row.join("  "), streaming),
       rowIndex === 0 ? { bold: true, color: "orange" } : {},
     ), width));
   }
@@ -328,7 +330,10 @@ function renderTable(rows: readonly string[][], width: number, streaming: boolea
     3,
     ...rows.map((row) => visibleWidth(row[column] ?? "")),
   ));
-  const columnWidths = naturalWidths.map((item) => Math.min(24, item));
+  // Allot each column up to 40% of available width so long paths can breathe
+  // instead of being chopped at 24 chars and wrapped mid-filename.
+  const columnCap = Math.max(8, Math.floor(available * 0.4));
+  const columnWidths = naturalWidths.map((item) => Math.min(columnCap, item));
   while (columnWidths.reduce((sum, item) => sum + item, 0) > available) {
     const largest = Math.max(...columnWidths);
     const index = columnWidths.findIndex((item) => item === largest && item > 3);
@@ -552,7 +557,7 @@ function renderCodeLine(value: string, width: number): string[] {
     currentWidth += symbolWidth;
   }
   if (current || !chunks.length) chunks.push(current);
-  return chunks.map((chunk) => `${prefix}${chunk}`);
+  return chunks.map((chunk) => `${prefix}${ANSI.dim}${chunk}${ANSI.reset}`);
 }
 
 function listIndent(value: string): number {

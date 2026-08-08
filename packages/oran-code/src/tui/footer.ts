@@ -82,9 +82,18 @@ function usageLabel(state: TuiState): string | undefined {
   const usage = state.session.usage;
   if (usage.totalTokens <= 0 && usage.inputTokens <= 0 && usage.outputTokens <= 0) return undefined;
   const parts = [`in ${compactNumber(usage.inputTokens)}`, `out ${compactNumber(usage.outputTokens)}`];
-  if (usage.cacheReadTokens > 0) parts.push(`cache ${compactNumber(usage.cacheReadTokens)}`);
+  if (usage.cacheReadTokens > 0) parts.push(cacheReadLabel(usage.cacheReadTokens, usage.inputTokens));
   if (usage.cacheWriteTokens > 0) parts.push(`write ${compactNumber(usage.cacheWriteTokens)}`);
   return parts.join(" · ");
+}
+
+function cacheReadLabel(cacheReadTokens: number, inputTokens: number): string {
+  const ratio = inputTokens > 0
+    ? Math.max(0, Math.min(100, Math.round((cacheReadTokens / inputTokens) * 100)))
+    : undefined;
+  return ratio === undefined
+    ? `cache ${compactNumber(cacheReadTokens)}`
+    : `cache ${compactNumber(cacheReadTokens)} (${ratio}%)`;
 }
 
 function compactNumber(value: number): string {

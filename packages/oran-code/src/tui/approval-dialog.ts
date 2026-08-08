@@ -26,8 +26,9 @@ export function approvalDialogLines(
   lines.push("", ...APPROVAL_OPTIONS.map((option, index) => highlightSelection(`  ${option}`, index === selectedIndex)), "", "↑↓ Select   Enter Confirm   Esc Reject");
   return lines.flatMap((line) => {
     if (!line) return [""];
-    // Keep Blessed selection tags on lines that already fit. Long detail
-    // lines still use the plain-text wrapper because they are not selectable.
+    // Keep the `{inverse}` selection tags on lines that already fit so the Ink
+    // overlay renderer can highlight them. Long detail lines still use the
+    // plain-text wrapper because they are not selectable.
     return visibleWidth(line) <= width ? [line] : wrapDisplayText(line, width);
   });
 }

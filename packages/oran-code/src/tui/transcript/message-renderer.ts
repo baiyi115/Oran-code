@@ -48,13 +48,13 @@ function prefixFor(kind: TranscriptMessage["kind"]): string {
     case "thought":
       return "+ ";
     case "plan":
-      return `${ANSI.amberBold}plan${ANSI.reset}  `;
+      return `${ANSI.amberBold}Plan${ANSI.reset}  `;
     case "tool":
       return "tool  ";
     case "verification":
       return "check ";
     case "error":
-      return `${ANSI.redBold}error${ANSI.reset} `;
+      return `${ANSI.redBold}Error${ANSI.reset} `;
     case "system":
       return "      ";
   }
@@ -153,7 +153,7 @@ function styleThoughtLabel(value: string): string {
 }
 
 function renderVerification(message: VerificationMessage, width: number): string[] {
-  const lines = [`${ANSI.toolBold}check${ANSI.reset}`];
+  const lines = [`${ANSI.toolBold}Check${ANSI.reset}`];
   for (const result of message.results) {
     const status = result.passed ? "passed" : "failed";
     const statusColor = result.passed ? ANSI.greenBold : ANSI.redBold;

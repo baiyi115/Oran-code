@@ -42,10 +42,10 @@ export function reduceRuntimeEvent(state: TuiState, event: RuntimeEvent): void {
       if (event.state === "planning" || event.state === "executing" || event.state === "verifying") {
         state.session.startedAt ??= Date.now();
       }
-      if (event.state === "completed" || event.state === "failed" || event.state === "cancelled") {
-        state.session.elapsedMs = state.session.startedAt === undefined ? undefined : Math.max(0, Date.now() - state.session.startedAt);
-        state.session.currentTool = undefined;
-      }
+      if (event.state === "completed" || event.state === "failed" || event.state === "cancelled" || event.state === "paused") {
+       state.session.elapsedMs = state.session.startedAt === undefined ? undefined : Math.max(0, Date.now() - state.session.startedAt);
+       state.session.currentTool = undefined;
+     }
       break;
     case "assistant_start":
       if (state.streaming && state.assistantMessageId) break;
@@ -510,7 +510,8 @@ function numberFrom(value: Record<string, number>, ...keys: string[]): number | 
 }
 
 function isRejected(result: ToolResult): boolean {
-  return /reject|denied|permission/i.test(`${result.summary ?? ""} ${result.error ?? ""}`);
+  return result.metadata?.blockedBeforeExecution === true
+    || /reject|denied|permission/i.test(`${result.summary ?? ""} ${result.error ?? ""}`);
 }
 
 function isCancelled(result: ToolResult): boolean {

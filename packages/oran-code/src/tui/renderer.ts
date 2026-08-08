@@ -28,7 +28,8 @@ export class TuiTranscriptRenderer {
   }
 
   attachPrompt(_hooks: PromptOutputHooks | undefined): void {
-    // The blessed screen owns the prompt and redraw lifecycle.
+    // The Ink app's live frame owns the prompt and redraw lifecycle; the
+    // transcript renderer only reduces events and invalidates that frame.
   }
 
   setApprovalCancelHandler(handler: ApprovalCancelHandler): void {

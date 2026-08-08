@@ -1,6 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { TuiTranscriptRenderer } from "../src/tui/renderer.js";
-import type { TuiLayout } from "../src/tui/layout.js";
+import { TuiTranscriptRenderer, type TuiRendererLayout } from "../src/tui/renderer.js";
 import { createTuiState } from "../src/tui/state.js";
 import type { TuiState } from "../src/tui/types.js";
 import type { RuntimeEvent } from "../src/types.js";
@@ -25,7 +24,7 @@ function event(value: Record<string, unknown>): RuntimeEvent {
 describe("TuiTranscriptRenderer", () => {
   it("accumulates deltas and does not duplicate final assistant text", () => {
     const state = createState();
-    const layout = { redraw() {}, destroy() {} } as unknown as TuiLayout;
+    const layout = { redraw() {}, destroy() {} } as TuiRendererLayout;
     const renderer = new TuiTranscriptRenderer(layout, state);
 
     renderer.render(event({ type: "assistant_start", step: 0, source: "turn", attempt: 0, model: "chat" }));
@@ -49,7 +48,7 @@ describe("TuiTranscriptRenderer", () => {
 
   it("uses a non-empty final response to correct partial streamed text", () => {
     const state = createState();
-    const layout = { redraw() {}, destroy() {} } as unknown as TuiLayout;
+    const layout = { redraw() {}, destroy() {} } as TuiRendererLayout;
     const renderer = new TuiTranscriptRenderer(layout, state);
 
     renderer.render(event({ type: "assistant_delta", step: 0, source: "turn", attempt: 0, text: "helxo" }));

@@ -1,6 +1,3 @@
-import type { Widgets } from "blessed";
-import { transparentStyle } from "./interaction.js";
-
 /** Terminal theme: muted citrus for focus, warm neutrals for dense content. */
 export const COLORS = {
   accent: "#D08A52",
@@ -41,18 +38,6 @@ export const ANSI = {
   yellow: "\u001b[38;5;179m",
 } as const;
 
-export function textStyle(fg: string = COLORS.text, extra: Pick<Widgets.Types.TStyle, "bold"> = {}): Widgets.Types.TStyle {
-  return { ...transparentStyle(fg), ...extra } as Widgets.Types.TStyle;
-}
-
-export function lineStyle(fg = COLORS.muted): Widgets.Types.TStyle {
-  return transparentStyle(fg) as Widgets.Types.TStyle;
-}
-
 export function horizontalRule(width: number, char = "─"): string {
   return char.repeat(Math.max(1, width));
-}
-
-export function borderStyle(fg = COLORS.muted): Widgets.Types.TStyle {
-  return { ...transparentStyle(fg), border: { fg } } as Widgets.Types.TStyle;
 }

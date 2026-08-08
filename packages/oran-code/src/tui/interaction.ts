@@ -45,13 +45,6 @@ export function navigateHistory(
   return { value: history[nextIndex] ?? currentValue, index: nextIndex, draft };
 }
 
-export function transparentStyle(fg = "default"): Record<string, unknown> {
-  // Blessed 0.1.x treats `transparent: true` as color blending and converts
-  // the terminal's default background to black. ANSI `default` is what keeps
-  // Windows Terminal background images and acrylic visible.
-  return { fg, bg: "default" };
-}
-
 export function redactSecrets(value: unknown): unknown {
   if (Array.isArray(value)) return value.map(redactSecrets);
   if (!value || typeof value !== "object") {
