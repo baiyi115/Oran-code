@@ -122,6 +122,7 @@ export interface ModelConfig {
   model: string;
   baseUrl?: string;
   apiKey?: string;
+  headers?: Record<string, string>;
   temperature: number;
   maxTokens: number;
   contextWindow?: number;
@@ -181,10 +182,21 @@ export interface SessionTitleSettings {
   model?: string;
 }
 
+export interface McpServerConfig {
+  command?: string;
+  args?: string[];
+  env?: Record<string, string>;
+  url?: string;
+  headers?: Record<string, string>;
+  transport?: "sse";
+}
+
 export interface UserConfig {
   providers: Record<string, ProviderProfile>;
   agent?: AgentSettings;
   sessionTitles?: SessionTitleSettings;
+  mcpServers?: Record<string, McpServerConfig>;
+  hooks?: HookRule[];
 }
 
 export interface LoopConfig {
@@ -360,4 +372,42 @@ export interface AgentOptions {
   onEvent?: (event: AgentEvent) => void;
   approve?: (call: ToolCall, level: number) => Promise<boolean>;
   stablePromptModules?: OptionalSystemPromptModules;
+}
+
+export interface HookRule {
+  id?: string;
+  event: string;
+  if?: string;
+  action: {
+    type: string;
+    command?: string;
+    prompt?: string;
+    url?: string;
+    method?: string;
+    headers?: Record<string, string>;
+    timeoutMs?: number;
+  };
+  intercept?: boolean;
+  once?: boolean;
+  async?: boolean;
+  onError?: "ignore" | "fail" | "reject";
+}
+
+export interface HookEnginePort {
+  readonly hasRules: boolean;
+  getErrors(): readonly { index: number; id?: string; message: string }[];
+  dispatch(ctx: HookEventPortContext): Promise<unknown>;
+  dispatchBeforeTool(ctx: HookEventPortContext): Promise<{ intercepted: boolean; interceptReason?: string }>;
+  drainNotices(): { event: string; text: string }[];
+  resetOnce(): void;
+}
+
+export interface HookEventPortContext {
+  event: string;
+  tool?: ToolCall;
+  filePath?: string;
+  userPrompt?: string;
+  assistantText?: string;
+  workspace?: string;
+  model?: string;
 }

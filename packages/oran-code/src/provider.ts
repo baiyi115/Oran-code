@@ -1,4 +1,5 @@
 import type { Message, ModelConfig, ModelProvider, ModelResponse, ModelStreamChunk, ProviderRequestOptions, ToolCall } from "./types.js";
+import { CLIENT_ID, CLIENT_USER_AGENT, PRODUCT_VERSION } from "./paths.js";
 
 export class OpenAICompatibleProvider implements ModelProvider {
   private readonly endpoint: string;
@@ -17,7 +18,7 @@ export class OpenAICompatibleProvider implements ModelProvider {
       body: JSON.stringify(this.payload(messages, tools, false)),
       ...(options?.signal ? { signal: options.signal } : {}),
     });
-    if (!response.ok) throw new Error(`model API returned ${response.status}: ${await boundedError(response)}`);
+    if (!response.ok) throw new ModelRequestError(response.status, await boundedError(response));
     const data = await response.json() as Record<string, unknown>;
     return parseCompletion(data, false);
   }
@@ -29,7 +30,7 @@ export class OpenAICompatibleProvider implements ModelProvider {
       body: JSON.stringify(this.payload(messages, tools, true)),
       ...(options?.signal ? { signal: options.signal } : {}),
     });
-    if (!response.ok) throw new Error(`model API returned ${response.status}: ${await boundedError(response)}`);
+    if (!response.ok) throw new ModelRequestError(response.status, await boundedError(response));
     const contentType = response.headers.get("content-type") ?? "";
     if (!contentType.includes("text/event-stream") || !response.body) {
       yield parseCompletion(await response.json() as Record<string, unknown>, false);
@@ -116,7 +117,11 @@ export class OpenAICompatibleProvider implements ModelProvider {
   private headers(): Record<string, string> {
     return {
       "content-type": "application/json",
+      "user-agent": CLIENT_USER_AGENT,
+      "x-oran-client": CLIENT_ID,
+      "x-oran-version": PRODUCT_VERSION,
       ...(this.config.apiKey ? { authorization: `Bearer ${this.config.apiKey}` } : {}),
+      ...this.config.headers,
     };
   }
 
@@ -133,7 +138,7 @@ export class OpenAICompatibleProvider implements ModelProvider {
     return {
       ...options,
       model: this.config.model,
-      messages: messages.map(toApiMessage),
+      messages: toOpenAiMessages(messages),
       temperature: this.config.temperature,
       max_tokens: this.config.maxTokens,
       stream,
@@ -152,6 +157,7 @@ function requestOptions(options: Record<string, unknown> | undefined): Record<st
   const reserved = new Set([
     "apiKey",
     "api_key",
+    "headers",
     "baseUrl",
     "baseURL",
     "base_url",
@@ -178,8 +184,37 @@ function requestOptions(options: Record<string, unknown> | undefined): Record<st
   );
 }
 
+export class ModelRequestError extends Error {
+  readonly status: number;
+  constructor(status: number, detail: string) {
+    super(`model API returned ${status}: ${detail}`);
+    this.name = "ModelRequestError";
+    this.status = status;
+  }
+}
+
 async function boundedError(response: Response): Promise<string> {
   return (await response.text()).slice(0, 500);
+}
+
+/** 运行时提醒移到对话末尾，避免逐轮变化击穿稳定前缀缓存。 */
+function toOpenAiMessages(messages: readonly Message[]): Record<string, unknown>[] {
+  const result: Record<string, unknown>[] = [];
+  for (const message of messages) {
+    if (message.role === "system" && message.metadata?.promptBlock === "runtime-reminder") {
+      const reminderText = message.content?.trim() ?? "";
+      if (!reminderText) continue;
+      const last = result[result.length - 1];
+      if (last && last.role === "user" && typeof last.content === "string") {
+        last.content = `${last.content}\n\n${reminderText}`;
+      } else {
+        result.push({ role: "user", content: reminderText });
+      }
+      continue;
+    }
+    result.push(toApiMessage(message));
+  }
+  return result;
 }
 
 function toApiMessage(message: Message): Record<string, unknown> {
@@ -333,7 +368,7 @@ export class AnthropicProvider implements ModelProvider {
       body: JSON.stringify(this.payload(messages, tools, false)),
       ...(options?.signal ? { signal: options.signal } : {}),
     });
-    if (!response.ok) throw new Error(`model API returned ${response.status}: ${await boundedError(response)}`);
+    if (!response.ok) throw new ModelRequestError(response.status, await boundedError(response));
     const data = await response.json() as Record<string, unknown>;
     return parseAnthropicMessage(data, false);
   }
@@ -345,7 +380,7 @@ export class AnthropicProvider implements ModelProvider {
       body: JSON.stringify(this.payload(messages, tools, true)),
       ...(options?.signal ? { signal: options.signal } : {}),
     });
-    if (!response.ok) throw new Error(`model API returned ${response.status}: ${await boundedError(response)}`);
+    if (!response.ok) throw new ModelRequestError(response.status, await boundedError(response));
     const contentType = response.headers.get("content-type") ?? "";
     if (!contentType.includes("text/event-stream") || !response.body) {
       yield parseAnthropicMessage(await response.json() as Record<string, unknown>, false);
@@ -450,8 +485,12 @@ export class AnthropicProvider implements ModelProvider {
   private headers(): Record<string, string> {
     return {
       "content-type": "application/json",
+      "user-agent": CLIENT_USER_AGENT,
+      "x-oran-client": CLIENT_ID,
+      "x-oran-version": PRODUCT_VERSION,
       "anthropic-version": this.apiVersion,
       ...(this.config.apiKey ? { "x-api-key": this.config.apiKey } : {}),
+      ...this.config.headers,
     };
   }
 
@@ -515,6 +554,7 @@ function toAnthropicTool(tool: Record<string, unknown>): Record<string, unknown>
 function toAnthropicMessages(messages: Message[]): { system: Record<string, unknown>[]; conversation: Record<string, unknown>[] } {
   const system: Record<string, unknown>[] = [];
   const conversation: Record<string, unknown>[] = [];
+  const tailReminders: string[] = [];
   let pendingToolResults: Record<string, unknown>[] = [];
 
   const flushToolResults = (): void => {
@@ -525,6 +565,12 @@ function toAnthropicMessages(messages: Message[]): { system: Record<string, unkn
 
   for (const message of messages) {
     if (message.role === "system") {
+      if (message.metadata?.promptBlock === "runtime-reminder") {
+        // 合并到对话尾部，避免逐轮变化击穿稳定前缀缓存。
+        const reminderText = message.content?.trim();
+        if (reminderText) tailReminders.push(reminderText);
+        continue;
+      }
       if (message.content?.trim()) {
         system.push({
           type: "text",
@@ -563,6 +609,28 @@ function toAnthropicMessages(messages: Message[]): { system: Record<string, unkn
     }
   }
   flushToolResults();
+  if (tailReminders.length) {
+    const reminderText = tailReminders.join("\n\n");
+    const last = conversation[conversation.length - 1];
+    if (last && last.role === "user") {
+      if (typeof last.content === "string") {
+        last.content = `${last.content}\n\n${reminderText}`;
+      } else if (Array.isArray(last.content)) {
+        last.content.push({ type: "text", text: reminderText });
+      }
+    } else {
+      conversation.push({ role: "user", content: reminderText });
+    }
+  }
+  if (conversation.length) {
+    const last = conversation[conversation.length - 1]!;
+    if (Array.isArray(last.content) && last.content.length) {
+      const lastBlock = last.content[last.content.length - 1] as Record<string, unknown>;
+      if (!lastBlock.cache_control) lastBlock.cache_control = { type: "ephemeral" };
+    } else if (typeof last.content === "string") {
+      last.content = [{ type: "text", text: last.content, cache_control: { type: "ephemeral" } }];
+    }
+  }
   return { system, conversation };
 }
 

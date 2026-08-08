@@ -7,7 +7,9 @@ export const DEFAULT_MAX_STEPS = 20;
 export const DEFAULT_MAX_RETRIES = 5;
 export const DEFAULT_COMMAND_TIMEOUT = 60_000;
 export const DEFAULT_NO_PROGRESS_LIMIT = 3;
-export const DEFAULT_TOKEN_BUDGET = 500_000;
+// Twenty model iterations with a medium coding context can legitimately exceed 500k
+// cumulative tokens. Keep a finite safety rail, but size the default for long tasks.
+export const DEFAULT_TOKEN_BUDGET = 1_000_000;
 export const DEFAULT_UNKNOWN_TOOL_LIMIT = 3;
 export const DEFAULT_READONLY_CONCURRENCY = 4;
 

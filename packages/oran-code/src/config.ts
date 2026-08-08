@@ -9,6 +9,7 @@ import type {
   ModelConfig,
   ModelOptions,
   ModelProfile,
+  McpServerConfig,
   ProviderOptions,
   ProviderProfile,
   ReasoningEffort,
@@ -82,6 +83,7 @@ async function readConfig(path: string): Promise<UserConfig> {
       providers: normalizeProviders(value.providers),
       ...(value.agent ? { agent: value.agent } : {}),
       ...(value.sessionTitles ? { sessionTitles: value.sessionTitles } : {}),
+      ...(value.mcpServers ? { mcpServers: value.mcpServers } : {}),
     };
   } catch (error) {
     if (isMissingFile(error)) return { ...defaultConfig };
@@ -99,6 +101,8 @@ function normalizeConfig(value: unknown): UserConfig {
   if (agent) result.agent = agent;
   const sessionTitles = normalizeSessionTitleSettings(item.sessionTitles);
   if (sessionTitles) result.sessionTitles = sessionTitles;
+  const mcpServers = normalizeMcpServers(item.mcpServers);
+  if (mcpServers) result.mcpServers = mcpServers;
 
   // Read the pre-0.1 top-level settings so an existing installation remains usable.
   // Legacy top-level model/default fields stay ignored; the current preference lives at agent.lastModel.
@@ -144,6 +148,64 @@ function normalizeSessionTitleSettings(value: unknown): SessionTitleSettings | u
     ...(mode !== undefined ? { mode } : {}),
     ...(model !== undefined ? { model } : {}),
   };
+}
+
+function normalizeMcpServers(value: unknown): Record<string, McpServerConfig> | undefined {
+  if (value === undefined) return undefined;
+  if (!value || typeof value !== "object" || Array.isArray(value)) {
+    throw new Error("mcpServers must be an object");
+  }
+  const result: Record<string, McpServerConfig> = {};
+  for (const [name, raw] of Object.entries(value as Record<string, unknown>)) {
+    if (!raw || typeof raw !== "object" || Array.isArray(raw)) {
+      throw new Error(`mcpServers.${name} must be an object`);
+    }
+    const item = raw as Record<string, unknown>;
+    const command = optionalString(item.command, `mcpServers.${name}.command`);
+    const url = optionalString(item.url, `mcpServers.${name}.url`);
+    const args = optionalStringArray(item.args, `mcpServers.${name}.args`);
+    const env = optionalStringMap(item.env, `mcpServers.${name}.env`);
+    const headers = optionalStringMap(item.headers, `mcpServers.${name}.headers`);
+    if (item.transport !== undefined && item.transport !== "sse") {
+      throw new Error(`mcpServers.${name}.transport must be sse`);
+    }
+    result[name] = {
+      ...(command !== undefined ? { command } : {}),
+      ...(args !== undefined ? { args } : {}),
+      ...(env !== undefined ? { env } : {}),
+      ...(url !== undefined ? { url } : {}),
+      ...(headers !== undefined ? { headers } : {}),
+      ...(item.transport === "sse" ? { transport: "sse" } : {}),
+    };
+  }
+  return result;
+}
+
+function optionalString(value: unknown, path: string): string | undefined {
+  if (value === undefined) return undefined;
+  if (typeof value !== "string" || !value.trim()) throw new Error(`${path} must be a non-empty string`);
+  return value;
+}
+
+function optionalStringArray(value: unknown, path: string): string[] | undefined {
+  if (value === undefined) return undefined;
+  if (!Array.isArray(value) || value.some((item) => typeof item !== "string")) {
+    throw new Error(`${path} must be an array of strings`);
+  }
+  return [...value] as string[];
+}
+
+function optionalStringMap(value: unknown, path: string): Record<string, string> | undefined {
+  if (value === undefined) return undefined;
+  if (!value || typeof value !== "object" || Array.isArray(value)) {
+    throw new Error(`${path} must be an object of string values`);
+  }
+  const result: Record<string, string> = {};
+  for (const [key, raw] of Object.entries(value as Record<string, unknown>)) {
+    if (typeof raw !== "string") throw new Error(`${path}.${key} must be a string`);
+    result[key] = raw;
+  }
+  return result;
 }
 
 function normalizeAgentSettings(value: unknown): AgentSettings | undefined {
@@ -228,7 +290,7 @@ function normalizeOptions(value: unknown): ProviderOptions & ModelOptions {
   const item = value as Record<string, unknown>;
   const result: Record<string, unknown> = {};
   for (const [key, raw] of Object.entries(item)) {
-    if (["providers", "agent", "sessionTitles", "workspace", "default", "model", "models", "options", "name", "npm", "default_model", "defaultModel"].includes(key)) continue;
+    if (["providers", "agent", "sessionTitles", "mcpServers", "workspace", "default", "model", "models", "options", "name", "npm", "default_model", "defaultModel"].includes(key)) continue;
     if (raw === undefined || raw === null) continue;
     const normalizedKey = key === "base_url" || key === "baseURL" ? "baseUrl"
       : key === "api_key" ? "apiKey"
@@ -276,6 +338,9 @@ function merge(base: UserConfig, override: UserConfig): UserConfig {
     ...(base.agent || override.agent ? { agent: { ...base.agent, ...override.agent } } : {}),
     ...(base.sessionTitles || override.sessionTitles
       ? { sessionTitles: { ...base.sessionTitles, ...override.sessionTitles } }
+      : {}),
+    ...(base.mcpServers || override.mcpServers
+      ? { mcpServers: { ...base.mcpServers, ...override.mcpServers } }
       : {}),
   };
 }
@@ -326,6 +391,7 @@ function toFileShape(config: UserConfig): Record<string, unknown> {
     providers,
     ...(config.agent ? { agent: config.agent } : {}),
     ...(config.sessionTitles ? { sessionTitles: config.sessionTitles } : {}),
+    ...(config.mcpServers ? { mcpServers: config.mcpServers } : {}),
   };
 }
 
@@ -393,6 +459,8 @@ export function resolveModelConfig(config: UserConfig, requested: string | undef
   delete options.contextWindow;
   delete options.reasoningEffort;
   delete options.permission;
+  const headers = normalizeHeaders(options.headers);
+  delete options.headers;
   return {
     provider: providerName,
     model: modelName,
@@ -400,10 +468,26 @@ export function resolveModelConfig(config: UserConfig, requested: string | undef
     maxTokens,
     ...(baseUrl !== undefined ? { baseUrl } : {}),
     ...(apiKey !== undefined ? { apiKey } : {}),
+    ...(headers !== undefined ? { headers } : {}),
     ...(contextWindow !== undefined ? { contextWindow } : {}),
     reasoningEffort,
     ...(Object.keys(options).length ? { options } : {}),
   };
+}
+
+function normalizeHeaders(value: unknown): Record<string, string> | undefined {
+  if (value === undefined) return undefined;
+  if (!value || typeof value !== "object" || Array.isArray(value)) {
+    throw new Error("headers must be an object of string values");
+  }
+  const result: Record<string, string> = {};
+  for (const [key, raw] of Object.entries(value as Record<string, unknown>)) {
+    if (typeof raw !== "string") {
+      throw new Error(`header ${key} must be a string`);
+    }
+    result[key] = raw;
+  }
+  return result;
 }
 
 function defaultContextWindow(

@@ -127,7 +127,7 @@ export function stableSystemMessage(content = assembleStableSystemPrompt()): Mes
 }
 
 export function environmentSystemMessage(content: string): Message {
-  return { role: "system", content, metadata: { promptBlock: "environment" } };
+  return { role: "system", content, metadata: { cacheControl: "ephemeral", promptBlock: "environment" } };
 }
 
 export function systemReminderMessage(instructions: readonly string[]): Message {
