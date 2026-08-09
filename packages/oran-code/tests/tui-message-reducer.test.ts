@@ -81,7 +81,7 @@ describe("TUI runtime event reducer", () => {
     reduceRuntimeEvent(state, event({ type: "assistant_end", step: 0, source: "turn", attempt: 0, text: "ignored", toolCalls: [], usage: {}, streamed: true }));
     reduceRuntimeEvent(state, event({ type: "cancelled", message: "user cancelled" }));
 
-    expect(state.session.usage).toEqual({ inputTokens: 5, outputTokens: 7, totalTokens: 12 });
+    expect(state.session.usage).toEqual({ inputTokens: 5, outputTokens: 7, totalTokens: 12, cacheReadTokens: 0, cacheWriteTokens: 0 });
     expect(state.session.taskState).toBe("cancelled");
     expect(state.streaming).toBe(false);
     expect(state.transcript).toHaveLength(1);

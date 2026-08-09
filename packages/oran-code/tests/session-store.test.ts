@@ -111,7 +111,7 @@ describe("SessionStore JSONL archives", () => {
   it("derives list metadata and restores a legacy JSONL archive without state records", async () => {
     const root = await mkdtemp(join(tmpdir(), "liteagent-store-legacy-jsonl-"));
     try {
-      const directory = join(root, ".litecode", "sessions");
+      const directory = join(root, ".oran", "sessions");
       await mkdir(directory, { recursive: true });
       const id = "legacy-lines-only";
       const timestamp = new Date().toISOString();
@@ -183,8 +183,8 @@ describe("SessionStore JSONL archives", () => {
   it("migrates the legacy aggregate once and preserves its id", async () => {
     const root = await mkdtemp(join(tmpdir(), "liteagent-store-migrate-"));
     try {
-      const legacyPath = join(root, ".litecode", "sessions.json");
-      await mkdir(join(root, ".litecode"), { recursive: true });
+      const legacyPath = join(root, ".oran", "sessions.json");
+      await mkdir(join(root, ".oran"), { recursive: true });
       const now = new Date().toISOString();
       const legacy: StoredSession = {
         id: "session-legacy",

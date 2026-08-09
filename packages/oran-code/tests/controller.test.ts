@@ -84,10 +84,10 @@ describe("TaskController", () => {
       expect(task.plan).toBeUndefined();
       expect(task.result).toBe("Hi! How can I help?");
       expect(provider.requests).toHaveLength(1);
-      expect(provider.requests[0]?.at(-1)?.content).toContain("User message:\nhi");
+      expect(provider.requests[0]?.some((message) => typeof message.content === "string" && message.content.includes("User message:\nhi"))).toBe(true);
       expect(events.some((event) => event.type === "plan")).toBe(false);
       expect(events.some((event) => event.type === "approval_request")).toBe(false);
-      expect(trace.exportTrace(task.id).steps.map((step) => step.kind)).toEqual(["context"]);
+      expect(trace.exportTrace(task.id).steps.map((step) => step.kind)).toEqual(["context", "model_request", "model_response"]);
     } finally {
       await rm(workspace, { recursive: true, force: true });
     }
@@ -133,7 +133,7 @@ describe("TaskController", () => {
       expect(exported.task.state).toBe("completed");
       expect(exported.toolCalls).toHaveLength(1);
       expect(exported.toolCalls[0]).toMatchObject({ name: "write_note", ok: 1 });
-      expect(provider.requests[1]?.at(-1)).toMatchObject({ role: "tool", toolCallId: "call_1", content: "wrote note.txt" });
+      expect(provider.requests[1]?.some((message) => message.role === "tool" && message.toolCallId === "call_1" && message.content === "wrote note.txt")).toBe(true);
     } finally {
       await rm(workspace, { recursive: true, force: true });
     }

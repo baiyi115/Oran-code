@@ -63,7 +63,7 @@ export function deleteBackward(composer: ComposerState): void {
     const previous = composer.lines[line - 1] ?? "";
     const current = composer.lines[line] ?? "";
     composer.lines.splice(line - 1, 2, previous + current);
-    composer.cursor = { line: line - 1, column: graphemeLength(previous) };
+    composer.cursor = { line: line - 1, column: graphemeLength(previous + current) };
   }
   composer.preferredDisplayColumn = undefined;
 }

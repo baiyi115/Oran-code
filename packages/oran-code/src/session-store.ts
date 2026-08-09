@@ -6,7 +6,6 @@ import type { TranscriptMessage } from "./tui/types.js";
 import type { Message, ModelReference, SessionTitleMode } from "./types.js";
 import { isPermissionMode, isReasoningEffort, type PermissionMode, type ReasoningEffort, type WorkMode } from "./types.js";
 import { ensureProjectStateRoot, projectStateRoot } from "./paths.js";
-import { repairToolMessagePairs } from "./message-utils.js";
 
 export type SessionTitleSource = "local" | "model" | "manual";
 export interface StoredSession {
@@ -374,7 +373,47 @@ export function rebuildConversation(records: readonly SessionJsonlRecord[]): Mes
     const message = recordMessage(records[index]);
     if (message) rebuilt.push(message);
   }
-  return repairToolMessagePairs(rebuilt);
+  return truncateIncompleteToolChains(rebuilt);
+}
+
+function truncateIncompleteToolChains(messages: readonly Message[]): Message[] {
+  const result: Message[] = cloneMessages(messages);
+  let changed = true;
+  while (changed) {
+    changed = false;
+    const output: Message[] = [];
+    let pending = new Set<string>();
+    let assistantInsertIndex = -1;
+    for (const message of result) {
+      if (message.role === "assistant" && message.toolCalls?.length) {
+        pending = new Set(message.toolCalls
+          .map((call) => call.id)
+          .filter((id): id is string => typeof id === "string" && id.length > 0));
+        assistantInsertIndex = output.length;
+        output.push(structuredClone(message));
+        continue;
+      }
+      if (message.role === "tool" && message.toolCallId && pending.has(message.toolCallId)) {
+        pending.delete(message.toolCallId);
+        if (pending.size === 0) pending = new Set<string>();
+        output.push(structuredClone(message));
+        continue;
+      }
+      if (pending.size > 0) {
+        output.splice(assistantInsertIndex);
+        pending = new Set<string>();
+        changed = true;
+      }
+      output.push(structuredClone(message));
+    }
+    if (pending.size > 0) {
+      output.splice(assistantInsertIndex);
+      changed = true;
+    }
+    result.length = 0;
+    result.push(...cloneMessages(output));
+  }
+  return result;
 }
 
 function recordMessage(record: SessionJsonlRecord | undefined): Message | undefined {

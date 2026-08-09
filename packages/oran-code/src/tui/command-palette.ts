@@ -59,19 +59,7 @@ function commandMatchScore(command: SlashCommand, query: string): number {
   if (aliases.includes(query)) return 450;
   if (name.startsWith(query)) return 400 - Math.min(100, name.length - query.length);
   if (aliases.some((alias) => alias.startsWith(query))) return 350;
-  if (isSubsequence(query, name)) return 250 - Math.min(100, name.length - query.length);
-  if (aliases.some((alias) => isSubsequence(query, alias))) return 200;
-  if (command.description.toLowerCase().includes(query)) return 100;
   return 0;
-}
-
-function isSubsequence(query: string, value: string): boolean {
-  let offset = 0;
-  for (const character of value) {
-    if (character === query[offset]) offset += 1;
-    if (offset === query.length) return true;
-  }
-  return false;
 }
 
 function commandDisplayName(input: string, command: SlashCommand): string {

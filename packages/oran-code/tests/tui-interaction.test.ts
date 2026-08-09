@@ -11,17 +11,27 @@ describe("TUI interaction helpers", () => {
   it("filters slash commands by the typed command", () => {
     expect(filterCommands("/mo").map((command) => command.name)).toEqual(["/model"]);
     expect(filterCommands("/").map((command) => command.name)).toEqual([
-      "/new",
-      "/model",
-      "/session",
       "/clear",
+      "/compact",
+      "/do",
+      "/exit",
+      "/help",
+      "/memory",
+      "/model",
+      "/new",
+      "/plan",
       "/rename",
+      "/session",
+      "/skills",
+      "/status",
+      "/undo",
+      "/worktree",
     ]);
   });
 
   it("maps approval choices and redacts secrets", () => {
     expect(approvalResponse(0)).toBe(true);
-    expect(approvalResponse(1)).toBe("task");
+    expect(approvalResponse(1)).toBe("always");
     expect(approvalResponse(2)).toBe(false);
     expect(redactSecrets({ apiKey: "sk-super-secret-value", nested: { token: "abc" } })).toEqual({
       apiKey: "[redacted]",

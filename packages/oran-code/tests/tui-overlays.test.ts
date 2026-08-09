@@ -15,14 +15,24 @@ describe("TUI overlays", () => {
     expect(commandCandidates("/mo").map((command) => command.name)).toEqual(["/model"]);
     const lines = commandPaletteLines("/", 0).join("\n");
     expect(commandCandidates("/").map((command) => command.name)).toEqual([
-      "/new",
-      "/model",
-      "/session",
       "/clear",
+      "/compact",
+      "/do",
+      "/exit",
+      "/help",
+      "/memory",
+      "/model",
+      "/new",
+      "/plan",
       "/rename",
+      "/session",
+      "/skills",
+      "/status",
+      "/undo",
+      "/worktree",
     ]);
     expect(lines).toContain("{inverse}");
-    expect(lines).toContain("new");
+    expect(lines).toContain("clear");
     expect(lines).not.toContain("> ");
     expect(lines).not.toContain("→ ");
     expect(lines).not.toMatch(/\(\d+\/\d+\)/);
@@ -42,7 +52,7 @@ describe("TUI overlays", () => {
     expect(text).not.toContain("Tool: run_command (L3)");
     expect(text).toContain("Command: pnpm test");
     expect(text).toContain("{inverse}  Allow once");
-    expect(text).toContain("Allow for this task");
+    expect(text).toContain("Always allow");
     expect(text).toContain("Reject");
     expect(text).not.toContain("sk-super-secret-value");
   });

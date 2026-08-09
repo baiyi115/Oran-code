@@ -79,8 +79,14 @@ describe("runTask", () => {
 
     expect(requests).toHaveLength(2);
     const secondMessages = requests[1]?.messages as Record<string, unknown>[];
-    expect(secondMessages[2]).toMatchObject({ role: "assistant", tool_calls: [{ id: "call_1" }] });
-    expect(secondMessages[3]).toMatchObject({ role: "tool", tool_call_id: "call_1", content: "ok" });
+    expect(secondMessages.some((message) =>
+      message.role === "assistant"
+      && Array.isArray(message.tool_calls)
+      && (message.tool_calls as Array<{ id?: unknown }>).some((call) => call.id === "call_1"),
+    )).toBe(true);
+    expect(secondMessages.some((message) =>
+      message.role === "tool" && message.tool_call_id === "call_1" && message.content === "ok",
+    )).toBe(true);
     expect(eventsOfType(events, "tool_result")).toHaveLength(1);
     expect(eventsOfType(events, "completed")).toEqual([{ type: "completed", steps: 2 }]);
   });

@@ -12,7 +12,7 @@ describe("builtin tools", () => {
       registerBuiltinTools(registry, workspace);
       await expect(registry.invoke({ name: "apply_patch", arguments: { path: "note.txt", content: "ok" }, createdAt: new Date().toISOString() })).resolves.toMatchObject({ ok: true });
       await expect(readFile(join(workspace, "note.txt"), "utf8")).resolves.toBe("ok");
-      await expect(registry.invoke({ name: "apply_patch", arguments: { path: "../escape.txt", content: "bad" }, createdAt: new Date().toISOString() })).rejects.toThrow(/escapes workspace/);
+      await expect(registry.invoke({ name: "apply_patch", arguments: { path: "../escape.txt", content: "bad" }, createdAt: new Date().toISOString() })).resolves.toMatchObject({ ok: false, error: expect.stringContaining("escapes workspace") });
     } finally {
       await rm(workspace, { recursive: true, force: true });
     }
