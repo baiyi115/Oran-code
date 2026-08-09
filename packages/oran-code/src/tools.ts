@@ -105,7 +105,8 @@ export function registerBuiltinTools(registry: ToolRegistry, workspace: string):
     required: ["path"],
   };
 
-  const target = (raw: unknown): string => resolveWorkspacePath(root, raw);
+  const activeRoot = (context?: ToolExecutionContext): string => context?.workspace ? resolve(context.workspace) : root;
+  const pathFor = (context: ToolExecutionContext | undefined, raw: unknown): string => resolveWorkspacePath(activeRoot(context), raw);
 
   const register = (tool: ToolDefinition): void => {
     registry.register(tool);
@@ -118,12 +119,13 @@ export function registerBuiltinTools(registry: ToolRegistry, workspace: string):
     permissionLevel: 0,
     kind: "readonly",
     maxOutputChars: 16_000,
-    invoke: async (call) => {
+    invoke: async (call, context) => {
       try {
-        const dir = target(call.arguments.path ?? ".");
+        const workspace = activeRoot(context);
+        const dir = pathFor(context, call.arguments.path ?? ".");
         const info = await stat(dir);
         if (!info.isDirectory()) {
-          return { ok: false, output: "", error: `not a directory: ${displayPath(root, dir)}`, summary: "not a directory" };
+          return { ok: false, output: "", error: `not a directory: ${displayPath(workspace, dir)}`, summary: "not a directory" };
         }
         const entries = await readdir(dir, { withFileTypes: true });
         return {
@@ -155,12 +157,13 @@ export function registerBuiltinTools(registry: ToolRegistry, workspace: string):
     permissionLevel: 0,
     kind: "readonly",
     maxOutputChars: 32_000,
-    invoke: async (call) => {
+    invoke: async (call, context) => {
       try {
-        const path = target(call.arguments.path);
+        const workspace = activeRoot(context);
+        const path = pathFor(context, call.arguments.path);
         const info = await stat(path);
         if (info.isDirectory()) {
-          return { ok: false, output: "", error: `path is a directory: ${displayPath(root, path)}`, summary: "is directory" };
+          return { ok: false, output: "", error: `path is a directory: ${displayPath(workspace, path)}`, summary: "is directory" };
         }
         const content = await readFile(path, "utf8");
         const lines = content.split(/\r?\n/);
@@ -208,7 +211,7 @@ export function registerBuiltinTools(registry: ToolRegistry, workspace: string):
     permissionLevel: 2,
     kind: "write",
     maxOutputChars: 16_000,
-    invoke: async (call) => writeTextFile(root, target, call.arguments.path, call.arguments.content),
+    invoke: async (call, context) => writeTextFile(activeRoot(context), (raw) => pathFor(context, raw), call.arguments.path, call.arguments.content),
   });
 
   register({
@@ -226,7 +229,7 @@ export function registerBuiltinTools(registry: ToolRegistry, workspace: string):
     permissionLevel: 2,
     kind: "write",
     maxOutputChars: 16_000,
-    invoke: async (call) => writePlanFile(root, call.arguments.path, call.arguments.content),
+    invoke: async (call, context) => writePlanFile(activeRoot(context), call.arguments.path, call.arguments.content),
   });
 
   register({
@@ -246,12 +249,13 @@ export function registerBuiltinTools(registry: ToolRegistry, workspace: string):
     permissionLevel: 2,
     kind: "write",
     maxOutputChars: 16_000,
-    invoke: async (call) => {
+    invoke: async (call, context) => {
       try {
-        const path = target(call.arguments.path);
+        const workspace = activeRoot(context);
+        const path = pathFor(context, call.arguments.path);
         const info = await stat(path);
         if (info.isDirectory()) {
-          return { ok: false, output: "", error: `path is a directory: ${displayPath(root, path)}`, summary: "is directory" };
+          return { ok: false, output: "", error: `path is a directory: ${displayPath(workspace, path)}`, summary: "is directory" };
         }
         const oldString = String(call.arguments.old_string ?? "");
         const newString = String(call.arguments.new_string ?? "");
@@ -265,7 +269,7 @@ export function registerBuiltinTools(registry: ToolRegistry, workspace: string):
           return {
             ok: false,
             output: "",
-            error: `old_string matched 0 times in ${displayPath(root, path)}; provide a unique exact snippet`,
+            error: `old_string matched 0 times in ${displayPath(workspace, path)}; provide a unique exact snippet`,
             summary: "0 matches",
             metadata: { matches: 0 },
           };
@@ -274,7 +278,7 @@ export function registerBuiltinTools(registry: ToolRegistry, workspace: string):
           return {
             ok: false,
             output: "",
-            error: `old_string matched ${matches} times in ${displayPath(root, path)}; refine the snippet or set replace_all=true`,
+            error: `old_string matched ${matches} times in ${displayPath(workspace, path)}; refine the snippet or set replace_all=true`,
             summary: `${matches} matches`,
             metadata: { matches },
           };
@@ -284,7 +288,7 @@ export function registerBuiltinTools(registry: ToolRegistry, workspace: string):
         const replaced = replaceAll ? matches : 1;
         return {
           ok: true,
-          output: `edited ${displayPath(root, path)} (${replaced} replacement${replaced === 1 ? "" : "s"})`,
+          output: `edited ${displayPath(workspace, path)} (${replaced} replacement${replaced === 1 ? "" : "s"})`,
           summary: replaceAll ? `replace_all ${replaced}` : "unique replace",
           metadata: { matches: replaced, replaceAll },
         };
@@ -310,7 +314,7 @@ export function registerBuiltinTools(registry: ToolRegistry, workspace: string):
     permissionLevel: 2,
     kind: "write",
     maxOutputChars: 16_000,
-    invoke: async (call) => writeTextFile(root, target, call.arguments.path, call.arguments.content),
+    invoke: async (call, context) => writeTextFile(activeRoot(context), (raw) => pathFor(context, raw), call.arguments.path, call.arguments.content),
   });
 
   register({
@@ -329,21 +333,22 @@ export function registerBuiltinTools(registry: ToolRegistry, workspace: string):
     permissionLevel: 0,
     kind: "readonly",
     maxOutputChars: 32_000,
-    invoke: async (call) => {
+    invoke: async (call, context) => {
       try {
         const pattern = String(call.arguments.pattern ?? "").trim();
         if (!pattern) return { ok: false, output: "", error: "pattern is required", summary: "invalid arguments" };
-        const base = target(call.arguments.path ?? ".");
+        const workspace = activeRoot(context);
+        const base = pathFor(context, call.arguments.path ?? ".");
         const baseInfo = await stat(base);
         if (!baseInfo.isDirectory()) {
-          return { ok: false, output: "", error: `search root is not a directory: ${displayPath(root, base)}`, summary: "not a directory" };
+          return { ok: false, output: "", error: `search root is not a directory: ${displayPath(workspace, base)}`, summary: "not a directory" };
         }
         const limit = Math.max(1, intArg(call.arguments.limit, DEFAULT_GLOB_LIMIT));
         const matcher = compileGlob(pattern);
         const hits: Array<{ path: string; mtime: number }> = [];
         await walkFiles(base, async (filePath, mtime) => {
           const relFromBase = relative(base, filePath).replaceAll("\\", "/");
-          const relFromRoot = relative(root, filePath).replaceAll("\\", "/");
+          const relFromRoot = relative(workspace, filePath).replaceAll("\\", "/");
           if (matcher(relFromBase) || matcher(relFromRoot) || matcher(filePath.replaceAll("\\", "/"))) {
             hits.push({ path: relFromRoot, mtime });
           }
@@ -381,7 +386,7 @@ export function registerBuiltinTools(registry: ToolRegistry, workspace: string):
     permissionLevel: 0,
     kind: "readonly",
     maxOutputChars: 32_000,
-    invoke: async (call) => {
+    invoke: async (call, context) => {
       try {
         const source = String(call.arguments.pattern ?? "");
         if (!source) return { ok: false, output: "", error: "pattern is required", summary: "invalid arguments" };
@@ -391,7 +396,8 @@ export function registerBuiltinTools(registry: ToolRegistry, workspace: string):
         } catch (error) {
           return { ok: false, output: "", error: `invalid regular expression: ${errorMessage(error)}`, summary: "invalid regex" };
         }
-        const base = target(call.arguments.path ?? ".");
+        const workspace = activeRoot(context);
+        const base = pathFor(context, call.arguments.path ?? ".");
         const limit = Math.max(1, intArg(call.arguments.limit, DEFAULT_SEARCH_LIMIT));
         const fileFilter = typeof call.arguments.glob === "string" && call.arguments.glob.trim()
           ? compileGlob(String(call.arguments.glob))
@@ -400,7 +406,7 @@ export function registerBuiltinTools(registry: ToolRegistry, workspace: string):
         let total = 0;
         await walkFiles(base, async (filePath) => {
           if (hits.length >= limit) return;
-          const rel = relative(root, filePath).replaceAll("\\", "/");
+          const rel = relative(workspace, filePath).replaceAll("\\", "/");
           const name = rel.split("/").pop() ?? rel;
           if (fileFilter && !fileFilter(rel) && !fileFilter(name)) return;
           try {
@@ -442,9 +448,9 @@ export function registerBuiltinTools(registry: ToolRegistry, workspace: string):
       permissionLevel: 0,
       kind: "readonly",
       maxOutputChars: 16_000,
-      invoke: async () => {
+      invoke: async (_call, context) => {
         try {
-          const result = await execFileAsync(command, ["-C", root, ...args], { encoding: "utf8" });
+          const result = await execFileAsync(command, ["-C", activeRoot(context), ...args], { encoding: "utf8" });
           return { ok: true, output: result.stdout.trim() || "(empty)", summary: "ok" };
         } catch (error) {
           const item = error as { stderr?: string };
@@ -469,10 +475,10 @@ export function registerBuiltinTools(registry: ToolRegistry, workspace: string):
     permissionLevel: 3,
     kind: "command",
     maxOutputChars: 32_000,
-    invoke: async (call, context) => {
-      const timeout = Math.max(1, numberArg(call.arguments.timeout, 60)) * 1000;
-      try {
-        const cwd = await resolveCommandCwd(root, call.arguments.cwd);
+      invoke: async (call, context) => {
+        const timeout = Math.max(1, numberArg(call.arguments.timeout, 60)) * 1000;
+        try {
+        const cwd = await resolveCommandCwd(activeRoot(context), call.arguments.cwd);
         const result = await execAsync(String(call.arguments.command), {
           cwd,
           timeout,
