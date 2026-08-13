@@ -14,6 +14,7 @@ export function renderMessage(message: TranscriptMessage, width: number, context
   if (message.kind === "tool") return withMessageSpacing(renderToolMessage(message, width, context.liveTick));
   if (message.kind === "verification") return withMessageSpacing(renderVerification(message, width));
   if (message.kind === "thought") return withMessageSpacing(renderThought(message, width, context.liveTick));
+  if (message.kind === "error") return withMessageSpacing(renderError(message.text, width));
   if (message.kind === "assistant" && !message.text.trim() && !message.streaming) return [];
 
   const prefix = prefixFor(message.kind);
@@ -99,6 +100,19 @@ function prefixVisibleWidth(kind: TranscriptMessage["kind"]): number {
     default:
       return prefixFor(kind).replace(/\u001b\[[0-9;]*m/g, "").length;
   }
+}
+
+function renderError(text: string, width: number): string[] {
+  const prefix = prefixFor("error");
+  const prefixWidth = prefixVisibleWidth("error");
+  const contentWidth = Math.max(1, width - prefixWidth);
+  const sections = stripTerminalMarkup(text).trimEnd().split(/\r?\n/);
+  const primary = wrapDisplayText(sections.shift() ?? "", contentWidth);
+  if (!primary.length) return [prefix.trimEnd()];
+  const indent = " ".repeat(prefixWidth);
+  const details = wrapDisplayText(sections.join("\n"), contentWidth)
+    .map((line) => `${indent}${ANSI.gray}${line}${ANSI.reset}`);
+  return primary.map((line, index) => `${index === 0 ? prefix : indent}${line}`).concat(details);
 }
 
 function renderThought(message: Extract<TranscriptMessage, { kind: "thought" }>, width: number, liveTick = 0): string[] {

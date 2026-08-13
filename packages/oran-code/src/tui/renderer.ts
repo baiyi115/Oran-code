@@ -69,6 +69,7 @@ export class TuiTranscriptRenderer {
 
   clearTranscript(): void {
     this.state.transcript.splice(0);
+    this.state.expandedToolGroupIds.clear();
     this.state.assistantMessageId = undefined;
     this.state.thoughtMessageId = undefined;
     this.state.streaming = false;

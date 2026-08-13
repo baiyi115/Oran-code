@@ -212,6 +212,8 @@ export interface TuiState {
   composer: ComposerState;
   overlay: OverlayState;
   transcript: TranscriptMessage[];
+  /** Tool-group ids explicitly expanded for the current TUI session. */
+  expandedToolGroupIds: Set<string>;
   streaming: boolean;
   assistantMessageId: string | undefined;
   thoughtMessageId: string | undefined;

@@ -1,6 +1,8 @@
 import type { TuiState, TranscriptMessage } from "../types.js";
 import { MarkdownRenderer } from "./markdown-renderer.js";
 import { renderMessage } from "./message-renderer.js";
+import { wrapDisplayText } from "../text-width.js";
+import { ANSI } from "../theme.js";
 
 export interface TranscriptRenderLine {
   text: string;
@@ -23,28 +25,57 @@ export class TranscriptView {
     for (const id of this.cache.keys()) {
       if (!activeIds.has(id)) this.cache.delete(id);
     }
-    return messages.flatMap((message) => this.renderMessage(message, safeWidth));
+    return this.renderItems(messages, safeWidth, 0, new Set()).map((line) => line.text);
   }
 
   lines(state: TuiState, width: number): string[] {
-    return this.render(state.transcript, width);
+    const safeWidth = Math.max(12, width);
+    this.pruneCache(state.transcript);
+    return this.renderItems(state.transcript, safeWidth, 0, state.expandedToolGroupIds).map((line) => line.text);
   }
 
-  renderLines(messages: readonly TranscriptMessage[], width: number, liveTick = 0): TranscriptRenderLine[] {
+  renderLines(
+    messages: readonly TranscriptMessage[],
+    width: number,
+    liveTick = 0,
+    expandedToolGroupIds: ReadonlySet<string> = new Set(),
+  ): TranscriptRenderLine[] {
     const safeWidth = Math.max(12, width);
+    this.pruneCache(messages);
+    return this.renderItems(messages, safeWidth, liveTick, expandedToolGroupIds);
+  }
+
+  linesWithAnchors(state: TuiState, width: number, liveTick = 0): TranscriptRenderLine[] {
+    return this.renderLines(state.transcript, width, liveTick, state.expandedToolGroupIds);
+  }
+
+  private pruneCache(messages: readonly TranscriptMessage[]): void {
     const activeIds = new Set(messages.map((message) => message.id));
     for (const id of this.cache.keys()) {
       if (!activeIds.has(id)) this.cache.delete(id);
     }
-    return messages.flatMap((message) => this.renderMessage(message, safeWidth, liveTick).map((text, lineOffset) => ({
-      text,
-      messageId: message.id,
-      lineOffset,
-    })));
   }
 
-  linesWithAnchors(state: TuiState, width: number, liveTick = 0): TranscriptRenderLine[] {
-    return this.renderLines(state.transcript, width, liveTick);
+  private renderItems(
+    messages: readonly TranscriptMessage[],
+    width: number,
+    liveTick: number,
+    expandedToolGroupIds: ReadonlySet<string>,
+  ): TranscriptRenderLine[] {
+    return transcriptRenderItems(messages, expandedToolGroupIds).flatMap((item) => {
+      if (item.kind === "tool-group") {
+        return renderCollapsedToolGroup(item.messages, width).map((text, lineOffset) => ({
+          text,
+          messageId: item.messages[0]!.id,
+          lineOffset,
+        }));
+      }
+      return this.renderMessage(item.message, width, liveTick).map((text, lineOffset) => ({
+        text,
+        messageId: item.message.id,
+        lineOffset,
+      }));
+    });
   }
 
   private renderMessage(message: TranscriptMessage, width: number, liveTick = 0): string[] {
@@ -58,6 +89,72 @@ export class TranscriptView {
     this.cache.set(message.id, { width, signature, text, lines, markdownRenderer });
     return lines;
   }
+}
+
+const TOOL_GROUP_MIN_SIZE = 3;
+
+type TranscriptRenderItem =
+  | { kind: "message"; message: TranscriptMessage }
+  | { kind: "tool-group"; messages: ToolGroup };
+
+export type ToolGroup = readonly Extract<TranscriptMessage, { kind: "tool" }>[];
+
+/** Consecutive successful tools are visually compacted unless explicitly expanded. */
+export function toolGroups(messages: readonly TranscriptMessage[]): ToolGroup[] {
+  const groups: ToolGroup[] = [];
+  let run: Extract<TranscriptMessage, { kind: "tool" }>[] = [];
+  for (const message of messages) {
+    if (message.kind === "tool" && message.status === "success") {
+      run.push(message);
+      continue;
+    }
+    if (run.length >= TOOL_GROUP_MIN_SIZE) groups.push(run);
+    run = [];
+  }
+  if (run.length >= TOOL_GROUP_MIN_SIZE) groups.push(run);
+  return groups;
+}
+
+export function toolGroupId(messages: ToolGroup): string {
+  const first = messages[0];
+  const last = messages.at(-1);
+  return `tool-group:${first?.id ?? ""}:${last?.id ?? ""}`;
+}
+
+function transcriptRenderItems(
+  messages: readonly TranscriptMessage[],
+  expandedToolGroupIds: ReadonlySet<string>,
+): TranscriptRenderItem[] {
+  const items: TranscriptRenderItem[] = [];
+  let index = 0;
+  while (index < messages.length) {
+    const message = messages[index]!;
+    if (message.kind !== "tool" || message.status !== "success") {
+      items.push({ kind: "message", message });
+      index += 1;
+      continue;
+    }
+    let end = index + 1;
+    while (true) {
+      const next = messages[end];
+      if (!next || next.kind !== "tool" || next.status !== "success") break;
+      end += 1;
+    }
+    const group = messages.slice(index, end) as ToolGroup;
+    if (group.length >= TOOL_GROUP_MIN_SIZE && !expandedToolGroupIds.has(toolGroupId(group))) {
+      items.push({ kind: "tool-group", messages: group });
+    } else {
+      items.push(...group.map((entry) => ({ kind: "message" as const, message: entry })));
+    }
+    index = end;
+  }
+  return items;
+}
+
+function renderCollapsedToolGroup(messages: ToolGroup, width: number): string[] {
+  const count = messages.length;
+  const text = `${ANSI.greenBold}◇${ANSI.reset} ${ANSI.toolBold}Called ${count} tools${ANSI.reset} ${ANSI.gray}· Ctrl+O to expand${ANSI.reset}`;
+  return [...wrapDisplayText(text, width), ""];
 }
 
 function liveSignature(message: TranscriptMessage, liveTick: number): number {

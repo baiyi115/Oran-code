@@ -16,6 +16,8 @@ interface Heading {
   body: string;
 }
 
+type TableAlignment = "left" | "center" | "right";
+
 export interface MarkdownRenderOptions {
   streaming?: boolean;
 }
@@ -191,6 +193,7 @@ function renderMarkdownInternal(value: string, safeWidth: number, options: Markd
 
     if (isTableStart(sourceLines, index)) {
       const rows = [parseTableRow(line)];
+      const alignments = parseTableAlignments(sourceLines[index + 1] ?? "");
       index += 2;
       while (index < sourceLines.length && isTableRow(sourceLines[index] ?? "")) {
         rows.push(parseTableRow((sourceLines[index] ?? "").trimEnd()));
@@ -198,7 +201,7 @@ function renderMarkdownInternal(value: string, safeWidth: number, options: Markd
       }
       index -= 1;
       pushBlank(lines);
-      lines.push(...renderTable(rows, safeWidth, Boolean(options.streaming && index >= sourceLines.length - 1)));
+      lines.push(...renderTable(rows, safeWidth, Boolean(options.streaming && index >= sourceLines.length - 1), alignments));
       pushBlank(lines);
       continue;
     }
@@ -329,16 +332,25 @@ function parseTableRow(value: string): string[] {
   return trimmed.split("|").map((cell) => cell.trim());
 }
 
-function renderTable(rows: readonly string[][], width: number, streaming: boolean): string[] {
+function parseTableAlignments(value: string): TableAlignment[] {
+  return parseTableRow(value).map((cell) => {
+    const trimmed = cell.trim();
+    if (trimmed.startsWith(":") && trimmed.endsWith(":")) return "center";
+    if (trimmed.endsWith(":")) return "right";
+    return "left";
+  });
+}
+
+function renderTable(
+  rows: readonly string[][],
+  width: number,
+  streaming: boolean,
+  alignments: readonly TableAlignment[],
+): string[] {
   const columnCount = Math.max(1, ...rows.map((row) => row.length));
   const available = width - (columnCount * 3) - 1;
-  // Narrow terminals: render as a definition list instead of a cramped table.
-  // Each row becomes "header · value · value ...", header bolded.
   if (available < columnCount * 6) {
-    return rows.flatMap((row, rowIndex) => wrapInlineSegments(withStyle(
-      parseInline(row.join("  "), streaming),
-      rowIndex === 0 ? { bold: true, color: "orange" } : {},
-    ), width));
+    return renderCompactTable(rows, width, streaming);
   }
 
   const naturalWidths = Array.from({ length: columnCount }, (_, column) => Math.max(
@@ -356,13 +368,46 @@ function renderTable(rows: readonly string[][], width: number, streaming: boolea
     columnWidths[index] = Math.max(3, (columnWidths[index] ?? 3) - 1);
   }
 
-  const output = renderTableRow(rows[0] ?? [], columnWidths, true, streaming);
-  output.push(`${ANSI.gray}├${columnWidths.map((item) => "─".repeat(item + 2)).join("┼")}┤${ANSI.reset}`);
-  for (const row of rows.slice(1)) output.push(...renderTableRow(row, columnWidths, false, streaming));
+  const output = [renderTableBorder(columnWidths, "┌", "┬", "┐")];
+  output.push(...renderTableRow(rows[0] ?? [], columnWidths, true, streaming, alignments));
+  output.push(renderTableBorder(columnWidths, "├", "┼", "┤"));
+  for (const row of rows.slice(1)) output.push(...renderTableRow(row, columnWidths, false, streaming, alignments));
+  output.push(renderTableBorder(columnWidths, "└", "┴", "┘"));
   return output;
 }
 
-function renderTableRow(row: readonly string[], widths: readonly number[], header: boolean, streaming: boolean): string[] {
+function renderCompactTable(rows: readonly string[][], width: number, streaming: boolean): string[] {
+  const headers = rows[0] ?? [];
+  const records = rows.slice(1);
+  if (records.length === 0) {
+    return wrapInlineSegments(withStyle(parseInline(headers.join("  "), streaming), { bold: true, color: "orange" }), width);
+  }
+  return records.flatMap((row, rowIndex) => {
+    const lines = Array.from({ length: Math.max(headers.length, row.length) }, (_, column) => {
+      const label = headers[column] || `Column ${column + 1}`;
+      const segments = [
+        ...withStyle(parseInline(label, streaming), { bold: true, color: "orange" }),
+        { text: ": ", style: {} },
+        ...parseInline(row[column] ?? "", streaming),
+      ];
+      return wrapInlineSegments(segments, width);
+    }).flat();
+    if (rowIndex < records.length - 1) lines.push("");
+    return lines;
+  });
+}
+
+function renderTableBorder(widths: readonly number[], left: string, middle: string, right: string): string {
+  return `${ANSI.gray}${left}${widths.map((item) => "─".repeat(item + 2)).join(middle)}${right}${ANSI.reset}`;
+}
+
+function renderTableRow(
+  row: readonly string[],
+  widths: readonly number[],
+  header: boolean,
+  streaming: boolean,
+  alignments: readonly TableAlignment[],
+): string[] {
   const cells = widths.map((cellWidth, index) => wrapInlineSegments(withStyle(
     parseInline(row[index] ?? "", streaming),
     header ? { bold: true, color: "orange" } : {},
@@ -371,10 +416,20 @@ function renderTableRow(row: readonly string[], widths: readonly number[], heade
   return Array.from({ length: height }, (_, lineIndex) => {
     const content = cells.map((cell, column) => {
       const item = cell[lineIndex] ?? "";
-      return ` ${item}${" ".repeat(Math.max(0, (widths[column] ?? 1) - visibleWidth(item)))} `;
+      return ` ${padTableCell(item, widths[column] ?? 1, alignments[column] ?? "left")} `;
     }).join(`${ANSI.gray}│${ANSI.reset}`);
     return `${ANSI.gray}│${ANSI.reset}${content}${ANSI.gray}│${ANSI.reset}`;
   });
+}
+
+function padTableCell(value: string, width: number, alignment: TableAlignment): string {
+  const padding = Math.max(0, width - visibleWidth(value));
+  if (alignment === "right") return `${" ".repeat(padding)}${value}`;
+  if (alignment === "center") {
+    const left = Math.floor(padding / 2);
+    return `${" ".repeat(left)}${value}${" ".repeat(padding - left)}`;
+  }
+  return `${value}${" ".repeat(padding)}`;
 }
 
 function parseInline(value: string, streaming: boolean, inherited: InlineStyle = {}): InlineSegment[] {

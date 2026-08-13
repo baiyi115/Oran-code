@@ -69,6 +69,7 @@ export function createTuiState(
     composer: createComposerState(history),
     overlay: { kind: "none" },
     transcript: [...initialTranscript],
+    expandedToolGroupIds: new Set(),
     streaming: false,
     assistantMessageId: undefined,
     thoughtMessageId: undefined,

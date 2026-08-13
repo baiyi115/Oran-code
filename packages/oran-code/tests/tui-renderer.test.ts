@@ -2,6 +2,9 @@ import { describe, expect, it } from "vitest";
 import { TuiTranscriptRenderer, type TuiRendererLayout } from "../src/tui/renderer.js";
 import { createTuiState } from "../src/tui/state.js";
 import { workingIndicatorLine } from "../src/tui/status-indicator.js";
+import { TranscriptView, toolGroupId, toolGroups } from "../src/tui/transcript/transcript-view.js";
+import { renderMessage } from "../src/tui/transcript/message-renderer.js";
+import { ANSI } from "../src/tui/theme.js";
 import type { TuiState } from "../src/tui/types.js";
 import type { RuntimeEvent } from "../src/types.js";
 
@@ -74,5 +77,47 @@ describe("TuiTranscriptRenderer", () => {
     state.transcript.push({ id: "assistant-1", kind: "assistant", text: "partial", streaming: true });
 
     expect(workingIndicatorLine(state, 0)).toBeUndefined();
+  });
+
+  it("collapses three consecutive successful tool calls into a count summary", () => {
+    const state = createState();
+    state.transcript.push(
+      ...["read_file", "search_code", "run_command"].map((name, index) => ({
+        id: `tool-${index}`,
+        kind: "tool" as const,
+        callId: `call-${index}`,
+        name,
+        arguments: {},
+        permissionLevel: 0,
+        status: "success" as const,
+        expanded: false,
+      })),
+    );
+    const view = new TranscriptView();
+
+    expect(view.lines(state, 80).join("\n")).toContain("Called 3 tools");
+
+    const group = toolGroups(state.transcript)[0]!;
+    state.expandedToolGroupIds.add(toolGroupId(group));
+    const expanded = view.lines(state, 80).join("\n");
+    expect(expanded).not.toContain("Called 3 tools");
+    expect(expanded).toContain("Read");
+    expect(expanded).toContain("Search");
+    expect(expanded).toContain("Bash");
+  });
+
+  it("keeps the primary error visible and mutes retry details", () => {
+    const lines = renderMessage({
+      id: "error-1",
+      kind: "error",
+      text: "Attempt 1/6 failed: model API returned 503:\n{\"error\":{\"message\":\"busy\"}}\nRetrying (1/5)...",
+    }, 120);
+
+    expect(lines[0]).toContain(`${ANSI.redBold}Error${ANSI.reset}`);
+    expect(lines[0]).toContain("Attempt 1/6 failed: model API returned 503:");
+    expect(lines[0]).not.toContain(ANSI.gray);
+    const mutedDetails = lines.filter((line) => line.includes("busy") || line.includes("Retrying"));
+    expect(mutedDetails).not.toHaveLength(0);
+    expect(mutedDetails.every((line) => line.includes(ANSI.gray))).toBe(true);
   });
 });

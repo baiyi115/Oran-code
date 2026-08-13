@@ -178,11 +178,7 @@ export function reduceRuntimeEvent(state: TuiState, event: RuntimeEvent): void {
       // then note that another attempt is starting.
       appendTranscriptMessage(state, {
         kind: "error",
-        text: `Attempt ${event.attempt + 1}/${event.maxRetries + 1} failed: ${detail}`,
-      });
-      appendTranscriptMessage(state, {
-        kind: "system",
-        text: `Retrying (${event.nextAttempt}/${event.maxRetries})...`,
+        text: `Attempt ${event.attempt + 1}/${event.maxRetries + 1} failed: ${detail}\nRetrying (${event.nextAttempt}/${event.maxRetries})...`,
       });
       state.session.status = `retrying (${event.nextAttempt}/${event.maxRetries})`;
       break;
