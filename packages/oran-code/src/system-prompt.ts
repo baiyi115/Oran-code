@@ -13,6 +13,7 @@ export interface EnvironmentPromptOptions {
   readonly snapshot: WorkspaceSnapshot;
   readonly appVersion?: string;
   readonly now?: Date;
+  readonly platform?: NodeJS.Platform;
 }
 
 const FIXED_MODULES: readonly SystemPromptModule[] = [
@@ -55,7 +56,9 @@ const FIXED_MODULES: readonly SystemPromptModule[] = [
     content: [
       "First decide whether the request actually needs workspace evidence. Greetings, thanks, farewells, identity questions, and ordinary conversation must be answered directly without tools.",
       "Never inspect the workspace merely to introduce yourself or to make a conversational reply appear more thorough.",
+      "Before each tool call, use the current <environment> and exposed tool schemas to choose the tool that matches the task and operating system.",
       "Prefer dedicated file, search, patch, and workspace tools over shell commands that duplicate those capabilities.",
+      "Use run_command only for operations that need an external command; write its syntax for the configured default shell, or explicitly launch and verify another shell when required.",
       "Use tools deliberately, avoid redundant exploration, and stop calling tools once enough evidence is available.",
       "When a tool result says its full content was offloaded, use read_file on the supplied path if the omitted detail is needed.",
     ].join("\n"),
@@ -101,10 +104,12 @@ export function assembleStableSystemPrompt(optional: OptionalSystemPromptModules
 
 export function buildEnvironmentPrompt(options: EnvironmentPromptOptions): string {
   const now = options.now ?? new Date();
+  const currentPlatform = options.platform ?? platform();
   const lines = [
     "<environment>",
     `Working directory: ${options.workspace}`,
-    `Platform: ${platform()}`,
+    `Platform: ${currentPlatform}`,
+    ...commandEnvironmentLines(currentPlatform),
     `Current date: ${now.toISOString().slice(0, 10)}`,
     `Git repository: ${options.snapshot.isGitRepo ? "yes" : "no"}`,
     `Model: ${options.model.provider}/${options.model.model}`,
@@ -120,6 +125,22 @@ export function buildEnvironmentPrompt(options: EnvironmentPromptOptions): strin
   if (options.snapshot.summary.trim()) lines.push(`Workspace summary:\n${options.snapshot.summary.trim()}`);
   lines.push("</environment>");
   return lines.join("\n");
+}
+
+function commandEnvironmentLines(currentPlatform: NodeJS.Platform): readonly string[] {
+  if (currentPlatform === "win32") {
+    return [
+      "Default command execution: Node.js uses the Windows command shell (cmd.exe syntax) unless your command explicitly launches another shell.",
+      "Do not use Bash, PowerShell, WSL, or Unix utility syntax as the default assumption. If one is needed, first verify it is available or invoke it explicitly.",
+      "Tool selection: use workspace and git tools for file, search, patch, and repository operations; reserve run_command for commands that have no dedicated tool.",
+      "Prefer dedicated file, search, patch, and git tools over shell commands.",
+    ];
+  }
+  return [
+    "Command execution: Node.js uses the system shell.",
+    "Tool selection: use workspace and git tools for file, search, patch, and repository operations; reserve run_command for commands that have no dedicated tool.",
+    "Prefer dedicated file, search, patch, and git tools over shell commands.",
+  ];
 }
 
 export function stableSystemMessage(content = assembleStableSystemPrompt()): Message {
