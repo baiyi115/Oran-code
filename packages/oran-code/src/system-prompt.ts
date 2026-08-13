@@ -58,6 +58,7 @@ const FIXED_MODULES: readonly SystemPromptModule[] = [
       "Never inspect the workspace merely to introduce yourself or to make a conversational reply appear more thorough.",
       "Before each tool call, use the current <environment> and exposed tool schemas to choose the tool that matches the task and operating system.",
       "Prefer dedicated file, search, patch, and workspace tools over shell commands that duplicate those capabilities.",
+      "Use apply_diff for multi-hunk edits to existing files; use edit_file for small unique-snippet replacements, and write_file for new files.",
       "Use run_command only for operations that need an external command; write its syntax for the configured default shell, or explicitly launch and verify another shell when required.",
       "Use tools deliberately, avoid redundant exploration, and stop calling tools once enough evidence is available.",
       "When a tool result says its full content was offloaded, use read_file on the supplied path if the omitted detail is needed.",

@@ -29,6 +29,7 @@ export const BACKGROUND_SUBAGENT_ALLOWED_TOOLS = new Set([
   "write_plan",
   "edit_file",
   "apply_patch",
+  "apply_diff",
   "glob_files",
   "search_code",
   "run_command",

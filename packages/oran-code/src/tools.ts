@@ -4,6 +4,7 @@ import { promisify } from "node:util";
 import { dirname, isAbsolute, relative, resolve, sep } from "node:path";
 import type { ToolCall, ToolDefinition, ToolExecutionContext, ToolResult } from "./types.js";
 import { projectStateRoot } from "./paths.js";
+import { applyUnifiedDiff } from "./patch.js";
 import { registerWorktreeTools } from "./worktree/tools.js";
 
 const execAsync = promisify(exec);
@@ -318,6 +319,56 @@ export function registerBuiltinTools(registry: ToolRegistry, workspace: string):
   });
 
   register({
+    name: "apply_diff",
+    description:
+      "Apply a unified diff to an existing UTF-8 text file. The diff must contain one or more @@ hunks; file header lines (index/---/+++) are ignored and the target comes from the path argument. Hunk line numbers may be approximate: each hunk is located by matching its context lines against the file. Returns the number of hunks applied and a summary of added/removed lines.",
+    parameters: {
+      type: "object",
+      properties: {
+        path: { type: "string", description: "Path relative to workspace root." },
+        diff: { type: "string", description: "Unified diff text with @@ hunks." },
+      },
+      required: ["path", "diff"],
+    },
+    permissionLevel: 2,
+    kind: "write",
+    maxOutputChars: 16_000,
+    invoke: async (call, context) => {
+      try {
+        const workspace = activeRoot(context);
+        const path = pathFor(context, call.arguments.path);
+        const info = await stat(path);
+        if (info.isDirectory()) {
+          return { ok: false, output: "", error: `path is a directory: ${displayPath(workspace, path)}`, summary: "is directory" };
+        }
+        const diff = String(call.arguments.diff ?? "");
+        if (!diff.trim()) {
+          return { ok: false, output: "", error: "diff must not be empty", summary: "invalid arguments" };
+        }
+        const content = await readFile(path, "utf8");
+        const applied = applyUnifiedDiff(content, diff);
+        if (!applied.ok || applied.content === undefined) {
+          return {
+            ok: false,
+            output: "",
+            error: `apply_diff failed: ${applied.error ?? "unknown error"}`,
+            summary: "patch failed",
+          };
+        }
+        await writeFile(path, applied.content, "utf8");
+        return {
+          ok: true,
+          output: `applied ${applied.hunksApplied} hunk(s) to ${displayPath(workspace, path)} (+${applied.linesAdded}/-${applied.linesRemoved})`,
+          summary: `applied ${applied.hunksApplied} hunks`,
+          metadata: { hunksApplied: applied.hunksApplied, linesAdded: applied.linesAdded, linesRemoved: applied.linesRemoved },
+        };
+      } catch (error) {
+        return failedResult(error, "apply_diff failed");
+      }
+    },
+  });
+
+  register({
     name: "glob_files",
     description:
       "Find files by glob pattern under the workspace (supports *, **, ?, and brace alternatives such as *.{ts,tsx}). Ignores VCS/dependency/build directories. Results are sorted by newest mtime first and capped.",
@@ -565,7 +616,7 @@ function registerSearchTools(registry: ToolRegistry): void {
 }
 
 export function isWriteToolName(name: string): boolean {
-  return name === "apply_patch" || name === "write_file" || name === "edit_file" || name === "write_plan";
+  return name === "apply_patch" || name === "write_file" || name === "edit_file" || name === "write_plan" || name === "apply_diff";
 }
 
 export function isMutatingToolName(name: string): boolean {
