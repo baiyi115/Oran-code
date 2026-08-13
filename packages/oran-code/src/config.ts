@@ -236,6 +236,7 @@ function normalizeAgentSettings(value: unknown): AgentSettings | undefined {
   const permissionModeValue = item.permissionMode ?? item.permission_mode;
   const permissionMode = isPermissionMode(permissionModeValue) ? permissionModeValue : undefined;
   const lastModel = stringOrUndefined(item.lastModel ?? item.last_model);
+  const verifyCommands = optionalStringArray(item.verifyCommands ?? item.verify_commands, "agent.verifyCommands");
   if (approveAll !== undefined) result.approveAll = approveAll;
   if (skipVerify !== undefined) result.skipVerify = skipVerify;
   if (maxSteps !== undefined) result.maxSteps = maxSteps;
@@ -243,6 +244,7 @@ function normalizeAgentSettings(value: unknown): AgentSettings | undefined {
   if (workMode !== undefined) result.workMode = workMode;
   if (permissionMode !== undefined) result.permissionMode = permissionMode;
   if (lastModel !== undefined) result.lastModel = lastModel;
+  if (verifyCommands !== undefined) result.verifyCommands = verifyCommands;
   return Object.keys(result).length ? result : undefined;
 }
 

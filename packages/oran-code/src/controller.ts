@@ -1218,9 +1218,10 @@ export class TaskController {
   private async verify(task: Task, messages: Message[]): Promise<import("./types.js").VerificationResult> {
     transitionTask(task, "verifying");
     await this.persist(task);
+    const commands = this.config.verifyCommands ?? Verifier.inferCommands(task.workspace);
     const results = this.config.skipVerify
       ? [{ command: "(skipped)", exitCode: 0, output: "Verification skipped by user.", durationMs: 0, passed: true }]
-      : await this.verifier.runMany(Verifier.inferCommands(task.workspace), this.abortController?.signal);
+      : await this.verifier.runMany(commands, this.abortController?.signal);
     this.throwIfCancelled();
     const result = results[0] ?? { command: "(none)", exitCode: 0, output: "No test/lint command configured; verification skipped.", durationMs: 0, passed: true };
     this.trace.appendStep(task.id, "verify", { results });

@@ -171,6 +171,8 @@ export interface AgentSettings {
   workMode?: WorkMode;
   permissionMode?: PermissionMode;
   lastModel?: string;
+  /** Explicit verification commands run after workspace mutations. Takes precedence over inferred commands. */
+  verifyCommands?: string[];
 }
 
 export interface OptionalSystemPromptModules {
@@ -243,6 +245,8 @@ export interface RuntimeConfig {
   skipVerify: boolean;
   approveAll: boolean;
   traceDb?: string;
+  /** Explicit verification commands; falls back to Verifier.inferCommands when absent. */
+  verifyCommands?: string[];
 }
 
 export interface ToolResult {

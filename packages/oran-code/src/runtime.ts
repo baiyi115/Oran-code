@@ -57,6 +57,7 @@ export function createRuntimeConfig(
     skipVerify: config.agent?.skipVerify === true,
     approveAll,
     traceDb,
+    ...(config.agent?.verifyCommands?.length ? { verifyCommands: [...config.agent.verifyCommands] } : {}),
   };
 }
 

@@ -1,6 +1,6 @@
 import { exec } from "node:child_process";
 import { promisify } from "node:util";
-import { existsSync } from "node:fs";
+import { existsSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import type { VerificationResult } from "./types.js";
 
@@ -33,13 +33,48 @@ export class Verifier {
     return results;
   }
 
+  /**
+   * Infer verification commands from the workspace layout.
+   *
+   * Node projects resolve the package.json `scripts.test` entry through the
+   * project's own package manager (pnpm when the workspace is a pnpm
+   * workspace, otherwise npm), so monorepos and projects with custom test
+   * scripts are verified correctly. A package.json without a test script does
+   * not produce a Node command, so verification never fails with a spurious
+   * "missing script" error.
+   */
   static inferCommands(workspace: string): string[] {
     const commands: string[] = [];
+    const nodeCommand = inferNodeTestCommand(workspace);
+    if (nodeCommand) commands.push(nodeCommand);
     if (existsSync(join(workspace, "pyproject.toml"))) commands.push(findPython(workspace));
-    if (existsSync(join(workspace, "package.json"))) commands.push("npm test");
     if (existsSync(join(workspace, "go.mod"))) commands.push("go test ./...");
     if (existsSync(join(workspace, "pom.xml"))) commands.push("mvn -q test");
     return commands;
+  }
+}
+
+function inferNodeTestCommand(workspace: string): string | undefined {
+  const packageJsonPath = join(workspace, "package.json");
+  if (!existsSync(packageJsonPath)) return undefined;
+  const packageJson = readPackageJson(packageJsonPath);
+  if (!packageJson) return undefined;
+  const rawScripts = packageJson.scripts;
+  if (!rawScripts || typeof rawScripts !== "object" || Array.isArray(rawScripts)) return undefined;
+  const scripts = rawScripts as Record<string, unknown>;
+  if (typeof scripts.test !== "string" || !scripts.test.trim()) return undefined;
+  const packageManager = typeof packageJson.packageManager === "string" ? packageJson.packageManager : "";
+  const usesPnpm = existsSync(join(workspace, "pnpm-workspace.yaml")) || packageManager.startsWith("pnpm");
+  return usesPnpm ? "pnpm test" : "npm test";
+}
+
+function readPackageJson(path: string): Record<string, unknown> | undefined {
+  try {
+    const parsed: unknown = JSON.parse(readFileSync(path, "utf8"));
+    if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) return undefined;
+    return parsed as Record<string, unknown>;
+  } catch {
+    return undefined;
   }
 }
 
