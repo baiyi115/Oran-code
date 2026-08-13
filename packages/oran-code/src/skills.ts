@@ -1,4 +1,5 @@
 import { mkdir, readFile, readdir, stat, writeFile } from "node:fs/promises";
+import type { Stats } from "node:fs";
 import { homedir } from "node:os";
 import { basename, dirname, extname, isAbsolute, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -38,6 +39,18 @@ export type SkillDirectoryOverrides = Partial<SkillDirectories> & {
 const SKILL_NAME = /^[a-z0-9](?:[a-z0-9-]{0,62}[a-z0-9])?$/;
 const SKILL_MODES = new Set<SkillMode>(["inline", "derived"]);
 const CONTEXT_LEVELS = new Set<SkillContextLevel>(["none", "recent", "long"]);
+const SKILL_SCOPES = new Set<SkillScope>(["builtin", "user", "project"]);
+const SKILL_CACHE_VERSION = 1;
+
+interface PersistedSkillRecord {
+  readonly skill: SkillDefinition;
+  readonly size: number;
+}
+
+interface PersistedSkillCache {
+  readonly version: number;
+  readonly skills: readonly PersistedSkillRecord[];
+}
 
 /** Loads Markdown skills without allowing one malformed package to break discovery. */
 export class SkillLoader {
@@ -60,6 +73,7 @@ export class SkillLoader {
 
   async scan(): Promise<readonly SkillDefinition[]> {
     const previousByFile = new Map([...this.cache.values()].map((skill) => [skill.filePath, skill]));
+    const persistedByFile = await this.loadPersistentCache();
     const next = new Map<string, SkillDefinition>();
     const layers: [SkillScope, string][] = [["builtin", this.directories.builtin]];
     if (this.legacyUserDirectory && this.legacyUserDirectory !== this.directories.user) {
@@ -67,15 +81,34 @@ export class SkillLoader {
     }
     layers.push(["user", this.directories.user], ["project", this.directories.project]);
 
-    for (const [scope, directory] of layers) {
-      for (const candidate of await collectCandidates(directory)) {
-        const loaded = await loadSkill(candidate.filePath, candidate.rootDirectory, scope)
+    const candidatesByLayer = await Promise.all(layers.map(async ([scope, directory]) => ({
+      scope,
+      candidates: await collectCandidates(directory),
+    })));
+    const persisted: PersistedSkillRecord[] = [];
+    for (const { scope, candidates } of candidatesByLayer) {
+      const loadedCandidates = await Promise.all(candidates.map(async (candidate) => {
+        const file = await statSkill(candidate.filePath);
+        const cached = persistedByFile.get(candidate.filePath);
+        if (file && cached && cached.skill.rootDirectory === candidate.rootDirectory && cached.skill.scope === scope
+          && cached.skill.mtimeMs === file.mtimeMs && cached.size === file.size) {
+          return { file, skill: cached.skill };
+        }
+        const skill = await loadSkill(candidate.filePath, candidate.rootDirectory, scope, file)
           ?? previousByFile.get(candidate.filePath);
+        return { file, skill };
+      }));
+      for (const { file, skill } of loadedCandidates) {
+        const loaded = skill;
         if (loaded) next.set(loaded.name, loaded);
+        if (file && loaded && loaded.mtimeMs === file.mtimeMs) {
+          persisted.push({ skill: loaded, size: file.size });
+        }
       }
     }
 
     this.cache = next;
+    void this.writePersistentCache(persisted);
     return this.list();
   }
 
@@ -126,6 +159,30 @@ export class SkillLoader {
       throw new Error(`failed to install skill: ${sourceLabel}`);
     }
     return installed;
+  }
+
+  private persistentCachePath(): string {
+    return resolve(projectStateRoot(this.workspace), "cache", "skills-v1.json");
+  }
+
+  private async loadPersistentCache(): Promise<Map<string, PersistedSkillRecord>> {
+    try {
+      const parsed = JSON.parse(await readFile(this.persistentCachePath(), "utf8")) as unknown;
+      if (!isPersistedSkillCache(parsed)) return new Map();
+      return new Map(parsed.skills.map((entry) => [entry.skill.filePath, entry]));
+    } catch {
+      return new Map();
+    }
+  }
+
+  private async writePersistentCache(skills: readonly PersistedSkillRecord[]): Promise<void> {
+    try {
+      const path = this.persistentCachePath();
+      await mkdir(dirname(path), { recursive: true });
+      await writeFile(path, JSON.stringify({ version: SKILL_CACHE_VERSION, skills }), "utf8");
+    } catch {
+      // Cache persistence must never prevent skill discovery.
+    }
   }
 }
 
@@ -214,9 +271,12 @@ async function loadSkill(
   filePath: string,
   rootDirectory: string,
   scope: SkillScope,
+  knownFile?: Stats,
 ): Promise<SkillDefinition | undefined> {
   try {
-    const [content, file] = await Promise.all([readFile(filePath, "utf8"), stat(filePath)]);
+    const file = knownFile ?? await statSkill(filePath);
+    if (!file) return undefined;
+    const content = await readFile(filePath, "utf8");
     if (!file.isFile()) return undefined;
     const parsed = parseSkillContent(content);
     if (!parsed) return undefined;
@@ -224,6 +284,51 @@ async function loadSkill(
   } catch {
     return undefined;
   }
+}
+
+async function statSkill(filePath: string): Promise<Stats | undefined> {
+  try {
+    const file = await stat(filePath);
+    return file.isFile() ? file : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+function isPersistedSkillCache(value: unknown): value is PersistedSkillCache {
+  return isRecord(value)
+    && value.version === SKILL_CACHE_VERSION
+    && Array.isArray(value.skills)
+    && value.skills.every(isPersistedSkillRecord);
+}
+
+function isPersistedSkillRecord(value: unknown): value is PersistedSkillRecord {
+  return isRecord(value)
+    && typeof value.size === "number"
+    && Number.isFinite(value.size)
+    && value.size >= 0
+    && isSkillDefinition(value.skill);
+}
+
+function isSkillDefinition(value: unknown): value is SkillDefinition {
+  return isRecord(value)
+    && typeof value.name === "string"
+    && SKILL_NAME.test(value.name)
+    && typeof value.description === "string"
+    && Array.isArray(value.allowedTools)
+    && value.allowedTools.every((tool) => typeof tool === "string")
+    && typeof value.mode === "string"
+    && SKILL_MODES.has(value.mode as SkillMode)
+    && typeof value.context === "string"
+    && CONTEXT_LEVELS.has(value.context as SkillContextLevel)
+    && (value.model === undefined || typeof value.model === "string")
+    && typeof value.body === "string"
+    && typeof value.filePath === "string"
+    && typeof value.rootDirectory === "string"
+    && typeof value.scope === "string"
+    && SKILL_SCOPES.has(value.scope as SkillScope)
+    && typeof value.mtimeMs === "number"
+    && Number.isFinite(value.mtimeMs);
 }
 
 function parseSkillContent(

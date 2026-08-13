@@ -194,11 +194,13 @@ export class TerminalSession {
   async run(): Promise<void> {
     if (!existsSync(this.workspace)) throw new Error(`workspace does not exist: ${this.workspace}`);
     await ensureProjectStateRoot(this.workspace);
-    await this.ensureAgentStateRestored();
-    await this.initializeCommandIntegrations();
-    await this.openTrace();
-    await this.openSessionStore();
-    const history = await loadHistory();
+    const [history] = await Promise.all([
+      loadHistory(),
+      this.ensureAgentStateRestored(),
+      this.initializeCommandIntegrations(),
+      this.openTrace(),
+      this.openSessionStore(),
+    ]);
     const isTty = supportsTui(this.input, this.output);
     if (isTty) {
       try {
@@ -247,10 +249,12 @@ export class TerminalSession {
   async runOnce(prompt: string): Promise<Task> {
     if (!existsSync(this.workspace)) throw new Error(`workspace does not exist: ${this.workspace}`);
     await ensureProjectStateRoot(this.workspace);
-    await this.ensureAgentStateRestored();
-    await this.initializeCommandIntegrations();
-    await this.openTrace();
-    await this.openSessionStore();
+    await Promise.all([
+      this.ensureAgentStateRestored(),
+      this.initializeCommandIntegrations(),
+      this.openTrace(),
+      this.openSessionStore(),
+    ]);
     this.startMcpConnections();
     try {
       return await this.startTask(prompt, false, false, undefined, true);
@@ -621,9 +625,12 @@ export class TerminalSession {
   private async initializeCommandIntegrations(): Promise<void> {
     if (!this.commandIntegrationPromise) {
       this.commandIntegrationPromise = (async () => {
-        this.commandUsage = await CommandUsageTracker.load(this.workspace);
-        await this.agentDefinitionLoader.scan();
-        await this.loadCommandRegistry();
+        const [commandUsage] = await Promise.all([
+          CommandUsageTracker.load(this.workspace),
+          this.agentDefinitionLoader.scan(),
+          this.loadCommandRegistry(),
+        ]);
+        this.commandUsage = commandUsage;
       })();
     }
     await this.commandIntegrationPromise;
@@ -664,8 +671,10 @@ export class TerminalSession {
   }
 
   private async refreshSessionKnowledge(): Promise<void> {
-    const projectInstructions = await loadProjectInstructions({ workspace: this.workspace }).catch(() => "");
-    const memorySummary = await this.memoryManager.buildSummary().catch(() => "");
+    const [projectInstructions, memorySummary] = await Promise.all([
+      loadProjectInstructions({ workspace: this.workspace }).catch(() => ""),
+      this.memoryManager.buildSummary().catch(() => ""),
+    ]);
     const discoveredInstructions = [
       `Current date: ${new Date().toISOString().slice(0, 10)}`,
       projectInstructions,

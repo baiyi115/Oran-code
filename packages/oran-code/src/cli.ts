@@ -14,11 +14,6 @@ import {
   userConfigPath,
   userConfigReadPath,
 } from "./config.js";
-import { commandHelp } from "./commands.js";
-import { discoverWorkspace } from "./workspace.js";
-import { TerminalSession } from "./session.js";
-import { SqliteTraceStore } from "./trace.js";
-import { registerBuiltinTools, ToolRegistry } from "./tools.js";
 import type { UserConfig } from "./types.js";
 import { formatErrorDetail } from "./error-format.js";
 import { CLI_NAME, ensureProjectStateRoot, PRODUCT_NAME, PROJECT_STATE_DIRECTORY, projectStateRoot, USER_DATA_DIRECTORY } from "./paths.js";
@@ -27,7 +22,7 @@ const VERSION = "0.1.0";
 
 export async function main(argv = process.argv.slice(2)): Promise<void> {
   if (argv.includes("--help") || argv.includes("-h")) {
-    printHelp();
+    await printHelp();
     return;
   }
   if (argv.includes("--version")) {
@@ -45,13 +40,13 @@ export async function main(argv = process.argv.slice(2)): Promise<void> {
     return;
   }
   if (command === "tasks") {
-    listTasks(workspace, numberOption(argv, "--limit") ?? 20);
+    await listTasks(workspace, numberOption(argv, "--limit") ?? 20);
     return;
   }
   if (command === "show") {
     const taskId = firstPositional(argv.slice(1));
     if (!taskId) throw new Error(`usage: ${CLI_NAME} show TASK_ID [--workspace PATH]`);
-    showTask(workspace, taskId);
+    await showTask(workspace, taskId);
     return;
   }
   if (command === "config") {
@@ -66,6 +61,7 @@ export async function main(argv = process.argv.slice(2)): Promise<void> {
 
   if (prompt && command !== "tui") {
     const model = resolveModelConfig(config, requestedModel ?? config.agent?.lastModel);
+    const { TerminalSession } = await import("./session.js");
     const session = new TerminalSession({ workspace, model, config, approveAll });
     const task = await session.runOnce(prompt);
     if (task.state === "failed") process.exitCode = 1;
@@ -77,6 +73,7 @@ export async function main(argv = process.argv.slice(2)): Promise<void> {
   }
 
   const model = requestedModel ? resolveModelConfig(config, requestedModel) : undefined;
+  const { TerminalSession } = await import("./session.js");
   const session = new TerminalSession({ workspace, ...(model ? { model } : {}), config, approveAll });
   const removeSignalHandlers = installSignalHandlers(session);
   try {
@@ -89,7 +86,7 @@ export async function main(argv = process.argv.slice(2)): Promise<void> {
   if (process.exitCode === undefined) process.exitCode = 0;
 }
 
-function installSignalHandlers(session: TerminalSession): () => void {
+function installSignalHandlers(session: { cancel(): void }): () => void {
   const cancel = (): void => session.cancel();
   process.on("SIGINT", cancel);
   return () => process.off("SIGINT", cancel);
@@ -122,6 +119,10 @@ export function resolveWorkspace(requested: string | undefined): string {
 }
 
 async function inspectWorkspace(workspace: string): Promise<void> {
+  const [{ discoverWorkspace }, { registerBuiltinTools, ToolRegistry }] = await Promise.all([
+    import("./workspace.js"),
+    import("./tools.js"),
+  ]);
   const snapshot = await discoverWorkspace(workspace);
   console.log(snapshot.summary);
   const registry = new ToolRegistry();
@@ -133,12 +134,13 @@ async function inspectWorkspace(workspace: string): Promise<void> {
   }
 }
 
-function listTasks(workspace: string, limit: number): void {
+async function listTasks(workspace: string, limit: number): Promise<void> {
   const path = resolve(projectStateRoot(workspace), "trace.db");
   if (!existsSync(path)) {
     console.log(`No task trace at ${path}`);
     return;
   }
+  const { SqliteTraceStore } = await import("./trace.js");
   const trace = new SqliteTraceStore(path, workspace);
   try {
     for (const task of trace.listTasks(Math.max(1, limit))) {
@@ -150,9 +152,10 @@ function listTasks(workspace: string, limit: number): void {
   }
 }
 
-function showTask(workspace: string, taskId: string): void {
+async function showTask(workspace: string, taskId: string): Promise<void> {
   const path = resolve(projectStateRoot(workspace), "trace.db");
   if (!existsSync(path)) throw new Error(`no task trace at ${path}`);
+  const { SqliteTraceStore } = await import("./trace.js");
   const trace = new SqliteTraceStore(path, workspace);
   try {
     console.log(JSON.stringify(trace.exportTrace(taskId), null, 2));
@@ -286,7 +289,8 @@ function numberOption(args: readonly string[], name: string): number | undefined
   return value;
 }
 
-export function printHelp(): void {
+export async function printHelp(): Promise<void> {
+  const { commandHelp } = await import("./commands.js");
   console.log(`${PRODUCT_NAME} ${VERSION}
 
 Usage:
