@@ -108,6 +108,7 @@ export interface AssistantMessage {
   streaming?: boolean;
   turnId?: string;
   taskId?: string;
+  abortMessage?: string;
 }
 
 export interface ThoughtMessage {

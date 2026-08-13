@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import { TuiTranscriptRenderer, type TuiRendererLayout } from "../src/tui/renderer.js";
 import { createTuiState } from "../src/tui/state.js";
+import { workingIndicatorLine } from "../src/tui/status-indicator.js";
 import type { TuiState } from "../src/tui/types.js";
 import type { RuntimeEvent } from "../src/types.js";
 
@@ -65,5 +66,13 @@ describe("TuiTranscriptRenderer", () => {
 
     expect(state.transcript).toHaveLength(1);
     expect(state.transcript[0]).toMatchObject({ kind: "assistant", text: "hello", streaming: false });
+  });
+
+  it("hides the footer spinner while an assistant row streams", () => {
+    const state = createState();
+    state.streaming = true;
+    state.transcript.push({ id: "assistant-1", kind: "assistant", text: "partial", streaming: true });
+
+    expect(workingIndicatorLine(state, 0)).toBeUndefined();
   });
 });

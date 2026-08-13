@@ -567,10 +567,12 @@ function isRetainedMessage(value: unknown): value is Message {
 }
 function isTranscriptMessage(value: unknown): value is TranscriptMessage {
   if (!value || typeof value !== "object") return false;
-  const item = value as { id?: unknown; kind?: unknown; text?: unknown; [key: string]: unknown };
+  const item = value as { id?: unknown; kind?: unknown; text?: unknown; abortMessage?: unknown; [key: string]: unknown };
   if (typeof item.id !== "string" || typeof item.kind !== "string") return false;
   if (item.kind === "user") return typeof item.text === "string" && (item.queued === undefined || typeof item.queued === "boolean");
-  if (item.kind === "assistant") return typeof item.text === "string" && (item.streaming === undefined || typeof item.streaming === "boolean");
+  if (item.kind === "assistant") return typeof item.text === "string"
+    && (item.streaming === undefined || typeof item.streaming === "boolean")
+    && (item.abortMessage === undefined || typeof item.abortMessage === "string");
   if (item.kind === "thought") return typeof item.text === "string" && typeof item.expanded === "boolean"
     && (item.streaming === undefined || typeof item.streaming === "boolean");
   if (["system", "plan", "error"].includes(item.kind)) return typeof item.text === "string";

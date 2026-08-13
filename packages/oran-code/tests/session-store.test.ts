@@ -211,6 +211,31 @@ describe("SessionStore JSONL archives", () => {
     }
   });
 
+  it("rejects legacy transcript snapshots with a non-string abort message", async () => {
+    const root = await mkdtemp(join(tmpdir(), "liteagent-store-invalid-abort-"));
+    try {
+      const legacyPath = join(root, ".oran", "sessions.json");
+      await mkdir(join(root, ".oran"), { recursive: true });
+      const now = new Date().toISOString();
+      await writeFile(legacyPath, `${JSON.stringify([{
+        id: "session-invalid-abort",
+        name: "Invalid abort",
+        workspace: root,
+        createdAt: now,
+        updatedAt: now,
+        messages: [{ id: "assistant-1", kind: "assistant", text: "partial", abortMessage: 42 }],
+        history: [],
+      }])}\n`, "utf8");
+
+      const store = new SessionStore(root);
+      await store.open();
+
+      expect(store.list()).toEqual([]);
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
   it("generates sortable ids and removes only expired archives", async () => {
     expect(generateSessionId(1_000)).toMatch(/^rs-[0-9a-f]{6}$/);
     expect(generateSessionId(1_000).localeCompare(generateSessionId(1_001))).toBeLessThan(0);

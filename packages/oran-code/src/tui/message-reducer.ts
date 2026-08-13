@@ -87,7 +87,9 @@ export function reduceRuntimeEvent(state: TuiState, event: RuntimeEvent): void {
       const assistant = activeAssistant(state, event.turnId, event.taskId);
       if (!assistant && hasCompletedAssistant(state, event.turnId, event.taskId)) break;
       const target = assistant ?? ensureAssistant(state, event.turnId, event.taskId);
-      target.text = `${target.text}${target.text ? "\n" : ""}[${redactSecretText(event.message)}]`;
+      const abortMessage = redactSecretText(event.message);
+      target.text = `${target.text}${target.text ? "\n" : ""}[${abortMessage}]`;
+      target.abortMessage = abortMessage;
       target.streaming = false;
       state.streaming = false;
       state.assistantMessageId = undefined;

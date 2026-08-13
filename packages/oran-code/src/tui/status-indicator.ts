@@ -42,6 +42,7 @@ function hasVisibleLiveActivity(state: TuiState): boolean {
   return state.transcript.some((message) => {
     if (message.kind === "tool") return message.status === "running";
     if (message.kind === "thought") return message.streaming === true;
+    if (message.kind === "assistant") return message.streaming === true;
     return false;
   });
 }

@@ -61,6 +61,7 @@ export class TranscriptView {
 }
 
 function liveSignature(message: TranscriptMessage, liveTick: number): number {
+  if (message.kind === "assistant" && message.streaming) return liveTick;
   if (message.kind === "thought" && message.streaming) return liveTick;
   if (message.kind === "tool" && message.status === "running") return liveTick;
   return 0;

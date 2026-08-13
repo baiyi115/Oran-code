@@ -33,7 +33,12 @@ export class TerminalRenderer implements SessionRenderer {
   private readonly colorEnabled: boolean;
   private hooks: PromptOutputHooks | undefined;
   private assistantOpen = false;
+  private assistantSource = "turn";
   private assistantText = "";
+  /** Incomplete assistant line held until its newline arrives. */
+  private assistantLineBuffer = "";
+  /** Text already written to the output for the current assistant turn. */
+  private assistantFlushed = "";
 
   constructor(output: Writable = process.stdout) {
     this.output = output;
@@ -74,14 +79,21 @@ export class TerminalRenderer implements SessionRenderer {
     const label = source === "plan" ? "Plan" : model ? `Oran code [${model}]` : "Oran code";
     this.write(`${paint(`\n${label} > `, "boldCyan", this.colorEnabled)}`);
     this.assistantOpen = true;
+    this.assistantSource = source;
     this.assistantText = "";
+    this.assistantLineBuffer = "";
+    this.assistantFlushed = "";
   }
 
   assistantDelta(text: string): void {
     if (!text) return;
     if (!this.assistantOpen) this.assistantStart("", "turn");
-    this.write(text);
     this.assistantText += text;
+    // Buffer incomplete lines so raw markdown fragments ("####文字...") never
+    // stream into the terminal one character at a time. A line is flushed as
+    // soon as its newline arrives.
+    this.assistantLineBuffer += text;
+    this.flushCompletedAssistantLines();
   }
 
   assistantEnd(text: string): void {
@@ -89,12 +101,26 @@ export class TerminalRenderer implements SessionRenderer {
       if (text) {
         this.assistantStart("", "turn");
         this.write(text);
+        this.assistantFlushed = text;
       }
       this.finishAssistant();
       return;
     }
     if (text && text !== this.assistantText) {
-      this.write(text.slice(this.assistantText.length));
+      if (text.startsWith(this.assistantText)) {
+        // Normal incremental completion: route the missing suffix through the
+        // line buffer so it lands in order after the buffered partial tail.
+        this.assistantLineBuffer += text.slice(this.assistantText.length);
+        this.assistantText = text;
+      } else {
+        // A normal terminal cannot retract text that has already been written.
+        // Discard a divergent partial tail rather than appending a corrected
+        // suffix after stale output (for example, "helxo\nlo").
+        this.assistantLineBuffer = "";
+        this.assistantText = text;
+        const flushed = this.assistantFlushed;
+        if (text.startsWith(flushed)) this.assistantLineBuffer = text.slice(flushed.length);
+      }
     }
     this.finishAssistant();
   }
@@ -104,9 +130,13 @@ export class TerminalRenderer implements SessionRenderer {
       this.status(`[${message}]`, "yellow");
       return;
     }
+    this.flushAssistantBuffer();
     this.write(`\n${paint(`[${message}]`, "yellow", this.colorEnabled)}\n`);
     this.assistantOpen = false;
+    this.assistantSource = "turn";
     this.assistantText = "";
+    this.assistantLineBuffer = "";
+    this.assistantFlushed = "";
     this.endExternal();
   }
 
@@ -177,7 +207,7 @@ export class TerminalRenderer implements SessionRenderer {
       case "assistant_end": this.assistantEnd(event.text); break;
       case "assistant_abort": this.assistantAbort(event.message); break;
       case "plan": if (!event.streamed) this.plan(event.plan); break;
-      case "plan_complete": this.plan(event.plan); this.status(event.autoExecute ? "Plan complete; executing..." : "Plan complete.", "cyan"); break;
+      case "plan_complete": this.status(event.autoExecute ? "Plan complete; executing..." : "Plan complete.", "cyan"); break;
       case "tool_start": this.toolStart(event.call, event.permissionLevel); break;
       case "tool_result": this.toolResult(event.call, event.result); break;
       case "verify": this.verify(event.results); break;
@@ -235,10 +265,35 @@ export class TerminalRenderer implements SessionRenderer {
   }
 
   private finishAssistant(): void {
+    this.flushAssistantBuffer();
     this.write("\n");
     this.assistantOpen = false;
+    this.assistantSource = "turn";
     this.assistantText = "";
+    this.assistantLineBuffer = "";
+    this.assistantFlushed = "";
     this.endExternal();
+  }
+
+  private flushAssistantBuffer(): void {
+    if (this.assistantLineBuffer) {
+      this.flushAssistantText(this.assistantLineBuffer);
+      this.assistantLineBuffer = "";
+    }
+  }
+
+  private flushCompletedAssistantLines(): void {
+    const newline = this.assistantLineBuffer.lastIndexOf("\n");
+    if (newline < 0) return;
+    this.flushAssistantText(this.assistantLineBuffer.slice(0, newline + 1));
+    this.assistantLineBuffer = this.assistantLineBuffer.slice(newline + 1);
+  }
+
+  private flushAssistantText(text: string): void {
+    const displayText = this.assistantSource === "plan" ? stripPlanCompleteMarkers(text) : text;
+    if (!displayText) return;
+    this.write(displayText);
+    this.assistantFlushed += displayText;
   }
 
   private write(text: string): void {
@@ -278,4 +333,12 @@ function paint(value: string, style: Style, enabled: boolean): string {
 
 function truncate(value: string, limit: number): string {
   return value.length <= limit ? value : `${value.slice(0, limit)}\n...[truncated]`;
+}
+
+function stripPlanCompleteMarkers(value: string): string {
+  return value.split(/(?<=\n)/).filter((line) => !isPlanCompleteMarker(line)).join("");
+}
+
+function isPlanCompleteMarker(value: string): boolean {
+  return ["PLAN_COMPLETE", "<<PLAN_COMPLETE>>", "<plan_complete>", "</plan_complete>"].includes(value.trim());
 }

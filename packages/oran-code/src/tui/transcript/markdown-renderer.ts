@@ -40,7 +40,12 @@ interface InlineUnit {
   style: InlineStyle;
 }
 
-/** Reuses completed paragraphs while the currently streamed block grows. */
+/**
+ * Streamed markdown is buffered at block granularity: while streaming, only
+ * completed blocks are rendered (blank-line-terminated paragraphs and closed
+ * code fences). The in-progress block stays hidden until it completes or the
+ * assistant turn ends, so partial syntax like a bare "####" never flashes.
+ */
 export class MarkdownRenderer {
   private width = 0;
   private sourceValue = "";
@@ -68,6 +73,10 @@ export class MarkdownRenderer {
     }
 
     const tail = normalized.slice(this.stableEnd);
+    // While streaming, show only completed blocks. The in-progress block is
+    // buffered until it terminates (blank line, closing fence) or the turn
+    // ends and a final non-streaming render seals the message.
+    if (options.streaming) return this.stableLines;
     if (!tail) return this.stableLines;
     const tailLines = renderMarkdownInternal(tail, safeWidth, options);
     if (this.stableLines[this.stableLines.length - 1] === "" && tailLines[0] === "") {
@@ -103,7 +112,13 @@ export class MarkdownRenderer {
       if (newline < 0) return;
       const line = value.slice(this.scanOffset, newline).trimEnd();
       if (this.scanFence) {
-        if (isFenceClose(line, this.scanFence)) this.scanFence = undefined;
+        if (isFenceClose(line, this.scanFence)) {
+          this.scanFence = undefined;
+          // A fence block completes at its closing marker; commit the whole
+          // block so it appears once closed instead of waiting for the next
+          // blank line.
+          this.stableEnd = newline + 1;
+        }
       } else {
         this.scanFence = parseFenceOpen(line);
         if (!this.scanFence && !line.trim()) this.stableEnd = newline + 1;

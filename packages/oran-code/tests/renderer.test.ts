@@ -79,6 +79,41 @@ describe("TerminalRenderer", () => {
     expect(text).not.toContain("\u001b[40m");
   });
 
+  it("does not append a corrected suffix after a divergent streamed line", () => {
+    const captured = capture();
+    const renderer = new TerminalRenderer(captured.output);
+
+    renderer.assistantStart("chat", "turn");
+    renderer.assistantDelta("helxo\n");
+    renderer.assistantEnd("hello");
+
+    expect(captured.text()).toContain("helxo\n");
+    expect(captured.text()).not.toContain("helxo\nlo");
+  });
+
+  it("filters streamed plan markers and does not repeat the plan on completion", () => {
+    const captured = capture();
+    const renderer = new TerminalRenderer(captured.output);
+
+    renderer.assistantStart("", "plan");
+    renderer.assistantDelta("## Plan\n\n1. Do work\n\nPLAN_COMPLETE\n");
+    renderer.assistantEnd("## Plan\n\n1. Do work");
+    renderer.render({
+      version: 1,
+      type: "plan_complete",
+      taskId: "task-1",
+      sequence: 1,
+      timestamp: new Date(0).toISOString(),
+      plan: "## Plan\n\n1. Do work",
+      autoExecute: false,
+    });
+
+    const text = captured.text();
+    expect(text).not.toContain("PLAN_COMPLETE");
+    expect(text.match(/1\. Do work/g)).toHaveLength(1);
+    expect(text).toContain("Plan complete.");
+  });
+
   it("renders tool results, approvals, and verification status", () => {
     const captured = capture();
     const renderer = new TerminalRenderer(captured.output);

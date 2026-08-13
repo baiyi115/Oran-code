@@ -14,11 +14,22 @@ export function renderMessage(message: TranscriptMessage, width: number, context
   if (message.kind === "tool") return withMessageSpacing(renderToolMessage(message, width, context.liveTick));
   if (message.kind === "verification") return withMessageSpacing(renderVerification(message, width));
   if (message.kind === "thought") return withMessageSpacing(renderThought(message, width, context.liveTick));
-  if (message.kind === "assistant" && !message.text.trim()) return [];
+  if (message.kind === "assistant" && !message.text.trim() && !message.streaming) return [];
 
   const prefix = prefixFor(message.kind);
   const prefixWidth = prefixVisibleWidth(message.kind);
-  const text = message.kind === "user" && message.queued ? `[Queued] ${message.text}` : message.text;
+  let text = message.kind === "user" && message.queued ? `[Queued] ${message.text}` : message.text;
+  // An aborted turn appends "[reason]" to the assistant text. Keep that line
+  // out of the Markdown pass so cancellation reasons with markdown characters
+  // render as plain text instead of being parsed as syntax.
+  let abortMarker: string | undefined;
+  if (message.kind === "assistant" && message.abortMessage) {
+    const marker = `[${message.abortMessage}]`;
+    if (text.endsWith(marker)) {
+      text = text.slice(0, text.length - marker.length).replace(/\n+$/, "");
+      abortMarker = marker;
+    }
+  }
   const markdownOptions = { streaming: message.kind === "assistant" && Boolean(message.streaming) };
   const content = message.kind === "assistant" || message.kind === "plan"
     ? context.markdownRenderer
@@ -26,9 +37,25 @@ export function renderMessage(message: TranscriptMessage, width: number, context
       : renderMarkdown(text, Math.max(1, width - prefixWidth), markdownOptions)
     : wrapDisplayText(stripTerminalMarkup(text).trimEnd(), Math.max(1, width - prefixWidth));
 
+  const contentEmpty = !content.length;
   let lines: string[];
-  if (!content.length) lines = [prefix.trimEnd()];
+  if (contentEmpty) lines = [prefix.trimEnd()];
   else lines = content.map((line, index) => `${index === 0 ? prefix : " ".repeat(prefixWidth)}${line}`);
+
+  if (abortMarker) {
+    const indent = " ".repeat(prefixWidth);
+    for (const line of wrapDisplayText(abortMarker, Math.max(1, width - prefixWidth))) {
+      lines.push(`${indent}${ANSI.yellow}${line}${ANSI.reset}`);
+    }
+  }
+
+  // While the assistant turn streams, show a small blinking block so a long
+  // buffered paragraph never looks like the agent is stuck.
+  if (message.kind === "assistant" && message.streaming) {
+    const frame = (context.liveTick ?? 0) % 2 === 0 ? "▋" : "▌";
+    if (contentEmpty) lines = [];
+    lines.push(`${" ".repeat(prefixWidth)}${ANSI.gray}${frame}${ANSI.reset}`);
+  }
   return withMessageSpacing(lines);
 }
 
