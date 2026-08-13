@@ -1073,6 +1073,10 @@ export class TaskController {
     this.throwIfCancelled();
 
     if (approval === true) return undefined;
+    if (approval === "task") {
+      this.permission.allowForTask(call);
+      return undefined;
+    }
     if (approval === "always") {
       try {
         await this.permission.allowPermanently(call);

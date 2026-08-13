@@ -356,7 +356,7 @@ export type RuntimeEvent = {
   } & RuntimeEventPayloads[K];
 }[keyof RuntimeEventPayloads];
 
-export type ApprovalResponse = boolean | "always";
+export type ApprovalResponse = boolean | "task" | "always";
 export type ApprovalCallback = (
   call: ToolCall,
   level: number,

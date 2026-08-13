@@ -51,7 +51,8 @@ describe("TUI overlays", () => {
     expect(text).toContain("Tool: run_command");
     expect(text).not.toContain("Tool: run_command (L3)");
     expect(text).toContain("Command: pnpm test");
-    expect(text).toContain("{inverse}  Allow once");
+    expect(text).toContain("{inverse}  Allow for this task");
+    expect(text).toContain("Allow once");
     expect(text).toContain("Always allow");
     expect(text).toContain("Reject");
     expect(text).not.toContain("sk-super-secret-value");

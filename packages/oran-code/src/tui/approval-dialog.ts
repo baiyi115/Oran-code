@@ -4,7 +4,7 @@ import { highlightSelection } from "./overlay/select-list.js";
 import { visibleWidth, wrapDisplayText } from "./text-width.js";
 import { subagentOriginLabel, type SubagentOrigin } from "../subagent/types.js";
 
-export const APPROVAL_OPTIONS = ["Allow once", "Always allow", "Reject"] as const;
+export const APPROVAL_OPTIONS = ["Allow for this task", "Allow once", "Always allow", "Reject"] as const;
 
 export function approvalDialogLines(
   call: ToolCall,

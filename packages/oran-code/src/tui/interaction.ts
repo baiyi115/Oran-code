@@ -12,8 +12,9 @@ export function filterCommands(query: string, commands: readonly SlashCommand[] 
 }
 
 export function approvalResponse(index: number): ApprovalResponse {
-  if (index === 0) return true;
-  if (index === 1) return "always";
+  if (index === 0) return "task";
+  if (index === 1) return true;
+  if (index === 2) return "always";
   return false;
 }
 

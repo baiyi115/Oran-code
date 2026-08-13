@@ -10,7 +10,7 @@ import { composerValue, createTuiState, setComposerValue, setOverlay } from "./s
 import type { SessionOption, SessionView, TuiAppOptions, TuiState, TranscriptMessage } from "./types.js";
 import { appendSystemMessage } from "./message-reducer.js";
 import { composerCursorOffset, cursorVisualPosition, deleteBackward, deleteForward, insertText, moveCursor, moveToLineEdge, visualLines } from "./composer.js";
-import { TranscriptView } from "./transcript/transcript-view.js";
+import { TranscriptView, toolGroupId, toolGroups } from "./transcript/transcript-view.js";
 import { footerLines, workSummaryLine } from "./footer.js";
 import { approvalDialogLines } from "./approval-dialog.js";
 import type { SubagentOrigin } from "../subagent/types.js";
@@ -271,8 +271,17 @@ export class InkTuiApp {
     }
     if (key.ctrl && input === "o") {
       const reversed = [...this.state.transcript].reverse();
-      const target = reversed.find((message) => message.kind === "thought")
-        ?? reversed.find((message) => message.kind === "tool");
+      const target = reversed.find((message) => message.kind === "thought" || message.kind === "tool");
+      const latestGroup = toolGroups(this.state.transcript).at(-1);
+      if (latestGroup && target?.kind === "tool" && latestGroup.at(-1)?.id === target.id) {
+        const groupId = toolGroupId(latestGroup);
+        if (this.state.expandedToolGroupIds.has(groupId)) this.state.expandedToolGroupIds.delete(groupId);
+        else this.state.expandedToolGroupIds.add(groupId);
+        this.staticTranscriptGeneration += 1;
+        this.resetTranscriptViewport();
+        this.invalidate();
+        return;
+      }
       if (target && (target.kind === "tool" || target.kind === "thought")) {
         target.expanded = !target.expanded;
         this.invalidate();
@@ -618,7 +627,7 @@ export class InkTuiApp {
   private handleApprovalKey(input: string, key: Key): void {
     if (this.state.overlay.kind !== "approval") return;
     const selected = this.state.overlay.selectedIndex;
-    const next = key.upArrow ? Math.max(0, selected - 1) : key.downArrow ? Math.min(2, selected + 1) : selected;
+    const next = key.upArrow ? Math.max(0, selected - 1) : key.downArrow ? Math.min(3, selected + 1) : selected;
     if (key.escape) this.resolveApproval(false);
     else if (isSubmitKey(input, key)) this.resolveApproval(approvalResponse(next));
     else this.state.overlay = { ...this.state.overlay, selectedIndex: next };
@@ -681,6 +690,7 @@ export class InkTuiApp {
     if (session.modelWarning) this.state.session.modelWarning = session.modelWarning;
     else delete this.state.session.modelWarning;
     this.state.transcript = session.messages.map((message) => ({ ...message }));
+    this.state.expandedToolGroupIds.clear();
     if (session.modelWarning && !this.state.transcript.some((message) => message.kind === "error" && message.text === session.modelWarning)) {
       appendSystemMessage(this.state, session.modelWarning, "error");
     }

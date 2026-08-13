@@ -60,7 +60,7 @@ const TOOL_ALIASES: Readonly<Record<string, string>> = {
 };
 
 export class PermissionPolicy {
-  private readonly sessionAllows = new Set<string>();
+  private readonly taskAllows = new Set<string>();
   private readonly registeredKinds = new Map<string, ToolKind>();
 
   constructor(private readonly config: PermissionConfig) {}
@@ -106,8 +106,8 @@ export class PermissionPolicy {
       }
     }
 
-    if (this.sessionAllows.has(ruleKey(call, kind))) {
-      return decision("allow", "allowed for this process session", "session-rule", level);
+    if (this.taskAllows.has(ruleKey(call, kind))) {
+      return decision("allow", "allowed for the current task", "session-rule", level);
     }
 
     const layers: readonly [PermissionDecisionSource, string][] = [
@@ -123,9 +123,9 @@ export class PermissionPolicy {
     return modeDecision(this.config.mode, kind, level);
   }
 
-  allowForSession(call: ToolCall): void {
+  allowForTask(call: ToolCall): void {
     const kind = this.registeredKinds.get(canonicalTool(call.name)) ?? inferToolKind(call.name);
-    this.sessionAllows.add(ruleKey(call, kind));
+    this.taskAllows.add(ruleKey(call, kind));
   }
 
   async allowPermanently(call: ToolCall): Promise<void> {
@@ -229,7 +229,15 @@ function exactPattern(call: ToolCall, kind: ToolKind): string {
 }
 
 function ruleKey(call: ToolCall, kind: ToolKind): string {
-  return `${canonicalTool(call.name)}\u0000${exactPattern(call, kind)}`;
+  return `${canonicalTool(call.name)}\u0000${kind}\u0000${stableArguments(call.arguments)}`;
+}
+
+function stableArguments(value: unknown): string {
+  if (value === null || typeof value !== "object") return JSON.stringify(value);
+  if (Array.isArray(value)) return `[${value.map(stableArguments).join(",")}]`;
+  return `{${Object.keys(value as Record<string, unknown>).sort().map((key) => (
+    `${JSON.stringify(key)}:${stableArguments((value as Record<string, unknown>)[key])}`
+  )).join(",")}}`;
 }
 
 function formatRule(rule: PermissionRule): string {
