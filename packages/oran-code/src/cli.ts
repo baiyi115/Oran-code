@@ -20,6 +20,20 @@ import { CLI_NAME, ensureProjectStateRoot, PRODUCT_NAME, PROJECT_STATE_DIRECTORY
 
 const VERSION = "0.1.0";
 
+// Node 24 emits `ExperimentalWarning: SQLite is an experimental feature...` the
+// first time `node:sqlite` loads (trace store). Swallow exactly that warning so
+// it doesn't pollute the TUI, while every other warning passes through unchanged.
+const originalEmitWarning = process.emitWarning;
+process.emitWarning = ((warning: unknown, ...rest: unknown[]) => {
+  const type = typeof rest[0] === "string"
+    ? rest[0]
+    : (rest[0] as { type?: string } | undefined)?.type
+      ?? (warning instanceof Error ? warning.name : undefined);
+  const message = typeof warning === "string" ? warning : (warning as Error | undefined)?.message;
+  if (type === "ExperimentalWarning" && typeof message === "string" && message.includes("SQLite")) return;
+  return (originalEmitWarning as (...args: unknown[]) => void).call(process, warning, ...rest);
+}) as typeof process.emitWarning;
+
 export async function main(argv = process.argv.slice(2)): Promise<void> {
   if (argv.includes("--help") || argv.includes("-h")) {
     await printHelp();
