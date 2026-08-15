@@ -171,9 +171,9 @@ export class TerminalRenderer implements SessionRenderer {
   }
 
   retry(message: string, nextAttempt: number, maxRetries: number): void {
-    // Non-TUI path: show the failure immediately, then the retry notice.
-    this.status(`Attempt failed: ${message}`, "yellow");
-    this.status(`[retry ${nextAttempt}/${maxRetries}] retrying...`, "yellow");
+    // Non-TUI path: a single short line; the eventual success supersedes it.
+    const reason = message.trim().split(/\r?\n/)[0] || "request failed";
+    this.status(`retrying (${nextAttempt}/${maxRetries})${reason ? `: ${reason}` : ""}`, "yellow");
   }
 
   approval(call: ToolCall, level: number, description: string, origin: SubagentOrigin): void {

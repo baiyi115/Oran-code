@@ -689,7 +689,9 @@ export class InkTuiApp {
     else delete this.state.session.modelReference;
     if (session.modelWarning) this.state.session.modelWarning = session.modelWarning;
     else delete this.state.session.modelWarning;
-    this.state.transcript = session.messages.map((message) => ({ ...message }));
+    this.state.transcript = session.messages
+      .filter((message) => !isTransientRestoredMessage(message))
+      .map((message) => ({ ...message }));
     this.state.expandedToolGroupIds.clear();
     if (session.modelWarning && !this.state.transcript.some((message) => message.kind === "error" && message.text === session.modelWarning)) {
       appendSystemMessage(this.state, session.modelWarning, "error");
@@ -1115,6 +1117,28 @@ function findAnchoredLine(
   }
   if (first < 0) return -1;
   return Math.min(last, first + Math.max(0, lineOffset));
+}
+
+/**
+ * Transient failure artifacts (retry notices, abort-only turns, stale
+ * "Restored session" system lines) should not resurface when a session is
+ * loaded again — a later successful reply supersedes them.
+ */
+function isTransientRestoredMessage(message: TranscriptMessage): boolean {
+  if (message.kind === "system" && message.text.startsWith("Restored session ")) return true;
+  if (message.kind === "error") {
+    const text = message.text;
+    return (
+      /^Attempt \d+\/\d+ failed/.test(text) || // legacy retry notice
+      /^retrying \(\d+\/\d+\)/.test(text) || // current retry notice
+      /\nRetrying \(\d+\/\d+\)/.test(text)   // legacy multi-line retry
+    );
+  }
+  if (message.kind === "assistant" && message.abortMessage !== undefined && !message.streaming) {
+    const trimmed = message.text.trim();
+    if (trimmed.startsWith("[") && trimmed.endsWith("]")) return true;
+  }
+  return false;
 }
 
 

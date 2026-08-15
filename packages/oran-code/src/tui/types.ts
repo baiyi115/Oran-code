@@ -223,6 +223,8 @@ export interface TuiState {
   activeTaskUsage: UsageState;
   processedSequences: Set<string>;
   retiredTaskIds: Set<string>;
+  /** Transient retry-failure notice ids, cleared once a fresh response streams. */
+  retryErrorIds: Set<string>;
   transcriptScroll: TranscriptScrollState;
   lastTranscriptLines: number;
   lastTranscriptViewportLines: number;

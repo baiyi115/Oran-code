@@ -1,5 +1,6 @@
 import { redactSecretText, redactSecrets } from "./interaction.js";
 import { appendTranscriptMessage, getToolMessage } from "./state.js";
+import { truncateVisible } from "./text-width.js";
 import type { TuiState } from "./types.js";
 import type { RuntimeEvent, ToolCall, ToolResult, VerificationResult } from "../types.js";
 
@@ -51,6 +52,8 @@ export function reduceRuntimeEvent(state: TuiState, event: RuntimeEvent): void {
       if (state.streaming && state.assistantMessageId) break;
       if (event.turnId && findAssistantByTurnId(state, event.turnId, event.taskId)) break;
       finishAssistant(state);
+      clearRetryErrorNotices(state);
+      clearAbortOnlyAssistants(state);
       state.streaming = true;
       state.session.currentStep = event.step;
       state.assistantMessageId = appendTranscriptMessage(state, {
@@ -62,6 +65,7 @@ export function reduceRuntimeEvent(state: TuiState, event: RuntimeEvent): void {
       });
       break;
     case "assistant_delta": {
+      clearRetryErrorNotices(state);
       const assistant = ensureAssistant(state, event.turnId, event.taskId);
       assistant.text = stripPlanCompleteMarkers(assistant.text + redactSecretText(event.text));
       assistant.streaming = true;
@@ -174,12 +178,13 @@ export function reduceRuntimeEvent(state: TuiState, event: RuntimeEvent): void {
       break;
     case "retry": {
       const detail = redactSecretText(event.message).trim() || "request failed";
-      // Show the failure as it happens so the user sees why the agent paused,
-      // then note that another attempt is starting.
-      appendTranscriptMessage(state, {
+      // Keep the notice to a single short line; a later successful response clears it.
+      const reason = detail.split(/\r?\n/)[0] ?? "";
+      const id = appendTranscriptMessage(state, {
         kind: "error",
-        text: `Attempt ${event.attempt + 1}/${event.maxRetries + 1} failed: ${detail}\nRetrying (${event.nextAttempt}/${event.maxRetries})...`,
+        text: `retrying (${event.nextAttempt}/${event.maxRetries})${reason ? `: ${truncateVisible(reason, 60)}` : ""}`,
       });
+      state.retryErrorIds.add(id);
       state.session.status = `retrying (${event.nextAttempt}/${event.maxRetries})`;
       break;
     }
@@ -469,6 +474,31 @@ function finishRunningTools(
 function removeTranscriptMessage(state: TuiState, id: string): void {
   const index = state.transcript.findIndex((entry) => entry.id === id);
   if (index >= 0) state.transcript.splice(index, 1);
+}
+
+/** Remove transient retry-failure notices once a fresh response starts streaming. */
+function clearRetryErrorNotices(state: TuiState): void {
+  if (state.retryErrorIds.size === 0) return;
+  for (const id of state.retryErrorIds) removeTranscriptMessage(state, id);
+  state.retryErrorIds.clear();
+}
+
+/**
+ * Drop assistant turns that never produced real content (only an abort notice),
+ * e.g. a fetch failure that a later retry recovered from.
+ */
+function clearAbortOnlyAssistants(state: TuiState): void {
+  for (const message of [...state.transcript]) {
+    if (
+      message.kind === "assistant" &&
+      message.abortMessage !== undefined &&
+      !message.streaming &&
+      message.text.trim().startsWith("[") &&
+      message.text.trim().endsWith("]")
+    ) {
+      removeTranscriptMessage(state, message.id);
+    }
+  }
 }
 
 function usageDelta(next: Record<string, number>): TuiState["session"]["usage"] {
