@@ -80,6 +80,32 @@ export function truncateVisible(value: string, width: number): string {
   return `${result}…`;
 }
 
+/**
+ * Shorten a long path by keeping the drive/root and the trailing segments,
+ * collapsing the middle: "D:\Programming\project\Oran code" -> "D:\...\project\Oran code".
+ */
+export function abbreviatePath(path: string, width: number): string {
+  const safeWidth = Math.max(1, Math.floor(width));
+  if (visibleWidth(path) <= safeWidth) return path;
+  const parts = path.split(/[\\/]+/).filter(Boolean);
+  if (parts.length <= 1) return truncateVisible(path, safeWidth);
+  const head = parts[0]!;
+  const ellipsis = "...";
+  let tail: string[] = [];
+  for (let index = parts.length - 1; index >= 1; index -= 1) {
+    const candidate = [...tail, parts[index]!].join("\\");
+    if (visibleWidth(`${head}\\${ellipsis}\\${candidate}`) > safeWidth) {
+      if (tail.length === 0) {
+        // Even the last segment alone does not fit; fall back to tail truncation.
+        return truncateVisible(`${head}\\${ellipsis}\\${parts[index]}`, safeWidth);
+      }
+      break;
+    }
+    tail = [parts[index]!, ...tail];
+  }
+  return `${head}\\${ellipsis}\\${tail.join("\\")}`;
+}
+
 export function wrapDisplayText(value: string, width: number): string[] {
   const safeWidth = Math.max(1, Math.floor(width));
   return stripTerminalMarkup(value).replace(/\r\n/g, "\n").split("\n").flatMap((line) => {

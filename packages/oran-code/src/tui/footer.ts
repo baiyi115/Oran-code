@@ -1,5 +1,5 @@
 import type { TuiState } from "./types.js";
-import { truncateVisible, visibleWidth } from "./text-width.js";
+import { abbreviatePath, truncateVisible, visibleWidth } from "./text-width.js";
 import { isSessionBusy } from "./status-indicator.js";
 import { formatCompactDuration } from "./status-indicator.js";
 import { isCasualConversationPrompt } from "../prompt-intent.js";
@@ -27,15 +27,15 @@ export function footerLines(state: TuiState, width: number): string[] {
 
   const detail = [usage, queue, status].filter(Boolean).join(" · ");
   const lines = [truncateVisible(primary, available)];
-  if (!detail) return [...lines, truncateVisible(workspace, available)];
+  if (!detail) return [...lines, abbreviatePath(workspace, available)];
 
   const separator = "  ·  ";
   const detailWidth = visibleWidth(detail);
   const workspaceWidth = Math.max(12, available - detailWidth - visibleWidth(separator));
   if (workspaceWidth + detailWidth + visibleWidth(separator) <= available) {
-    lines.push(`${truncateVisible(workspace, workspaceWidth)}${separator}${detail}`);
+    lines.push(`${abbreviatePath(workspace, workspaceWidth)}${separator}${detail}`);
   } else {
-    lines.push(truncateVisible(workspace, available));
+    lines.push(abbreviatePath(workspace, available));
     lines.push(truncateVisible(detail, available));
   }
   return lines;

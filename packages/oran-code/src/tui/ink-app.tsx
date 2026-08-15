@@ -18,7 +18,7 @@ import { modelSelectorLines } from "./model-selector.js";
 import { commandPaletteLines } from "./command-palette.js";
 import { ANSI, COLORS, horizontalRule } from "./theme.js";
 import { highlightSelection } from "./overlay/select-list.js";
-import { graphemes, truncateVisible, visibleWidth } from "./text-width.js";
+import { abbreviatePath, graphemes, truncateVisible, visibleWidth } from "./text-width.js";
 import { scrollPercent, scrollTranscript, syncTranscriptScroll } from "./scroll-controller.js";
 import { currentSessionLine, sessionOptionLabel } from "./session-list.js";
 import { isSessionBusy, workingIndicatorLine } from "./status-indicator.js";
@@ -1362,7 +1362,7 @@ function oranWelcomeLines(state: TuiState, availableWidth: number): string[] {
     `${ANSI.orangeBold}>_ Oran code${ANSI.reset}`,
     "",
     `${ANSI.bold}${"model:".padEnd(labelWidth)}${ANSI.reset}${truncateVisible(model, valueWidth)}`,
-    `${ANSI.bold}${"directory:".padEnd(labelWidth)}${ANSI.reset}${truncateVisible(state.session.workspace, valueWidth)}`,
+    `${ANSI.bold}${"directory:".padEnd(labelWidth)}${ANSI.reset}${abbreviatePath(state.session.workspace, valueWidth)}`,
   ];
   const top = `${ANSI.gray}╭${"─".repeat(cardWidth - 2)}╮${ANSI.reset}`;
   const bottom = `${ANSI.gray}╰${"─".repeat(cardWidth - 2)}╯${ANSI.reset}`;
