@@ -44,6 +44,10 @@ export interface CursorPosition {
   column: number;
 }
 
+export interface PasteBlock {
+  text: string;
+}
+
 export interface ComposerState {
   lines: string[];
   cursor: CursorPosition;
@@ -51,6 +55,8 @@ export interface ComposerState {
   history: string[];
   historyIndex: number | undefined;
   historyDraft: string;
+  /** Folded paste payloads referenced by [paste #N +M lines] placeholders. */
+  pastes: PasteBlock[];
 }
 
 export interface TranscriptScrollState {

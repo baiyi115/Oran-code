@@ -7,7 +7,7 @@ import { commandCandidates } from "./command-palette.js";
 import { approvalResponse, moveSelection, navigateHistory } from "./interaction.js";
 import { TuiTranscriptRenderer } from "./renderer.js";
 import { composerValue, createTuiState, setComposerValue, setOverlay } from "./state.js";
-import type { SessionOption, SessionView, TuiAppOptions, TuiState, TranscriptMessage } from "./types.js";
+import type { ComposerState, PasteBlock, SessionOption, SessionView, TuiAppOptions, TuiState, TranscriptMessage } from "./types.js";
 import { appendSystemMessage } from "./message-reducer.js";
 import { composerCursorOffset, cursorVisualPosition, deleteBackward, deleteForward, insertText, moveCursor, moveToLineEdge, visualLines } from "./composer.js";
 import { TranscriptView, toolGroupId, toolGroups } from "./transcript/transcript-view.js";
@@ -361,11 +361,17 @@ export class InkTuiApp {
       // Idle Esc clears the draft; busy Esc is handled in handleKey before this.
       this.detachInputHistory();
       setComposerValue(this.state.composer, "");
+      this.state.composer.pastes = [];
     }
     else if (input && !key.ctrl && !key.meta) {
       // Multi-char payloads are paste events from Ink; keep newlines intact.
       if (input === "\r" || input === "\n") {
         // bare CR/LF already handled as submit above
+      } else if (input.includes("\n") || input.length > PASTE_FOLD_CHARS) {
+        // Fold large pastes into a short placeholder; the raw text is sent to
+        // the model on submit via expandPastes.
+        this.detachInputHistory();
+        insertText(this.state.composer, registerPaste(this.state.composer, input));
       } else {
         this.detachInputHistory();
         insertText(this.state.composer, input);
@@ -727,7 +733,11 @@ export class InkTuiApp {
     // Task/approval interactions still accept free-text so session can queue follow-ups.
     // Only block concurrent submits from the composer itself.
     if (this.submitBusy) return;
-    const value = (forcedCommand ?? composerValue(this.state.composer)).trim();
+    // Expand folded paste placeholders back to their raw text before sending;
+    // the composer only ever shows the short [paste #N +M lines] summary.
+    const value = forcedCommand
+      ? forcedCommand.trim()
+      : expandPastes(composerValue(this.state.composer), this.state.composer.pastes).trim();
     if (!value) return;
     this.submitBusy = true;
     const previousValue = composerValue(this.state.composer);
@@ -741,6 +751,9 @@ export class InkTuiApp {
     try {
       await this.options.onInput(value);
       accepted = true;
+      // Pastes are cleared only on success; on failure the composer is
+      // restored with its placeholders so they can be re-expanded.
+      this.state.composer.pastes = [];
       this.state.composer.history = [value, ...this.state.composer.history.filter((entry) => entry !== value)].slice(0, 1000);
       this.refreshContext();
     } catch (error) {
@@ -846,6 +859,7 @@ export class InkTuiApp {
       this.state.composer.historyDraft,
     );
     setComposerValue(this.state.composer, next.value);
+    this.state.composer.pastes = [];
     this.state.composer.historyIndex = next.index;
     this.state.composer.historyDraft = next.draft;
     this.updateComposerOverlay();
@@ -1139,6 +1153,26 @@ function isTransientRestoredMessage(message: TranscriptMessage): boolean {
     if (trimmed.startsWith("[") && trimmed.endsWith("]")) return true;
   }
   return false;
+}
+
+/** Pastes longer than this many characters (or any multi-line paste) fold. */
+const PASTE_FOLD_CHARS = 100;
+
+/** Register a folded paste payload and return its short placeholder text. */
+function registerPaste(composer: ComposerState, text: string): string {
+  const index = composer.pastes.length + 1;
+  const lineCount = text.split(/\r?\n/).length;
+  composer.pastes.push({ text });
+  return `[paste #${index} +${lineCount} lines]`;
+}
+
+/** Replace [paste #N +M lines] placeholders with the raw payloads they stand for. */
+function expandPastes(value: string, pastes: readonly PasteBlock[]): string {
+  if (!pastes.length || !value.includes("[paste #")) return value;
+  return value.replace(/\[paste #(\d+) \+\d+ lines\]/g, (match, rawIndex) => {
+    const index = Number(rawIndex) - 1;
+    return pastes[index]?.text ?? match;
+  });
 }
 
 

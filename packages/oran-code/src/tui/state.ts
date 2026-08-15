@@ -11,6 +11,7 @@ export function createComposerState(history: readonly string[] = []): ComposerSt
     history: [...history],
     historyIndex: undefined,
     historyDraft: "",
+    pastes: [],
   };
 }
 
