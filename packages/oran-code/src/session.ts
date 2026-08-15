@@ -6,15 +6,10 @@ import { promisify } from "node:util";
 import { dirname, resolve } from "node:path";
 import { legacyUserHistoryPath, loadConfig, loadConfigFile, resolveModelConfig, saveConfig, userConfigReadPath, userHistoryPath } from "./config.js";
 import { CommandRegistry, commandHelp, completeInput, formatModelReference, modelCandidates, parseSlashCommand, type SlashCommand } from "./commands.js";
-import { ContextManager } from "./context-manager.js";
-import { TaskController } from "./controller.js";
 import { createModelProvider } from "./provider.js";
 import { createRuntimeConfig } from "./runtime.js";
 import { TerminalRenderer, createPromptHooks, type SessionRenderer } from "./renderer.js";
-import { SqliteTraceStore } from "./trace.js";
 import { PERMISSION_MODES, createTask } from "./types.js";
-import { isPlanModeTool, registerBuiltinTools, ToolRegistry } from "./tools.js";
-import { InkTuiApp as TuiApp } from "./tui/ink-app.js";
 import { displaySessionName, firstConversationPrompt, isAutomaticSessionName, SessionStore, truncateSessionName, type StoredSession } from "./session-store.js";
 import type { ApprovalResponse, Message, ModelConfig, ModelProvider, ModelReference, OptionalSystemPromptModules, PermissionMode, ReasoningEffort, RuntimeEvent, RuntimeEventPayloads, SessionTitleMode, Task, ToolCall, ToolDefinition, ToolResult, UserConfig, WorkMode } from "./types.js";
 import type { SessionOption, SessionView } from "./tui/types.js";
@@ -23,27 +18,56 @@ import { formatErrorMessage } from "./error-format.js";
 import { registerDynamicMarkdownCommands } from "./dynamic-commands.js";
 import { CommandUsageTracker } from "./command-usage.js";
 import { assertSkillTools, registerSkillCommands, renderSkillPrompt, SkillLoader, type SkillDefinition } from "./skills.js";
-import { loadProjectInstructions } from "./project-instructions.js";
 import { MemoryManager } from "./memory-manager.js";
-import { MemoryExtractor } from "./memory-extractor.js";
-import { createHookEngine, type HookEngine, type HookNoticeQueue, type HookSubAgentExecutor } from "./hook/index.js";
+import type { HookEngine, HookNoticeQueue, HookSubAgentExecutor } from "./hook/index.js";
 import { CLI_NAME, ensureProjectStateRoot, PRODUCT_NAME, projectStateRoot } from "./paths.js";
-import { McpManager } from "./mcp/manager.js";
-import { backgroundTaskNotification, BackgroundAgentTaskManager } from "./subagent/background.js";
-import { SubagentCoordinator } from "./subagent/coordinator.js";
-import { AgentDefinitionLoader } from "./subagent/roles.js";
-import { SubagentRunner } from "./subagent/runner.js";
-import { StructuredSubagentScope } from "./subagent/scope.js";
-import { TeamManager } from "./subagent/team.js";
 import type { SubagentOrigin } from "./subagent/types.js";
-import { SnapshotStore } from "./snapshot.js";
-import { AgentStateStore } from "./subagent/state-store.js";
+import type { ContextManager } from "./context-manager.js";
+import type { TaskController } from "./controller.js";
+import type { SqliteTraceStore } from "./trace.js";
+import type { ToolRegistry } from "./tools.js";
+import type { InkTuiApp } from "./tui/ink-app.js";
+import type { MemoryExtractor } from "./memory-extractor.js";
+import type { McpManager } from "./mcp/manager.js";
+import type { BackgroundAgentTaskManager } from "./subagent/background.js";
+import type { AgentDefinitionLoader } from "./subagent/roles.js";
+import type { SubagentRunner } from "./subagent/runner.js";
+import type { TeamManager } from "./subagent/team.js";
+import type { SnapshotStore } from "./snapshot.js";
+import type { AgentStateStore } from "./subagent/state-store.js";
 
 const execAsync = promisify(exec);
 const HISTORY_FILE = userHistoryPath();
 const LEGACY_HISTORY_FILE = legacyUserHistoryPath();
 const SESSION_EXPIRY_DAYS = 30;
 const SESSION_GAP_REMINDER_DAYS = 7;
+
+/** Cached dynamic imports so cold-start stays light but first use pays once. */
+const loadInkApp = () => import("./tui/ink-app.js");
+const loadMcpManager = () => import("./mcp/manager.js");
+const loadController = () => import("./controller.js");
+const loadHookFacade = () => import("./hook/index.js");
+const loadContextManager = () => import("./context-manager.js");
+const loadTools = () => import("./tools.js");
+const loadTrace = () => import("./trace.js");
+const loadMemoryExtractor = () => import("./memory-extractor.js");
+const loadProjectInstructionsMod = () => import("./project-instructions.js");
+const loadSubagentBackground = () => import("./subagent/background.js");
+const loadSubagentCoordinator = () => import("./subagent/coordinator.js");
+const loadSubagentRoles = () => import("./subagent/roles.js");
+const loadSubagentRunner = () => import("./subagent/runner.js");
+const loadSubagentScope = () => import("./subagent/scope.js");
+const loadSubagentTeam = () => import("./subagent/team.js");
+const loadSubagentStateStore = () => import("./subagent/state-store.js");
+const loadSnapshot = () => import("./snapshot.js");
+
+interface AgentRuntimeServices {
+  readonly agentDefinitionLoader: AgentDefinitionLoader;
+  readonly agentStateStore: AgentStateStore;
+  readonly backgroundAgents: BackgroundAgentTaskManager;
+  readonly teams: TeamManager;
+  readonly snapshotStore: SnapshotStore;
+}
 
 export interface SessionOptions {
   workspace: string;
@@ -99,6 +123,7 @@ export class TerminalSession {
   private readonly output: NodeJS.WriteStream;
   private readline: Interface | undefined;
   private trace: SqliteTraceStore | undefined;
+  private traceOpen: Promise<void> | undefined;
   private controller: TaskController | undefined;
   private taskPromise: Promise<Task | undefined> | undefined;
   private shellPromise: Promise<void> | undefined;
@@ -130,7 +155,7 @@ export class TerminalSession {
   private quitRequested = false;
   private inputEnded = false;
   private readlineClosed = false;
-  private tui: TuiApp | undefined;
+  private tui: InkTuiApp | undefined;
   private readonly providerFactory: (model: ModelConfig) => ModelProvider;
   private stablePromptModules: OptionalSystemPromptModules;
   private readonly configuredStablePromptModules: OptionalSystemPromptModules;
@@ -155,11 +180,8 @@ export class TerminalSession {
   private mcpManager: McpManager | undefined;
   private mcpReady: Promise<void> | undefined;
   private mcpFailuresShown = false;
-  private readonly agentDefinitionLoader: AgentDefinitionLoader;
-  private readonly backgroundAgents: BackgroundAgentTaskManager;
-  private readonly teams: TeamManager;
-  private readonly snapshotStore: SnapshotStore;
-  private readonly agentStateStore: AgentStateStore;
+  private agentRuntime: AgentRuntimeServices | undefined;
+  private agentRuntimePromise: Promise<AgentRuntimeServices> | undefined;
   private agentStateRestore: Promise<void> | undefined;
 
   constructor(options: SessionOptions, input: NodeJS.ReadableStream = process.stdin, output: NodeJS.WriteStream = process.stdout) {
@@ -182,25 +204,52 @@ export class TerminalSession {
     this.stablePromptModules = { ...this.configuredStablePromptModules };
     this.memoryManager = new MemoryManager(this.workspace);
     this.skillLoader = new SkillLoader(this.workspace);
-    this.agentDefinitionLoader = new AgentDefinitionLoader(this.workspace);
-    this.agentStateStore = new AgentStateStore(this.workspace);
-    this.backgroundAgents = new BackgroundAgentTaskManager(this.agentStateStore, () => this.flushBackgroundNotifications());
-    this.teams = new TeamManager(this.agentStateStore);
-    this.snapshotStore = new SnapshotStore(this.workspace);
     this.configuredActiveSkills = options.stablePromptModules?.activeSkills;
     options.onCommandReloadReady?.(() => this.reloadCommands());
+  }
+
+  /** Lazily construct subagent/snapshot services so interactive cold start skips that module graph. */
+  private async ensureAgentRuntime(): Promise<AgentRuntimeServices> {
+    if (this.agentRuntime) return this.agentRuntime;
+    this.agentRuntimePromise ??= (async () => {
+      const [
+        { AgentDefinitionLoader },
+        { AgentStateStore },
+        { BackgroundAgentTaskManager },
+        { TeamManager },
+        { SnapshotStore },
+      ] = await Promise.all([
+        loadSubagentRoles(),
+        loadSubagentStateStore(),
+        loadSubagentBackground(),
+        loadSubagentTeam(),
+        loadSnapshot(),
+      ]);
+      const agentStateStore = new AgentStateStore(this.workspace);
+      const runtime: AgentRuntimeServices = {
+        agentDefinitionLoader: new AgentDefinitionLoader(this.workspace),
+        agentStateStore,
+        backgroundAgents: new BackgroundAgentTaskManager(agentStateStore, () => this.flushBackgroundNotifications()),
+        teams: new TeamManager(agentStateStore),
+        snapshotStore: new SnapshotStore(this.workspace),
+      };
+      this.agentRuntime = runtime;
+      return runtime;
+    })();
+    return this.agentRuntimePromise;
   }
 
   async run(): Promise<void> {
     if (!existsSync(this.workspace)) throw new Error(`workspace does not exist: ${this.workspace}`);
     await ensureProjectStateRoot(this.workspace);
+    // First paint only needs history + a blank session. Heavy integrations load in the background.
     const [history] = await Promise.all([
       loadHistory(),
-      this.ensureAgentStateRestored(),
-      this.initializeCommandIntegrations(),
-      this.openTrace(),
       this.openSessionStore(),
     ]);
+    void this.ensureAgentStateRestored().catch((error) => this.writeDebugLog(`agent state restore failed: ${String(error)}`));
+    void this.initializeCommandIntegrations().then(() => this.refreshTui()).catch((error) => this.writeDebugLog(`command integrations failed: ${String(error)}`));
+    void this.openTrace().catch((error) => this.writeDebugLog(`trace open failed: ${String(error)}`));
     const isTty = supportsTui(this.input, this.output);
     if (isTty) {
       try {
@@ -268,6 +317,8 @@ export class TerminalSession {
     if (!input) return;
 
     if (input.startsWith("/")) {
+      // Dynamic/skills commands may still be scanning after first paint.
+      await this.initializeCommandIntegrations();
       await this.handleCommand(input);
       return;
     }
@@ -309,8 +360,9 @@ export class TerminalSession {
 
   /** 首次需要时构造 Hook 引擎，并为当前任务绑定 Subagent Runner。 */
   private async ensureHookEngine(runner: SubagentRunner): Promise<HookEngine | undefined> {
+    const runtime = await this.ensureAgentRuntime();
     const subAgentExecutor: HookSubAgentExecutor = async (prompt, context) => {
-      const definition = this.agentDefinitionLoader.get("general");
+      const definition = runtime.agentDefinitionLoader.get("general");
       const abortController = new AbortController();
       this.hookSubagentAbortControllers.add(abortController);
       const run = runner.run({
@@ -341,6 +393,7 @@ export class TerminalSession {
       return this.hookEngine;
     }
     try {
+      const { createHookEngine } = await loadHookFacade();
       const built = await createHookEngine(this.workspace, {
         defaultCommandTimeoutMs: 60_000,
         log: (message) => { try { this.renderer.status(message); } catch { /* ignore */ } },
@@ -384,7 +437,32 @@ export class TerminalSession {
       throw error;
     }
     if (!isolated) await this.persistQueuedUserMessage(prompt);
-    await this.ensureMcpReady();
+    await Promise.all([
+      this.ensureMcpReady(),
+      this.openTrace(),
+      this.initializeCommandIntegrations(),
+    ]);
+    const [
+      agentRuntime,
+      { ToolRegistry, registerBuiltinTools },
+      { SubagentRunner },
+      { StructuredSubagentScope },
+      { SubagentCoordinator },
+      { backgroundTaskNotification },
+      { TaskController },
+      { ContextManager },
+      { createHookEngine },
+    ] = await Promise.all([
+      this.ensureAgentRuntime(),
+      loadTools(),
+      loadSubagentRunner(),
+      loadSubagentScope(),
+      loadSubagentCoordinator(),
+      loadSubagentBackground(),
+      loadController(),
+      loadContextManager(),
+      loadHookFacade(),
+    ]);
     const registry = new ToolRegistry();
     registerBuiltinTools(registry, this.workspace);
     this.registerMcpTools(registry);
@@ -434,10 +512,10 @@ export class TerminalSession {
       ? new StructuredSubagentScope(runner, runtimeConfig.subagent.forkWaitTimeoutMs)
       : undefined;
     new SubagentCoordinator({
-      roles: this.agentDefinitionLoader,
+      roles: agentRuntime.agentDefinitionLoader,
       runner,
-      background: this.backgroundAgents,
-      teams: this.teams,
+      background: agentRuntime.backgroundAgents,
+      teams: agentRuntime.teams,
       parentConversation: () => isolated ? derivedConversation : this.conversation,
       ...(structuredScope ? { scope: structuredScope } : {}),
       resolveModel: (reference) => resolveModelConfig(this.config, reference),
@@ -453,7 +531,7 @@ export class TerminalSession {
       conversation: isolated ? derivedConversation : this.conversation,
       contextManager: isolated
         ? new ContextManager({ workspace: this.workspace, conversation: derivedConversation })
-        : this.currentContextManager(),
+        : await this.currentContextManager(),
       approvalCallback: (call, level, description, requestId) => (
         this.requestApproval(call, level, description, { kind: "main" }, requestId)
       ),
@@ -470,7 +548,7 @@ export class TerminalSession {
         const reminders = derivedSkill
           ? [this.formatActiveSkillReminder(derivedSkill.name, renderSkillPrompt(derivedSkill))]
           : this.activeSkillReminders();
-        const notifications = this.backgroundAgents.drainNotifications().map(backgroundTaskNotification);
+        const notifications = agentRuntime.backgroundAgents.drainNotifications().map(backgroundTaskNotification);
         consumedBackgroundNotifications.push(...notifications);
         return [...reminders, ...notifications];
       },
@@ -480,7 +558,7 @@ export class TerminalSession {
       previousToolCalls: this.previousToolHistory,
       ...(this.previousReadonlyResults !== undefined ? { previousReadonlyResults: this.previousReadonlyResults } : {}),
       debugLogger: (message) => this.writeDebugLog(message),
-      ...(sessionId ? { snapshotStore: this.snapshotStore, snapshotSessionId: sessionId } : {}),
+      ...(sessionId ? { snapshotStore: agentRuntime.snapshotStore, snapshotSessionId: sessionId } : {}),
     });
     this.controller = controller;
     let completed = false;
@@ -512,7 +590,7 @@ export class TerminalSession {
       if (this.controller === controller) this.controller = undefined;
       const conversationSnapshot = controller.conversationSnapshot();
       consumedBackgroundNotifications.push(
-        ...this.backgroundAgents.drainNotifications().map(backgroundTaskNotification),
+        ...agentRuntime.backgroundAgents.drainNotifications().map(backgroundTaskNotification),
       );
       for (const notification of consumedBackgroundNotifications) {
         conversationSnapshot.push({
@@ -625,9 +703,10 @@ export class TerminalSession {
   private async initializeCommandIntegrations(): Promise<void> {
     if (!this.commandIntegrationPromise) {
       this.commandIntegrationPromise = (async () => {
+        const runtime = await this.ensureAgentRuntime();
         const [commandUsage] = await Promise.all([
           CommandUsageTracker.load(this.workspace),
-          this.agentDefinitionLoader.scan(),
+          runtime.agentDefinitionLoader.scan(),
           this.loadCommandRegistry(),
         ]);
         this.commandUsage = commandUsage;
@@ -659,11 +738,12 @@ export class TerminalSession {
     ];
   }
 
-  private currentContextManager(): ContextManager {
+  private async currentContextManager(): Promise<ContextManager> {
     const session = this.currentSession;
     if (!session) throw new Error("session context is not initialized");
     let manager = this.contextManagers.get(session.id);
     if (!manager) {
+      const { ContextManager } = await loadContextManager();
       manager = new ContextManager({ workspace: this.workspace, conversation: this.conversation });
       this.contextManagers.set(session.id, manager);
     }
@@ -671,6 +751,7 @@ export class TerminalSession {
   }
 
   private async refreshSessionKnowledge(): Promise<void> {
+    const { loadProjectInstructions } = await loadProjectInstructionsMod();
     const [projectInstructions, memorySummary] = await Promise.all([
       loadProjectInstructions({ workspace: this.workspace }).catch(() => ""),
       this.memoryManager.buildSummary().catch(() => ""),
@@ -760,7 +841,7 @@ export class TerminalSession {
       .filter((message) => message.metadata?.promptBlock !== "session-gap-reminder");
     const gapReminder = createSessionGapReminder(stored.updatedAt);
     if (gapReminder) this.conversation.unshift(gapReminder);
-    const manager = this.currentContextManager();
+    const manager = await this.currentContextManager();
     await this.compactRestoredConversation(manager);
     if (this.currentSession) this.currentSession.conversation = structuredClone(this.conversation);
     if (this.model) await this.rememberModelPreference(this.model);
@@ -768,13 +849,14 @@ export class TerminalSession {
 
   private async compactRestoredConversation(manager: ContextManager): Promise<void> {
     if (!this.model || !this.conversation.length) return;
+    const { ToolRegistry, registerBuiltinTools } = await loadTools();
     const registry = new ToolRegistry();
     registerBuiltinTools(registry, this.workspace);
     if (this.mcpManager) {
       await this.ensureMcpReady();
       this.registerMcpTools(registry);
     }
-    const tools = this.toolSchemasForCurrentMode(registry);
+    const tools = await this.toolSchemasForCurrentMode(registry);
     const requestModel: ModelConfig = { ...this.model, reasoningEffort: this.reasoningEffort };
     const contextWindow = manager.resolveContextWindow(requestModel);
     if (!manager.shouldAutoCompact(this.conversation, contextWindow, tools)) return;
@@ -909,7 +991,7 @@ export class TerminalSession {
       await this.waitForInteraction();
     }
     await this.persistTuiSession();
-    const stored = this.sessionStore.find(id);
+    const stored = await this.sessionStore.ensureConversation(id) ?? this.sessionStore.find(id);
     if (!stored) return undefined;
     await this.restoreStoredSession(stored, !this.explicitModel);
     await this.persistTuiSession(false);
@@ -964,7 +1046,7 @@ export class TerminalSession {
     this.hookEngine?.drainNotices();
     await this.refreshSessionKnowledge();
     this.contextManagers.delete(stored.id);
-    this.currentContextManager();
+    await this.currentContextManager();
     this.modelWarning = undefined;
     this.permissionMode = stored.permissionMode ?? (stored.workMode === "plan" ? "plan" : this.permissionMode);
     this.workMode = workModeForPermission(this.permissionMode);
@@ -1028,7 +1110,10 @@ export class TerminalSession {
 
   private async flushBackgroundNotifications(): Promise<void> {
     if (this.taskRunning()) return;
-    const notifications = this.backgroundAgents.drainNotifications().map(backgroundTaskNotification);
+    const runtime = this.agentRuntime;
+    if (!runtime) return;
+    const { backgroundTaskNotification } = await loadSubagentBackground();
+    const notifications = runtime.backgroundAgents.drainNotifications().map(backgroundTaskNotification);
     if (!notifications.length) return;
     for (const notification of notifications) {
       this.conversation.push({
@@ -1231,7 +1316,7 @@ export class TerminalSession {
         }
         this.renderer.clearTranscript();
         this.conversation = [];
-        this.currentContextManager().reset();
+        (await this.currentContextManager()).reset();
         await this.persistTuiSession();
         this.renderer.status("Transcript cleared.", "cyan");
         return;
@@ -1260,7 +1345,8 @@ export class TerminalSession {
           this.renderer.error("No active session is available for undo.");
           return;
         }
-        const result = await this.snapshotStore.undoLatest(sessionId);
+        const runtime = await this.ensureAgentRuntime();
+        const result = await runtime.snapshotStore.undoLatest(sessionId);
         if (result.ok) this.renderer.status(result.output, "cyan");
         else this.renderer.error(result.output);
         return;
@@ -1290,6 +1376,7 @@ export class TerminalSession {
         const usage = this.tui?.snapshot().session.usage;
         const inputTokens = usage?.inputTokens ?? tokenValue(this.latestUsage, "input_tokens", "inputTokens");
         const outputTokens = usage?.outputTokens ?? tokenValue(this.latestUsage, "output_tokens", "outputTokens");
+        const { ToolRegistry, registerBuiltinTools } = await loadTools();
         const registry = new ToolRegistry();
         registerBuiltinTools(registry, this.workspace);
         this.registerMcpTools(registry);
@@ -1298,7 +1385,7 @@ export class TerminalSession {
           `permission: ${this.permissionMode}`,
           `tokens.input: ${inputTokens}`,
           `tokens.output: ${outputTokens}`,
-          `tools: ${this.toolSchemasForCurrentMode(registry).length}`,
+          `tools: ${(await this.toolSchemasForCurrentMode(registry)).length}`,
           `mcp: ${servers.length} servers, ${this.mcpManager?.toolCount ?? 0} tools`,
           `memory.entries: ${countPromptEntries(this.stablePromptModules.longTermMemory)}`,
           `model: ${this.modelLabel()}`,
@@ -1360,6 +1447,7 @@ export class TerminalSession {
     }
 
     await this.ensureMcpReady();
+    const { ToolRegistry, registerBuiltinTools } = await loadTools();
     const registry = new ToolRegistry();
     registerBuiltinTools(registry, this.workspace);
     this.registerMcpTools(registry);
@@ -1473,7 +1561,8 @@ export class TerminalSession {
     if (!registry.has(search.name)) registry.register(search);
   }
 
-  private toolSchemasForCurrentMode(registry: ToolRegistry): Record<string, unknown>[] {
+  private async toolSchemasForCurrentMode(registry: ToolRegistry): Promise<Record<string, unknown>[]> {
+    const { isPlanModeTool } = await loadTools();
     return registry.schemas((tool) => {
       if (this.workMode === "plan" && !isPlanModeTool(tool)) return false;
       return !this.mcpManager?.isMcpTool(tool.name) || this.mcpManager.isActivated(tool.name);
@@ -1481,12 +1570,15 @@ export class TerminalSession {
   }
 
   private startMcpConnections(): void {
-    if (this.mcpManager) return;
-    this.mcpManager = new McpManager(this.config.mcpServers ?? {}, this.workspace);
-    this.mcpReady = this.mcpManager.connect().then(() => {
+    if (this.mcpManager || this.mcpReady) return;
+    this.mcpReady = (async () => {
+      const { McpManager } = await loadMcpManager();
+      if (this.mcpManager) return;
+      this.mcpManager = new McpManager(this.config.mcpServers ?? {}, this.workspace);
+      await this.mcpManager.connect();
       this.injectMcpSystemMessages();
       this.refreshTui();
-    });
+    })();
   }
 
   private async ensureMcpReady(): Promise<void> {
@@ -1619,7 +1711,7 @@ export class TerminalSession {
       const next = resolveModelConfig(fresh, argument);
       this.model = next;
       this.reasoningEffort = next.reasoningEffort ?? "medium";
-      this.currentContextManager().resetUsageAnchor();
+      (await this.currentContextManager()).resetUsageAnchor();
       this.modelWarning = undefined;
       this.renderer.status(`Model set to ${formatModelReference(this.model)}.`, "cyan");
       this.refreshTui();
@@ -1674,11 +1766,12 @@ export class TerminalSession {
     await this.ensureMcpReady();
     const sessionId = this.currentSession?.id;
     const sessionGeneration = this.sessionGeneration;
-    const manager = this.currentContextManager();
+    const manager = await this.currentContextManager();
+    const { ToolRegistry, registerBuiltinTools } = await loadTools();
     const registry = new ToolRegistry();
     registerBuiltinTools(registry, this.workspace);
     this.registerMcpTools(registry);
-    const tools = this.toolSchemasForCurrentMode(registry);
+    const tools = await this.toolSchemasForCurrentMode(registry);
     const requestModel: ModelConfig = { ...this.model, reasoningEffort: this.reasoningEffort };
     const contextWindow = manager.resolveContextWindow(requestModel);
     const beforeTokens = manager.estimateTokens(this.conversation, tools);
@@ -1753,7 +1846,8 @@ export class TerminalSession {
 
   private async runTui(history: readonly string[]): Promise<void> {
     const isRunning = (): boolean => this.interactionRunning() || this.hasPendingApprovals();
-    const tui = new TuiApp({
+    const { InkTuiApp } = await loadInkApp();
+    const tui = new InkTuiApp({
       input: this.input,
       output: this.output,
       getWorkspace: () => this.workspace,
@@ -1939,23 +2033,26 @@ export class TerminalSession {
     if (!snapshot || memorySnapshotDelta(previous, snapshot) < 40) return;
     this.pendingMemorySnapshots.set(snapshot, sessionId);
     const modelKey = `${model.provider}/${model.model}/${model.baseUrl ?? ""}`;
-    if (!this.memoryExtractor || (!this.memoryExtractor.isRunning() && this.memoryExtractorModelKey !== modelKey)) {
-      this.memoryExtractor = new MemoryExtractor({
-        manager: this.memoryManager,
-        provider: this.providerFactory(model),
-        onProcessed: (processedSnapshot, notes, succeeded) => {
-          const processedSessionId = this.pendingMemorySnapshots.get(processedSnapshot);
-          this.pendingMemorySnapshots.delete(processedSnapshot);
-          if (!processedSessionId) return;
-          if (succeeded) this.memorySnapshots.set(processedSessionId, processedSnapshot);
-          if (notes.length && this.currentSession?.id === processedSessionId) {
-            this.renderer.status(`Saved memory: ${notes.map((note) => note.id).join(", ")}.`, "cyan");
-          }
-        },
-      });
-      this.memoryExtractorModelKey = modelKey;
-    }
-    void this.memoryExtractor.extract(snapshot).catch(() => undefined);
+    void (async () => {
+      if (!this.memoryExtractor || (!this.memoryExtractor.isRunning() && this.memoryExtractorModelKey !== modelKey)) {
+        const { MemoryExtractor } = await loadMemoryExtractor();
+        this.memoryExtractor = new MemoryExtractor({
+          manager: this.memoryManager,
+          provider: this.providerFactory(model),
+          onProcessed: (processedSnapshot, notes, succeeded) => {
+            const processedSessionId = this.pendingMemorySnapshots.get(processedSnapshot);
+            this.pendingMemorySnapshots.delete(processedSnapshot);
+            if (!processedSessionId) return;
+            if (succeeded) this.memorySnapshots.set(processedSessionId, processedSnapshot);
+            if (notes.length && this.currentSession?.id === processedSessionId) {
+              this.renderer.status(`Saved memory: ${notes.map((note) => note.id).join(", ")}.`, "cyan");
+            }
+          },
+        });
+        this.memoryExtractorModelKey = modelKey;
+      }
+      await this.memoryExtractor.extract(snapshot).catch(() => undefined);
+    })();
   }
 
   private complete(
@@ -1998,7 +2095,8 @@ export class TerminalSession {
   }
 
   private async generateModelSessionTitle(sessionId: string, model: ModelConfig, signal: AbortSignal): Promise<void> {
-    const prompt = firstConversationPrompt(this.sessionStore.find(sessionId)?.conversation ?? []);
+    const stored = await this.sessionStore.ensureConversation(sessionId) ?? this.sessionStore.find(sessionId);
+    const prompt = firstConversationPrompt(stored?.conversation ?? []);
     if (!prompt || !await this.markTitleGenerationAttempted(sessionId)) return;
 
     const configuredModel = this.config.sessionTitles?.model
@@ -2075,14 +2173,27 @@ export class TerminalSession {
   }
 
   private async openTrace(): Promise<void> {
-    this.trace = await SqliteTraceStore.open(resolve(projectStateRoot(this.workspace), "trace.db"), this.workspace);
+    if (this.trace) return;
+    this.traceOpen ??= (async () => {
+      const { SqliteTraceStore } = await loadTrace();
+      if (this.trace) return;
+      this.trace = await SqliteTraceStore.open(resolve(projectStateRoot(this.workspace), "trace.db"), this.workspace);
+    })().catch((error) => {
+      // Allow a later attempt to retry a transient open failure.
+      this.traceOpen = undefined;
+      throw error;
+    });
+    await this.traceOpen;
   }
 
   private async ensureAgentStateRestored(): Promise<void> {
-    this.agentStateRestore ??= Promise.all([
-      this.backgroundAgents.restore(),
-      this.teams.restore(),
-    ]).then(() => undefined);
+    this.agentStateRestore ??= (async () => {
+      const runtime = await this.ensureAgentRuntime();
+      await Promise.all([
+        runtime.backgroundAgents.restore(),
+        runtime.teams.restore(),
+      ]);
+    })();
     await this.agentStateRestore;
   }
 
@@ -2101,6 +2212,7 @@ export class TerminalSession {
   private async closeTrace(): Promise<void> {
     this.trace?.close();
     this.trace = undefined;
+    this.traceOpen = undefined;
   }
 
   private async shutdown(): Promise<void> {
@@ -2109,13 +2221,19 @@ export class TerminalSession {
     for (const controller of this.titleAbortControllers) controller.abort();
     await this.waitForTask();
     await this.waitForCompaction();
-    this.backgroundAgents.interruptAll();
+    const runtime = this.agentRuntime;
+    // Ensure background agent state restore finished before tearing services down,
+    // so teams.restore() can never race teams.shutdown() on a quick exit.
+    await this.agentStateRestore?.catch(() => undefined);
+    runtime?.backgroundAgents.interruptAll();
     for (const abortController of this.hookSubagentAbortControllers) abortController.abort();
-    await this.teams.shutdown();
-    await this.backgroundAgents.waitForIdle();
-    await this.backgroundAgents.flush();
-    await this.teams.flush();
-    await this.agentStateStore.flush();
+    if (runtime) {
+      await runtime.teams.shutdown();
+      await runtime.backgroundAgents.waitForIdle();
+      await runtime.backgroundAgents.flush();
+      await runtime.teams.flush();
+      await runtime.agentStateStore.flush();
+    }
     await Promise.allSettled([...this.hookSubagentJobs]);
     await this.persistTuiSession();
     await Promise.allSettled([...this.titleJobs]);
@@ -2185,9 +2303,13 @@ function workModeForPermission(mode: PermissionMode): WorkMode {
 }
 
 function isReusableBlankSession(session: StoredSession): boolean {
-  return isAutomaticSessionName(session)
-    && session.messages.length === 0
-    && (session.conversation?.length ?? 0) === 0;
+  if (!isAutomaticSessionName(session) || session.messages.length !== 0) return false;
+  // Prefer the derived archive counter written while the body was known.
+  if (session.archiveMessageCount !== undefined) return session.archiveMessageCount === 0;
+  // Conversation already materialised.
+  if (session.conversation !== undefined) return session.conversation.length === 0;
+  // Metadata-only open without a known body size must not look blank.
+  return false;
 }
 
 function createSessionGapReminder(updatedAt: string, now = new Date()): Message | undefined {
