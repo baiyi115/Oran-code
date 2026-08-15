@@ -161,6 +161,8 @@ export class TerminalSession {
   private readonly configuredStablePromptModules: OptionalSystemPromptModules;
   private readonly memoryManager: MemoryManager;
   private memoryExtractor: MemoryExtractor | undefined;
+  private memoryExtractorInit: Promise<MemoryExtractor> | undefined;
+  private readonly memoryExtractionJobs = new Set<Promise<void>>();
   private memoryExtractorModelKey: string | undefined;
   private readonly memorySnapshots = new Map<string, string>();
   private readonly pendingMemorySnapshots = new Map<string, string>();
@@ -2033,26 +2035,49 @@ export class TerminalSession {
     if (!snapshot || memorySnapshotDelta(previous, snapshot) < 40) return;
     this.pendingMemorySnapshots.set(snapshot, sessionId);
     const modelKey = `${model.provider}/${model.model}/${model.baseUrl ?? ""}`;
-    void (async () => {
-      if (!this.memoryExtractor || (!this.memoryExtractor.isRunning() && this.memoryExtractorModelKey !== modelKey)) {
-        const { MemoryExtractor } = await loadMemoryExtractor();
-        this.memoryExtractor = new MemoryExtractor({
-          manager: this.memoryManager,
-          provider: this.providerFactory(model),
-          onProcessed: (processedSnapshot, notes, succeeded) => {
-            const processedSessionId = this.pendingMemorySnapshots.get(processedSnapshot);
-            this.pendingMemorySnapshots.delete(processedSnapshot);
-            if (!processedSessionId) return;
-            if (succeeded) this.memorySnapshots.set(processedSessionId, processedSnapshot);
-            if (notes.length && this.currentSession?.id === processedSessionId) {
-              this.renderer.status(`Saved memory: ${notes.map((note) => note.id).join(", ")}.`, "cyan");
-            }
-          },
-        });
-        this.memoryExtractorModelKey = modelKey;
-      }
-      await this.memoryExtractor.extract(snapshot).catch(() => undefined);
+    const job = (async () => {
+      const extractor = await this.ensureMemoryExtractor(model, modelKey);
+      await extractor.extract(snapshot).catch(() => undefined);
     })();
+    this.memoryExtractionJobs.add(job);
+    void job.then(
+      () => this.memoryExtractionJobs.delete(job),
+      () => this.memoryExtractionJobs.delete(job),
+    );
+  }
+
+  private ensureMemoryExtractor(model: ModelConfig, modelKey: string): Promise<MemoryExtractor> {
+    const current = this.memoryExtractor;
+    if (current && (current.isRunning() || this.memoryExtractorModelKey === modelKey)) return Promise.resolve(current);
+    if (this.memoryExtractorInit) return this.memoryExtractorInit;
+
+    const initialization = (async () => {
+      const existing = this.memoryExtractor;
+      if (existing && (existing.isRunning() || this.memoryExtractorModelKey === modelKey)) return existing;
+      const { MemoryExtractor } = await loadMemoryExtractor();
+      const extractor = new MemoryExtractor({
+        manager: this.memoryManager,
+        provider: this.providerFactory(model),
+        onProcessed: (processedSnapshot, notes, succeeded) => {
+          const processedSessionId = this.pendingMemorySnapshots.get(processedSnapshot);
+          this.pendingMemorySnapshots.delete(processedSnapshot);
+          if (!processedSessionId) return;
+          if (succeeded) this.memorySnapshots.set(processedSessionId, processedSnapshot);
+          if (notes.length && this.currentSession?.id === processedSessionId) {
+            this.renderer.status(`Saved memory: ${notes.map((note) => note.id).join(", ")}.`, "cyan");
+          }
+        },
+      });
+      this.memoryExtractor = extractor;
+      this.memoryExtractorModelKey = modelKey;
+      return extractor;
+    })();
+    this.memoryExtractorInit = initialization;
+    void initialization.then(
+      () => { if (this.memoryExtractorInit === initialization) this.memoryExtractorInit = undefined; },
+      () => { if (this.memoryExtractorInit === initialization) this.memoryExtractorInit = undefined; },
+    );
+    return initialization;
   }
 
   private complete(
@@ -2237,6 +2262,10 @@ export class TerminalSession {
     await Promise.allSettled([...this.hookSubagentJobs]);
     await this.persistTuiSession();
     await Promise.allSettled([...this.titleJobs]);
+    await this.memoryExtractorInit?.catch(() => undefined);
+    while (this.memoryExtractionJobs.size > 0) {
+      await Promise.allSettled([...this.memoryExtractionJobs]);
+    }
     await this.memoryExtractor?.waitForIdle();
     await this.mcpManager?.close();
     const tui = this.tui;
