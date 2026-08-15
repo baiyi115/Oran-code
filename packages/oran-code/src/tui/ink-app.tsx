@@ -1330,7 +1330,7 @@ function InkRoot({ app, revision }: { app: InkTuiApp; revision: number }): React
         <Text dimColor>{horizontalRule(width)}</Text>
         <Text>
           <Text color={COLORS.accent} bold>{composerPrefix(state.overlay.kind).trimEnd()}</Text>
-          <Text>{composerPrefix(state.overlay.kind).endsWith(" ") ? " " : ""}{renderComposerLines(editorLines, cursor.row, cursor.column)}</Text>
+          <Text>{composerPrefix(state.overlay.kind).endsWith(" ") ? " " : ""}{renderComposerLines(editorLines, cursor.row, cursor.column, busy)}</Text>
           {ghostCommandSuggestion(state, composerValue(state.composer)) ? <Text dimColor>{ghostCommandSuggestion(state, composerValue(state.composer))}</Text> : null}
         </Text>
         <Text dimColor>{horizontalRule(width)}</Text>
@@ -1518,16 +1518,18 @@ function renderComposerLines(
   editorLines: ReturnType<typeof visualLines>,
   cursorRow: number,
   cursorColumn: number,
+  busy: boolean,
 ): React.JSX.Element {
   // Real terminal cursor is also parked for IME; draw an inverse cell so the caret
   // stays visibly glued to the input box even if the host cursor briefly drifts.
+  // While a task is running the caret is hidden so the input line stays still.
   const lines = editorLines.length ? editorLines : [{ text: "", logicalLine: 0, startColumn: 0 }];
   const safeRow = Math.max(0, Math.min(lines.length - 1, cursorRow));
   return (
     <Text>
       {lines.map((line, index) => {
         const prefix = index === 0 ? "" : "\n  ";
-        if (index !== safeRow) {
+        if (index !== safeRow || busy) {
           return <Text key={`composer-line-${index}`}>{prefix}{line.text || " "}</Text>;
         }
         return <Text key={`composer-line-${index}`}>{prefix}{renderComposerLineWithCaret(line.text, cursorColumn)}</Text>;
