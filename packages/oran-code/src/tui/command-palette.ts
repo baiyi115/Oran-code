@@ -13,8 +13,18 @@ export function commandCandidates(
   return commands
     .map((command, index) => ({ command, index, score: commandMatchScore(command, query) }))
     .filter((entry) => entry.score > 0)
-    .sort((left, right) => right.score - left.score || left.index - right.index)
+    // Built-in commands (local/ui) always outrank skill commands (prompt/isolated-skill),
+    // then by match score, then by registration order.
+    .sort((left, right) =>
+      commandKindRank(right.command) - commandKindRank(left.command)
+      || right.score - left.score
+      || left.index - right.index,
+    )
     .map((entry) => entry.command);
+}
+
+function commandKindRank(command: SlashCommand): number {
+  return command.kind === "local" || command.kind === "ui" ? 1 : 0;
 }
 
 export function commandPaletteLines(
@@ -59,6 +69,9 @@ function commandMatchScore(command: SlashCommand, query: string): number {
   if (aliases.includes(query)) return 450;
   if (name.startsWith(query)) return 400 - Math.min(100, name.length - query.length);
   if (aliases.some((alias) => alias.startsWith(query))) return 350;
+  // Descriptions rank below name/alias matches so they fill in when the
+  // user searches by topic (e.g. "resume" finds a command whose description mentions resumes).
+  if (command.description.toLowerCase().includes(query)) return 300;
   return 0;
 }
 
