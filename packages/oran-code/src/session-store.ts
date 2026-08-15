@@ -244,13 +244,17 @@ export class SessionStore {
     const archivePath = this.archivePath(id);
     const statePath = this.statePath(id);
     const archiveText = records.length ? `${records.map((record) => JSON.stringify(record)).join("\n")}\n` : "";
-    const stateText = `${JSON.stringify(stateSnapshotRecord(session, timestamp))}\n`;
     const operation = this.writeTail.then(async () => {
       await mkdir(dirname(archivePath), { recursive: true });
-      // Write the replaceable snapshot first. If the append fails, retrying cannot
-      // duplicate semantic records because the sidecar contains no conversation.
-      await replaceTextFile(statePath, stateText);
       if (archiveText) await appendFile(archivePath, archiveText, "utf8");
+      // The sidecar is written only after the archive append succeeds and records
+      // the resulting size. A cold start can therefore reject a snapshot that is
+      // ahead of, or behind, the append-only archive.
+      const archiveSize = (await stat(archivePath)).size;
+      const snapshotSession = { ...session, archiveSize };
+      // The archive is authoritative. If this derived snapshot fails, the next
+      // open() will rebuild it from JSONL instead of retrying the append.
+      await replaceTextFile(statePath, `${JSON.stringify(stateSnapshotRecord(snapshotSession, timestamp))}\n`).catch(() => undefined);
     });
     this.writeTail = operation.catch(() => undefined);
     await operation;
@@ -265,7 +269,6 @@ export class SessionStore {
   ): Promise<void> {
     const archivePath = this.archivePath(id);
     const statePath = this.statePath(id);
-    const stateText = `${JSON.stringify(stateSnapshotRecord(session, timestamp))}\n`;
     const compactedRecords = compactArchive
       ? [stateRecord(session, timestamp), ...records.filter((record) => record.type !== "state")]
       : [];
@@ -274,8 +277,10 @@ export class SessionStore {
       : undefined;
     const operation = this.writeTail.then(async () => {
       await mkdir(dirname(archivePath), { recursive: true });
-      await replaceTextFile(statePath, stateText);
       if (archiveText !== undefined) await replaceTextFile(archivePath, archiveText);
+      const archiveSize = (await stat(archivePath)).size;
+      const snapshotSession = { ...session, archiveSize };
+      await replaceTextFile(statePath, `${JSON.stringify(stateSnapshotRecord(snapshotSession, timestamp))}\n`).catch(() => undefined);
     });
     this.writeTail = operation.catch(() => undefined);
     await operation;
@@ -302,7 +307,8 @@ export class SessionStore {
   private async readMetadata(path: string, fileId: string): Promise<{ session: StoredSession; mtimeMs: number; conversationLoaded: boolean } | undefined> {
     try {
       const [details, snapshot] = await Promise.all([stat(path), this.readStateSnapshot(fileId)]);
-      if (snapshot?.session && isStoredSessionState(snapshot.session) && snapshot.session.id === fileId) {
+      if (snapshot?.session && isStoredSessionState(snapshot.session) && snapshot.session.id === fileId
+        && snapshot.session.archiveSize === details.size) {
         const session: StoredSession = {
           ...structuredClone(snapshot.session),
           archiveSize: snapshot.session.archiveSize ?? details.size,
@@ -363,8 +369,11 @@ export class SessionStore {
       const conversation = rebuildConversation(records);
       const stateRecords = records.filter((record): record is SessionStateRecord => record.type === "state");
       const archiveState = stateRecords.at(-1);
-      const latestRecord = snapshot && (!archiveState || snapshot.timestamp >= archiveState.timestamp)
-        ? snapshot
+      // A sidecar whose recorded size differs from the archive cannot describe
+      // the same durable point, so only the archive's own state records may win.
+      const matchingSnapshot = snapshot?.session.archiveSize === initialDetails.size ? snapshot : undefined;
+      const latestRecord = matchingSnapshot && (!archiveState || matchingSnapshot.timestamp >= archiveState.timestamp)
+        ? matchingSnapshot
         : archiveState;
       const latest = latestRecord?.session;
       const base: StoredSession | undefined = latest && isStoredSessionState(latest) && latest.id === fileId
@@ -432,8 +441,14 @@ export class SessionStore {
         const destination = this.archivePath(session.id);
         if (existsSync(destination)) continue;
         const timestamp = session.updatedAt || new Date().toISOString();
-        const records: SessionJsonlRecord[] = [stateRecord(session, timestamp), ...messageRecords(session.conversation ?? [], timestamp)];
-        await this.persistRecordsAndState(session.id, records, session, timestamp);
+        const migrated = { ...session,
+          archiveMessageCount: countArchiveMessages(session.conversation ?? []),
+          ...(firstConversationPrompt(session.conversation ?? [])
+            ? { archiveTitle: truncateSessionName(firstConversationPrompt(session.conversation ?? [])!, 48) }
+            : {}),
+        };
+        const records: SessionJsonlRecord[] = [stateRecord(migrated, timestamp), ...messageRecords(migrated.conversation ?? [], timestamp)];
+        await this.persistRecordsAndState(session.id, records, migrated, timestamp);
       }
       await rename(this.path, `${this.path}.migrated`);
     } catch { /* retain the legacy file so migration can be retried */ }
