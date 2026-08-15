@@ -125,7 +125,7 @@ export function reduceRuntimeEvent(state: TuiState, event: RuntimeEvent): void {
       thought.text = text;
       thought.durationMs = event.durationMs;
       thought.streaming = false;
-      // Finished thoughts stay compact by default; Ctrl+O expands the full chain.
+      // Finished thoughts stay compact by default; Ctrl+T expands the full chain.
       thought.expanded = false;
       state.thoughtMessageId = undefined;
       break;

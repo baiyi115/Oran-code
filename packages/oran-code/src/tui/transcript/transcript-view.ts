@@ -153,7 +153,7 @@ function transcriptRenderItems(
 
 function renderCollapsedToolGroup(messages: ToolGroup, width: number): string[] {
   const count = messages.length;
-  const text = `${ANSI.greenBold}◇${ANSI.reset} ${ANSI.toolBold}Called ${count} tools${ANSI.reset} ${ANSI.gray}· Ctrl+O to expand${ANSI.reset}`;
+  const text = `${ANSI.greenBold}◇${ANSI.reset} ${ANSI.toolBold}Called ${count} tools${ANSI.reset} ${ANSI.gray}· ctrl+t to expand${ANSI.reset}`;
   return [...wrapDisplayText(text, width), ""];
 }
 

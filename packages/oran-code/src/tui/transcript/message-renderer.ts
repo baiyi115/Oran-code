@@ -1,7 +1,7 @@
 import type { TranscriptMessage, VerificationMessage } from "../types.js";
 import { renderMarkdown, type MarkdownRenderer } from "./markdown-renderer.js";
 import { renderToolMessage } from "./tool-message.js";
-import { stripTerminalMarkup, truncateVisible, wrapDisplayText } from "../text-width.js";
+import { stripTerminalMarkup, wrapDisplayText } from "../text-width.js";
 import { ANSI } from "../theme.js";
 import { spinnerFrame } from "../status-indicator.js";
 
@@ -140,43 +140,14 @@ function renderThought(message: Extract<TranscriptMessage, { kind: "thought" }>,
     return lines;
   }
 
-  // Collapsed finished thoughts:
-  // - short chain => one-sentence summary
-  // - long chain  => bounded preview; Ctrl+O expands the full text
-  const summary = summarizeThought(body);
-  if (isShortThought(body)) {
-    const heading = `◆ ${label}`;
-    const separator = " · ";
-    const summaryWidth = Math.max(1, width - stripTerminalMarkup(heading).length - separator.length);
-    return [`${styleThoughtLabel(heading)}${ANSI.gray}${separator}${truncateVisible(summary, summaryWidth)}${ANSI.reset}`];
-  }
-
-  const preview = truncateVisible(body.replace(/\s+/g, " ").trim(), 240);
-  const lines = [styleThoughtLabel(`◆ ${label}`)];
-  for (const line of wrapDisplayText(preview, contentWidth).slice(0, 3)) {
-    lines.push(styleThought(`  ${line}`));
-  }
-  return lines;
+  // Collapsed finished thoughts collapse to a single line; Ctrl+T expands the full text.
+  return [`${styleThoughtLabel(label)}${ANSI.gray}  (ctrl+t to expand)${ANSI.reset}`];
 }
 
 function thoughtLabel(message: Extract<TranscriptMessage, { kind: "thought" }>): string {
   if (message.streaming) return "Thinking...";
   if (message.durationMs !== undefined) return `Thought for ${formatDuration(message.durationMs)}`;
   return "Thought";
-}
-
-/** Short enough to collapse into a single summary line. */
-function isShortThought(body: string): boolean {
-  const normalized = body.replace(/\s+/g, " ").trim();
-  const lines = body.replace(/\r\n/g, "\n").split("\n").filter((line) => line.trim()).length;
-  return normalized.length <= 600 && lines <= 6;
-}
-
-function summarizeThought(body: string): string {
-  const normalized = body.replace(/\s+/g, " ").trim();
-  if (!normalized) return "";
-  const sentences = normalized.split(/(?<=[。！？.!?])\s+/).filter(Boolean);
-  return truncateVisible((sentences[0] ?? normalized).trim(), 240);
 }
 
 function thoughtPreviewLines(body: string, width: number, maxLines: number): string[] {

@@ -41,7 +41,7 @@ export function renderToolMessage(message: ToolMessage, width: number, liveTick 
     const preview = output.split(/\r?\n/).filter(Boolean);
     const limit = 12;
     lines.push(...preview.slice(0, limit).flatMap((line) => wrapDisplayText(`  \u2502 ${line}`, width)));
-    if (preview.length > limit) lines.push(`${ANSI.gray}  \u2502 ... ${preview.length - limit} more lines (Ctrl+O to expand)${ANSI.reset}`);
+    if (preview.length > limit) lines.push(`${ANSI.gray}  \u2502 ... ${preview.length - limit} more lines (ctrl+t to expand)${ANSI.reset}`);
   } else if (output && message.status !== "success" && output.trim() !== detail.trim()) {
     const error = truncateVisible(output.replace(/\s+/g, " ").trim(), Math.max(40, width * 2));
     lines.push(...wrapDisplayText(`  \u2502 ${error}`, width).slice(0, 2));

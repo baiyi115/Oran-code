@@ -269,7 +269,7 @@ export class InkTuiApp {
       void this.openFollowUps();
       return;
     }
-    if (key.ctrl && input === "o") {
+    if (key.ctrl && input === "t") {
       const reversed = [...this.state.transcript].reverse();
       const target = reversed.find((message) => message.kind === "thought" || message.kind === "tool");
       const latestGroup = toolGroups(this.state.transcript).at(-1);
