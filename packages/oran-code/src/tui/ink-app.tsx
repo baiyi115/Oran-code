@@ -706,6 +706,7 @@ export class InkTuiApp {
     this.state.composer.historyIndex = undefined;
     this.state.composer.historyDraft = "";
     setComposerValue(this.state.composer, "");
+    this.state.composer.pastes = [];
     this.state.nextMessageId = nextMessageNumber(this.state.transcript);
     this.state.assistantMessageId = undefined;
     this.state.thoughtMessageId = undefined;
