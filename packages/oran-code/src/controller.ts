@@ -261,9 +261,7 @@ export class TaskController {
       ];
       if (noProgressWarning) {
         const { call, repeatCount, limit } = noProgressWarning;
-        const argSummary = Object.entries(call.arguments)
-          .map(([key, value]) => `${key}=${typeof value === "string" ? value : JSON.stringify(value)}`)
-          .join(" ");
+        const argSummary = formatCallArguments(call.arguments);
         reminders.push(
           `Heads up: the previous ${repeatCount} call(s) to ${call.name}(${argSummary}) look identical. ` +
             `If this is not intentional, approach the task differently. Repeating ${limit} times will pause the task.`,
@@ -271,22 +269,40 @@ export class TaskController {
       }
       // 轮次开始：通知队列已并入本轮系统提醒后派发
       await this.fireHook({ event: "turn_start", workspace: task.workspace, model: this.config.model.model, userPrompt: task.prompt });
-      const tools = finalTurn || casualConversation ? [] : this.toolSchemasForMode();
-      const request = await this.requestWithContext(
-        messages,
-        reminders,
-        loop,
-        loop.turns,
-        finalTurn ? "finalize" : planMode ? "plan" : "turn",
-        tools,
-      );
-      messages = request.messages;
-      const response = request.response;
-      messages.push({ role: "assistant", content: response.text, toolCalls: response.toolCalls });
-      this.syncConversation(messages);
-      if (this.abortController?.signal.aborted) {
-        // Partial assistant already synced; if there are tool calls, pair them with cancelled results.
-        if (response.toolCalls.length) {
+      try {
+        const tools = finalTurn || casualConversation ? [] : this.toolSchemasForMode();
+        const request = await this.requestWithContext(
+          messages,
+          reminders,
+          loop,
+          loop.turns,
+          finalTurn ? "finalize" : planMode ? "plan" : "turn",
+          tools,
+        );
+        messages = request.messages;
+        const response = request.response;
+        messages.push({ role: "assistant", content: response.text, toolCalls: response.toolCalls });
+        this.syncConversation(messages);
+        if (this.abortController?.signal.aborted) {
+          // Partial assistant already synced; if there are tool calls, pair them with cancelled results.
+          if (response.toolCalls.length) {
+            for (const [index, call] of response.toolCalls.entries()) {
+              ensureCallId(call, this.contextManager);
+              await this.recordTool(
+                task,
+                messages,
+                call,
+                index,
+                { ok: false, output: "", error: "tool cancelled", summary: "cancelled", metadata: { cancelled: true } },
+                0,
+                { executed: false },
+              );
+            }
+          }
+          this.throwIfCancelled();
+        }
+        if (!response.text && !response.toolCalls.length) throw new Error("model returned an empty response");
+        if (finalTurn && response.toolCalls.length) {
           for (const [index, call] of response.toolCalls.entries()) {
             ensureCallId(call, this.contextManager);
             await this.recordTool(
@@ -294,131 +310,46 @@ export class TaskController {
               messages,
               call,
               index,
-              { ok: false, output: "", error: "tool cancelled", summary: "cancelled", metadata: { cancelled: true } },
+              {
+                ok: false,
+                output: "",
+                error: "iteration limit reached; no more tools can be run",
+                summary: "not run",
+              },
               0,
               { executed: false },
             );
           }
-        }
-        this.throwIfCancelled();
-      }
-      if (!response.text && !response.toolCalls.length) throw new Error("model returned an empty response");
-      if (finalTurn && response.toolCalls.length) {
-        for (const [index, call] of response.toolCalls.entries()) {
-          ensureCallId(call, this.contextManager);
-          await this.recordTool(
-            task,
-            messages,
-            call,
-            index,
-            {
-              ok: false,
-              output: "",
-              error: "iteration limit reached; no more tools can be run",
-              summary: "not run",
-            },
-            0,
-            { executed: false },
-          );
-        }
-        transitionTask(task, "failed");
-        await this.persist(task);
-        await this.emit("error", {
-          message: `Reached the ${this.config.loop.maxSteps}-iteration limit before the model produced a final answer.`,
-        });
-        return task;
-      }
-      if (planMode && !response.toolCalls.length) {
-        // Only hand off when the model explicitly marks the plan complete.
-        // Ordinary conversation (e.g. "hi") must stay in plan mode and must
-        // not auto-switch to execution.
-        if (isPlanComplete(response.text)) {
-          const planText = extractPlanText(response.text) || response.text.trim();
-          const last = messages[messages.length - 1];
-          if (last?.role === "assistant") {
-            last.content = planText;
-            this.syncConversation(messages);
-          }
-          task.plan = planText;
-          task.result = planText;
-          transitionTask(task, "completed");
-          await this.persist(task);
-          // Assistant stream already showed the plan body; mark streamed so the
-          // reducer does not append a duplicate plan block.
-          await this.emit("plan", { plan: planText, streamed: true, complete: true });
-          await this.emit("plan_complete", { plan: planText, autoExecute: false });
-          await this.emit("completed", { steps: Math.max(1, loop.turns), tokensUsed: loop.tokensUsed });
-          return task;
-        }
-        this.throwIfCancelled();
-        task.result = response.text;
-        transitionTask(task, "completed");
-        await this.persist(task);
-        this.throwIfCancelled();
-        await this.emit("completed", { steps: Math.max(1, loop.turns), tokensUsed: loop.tokensUsed });
-        return task;
-      }
-      if (response.toolCalls.length) {
-        const preExecutionNoProgress = loop.noProgressDiagnosticForNextCalls(response.toolCalls);
-        if (preExecutionNoProgress) {
-          this.recordNoProgressBlock(task, response.toolCalls, preExecutionNoProgress);
-          await this.reconcileToolCalls(
-            task,
-            messages,
-            response.toolCalls,
-            "repeated identical tool call blocked before execution",
-            false,
-          );
-          await this.pauseForNoProgress(task, preExecutionNoProgress);
-          return task;
-        }
-        try {
-          workspaceMutated ||= await this.runTools(task, messages, response.toolCalls, loop);
-        } catch (error) {
-          const cancelled = isAbortError(error) || this.abortController?.signal.aborted === true;
-          await this.reconcileToolCalls(
-            task,
-            messages,
-            response.toolCalls,
-            cancelled ? "tool cancelled" : `tool execution stopped: ${formatErrorMessage(error)}`,
-            cancelled,
-          );
-          throw error;
-        }
-        if (loop.shouldStopForUnknownTools()) {
           transitionTask(task, "failed");
           await this.persist(task);
           await this.emit("error", {
-            message: `stopped after ${loop.consecutiveUnknownTools} consecutive unknown tool call(s)`,
+            message: `Reached the ${this.config.loop.maxSteps}-iteration limit before the model produced a final answer.`,
           });
           return task;
         }
-      } else if (loop.toolCalls.length === 0) {
-        // A conversational response such as "hi" is complete as soon as the
-        // model answers. Do not run workspace verification for turns that did
-        // not perform any tool work.
-        this.throwIfCancelled();
-        task.result = response.text;
-        transitionTask(task, "completed");
-        await this.persist(task);
-        this.throwIfCancelled();
-        await this.emit("completed", { steps: Math.max(1, loop.turns), tokensUsed: loop.tokensUsed });
-        return task;
-      } else if (!workspaceMutated || this.config.workMode === "plan") {
-        // Read-only exploration and ordinary conversation do not need a
-        // verifier pass. In particular, saying "hi" or inspecting a project
-        // must not unexpectedly run tests or builds.
-        this.throwIfCancelled();
-        task.result = response.text;
-        transitionTask(task, "completed");
-        await this.persist(task);
-        this.throwIfCancelled();
-        await this.emit("completed", { steps: Math.max(1, loop.turns), tokensUsed: loop.tokensUsed });
-        return task;
-      } else {
-        const verification = await this.verify(task, messages);
-        this.throwIfCancelled();
-        if (verification.passed) {
+        if (planMode && !response.toolCalls.length) {
+          // Only hand off when the model explicitly marks the plan complete.
+          // Ordinary conversation (e.g. "hi") must stay in plan mode and must
+          // not auto-switch to execution.
+          if (isPlanComplete(response.text)) {
+            const planText = extractPlanText(response.text) || response.text.trim();
+            const last = messages[messages.length - 1];
+            if (last?.role === "assistant") {
+              last.content = planText;
+              this.syncConversation(messages);
+            }
+            task.plan = planText;
+            task.result = planText;
+            transitionTask(task, "completed");
+            await this.persist(task);
+            // Assistant stream already showed the plan body; mark streamed so the
+            // reducer does not append a duplicate plan block.
+            await this.emit("plan", { plan: planText, streamed: true, complete: true });
+            await this.emit("plan_complete", { plan: planText, autoExecute: false });
+            await this.emit("completed", { steps: Math.max(1, loop.turns), tokensUsed: loop.tokensUsed });
+            return task;
+          }
+          this.throwIfCancelled();
           task.result = response.text;
           transitionTask(task, "completed");
           await this.persist(task);
@@ -426,17 +357,87 @@ export class TaskController {
           await this.emit("completed", { steps: Math.max(1, loop.turns), tokensUsed: loop.tokensUsed });
           return task;
         }
-        messages.push({ role: "user", content: `Verification failed:\n${verification.output}` });
-        this.syncConversation(messages);
-        transitionTask(task, "executing");
-        await this.persist(task);
-      }
-      // 轮次结束：本轮工具结果已写回对话之后
-      await this.fireHook({ event: "turn_end", workspace: task.workspace, model: this.config.model.model, userPrompt: task.prompt });
-      const noProgress = loop.noProgressDiagnostic();
-      if (noProgress) {
-        await this.pauseForNoProgress(task, noProgress);
-        return task;
+        if (response.toolCalls.length) {
+          const preExecutionNoProgress = loop.noProgressDiagnosticForNextCalls(response.toolCalls);
+          if (preExecutionNoProgress) {
+            this.recordNoProgressBlock(task, response.toolCalls, preExecutionNoProgress);
+            await this.reconcileToolCalls(
+              task,
+              messages,
+              response.toolCalls,
+              "repeated identical tool call blocked before execution",
+              false,
+            );
+            await this.pauseForNoProgress(task, preExecutionNoProgress);
+            return task;
+          }
+          try {
+            workspaceMutated ||= await this.runTools(task, messages, response.toolCalls, loop);
+          } catch (error) {
+            const cancelled = isAbortError(error) || this.abortController?.signal.aborted === true;
+            await this.reconcileToolCalls(
+              task,
+              messages,
+              response.toolCalls,
+              cancelled ? "tool cancelled" : `tool execution stopped: ${formatErrorMessage(error)}`,
+              cancelled,
+            );
+            throw error;
+          }
+          if (loop.shouldStopForUnknownTools()) {
+            transitionTask(task, "failed");
+            await this.persist(task);
+            await this.emit("error", {
+              message: `stopped after ${loop.consecutiveUnknownTools} consecutive unknown tool call(s)`,
+            });
+            return task;
+          }
+        } else if (loop.toolCalls.length === 0) {
+          // A conversational response such as "hi" is complete as soon as the
+          // model answers. Do not run workspace verification for turns that did
+          // not perform any tool work.
+          this.throwIfCancelled();
+          task.result = response.text;
+          transitionTask(task, "completed");
+          await this.persist(task);
+          this.throwIfCancelled();
+          await this.emit("completed", { steps: Math.max(1, loop.turns), tokensUsed: loop.tokensUsed });
+          return task;
+        } else if (!workspaceMutated || this.config.workMode === "plan") {
+          // Read-only exploration and ordinary conversation do not need a
+          // verifier pass. In particular, saying "hi" or inspecting a project
+          // must not unexpectedly run tests or builds.
+          this.throwIfCancelled();
+          task.result = response.text;
+          transitionTask(task, "completed");
+          await this.persist(task);
+          this.throwIfCancelled();
+          await this.emit("completed", { steps: Math.max(1, loop.turns), tokensUsed: loop.tokensUsed });
+          return task;
+        } else {
+          const verification = await this.verify(task, messages);
+          this.throwIfCancelled();
+          if (verification.passed) {
+            task.result = response.text;
+            transitionTask(task, "completed");
+            await this.persist(task);
+            this.throwIfCancelled();
+            await this.emit("completed", { steps: Math.max(1, loop.turns), tokensUsed: loop.tokensUsed });
+            return task;
+          }
+          messages.push({ role: "user", content: `Verification failed:\n${verification.output}` });
+          this.syncConversation(messages);
+          transitionTask(task, "executing");
+          await this.persist(task);
+        }
+        const noProgress = loop.noProgressDiagnostic();
+        if (noProgress) {
+          await this.pauseForNoProgress(task, noProgress);
+          return task;
+        }
+      } finally {
+        // Every started turn has one matching end event, including return, cancellation, and error paths.
+        await this.fireHook({ event: "turn_end", workspace: task.workspace, model: this.config.model.model, userPrompt: task.prompt });
       }
     }
     if (loop.tokenBudgetReached()) {
@@ -938,7 +939,7 @@ export class TaskController {
       }
 
       const executable = prepared.filter((item) => !item.skip);
-      if (this.snapshotStore && this.snapshotSessionId && executable.some((item) => isPotentiallyMutating(item.call))) {
+      if (this.snapshotStore && this.snapshotSessionId && executable.some((item) => this.isPotentiallyMutating(item.call))) {
         try {
           await this.snapshotStore.begin(this.snapshotSessionId, task);
         } catch (error) {
@@ -960,7 +961,7 @@ export class TaskController {
             tool: item.call.name,
             arguments: summarizeArguments(item.call.arguments),
           }));
-          const beforeWorkspace = isPotentiallyMutating(item.call) ? await workspaceFingerprint(task.workspace) : undefined;
+          const beforeWorkspace = this.isPotentiallyMutating(item.call) ? await workspaceFingerprint(task.workspace) : undefined;
           const before = await fileHash(task.workspace, item.call);
           let result: ToolResult;
           try {
@@ -1000,7 +1001,7 @@ export class TaskController {
         const entry = results.get(item.index);
         if (!entry) continue;
         if (entry.mutated) workspaceMutated = true;
-        if (entry.result.ok && isPotentiallyMutating(entry.call)) this.readonlyCache.clear();
+        if (entry.result.ok && this.isPotentiallyMutating(entry.call)) this.readonlyCache.clear();
         if (entry.result.ok && entry.call.name === "read_file") {
           await this.trackSuccessfulFileRead(task.workspace, entry.call);
         }
@@ -1045,6 +1046,13 @@ export class TaskController {
       }, 0, { executed: false });
       pairedIds.add(id);
     }
+  }
+
+  private isPotentiallyMutating(call: ToolCall): boolean {
+    const tool = this.registry.has(call.name) ? this.registry.get(call.name) : undefined;
+    return tool
+      ? (tool.kind ?? inferToolKind(call.name)) !== "readonly"
+      : isMutatingToolName(call.name);
   }
 
   private async authorizeTool(
@@ -1168,9 +1176,7 @@ export class TaskController {
 
   private async pauseForNoProgress(task: Task, diagnostic: NoProgressDiagnostic): Promise<void> {
     const { call, repeatCount } = diagnostic;
-    const argSummary = Object.entries(call.arguments)
-      .map(([key, value]) => `${key}=${typeof value === "string" ? value : JSON.stringify(value)}`)
-      .join(" ");
+    const argSummary = formatCallArguments(call.arguments);
     transitionTask(task, "paused");
     await this.persist(task);
     await this.emit("log", {
@@ -1223,7 +1229,9 @@ export class TaskController {
       ? [{ command: "(skipped)", exitCode: 0, output: "Verification skipped by user.", durationMs: 0, passed: true }]
       : await this.verifier.runMany(commands, this.abortController?.signal);
     this.throwIfCancelled();
-    const result = results[0] ?? { command: "(none)", exitCode: 0, output: "No test/lint command configured; verification skipped.", durationMs: 0, passed: true };
+    const result = results.find((candidate) => !candidate.passed)
+      ?? results.at(-1)
+      ?? { command: "(none)", exitCode: 0, output: "No test/lint command configured; verification skipped.", durationMs: 0, passed: true };
     this.trace.appendStep(task.id, "verify", { results });
     await this.emit("verify", { results });
     return result;
@@ -1402,6 +1410,12 @@ function summarizeArguments(argumentsValue: Record<string, unknown>): Record<str
   return Object.fromEntries(
     Object.entries(argumentsValue).map(([key, value]) => [key, summarizeValue(value)]),
   );
+}
+
+function formatCallArguments(argumentsValue: Record<string, unknown>): string {
+  return Object.entries(argumentsValue)
+    .map(([key, value]) => `${key}=${typeof value === "string" ? value : JSON.stringify(value)}`)
+    .join(" ");
 }
 
 function summarizeToolCalls(calls: readonly ToolCall[]): Array<Record<string, unknown>> {
