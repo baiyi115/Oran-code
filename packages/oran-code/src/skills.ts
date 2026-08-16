@@ -5,6 +5,7 @@ import { basename, dirname, extname, isAbsolute, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { parseDocument } from "yaml";
 import { CommandRegistry, type SlashCommand } from "./commands.js";
+import { isRecord } from "./types.js";
 import { LEGACY_USER_DATA_DIRECTORY, projectStateRoot } from "./paths.js";
 
 export type SkillScope = "builtin" | "user" | "project";
@@ -438,10 +439,6 @@ function strictString(value: unknown): string | undefined {
   if (typeof value !== "string") return undefined;
   const trimmed = value.trim();
   return trimmed || undefined;
-}
-
-function isRecord(value: unknown): value is Record<string, unknown> {
-  return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 
 function errorMessage(error: unknown): string {

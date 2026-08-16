@@ -3,6 +3,7 @@ import { extname, relative, resolve } from "node:path";
 import { parse } from "yaml";
 import { CommandRegistry, type SlashCommand } from "./commands.js";
 import { compatibleUserDataPath, projectStateRoot } from "./paths.js";
+import { isRecord } from "./types.js";
 
 type SlashCommandKind = SlashCommand["kind"];
 
@@ -210,6 +211,3 @@ function stringValue(value: unknown): string | undefined {
   return normalized || undefined;
 }
 
-function isRecord(value: unknown): value is Record<string, unknown> {
-  return typeof value === "object" && value !== null && !Array.isArray(value);
-}

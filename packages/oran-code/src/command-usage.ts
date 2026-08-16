@@ -1,6 +1,7 @@
 import { mkdir, readFile, writeFile } from "node:fs/promises";
 import { dirname, resolve } from "node:path";
 import { projectStateRoot } from "./paths.js";
+import { isRecord } from "./types.js";
 
 const MILLISECONDS_PER_DAY = 24 * 60 * 60 * 1_000;
 
@@ -152,6 +153,3 @@ function boundedNumber(value: number | undefined, fallback: number, minimum: num
     : fallback;
 }
 
-function isRecord(value: unknown): value is Record<string, unknown> {
-  return typeof value === "object" && value !== null && !Array.isArray(value);
-}

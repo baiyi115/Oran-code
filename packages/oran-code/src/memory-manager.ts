@@ -3,6 +3,7 @@ import { basename, dirname, relative, resolve, sep } from "node:path";
 import { mkdir, readFile, readdir, rename, stat, unlink, writeFile } from "node:fs/promises";
 import { parse, stringify } from "yaml";
 import type { ModelProvider } from "./types.js";
+import { isRecord } from "./types.js";
 import { compatibleUserDataPath, projectStateRoot, USER_DATA_DIRECTORY } from "./paths.js";
 
 export const MEMORY_NOTE_TYPES = ["user-preference", "correction-feedback", "project-knowledge", "reference-material"] as const;
@@ -240,5 +241,4 @@ function compareById(left: MemoryNote, right: MemoryNote): number { return left.
 function positiveInteger(value: number | undefined, fallback: number): number { return typeof value === "number" && Number.isInteger(value) && value > 0 ? value : fallback; }
 function inline(value: string): string { return value.replace(/[\r\n|]+/gu, " ").replace(/\s+/gu, " ").trim(); }
 function toPortablePath(value: string): string { return value.split(sep).join("/"); }
-function isRecord(value: unknown): value is Record<string, unknown> { return typeof value === "object" && value !== null && !Array.isArray(value); }
 function stringField(value: unknown): string | undefined { return typeof value === "string" && value.trim() ? value.trim() : undefined; }

@@ -3,6 +3,7 @@ import { extname, resolve } from "node:path";
 import { parseDocument } from "yaml";
 import { projectStateRoot, userDataRoot } from "../paths.js";
 import { isPermissionMode } from "../types.js";
+import { isRecord } from "../types.js";
 import type { AgentDefinition, AgentDefinitionScope } from "./types.js";
 
 const AGENT_NAME = /^[a-z0-9](?:[a-z0-9-]{0,62}[a-z0-9])?$/;
@@ -180,6 +181,3 @@ function optionalPositiveInteger(value: unknown): number | undefined {
   return typeof value === "number" && Number.isInteger(value) && value > 0 ? value : undefined;
 }
 
-function isRecord(value: unknown): value is Record<string, unknown> {
-  return typeof value === "object" && value !== null && !Array.isArray(value);
-}
