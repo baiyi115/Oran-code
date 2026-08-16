@@ -247,7 +247,12 @@ function formatRule(rule: PermissionRule): string {
 async function loadRules(path: string): Promise<PermissionRule[]> {
   try {
     return normalizeRules(parse(await readFile(path, "utf8")));
-  } catch {
+  } catch (error) {
+    // ENOENT is expected when no permission file exists; other errors (YAML
+    // syntax, invalid structure) are surfaced so users can fix the file.
+    if ((error as { code?: string }).code === "ENOENT") return [];
+    const detail = error instanceof Error ? error.message : String(error);
+    console.error(`warning: failed to parse permission rules from ${path}: ${detail}`);
     return [];
   }
 }

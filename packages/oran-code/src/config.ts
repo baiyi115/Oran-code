@@ -314,6 +314,7 @@ function normalizeOptions(value: unknown): ProviderOptions & ModelOptions {
       : key === "api_key" ? "apiKey"
         : key === "max_tokens" ? "maxTokens"
           : key === "context_window" ? "contextWindow"
+          : key === "reasoning_effort" ? "reasoningEffort"
           : key;
     result[normalizedKey] = raw;
   }

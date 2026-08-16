@@ -86,5 +86,6 @@ function findPython(workspace: string): string {
   const candidates = process.platform === "win32"
     ? [join(workspace, ".venv", "Scripts", "python.exe"), join(workspace, "venv", "Scripts", "python.exe")]
     : [join(workspace, ".venv", "bin", "python"), join(workspace, "venv", "bin", "python")];
-  return `"${candidates.find(existsSync) ?? process.execPath}" -m pytest -q`;
+  const fallback = process.platform === "win32" ? "python" : "python3";
+  return `"${candidates.find(existsSync) ?? fallback}" -m pytest -q`;
 }

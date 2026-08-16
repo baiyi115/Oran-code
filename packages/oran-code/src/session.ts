@@ -1156,6 +1156,14 @@ export class TerminalSession {
     origin: SubagentOrigin,
     requestId: string,
   ): Promise<ApprovalResponse> {
+    // Non-interactive sessions (e.g. `oran run --once`) have no readline or
+    // TUI to present an approval prompt. Auto-deny rather than hanging forever.
+    if (!this.isReadlineActive() && !this.tui) {
+      this.renderer.error(
+        `approval required for ${call.name} but no interactive session is available; use --approve-all to run non-interactively`,
+      );
+      return Promise.resolve(false);
+    }
     return new Promise<ApprovalResponse>((resolveApproval) => {
       this.pendingApprovals.push({
         call,

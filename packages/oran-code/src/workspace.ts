@@ -89,10 +89,13 @@ async function visit(directoryPath: string, depth: number, state: ScanState): Pr
 
       state.visited += 1;
       if (depth === 0) {
-        state.topLevel.push({ name: entry.name, isDirectory: entry.isDirectory() });
+        // Skip ignored directories (.git/node_modules/dist) so they do not
+        // pollute the workspace summary; dot-files like .gitignore are kept.
+        if (!(entry.isDirectory() && IGNORED_DIRS.has(entry.name))) {
+          state.topLevel.push({ name: entry.name, isDirectory: entry.isDirectory() });
+        }
         if (entry.isFile() && PROJECT_FILES.has(entry.name)) state.projectFiles[entry.name] = entry.name;
       }
-
       if (entry.name.startsWith(".") && entry.name !== ".env.example") continue;
       if (entry.isDirectory() && IGNORED_DIRS.has(entry.name)) continue;
       const absolutePath = resolve(directoryPath, entry.name);

@@ -115,8 +115,10 @@ function parseOpenAiStreamEvent(event: string, state: OpenAiStreamState): ModelS
     const index = typeof call.index === "number" ? call.index : 0;
     const fn = (call.function ?? {}) as Record<string, unknown>;
     const current = state.calls.get(index) ?? { name: "", arguments: "" };
+    // Some compatible providers resend the full function name on every delta;
+    // overwrite (not append) so repeated names do not concatenate.
+    if (typeof fn.name === "string" && fn.name) current.name = fn.name;
     if (typeof call.id === "string") current.id = call.id;
-    if (typeof fn.name === "string") current.name += fn.name;
     if (typeof fn.arguments === "string") current.arguments += fn.arguments;
     state.calls.set(index, current);
   }
