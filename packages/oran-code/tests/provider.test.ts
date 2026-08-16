@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { OpenAICompatibleProvider } from "../src/provider.js";
+import { AnthropicProvider, OpenAICompatibleProvider } from "../src/provider.js";
 import type { Message, ModelConfig } from "../src/types.js";
 
 const messages: Message[] = [{ role: "user", content: "hello" }];
@@ -14,6 +14,29 @@ function model(overrides: Partial<ModelConfig> = {}): ModelConfig {
     maxTokens: 1024,
     ...overrides,
   };
+}
+
+function sseResponse(payload: string, splitEveryByte = false): Response {
+  const bytes = new TextEncoder().encode(payload);
+  const chunks: Uint8Array[] = [];
+  if (splitEveryByte) {
+    for (const byte of bytes) chunks.push(Uint8Array.of(byte));
+  } else {
+    chunks.push(bytes);
+  }
+  const body = new ReadableStream<Uint8Array>({
+    start(controller) {
+      for (const chunk of chunks) controller.enqueue(chunk);
+      controller.close();
+    },
+  });
+  return new Response(body, { status: 200, headers: { "content-type": "text/event-stream" } });
+}
+
+async function collect<T>(stream: AsyncIterable<T>): Promise<T[]> {
+  const values: T[] = [];
+  for await (const value of stream) values.push(value);
+  return values;
 }
 
 afterEach(() => {
@@ -71,5 +94,50 @@ describe("OpenAICompatibleProvider", () => {
     await provider.complete(messages);
 
     expect(vi.mocked(globalThis.fetch).mock.calls[0]?.[0]).toBe("https://example.test/v1/chat/completions");
+  });
+
+  it("keeps SSE tail bytes, usage, reasoning, and tool-call index order", async () => {
+    const fetchMock = vi.spyOn(globalThis, "fetch").mockResolvedValue(sseResponse([
+      `data: ${JSON.stringify({ choices: [{ delta: { content: "你", reasoning_content: "think" } }] })}\n\n`,
+      `data: ${JSON.stringify({ choices: [{ delta: { tool_calls: [{ index: 1, id: "call_second", function: { name: "second", arguments: '{"value":2}' } }] } }] })}\n\n`,
+      `data: ${JSON.stringify({ choices: [{ delta: { tool_calls: [{ index: 0, id: "call_first", function: { name: "first", arguments: '{"value":1}' } }] } }] })}\n\n`,
+      `data: ${JSON.stringify({ usage: { prompt_tokens: 3, completion_tokens: 4 }, choices: [] })}\n\n`,
+      `data: ${JSON.stringify({ choices: [{ delta: {}, finish_reason: "tool_calls" }] })}`,
+    ].join(""), true));
+
+    const chunks = await collect(new OpenAICompatibleProvider(model()).streamResponse(messages));
+    const final = chunks.at(-1);
+
+    expect(fetchMock).toHaveBeenCalledOnce();
+    expect(chunks.filter((chunk) => chunk.text).map((chunk) => chunk.text).join("")).toBe("你");
+    expect(chunks.filter((chunk) => chunk.reasoning).map((chunk) => chunk.reasoning).join("")).toBe("think");
+    expect(chunks.find((chunk) => chunk.usage?.prompt_tokens === 3)?.usage).toMatchObject({ prompt_tokens: 3, completion_tokens: 4 });
+    expect(final?.finishReason).toBe("tool_calls");
+    expect(final?.toolCalls?.map((call) => call.name)).toEqual(["first", "second"]);
+    expect(final?.toolCalls?.map((call) => call.id)).toEqual(["call_first", "call_second"]);
+  });
+});
+
+describe("AnthropicProvider", () => {
+  it("parses a final SSE event without a delimiter and preserves tool input", async () => {
+    vi.spyOn(globalThis, "fetch").mockResolvedValue(sseResponse([
+      `data: ${JSON.stringify({ type: "message_start", message: { usage: { input_tokens: 3 } } })}\n\n`,
+      `data: ${JSON.stringify({ type: "content_block_start", index: 0, content_block: { type: "text" } })}\n\n`,
+      `data: ${JSON.stringify({ type: "content_block_delta", index: 0, delta: { type: "text_delta", text: "hello" } })}\n\n`,
+      `data: ${JSON.stringify({ type: "content_block_start", index: 1, content_block: { type: "tool_use", id: "call_1", name: "lookup" } })}\n\n`,
+      `data: ${JSON.stringify({ type: "content_block_delta", index: 1, delta: { type: "input_json_delta", partial_json: '{"query":' } })}\n\n`,
+      `data: ${JSON.stringify({ type: "content_block_delta", index: 1, delta: { type: "input_json_delta", partial_json: '"status"}' } })}\n\n`,
+      `data: ${JSON.stringify({ type: "message_delta", delta: { stop_reason: "tool_use" }, usage: { output_tokens: 4 } })}`,
+    ].join(""), true));
+
+    const chunks = await collect(new AnthropicProvider(model({ provider: "anthropic" })).streamResponse(messages));
+    const final = chunks.at(-1);
+
+    expect(chunks.filter((chunk) => chunk.text).map((chunk) => chunk.text).join("")).toBe("hello");
+    expect(chunks.find((chunk) => chunk.usage?.input_tokens === 3)?.usage).toMatchObject({ input_tokens: 3 });
+    expect(final?.usage).toBeUndefined();
+    expect(final?.finishReason).toBe("tool_use");
+    expect(final?.toolCalls).toHaveLength(1);
+    expect(final?.toolCalls?.[0]).toMatchObject({ id: "call_1", name: "lookup", arguments: { query: "status" } });
   });
 });

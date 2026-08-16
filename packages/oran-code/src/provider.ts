@@ -36,81 +36,21 @@ export class OpenAICompatibleProvider implements ModelProvider {
       yield parseCompletion(await response.json() as Record<string, unknown>, false);
       return;
     }
-    const decoder = new TextDecoder();
-    let buffer = "";
-    const text = { value: "" };
-    const calls = new Map<number, { id?: string; name: string; arguments: string }>();
-    let finishReason: string | undefined;
-    for await (const chunk of response.body as AsyncIterable<Uint8Array>) {
-      buffer += decoder.decode(chunk, { stream: true });
-      const events = buffer.split(/\r?\n\r?\n/);
-      buffer = events.pop() ?? "";
-      for (const event of events) {
-        const data = event.split(/\r?\n/).filter((line) => line.startsWith("data:")).map((line) => line.slice(5).trim()).join("");
-        if (!data || data === "[DONE]") continue;
-        const parsed = JSON.parse(data) as Record<string, unknown>;
-        const usage = numericUsage(parsed.usage);
-        if (Object.keys(usage).length) yield { usage, streamed: true };
-        const choices = Array.isArray(parsed.choices) ? parsed.choices : [];
-        const choice = choices[0] as Record<string, unknown> | undefined;
-        const delta = choice?.delta as Record<string, unknown> | undefined;
-        const deltaReasoning = reasoningText(delta);
-        if (deltaReasoning) yield { reasoning: deltaReasoning, streamed: true };
-        const deltaText = typeof delta?.content === "string" ? delta.content : "";
-        if (deltaText) {
-          text.value += deltaText;
-          yield { text: deltaText, streamed: true };
-        }
-        const rawCalls = Array.isArray(delta?.tool_calls) ? delta.tool_calls : [];
-        for (const raw of rawCalls) {
-          const call = raw as Record<string, unknown>;
-          const index = typeof call.index === "number" ? call.index : 0;
-          const fn = (call.function ?? {}) as Record<string, unknown>;
-          const current = calls.get(index) ?? { name: "", arguments: "" };
-          if (typeof call.id === "string") current.id = call.id;
-          if (typeof fn.name === "string") current.name += fn.name;
-          if (typeof fn.arguments === "string") current.arguments += fn.arguments;
-          calls.set(index, current);
-        }
-        if (typeof choice?.finish_reason === "string") finishReason = choice.finish_reason;
-      }
+    const state: OpenAiStreamState = {
+      calls: new Map<number, { id?: string; name: string; arguments: string }>(),
+      finishReason: undefined,
+    };
+    for await (const event of readSseEvents(response.body as AsyncIterable<Uint8Array>)) {
+      for (const update of parseOpenAiStreamEvent(event, state)) yield update;
     }
-    if (buffer.trim()) {
-      const data = buffer.split(/\r?\n/).filter((line) => line.startsWith("data:")).map((line) => line.slice(5).trim()).join("");
-      if (data && data !== "[DONE]") {
-        const parsed = JSON.parse(data) as Record<string, unknown>;
-        const usage = numericUsage(parsed.usage);
-        if (Object.keys(usage).length) yield { usage, streamed: true };
-        const choices = Array.isArray(parsed.choices) ? parsed.choices : [];
-        const choice = choices[0] as Record<string, unknown> | undefined;
-        const delta = choice?.delta as Record<string, unknown> | undefined;
-        const deltaReasoning = reasoningText(delta);
-        if (deltaReasoning) yield { reasoning: deltaReasoning, streamed: true };
-        const deltaText = typeof delta?.content === "string" ? delta.content : "";
-        if (deltaText) {
-          text.value += deltaText;
-          yield { text: deltaText, streamed: true };
-        }
-        const rawCalls = Array.isArray(delta?.tool_calls) ? delta.tool_calls : [];
-        for (const raw of rawCalls) {
-          const call = raw as Record<string, unknown>;
-          const index = typeof call.index === "number" ? call.index : 0;
-          const fn = (call.function ?? {}) as Record<string, unknown>;
-          const current = calls.get(index) ?? { name: "", arguments: "" };
-          if (typeof call.id === "string") current.id = call.id;
-          if (typeof fn.name === "string") current.name += fn.name;
-          if (typeof fn.arguments === "string") current.arguments += fn.arguments;
-          calls.set(index, current);
-        }
-        if (typeof choice?.finish_reason === "string") finishReason = choice.finish_reason;
-      }
-    }
-    const toolCalls = [...calls.values()].map((call) => parseToolCall(call));
+    const toolCalls = [...state.calls.entries()]
+      .sort(([left], [right]) => left - right)
+      .map(([, call]) => parseToolCall(call));
     yield {
       text: "",
       toolCalls,
       streamed: true,
-      ...(finishReason !== undefined ? { finishReason } : {}),
+      ...(state.finishReason !== undefined ? { finishReason: state.finishReason } : {}),
     };
   }
 
@@ -145,6 +85,87 @@ export class OpenAICompatibleProvider implements ModelProvider {
       ...(tools?.length ? { tools, tool_choice: "auto" } : {}),
     };
   }
+}
+
+interface OpenAiStreamState {
+  readonly calls: Map<number, { id?: string; name: string; arguments: string }>;
+  finishReason: string | undefined;
+}
+
+function parseOpenAiStreamEvent(event: string, state: OpenAiStreamState): ModelStreamChunk[] {
+  const parsed = parseSseJson(event);
+  if (!parsed) return [];
+  if (parsed.error !== undefined) throw new Error(streamErrorMessage(parsed.error, "OpenAI-compatible stream error"));
+  const updates: ModelStreamChunk[] = [];
+  const usage = numericUsage(parsed.usage);
+  if (Object.keys(usage).length) updates.push({ usage, streamed: true });
+
+  const choices = Array.isArray(parsed.choices) ? parsed.choices : [];
+  const choice = choices[0] as Record<string, unknown> | undefined;
+  const delta = choice?.delta as Record<string, unknown> | undefined;
+  const reasoning = reasoningText(delta);
+  if (reasoning) updates.push({ reasoning, streamed: true });
+  if (typeof delta?.content === "string" && delta.content) {
+    updates.push({ text: delta.content, streamed: true });
+  }
+
+  const rawCalls = Array.isArray(delta?.tool_calls) ? delta.tool_calls : [];
+  for (const raw of rawCalls) {
+    const call = raw as Record<string, unknown>;
+    const index = typeof call.index === "number" ? call.index : 0;
+    const fn = (call.function ?? {}) as Record<string, unknown>;
+    const current = state.calls.get(index) ?? { name: "", arguments: "" };
+    if (typeof call.id === "string") current.id = call.id;
+    if (typeof fn.name === "string") current.name += fn.name;
+    if (typeof fn.arguments === "string") current.arguments += fn.arguments;
+    state.calls.set(index, current);
+  }
+  if (typeof choice?.finish_reason === "string") state.finishReason = choice.finish_reason;
+  return updates;
+}
+
+async function* readSseEvents(stream: AsyncIterable<Uint8Array>): AsyncGenerator<string> {
+  const decoder = new TextDecoder();
+  let buffer = "";
+  for await (const chunk of stream) {
+    buffer += decoder.decode(chunk, { stream: true });
+    const events = buffer.split(/\r\n\r\n|\n\n|\r\r/);
+    buffer = events.pop() ?? "";
+    for (const event of events) {
+      if (event.trim()) yield event;
+    }
+  }
+  buffer += decoder.decode();
+  if (buffer.trim()) yield buffer;
+}
+
+function parseSseJson(event: string): Record<string, unknown> | undefined {
+  const dataLines: string[] = [];
+  for (const line of event.split(/\r\n|\r|\n/)) {
+    if (line === "data") {
+      dataLines.push("");
+    } else if (line.startsWith("data:")) {
+      const value = line.slice(5);
+      dataLines.push(value.startsWith(" ") ? value.slice(1) : value);
+    }
+  }
+  if (!dataLines.length) return undefined;
+  const data = dataLines.join("\n");
+  if (!data.trim() || data.trim() === "[DONE]") return undefined;
+  const parsed: unknown = JSON.parse(data);
+  if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
+    throw new Error("invalid SSE JSON payload: expected an object");
+  }
+  return parsed as Record<string, unknown>;
+}
+
+function streamErrorMessage(value: unknown, fallback: string): string {
+  if (typeof value === "string" && value.trim()) return value;
+  if (value && typeof value === "object" && !Array.isArray(value)) {
+    const message = (value as Record<string, unknown>).message;
+    if (typeof message === "string" && message.trim()) return message;
+  }
+  return fallback;
 }
 
 /**
@@ -387,26 +408,14 @@ export class AnthropicProvider implements ModelProvider {
       return;
     }
 
-    const decoder = new TextDecoder();
-    let buffer = "";
     const toolUses = new Map<number, { id?: string; name: string; arguments: string }>();
     let finishReason: string | undefined;
     let currentBlockIndex: number | undefined;
     let currentBlockType: string | undefined;
 
-    for await (const chunk of response.body as AsyncIterable<Uint8Array>) {
-      buffer += decoder.decode(chunk, { stream: true });
-      const events = buffer.split(/\r?\n\r?\n/);
-      buffer = events.pop() ?? "";
-      for (const event of events) {
-        const data = event.split(/\r?\n/).filter((line) => line.startsWith("data:")).map((line) => line.slice(5).trim()).join("");
-        if (!data || data === "[DONE]") continue;
-        let parsed: Record<string, unknown>;
-        try {
-          parsed = JSON.parse(data) as Record<string, unknown>;
-        } catch {
-          continue;
-        }
+    for await (const event of readSseEvents(response.body as AsyncIterable<Uint8Array>)) {
+        const parsed = parseSseJson(event);
+        if (!parsed) continue;
         const type = typeof parsed.type === "string" ? parsed.type : "";
         if (type === "message_start") {
           const message = parsed.message as Record<string, unknown> | undefined;
@@ -461,11 +470,8 @@ export class AnthropicProvider implements ModelProvider {
           continue;
         }
         if (type === "error") {
-          const error = (parsed.error ?? parsed) as Record<string, unknown>;
-          const message = typeof error.message === "string" ? error.message : "anthropic stream error";
-          throw new Error(message);
+          throw new Error(streamErrorMessage(parsed.error ?? parsed, "anthropic stream error"));
         }
-      }
     }
 
     const toolCalls = [...toolUses.entries()]
