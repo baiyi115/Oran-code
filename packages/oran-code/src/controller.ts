@@ -1,6 +1,8 @@
 import { createHash } from "node:crypto";
+import { execFile } from "node:child_process";
 import { readdir, readFile, stat } from "node:fs/promises";
 import { resolve, relative, sep } from "node:path";
+import { promisify } from "node:util";
 import { AgentLoop, toolCallSignature, type NoProgressDiagnostic } from "./loop.js";
 import { ContextManager } from "./context-manager.js";
 import { PermissionPolicy, structuredPermissionDenial, type ApprovalDecision } from "./security.js";
@@ -90,6 +92,7 @@ const BUDGET_COMPACTION_MIN_REQUEST_TOKENS = 32_000;
 const BUDGET_COMPACTION_HEADROOM = 1.5;
 const BUDGET_COMPACTION_GROWTH_FACTOR = 1.25;
 const BUDGET_COMPACTION_COOLDOWN_TURNS = 3;
+const execFileAsync = promisify(execFile);
 
 export class TaskController {
   private readonly config: RuntimeConfig;
@@ -1497,6 +1500,8 @@ async function fileHash(workspace: string, call: ToolCall): Promise<{ path: stri
 }
 
 const FINGERPRINT_IGNORED = new Set([".git", ".oran", ".litecode", ".venv", "venv", "node_modules", "dist", "build", "__pycache__"]);
+const WORKSPACE_FINGERPRINT_TIMEOUT_MS = 750;
+const WORKSPACE_FINGERPRINT_MAX_ENTRIES = 10_000;
 
 function isPotentiallyMutating(call: ToolCall): boolean {
   return isMutatingToolName(call.name);
@@ -1509,12 +1514,31 @@ function inferToolKind(name: string): "readonly" | "write" | "command" {
 }
 
 async function workspaceFingerprint(root: string): Promise<string> {
-  const entries: string[] = [];
-  await collectWorkspaceEntries(resolve(root), resolve(root), entries);
-  return entries.sort().join("\n");
+  try {
+    const result = await execFileAsync(
+      "git",
+      ["-C", root, "status", "--porcelain=v1", "--untracked-files=all"],
+      { encoding: "utf8", maxBuffer: 1024 * 1024, timeout: WORKSPACE_FINGERPRINT_TIMEOUT_MS, windowsHide: true },
+    );
+    return `git:${result.stdout.split(/\r?\n/).filter(Boolean).sort().join("\n")}`;
+  } catch {
+    return collectWorkspaceEntries(resolve(root));
+  }
 }
 
-async function collectWorkspaceEntries(root: string, directory: string, entries: string[]): Promise<void> {
+async function collectWorkspaceEntries(root: string): Promise<string> {
+  const entries: string[] = [];
+  await collectWorkspaceEntriesRecursive(root, root, entries, Date.now() + WORKSPACE_FINGERPRINT_TIMEOUT_MS);
+  return `scan:${entries.sort().join("\n")}`;
+}
+
+async function collectWorkspaceEntriesRecursive(
+  root: string,
+  directory: string,
+  entries: string[],
+  deadline: number,
+): Promise<void> {
+  if (entries.length >= WORKSPACE_FINGERPRINT_MAX_ENTRIES || Date.now() > deadline) return;
   let children;
   try {
     children = await readdir(directory, { withFileTypes: true });
@@ -1522,12 +1546,13 @@ async function collectWorkspaceEntries(root: string, directory: string, entries:
     return;
   }
   for (const child of children) {
+    if (entries.length >= WORKSPACE_FINGERPRINT_MAX_ENTRIES || Date.now() > deadline) return;
     if (FINGERPRINT_IGNORED.has(child.name)) continue;
     const path = resolve(directory, child.name);
     const relativePath = relative(root, path).replaceAll("\\", "/");
     if (child.isDirectory()) {
       entries.push(`d:${relativePath}`);
-      await collectWorkspaceEntries(root, path, entries);
+      await collectWorkspaceEntriesRecursive(root, path, entries, deadline);
       continue;
     }
     if (!child.isFile()) continue;

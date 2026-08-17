@@ -12,6 +12,7 @@ const MCP_SEARCH_TOOL = "mcp_search_tools";
 const DEFAULT_SEARCH_LIMIT = 20;
 const MAX_SEARCH_LIMIT = 100;
 const MAX_TOOL_OUTPUT = 32_000;
+const MCP_CONNECTION_CONCURRENCY = 3;
 
 export interface McpToolInfo {
   readonly name: string;
@@ -167,11 +168,7 @@ export class McpManager {
   discoveryReminder(): string | undefined {
     const names = [...this.tools.keys()].filter((name) => !this.activated.has(name));
     if (!names.length) return undefined;
-    return [
-      "MCP tools are available but hidden until activated.",
-      "Use mcp_search_tools with keywords to search, then use select:<full-tool-name> to activate a tool.",
-      `Available MCP tool names: ${names.join(", ")}`,
-    ].join("\n");
+    return `${names.length} inactive MCP tool(s) are available. Use mcp_search_tools with keywords to discover them, then use select:<full-tool-name> to activate one.`;
   }
 
   async close(): Promise<void> {
@@ -191,42 +188,49 @@ export class McpManager {
 
   private async connectAll(): Promise<void> {
     if (this.closed) return;
-    for (const [name, config] of Object.entries(this.config)) {
+    const entries = Object.entries(this.config);
+    for (let offset = 0; offset < entries.length; offset += MCP_CONNECTION_CONCURRENCY) {
       if (this.closed) break;
-      let client: Client | undefined;
-      try {
-        const transport = createTransport(config, this.workspace);
-        client = new Client({ name: "oran-code", version: "0.1.0" });
-        this.pendingClients.add(client);
-        await client.connect(transport);
-        const listed = await client.listTools();
-        const instructions = client.getInstructions()?.trim();
-        const server: ConnectedMcpServer = {
-          name,
+      await Promise.all(entries.slice(offset, offset + MCP_CONNECTION_CONCURRENCY)
+        .map(([name, config]) => this.connectServer(name, config)));
+    }
+  }
+
+  private async connectServer(name: string, config: McpServerConfig): Promise<void> {
+    if (this.closed) return;
+    let client: Client | undefined;
+    try {
+      const transport = createTransport(config, this.workspace);
+      client = new Client({ name: "oran-code", version: "0.1.0" });
+      this.pendingClients.add(client);
+      await client.connect(transport);
+      const listed = await client.listTools();
+      const instructions = client.getInstructions()?.trim();
+      const server: ConnectedMcpServer = {
+        name,
+        client,
+        transport,
+        tools: listed.tools,
+        ...(instructions ? { instructions } : {}),
+      };
+      this.pendingClients.delete(client);
+      this.servers.set(name, server);
+      for (const remote of listed.tools) {
+        const fullName = `${MCP_TOOL_PREFIX}${sanitizeName(name)}__${sanitizeName(remote.name)}`;
+        this.tools.set(fullName, {
+          name: fullName,
+          server: name,
+          tool: remote.name,
+          description: remote.description ?? "",
+          parameters: remote.inputSchema as Record<string, unknown>,
           client,
-          transport,
-          tools: listed.tools,
-          ...(instructions ? { instructions } : {}),
-        };
-        this.pendingClients.delete(client);
-        this.servers.set(name, server);
-        for (const remote of listed.tools) {
-          const fullName = `${MCP_TOOL_PREFIX}${sanitizeName(name)}__${sanitizeName(remote.name)}`;
-          this.tools.set(fullName, {
-            name: fullName,
-            server: name,
-            tool: remote.name,
-            description: remote.description ?? "",
-            parameters: remote.inputSchema as Record<string, unknown>,
-            client,
-            remote,
-          });
-        }
-      } catch (error) {
-        if (client) this.pendingClients.delete(client);
-        this.connectionFailures.push({ name, error: errorMessage(error) });
-        await client?.close().catch(() => undefined);
+          remote,
+        });
       }
+    } catch (error) {
+      if (client) this.pendingClients.delete(client);
+      this.connectionFailures.push({ name, error: errorMessage(error) });
+      await client?.close().catch(() => undefined);
     }
   }
 
