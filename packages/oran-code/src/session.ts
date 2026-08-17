@@ -2243,6 +2243,9 @@ export class TerminalSession {
   }
 
   private async closeTrace(): Promise<void> {
+    // `run()` opens tracing in the background. Wait for that initialization to
+    // settle before closing so a late SQLite open cannot leak past shutdown.
+    await this.traceOpen?.catch(() => undefined);
     this.trace?.close();
     this.trace = undefined;
     this.traceOpen = undefined;
