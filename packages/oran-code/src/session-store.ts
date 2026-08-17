@@ -68,18 +68,24 @@ export class SessionStore {
     }
   }
 
+  /** Returns metadata-only sessions, sorted by most recently modified. */
   list(): StoredSession[] {
     return this.sessions.filter((session) => normalizeWorkspace(session.workspace) === normalizeWorkspace(this.workspace))
       .sort((a, b) => (this.mtimes.get(b.id) ?? 0) - (this.mtimes.get(a.id) ?? 0) || b.updatedAt.localeCompare(a.updatedAt))
       .map(cloneSession);
   }
+  /** Returns the most recently modified session without loading its conversation. */
   current(): StoredSession | undefined { return this.list()[0]; }
+  /** Returns metadata for one session; call `ensureConversation` when the body is needed. */
   find(id: string): StoredSession | undefined {
     const found = this.sessions.find((item) => item.id === id && normalizeWorkspace(item.workspace) === normalizeWorkspace(this.workspace));
     return found ? cloneSession(found) : undefined;
   }
 
-  /** Ensure the conversation body is loaded before resume/update paths touch it. */
+  /**
+   * Materialises the conversation body from the jsonl archive and returns the
+   * full session. Prefer this before mutating or reading `conversation`.
+   */
   async ensureConversation(id: string): Promise<StoredSession | undefined> {
     const existing = this.sessions.find((item) => item.id === id && normalizeWorkspace(item.workspace) === normalizeWorkspace(this.workspace));
     if (!existing) return undefined;

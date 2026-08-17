@@ -67,23 +67,25 @@ export async function main(argv = process.argv.slice(2)): Promise<void> {
     await handleConfigCommand(argv.slice(1), workspace);
     return;
   }
+  if (command && !["tui", "run"].includes(command) && !command.startsWith("-")) {
+    throw new Error(`unknown command: ${command}; use --help`);
+  }
 
   const config = await loadConfig(workspace);
   const requestedModel = valueAfter(argv, "--model", "-m");
   const approveAll = argv.includes("--approve-all") || argv.includes("-y") || config.agent?.approveAll === true;
-  const prompt = command === "run" ? firstPositional(argv.slice(1)) : firstPositional(argv);
+  const prompt = command === "run" ? firstPositional(argv.slice(1)) : undefined;
 
-  if (prompt && command !== "tui") {
+  if (command === "run" && !prompt) {
+    throw new Error(`usage: ${CLI_NAME} run "..." [--workspace PATH]`);
+  }
+  if (prompt) {
     const model = resolveModelConfig(config, requestedModel ?? config.agent?.lastModel);
     const { TerminalSession } = await import("./session.js");
     const session = new TerminalSession({ workspace, model, config, approveAll });
     const task = await session.runOnce(prompt);
     if (task.state === "failed") process.exitCode = 1;
     return;
-  }
-
-  if (command && !["tui", "run"].includes(command) && !command.startsWith("-")) {
-    throw new Error(`unknown command: ${command}; use --help`);
   }
 
   const model = requestedModel ? resolveModelConfig(config, requestedModel) : undefined;

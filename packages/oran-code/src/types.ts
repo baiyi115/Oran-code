@@ -181,7 +181,6 @@ export interface AgentSettings {
 
 export interface OptionalSystemPromptModules {
   readonly customInstructions?: string;
-  readonly availableSkills?: string;
   readonly activeSkills?: string;
   readonly longTermMemory?: string;
 }

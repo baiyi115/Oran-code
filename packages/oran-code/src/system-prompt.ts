@@ -85,7 +85,6 @@ const FIXED_MODULES: readonly SystemPromptModule[] = [
 
 const OPTIONAL_PRIORITIES = {
   customInstructions: 300,
-  availableSkills: 250,
   activeSkills: 200,
   longTermMemory: 100,
 } as const;
@@ -93,7 +92,6 @@ const OPTIONAL_PRIORITIES = {
 export function assembleStableSystemPrompt(optional: OptionalSystemPromptModules = {}): string {
   const modules: SystemPromptModule[] = [...FIXED_MODULES];
   addOptionalModule(modules, "custom-instructions", OPTIONAL_PRIORITIES.customInstructions, optional.customInstructions);
-  addOptionalModule(modules, "available-skills", OPTIONAL_PRIORITIES.availableSkills, optional.availableSkills);
   addOptionalModule(modules, "active-skills", OPTIONAL_PRIORITIES.activeSkills, optional.activeSkills);
   addOptionalModule(modules, "long-term-memory", OPTIONAL_PRIORITIES.longTermMemory, optional.longTermMemory);
   return modules
