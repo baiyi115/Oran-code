@@ -177,15 +177,16 @@ export class McpManager {
   async close(): Promise<void> {
     if (this.closed) return;
     this.closed = true;
+    await this.connectPromise?.catch(() => undefined);
     const clients = new Set([
       ...this.pendingClients,
       ...[...this.servers.values()].map((server) => server.client),
     ]);
     await Promise.allSettled([...clients].map((client) => client.close()));
-    await this.connectPromise?.catch(() => undefined);
     this.pendingClients.clear();
     this.servers.clear();
     this.tools.clear();
+    this.connectPromise = undefined;
   }
 
   private async connectAll(): Promise<void> {

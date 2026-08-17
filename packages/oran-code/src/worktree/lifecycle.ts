@@ -66,8 +66,12 @@ export async function ensureWorktree(workspace: string, slug: string): Promise<E
   let head: string;
   let warnings: readonly string[] = [];
   if (await exists(path)) {
-    // 快速恢复：不调用 git worktree 创建命令，优先纯文件系统读 HEAD，失败再回退 git 子进程。
+    // 快速恢复必须证明目录属于当前仓库，避免把任意同名目录当成隔离工作区。
+    if (!(await isRegisteredWorktree(repoRoot, path, branch))) {
+      throw new Error(`existing worktree path is not registered for branch ${branch}: ${path}`);
+    }
     head = await readHead(path);
+    if (!head) throw new Error(`could not resolve existing worktree HEAD: ${path}`);
   } else {
     await mkdir(dirname(path), { recursive: true });
     await runGit(repoRoot, ["worktree", "add", "-B", branch, path, "HEAD"]);
@@ -264,6 +268,45 @@ async function readHead(worktreePath: string): Promise<string> {
   } catch {
     return "";
   }
+}
+
+async function isRegisteredWorktree(repoRoot: string, worktreePath: string, branch: string): Promise<boolean> {
+  try {
+    const result = await execFileAsync("git", ["-C", repoRoot, "worktree", "list", "--porcelain"], {
+      encoding: "utf8",
+      windowsHide: true,
+    });
+    let currentPath: string | undefined;
+    let currentBranch: string | undefined;
+    const flush = (): boolean => {
+      const matchesPath = currentPath !== undefined && sameWorktreePath(currentPath, worktreePath);
+      const matchesBranch = currentBranch === `refs/heads/${branch}`;
+      return matchesPath && matchesBranch;
+    };
+    for (const rawLine of result.stdout.split(/\r?\n/)) {
+      const line = rawLine.trim();
+      if (!line) {
+        if (flush()) return true;
+        currentPath = undefined;
+        currentBranch = undefined;
+        continue;
+      }
+      if (line.startsWith("worktree ")) currentPath = line.slice("worktree ".length).trim();
+      else if (line.startsWith("branch ")) currentBranch = line.slice("branch ".length).trim();
+    }
+    return flush();
+  } catch {
+    return false;
+  }
+}
+
+function sameWorktreePath(left: string, right: string): boolean {
+  const normalize = (value: string): string => {
+    let path = resolve(value).replaceAll("\\", "/").replace(/\/+$/, "");
+    if (process.platform === "win32") path = path.toLowerCase();
+    return path;
+  };
+  return normalize(left) === normalize(right);
 }
 
 async function runGit(cwd: string, args: readonly string[]): Promise<void> {

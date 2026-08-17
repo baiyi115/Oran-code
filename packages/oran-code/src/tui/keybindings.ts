@@ -14,7 +14,7 @@ export const KEYBINDINGS = {
   followUpQueue: "C-q",
   deleteSession: "C-d",
   insertNewline: ["S-enter", "C-j"],
-  toggleTool: "C-o",
+  toggleTool: "C-t",
   switchPermissionMode: "tab",
   switchWorkMode: "tab",
   switchReasoningEffort: "S-tab",

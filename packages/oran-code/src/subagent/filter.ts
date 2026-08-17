@@ -54,13 +54,14 @@ export function createSubagentToolFilter(options: SubagentToolFilterOptions): (t
   const roleAllowed = new Set(options.definition?.allowedTools ?? []);
   const wildcardOnly = roleAllowed.size === 1 && roleAllowed.has("*");
   return (tool) => {
-    if (options.isMcpTool(tool.name)) return true;
-    if (GLOBAL_SUBAGENT_DENIED_TOOLS.has(tool.name)) return false;
-    if (options.customAgent && CUSTOM_SUBAGENT_DENIED_TOOLS.has(tool.name)) return false;
-    if (customDenied.has(tool.name)) return false;
-    if (options.background && !BACKGROUND_SUBAGENT_ALLOWED_TOOLS.has(tool.name)) return false;
-    if (roleDenied.has(tool.name)) return false;
-    if (roleAllowed.size > 0 && !wildcardOnly && !roleAllowed.has(tool.name)) return false;
+    const name = tool.name;
+    if (GLOBAL_SUBAGENT_DENIED_TOOLS.has(name)) return false;
+    if (options.customAgent && CUSTOM_SUBAGENT_DENIED_TOOLS.has(name)) return false;
+    if (customDenied.has(name)) return false;
+    if (options.background && !BACKGROUND_SUBAGENT_ALLOWED_TOOLS.has(name)) return false;
+    if (roleDenied.has(name)) return false;
+    if (roleAllowed.size > 0 && !wildcardOnly && !roleAllowed.has(name)) return false;
+    if (options.isMcpTool(name)) return true;
     return options.parentFilter?.(tool) ?? true;
   };
 }

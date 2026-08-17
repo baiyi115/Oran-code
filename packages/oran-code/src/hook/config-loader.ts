@@ -114,6 +114,7 @@ export function createHookEngineDeps(options: {
           env: merged,
           ...(resolvedTimeout !== undefined ? { timeout: resolvedTimeout } : {}),
           maxBuffer: 10 * 1024 * 1024,
+          windowsHide: true,
         });
         return { ok: true, stdout };
       } catch (error) {

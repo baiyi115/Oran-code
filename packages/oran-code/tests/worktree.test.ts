@@ -97,9 +97,8 @@ describe("worktree lifecycle", () => {
   it("uses the existing-directory fast recovery path", async () => {
     const fixture = await createGitFixture("oran-worktree-recovery-");
     const worktree = worktreeDirectory(fixture.root, "recover");
-    await mkdir(join(worktree, ".git", "refs", "heads"), { recursive: true });
-    await writeFile(join(worktree, ".git", "HEAD"), "ref: refs/heads/worktree-recover\n", "utf8");
-    await writeFile(join(worktree, ".git", "refs", "heads", "worktree-recover"), `${fixture.head}\n`, "utf8");
+    await mkdir(dirname(worktree), { recursive: true });
+    await runGit(fixture.root, ["worktree", "add", "-B", worktreeBranch("recover"), worktree, "HEAD"]);
 
     await expect(ensureWorktree(fixture.root, "recover")).resolves.toEqual({
       info: {
