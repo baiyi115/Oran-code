@@ -43,7 +43,7 @@ describe("SessionStore JSONL archives", () => {
 
       const reopened = new SessionStore(root);
       await reopened.open();
-      expect(reopened.find(created.id)).toMatchObject({ conversation, reasoningEffort: "high" });
+      expect(await reopened.ensureConversation(created.id)).toMatchObject({ conversation, reasoningEffort: "high" });
       expect(await reopened.remove(created.id)).toBe(true);
       expect(reopened.list()).toHaveLength(0);
     } finally {
@@ -73,7 +73,7 @@ describe("SessionStore JSONL archives", () => {
 
       const reopened = new SessionStore(root);
       await reopened.open();
-      expect(reopened.find(created.id)?.conversation).toEqual([
+      expect((await reopened.ensureConversation(created.id))?.conversation).toEqual([
         ...replacement,
         { role: "user", content: "after-boundary" },
       ]);
@@ -170,7 +170,7 @@ describe("SessionStore JSONL archives", () => {
 
       const reopened = new SessionStore(root);
       await reopened.open();
-      expect(reopened.find(created.id)?.conversation).toEqual([
+      expect((await reopened.ensureConversation(created.id))?.conversation).toEqual([
         expect.objectContaining({ role: "user", content: expect.stringContaining("finished setup") }),
         { role: "user", content: "continue here" },
         { role: "assistant", content: "ready" },
@@ -200,7 +200,7 @@ describe("SessionStore JSONL archives", () => {
 
       const store = new SessionStore(root);
       await store.open();
-      expect(store.find(legacy.id)?.conversation).toEqual(legacy.conversation);
+      expect((await store.ensureConversation(legacy.id))?.conversation).toEqual(legacy.conversation);
       expect(await stat(`${legacyPath}.migrated`)).toBeDefined();
 
       const reopened = new SessionStore(root);

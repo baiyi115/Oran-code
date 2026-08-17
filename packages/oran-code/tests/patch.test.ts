@@ -128,7 +128,7 @@ describe("applyUnifiedDiff", () => {
 
   it("handles removed lines whose content starts with dashes", () => {
     const content = "--old\nplain\n";
-    const diff = "@@ -1,1 +1,1 @@\n----old\n+--new\n";
+    const diff = "@@ -1,1 +1,1 @@\n---old\n+--new\n";
     const result = applyUnifiedDiff(content, diff);
     expect(result.ok).toBe(true);
     expect(result.content).toBe("--new\nplain\n");

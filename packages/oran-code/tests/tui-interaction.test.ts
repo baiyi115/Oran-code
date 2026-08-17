@@ -9,7 +9,7 @@ describe("TUI interaction helpers", () => {
   });
 
   it("filters slash commands by the typed command", () => {
-    expect(filterCommands("/mo").map((command) => command.name)).toEqual(["/model"]);
+    expect(filterCommands("/mo").map((command) => command.name)).toEqual(["/model", "/do", "/memory", "/plan"]);
     expect(filterCommands("/").map((command) => command.name)).toEqual([
       "/clear",
       "/compact",
@@ -30,9 +30,10 @@ describe("TUI interaction helpers", () => {
   });
 
   it("maps approval choices and redacts secrets", () => {
-    expect(approvalResponse(0)).toBe(true);
-    expect(approvalResponse(1)).toBe("always");
-    expect(approvalResponse(2)).toBe(false);
+    expect(approvalResponse(0)).toBe("task");
+    expect(approvalResponse(1)).toBe(true);
+    expect(approvalResponse(2)).toBe("always");
+    expect(approvalResponse(3)).toBe(false);
     expect(redactSecrets({ apiKey: "sk-super-secret-value", nested: { token: "abc" } })).toEqual({
       apiKey: "[redacted]",
       nested: { token: "[redacted]" },
