@@ -1,5 +1,5 @@
 import { platform } from "node:os";
-import type { Message, ModelConfig, OptionalSystemPromptModules, WorkspaceSnapshot } from "./types.js";
+import type { Message, ModelConfig, OptionalSystemPromptModules, TaskPlanState, WorkspaceSnapshot } from "./types.js";
 
 export interface SystemPromptModule {
   readonly name: string;
@@ -61,6 +61,7 @@ const FIXED_MODULES: readonly SystemPromptModule[] = [
       "Prefer dedicated file, search, patch, and workspace tools over shell commands that duplicate those capabilities.",
       "Use apply_diff for multi-hunk edits to existing files; use edit_file for small unique-snippet replacements, and write_file for new files.",
       "Use run_command only for operations that need an external command; write its syntax for the configured default shell, or explicitly launch and verify another shell when required.",
+      "For structured multi-step tasks, track and update your progress with the update_plan tool.",
       "Use tools deliberately, avoid redundant exploration, and stop calling tools once enough evidence is available.",
       "When a tool result says its full content was offloaded, use read_file on the supplied path if the omitted detail is needed.",
     ].join("\n"),
@@ -177,6 +178,27 @@ export function loopBudgetReminder(remainingTurns: number, finalTurn: boolean): 
   return finalTurn
     ? "This is the final model iteration. Do not call tools. Answer from available evidence and state any specific unfinished limitation."
     : `After this response, ${remainingTurns} model iteration(s) remain. Avoid redundant calls and synthesize once enough evidence is available.`;
+}
+
+export function taskPlanReminder(planState: TaskPlanState): string {
+  const lines: string[] = [
+    `[Active Task Plan] Goal: ${planState.goal}`,
+    "Steps:",
+  ];
+  planState.steps.forEach((step, idx) => {
+    const isCurrent = idx === planState.currentStepIndex;
+    const marker = step.status === "completed" ? "✓"
+      : step.status === "in_progress" ? "▶"
+      : step.status === "skipped" ? "⊘"
+      : "•";
+    const currentTag = isCurrent ? " (current)" : "";
+    lines.push(`  ${marker} [${step.status}] ${step.id}: ${step.title}${currentTag}`);
+    if (step.description) {
+      lines.push(`     Description: ${step.description}`);
+    }
+  });
+  lines.push("Note: Keep this plan updated using `update_plan` as you make progress on each step.");
+  return lines.join("\n");
 }
 
 function addOptionalModule(

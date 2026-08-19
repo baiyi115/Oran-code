@@ -19,6 +19,8 @@ import type {
   RuntimeEvent,
   RuntimeEventPayloads,
   Task,
+  TaskPlanState,
+  TaskPlanStep,
   ToolCall,
   ToolDefinition,
   ToolKind,
@@ -42,6 +44,7 @@ import {
   loopBudgetReminder,
   stableSystemMessage,
   systemReminderMessage,
+  taskPlanReminder,
   taskModeReminder,
 } from "./system-prompt.js";
 
@@ -262,13 +265,28 @@ export class TaskController {
         ...this.runtimeReminders(),
         ...hookNotices.map((notice) => `[hook:${notice.event}] ${notice.text}`),
       ];
+      if (task.planState && task.planState.steps.length > 0) {
+        reminders.push(taskPlanReminder(task.planState));
+      }
       if (noProgressWarning) {
-        const { call, repeatCount, limit } = noProgressWarning;
-        const argSummary = formatCallArguments(call.arguments);
-        reminders.push(
-          `Heads up: the previous ${repeatCount} call(s) to ${call.name}(${argSummary}) look identical. ` +
-            `If this is not intentional, approach the task differently. Repeating ${limit} times will pause the task.`,
-        );
+        const { call, repeatCount, limit, reason, detail } = noProgressWarning;
+        if (reason === "repeated_error") {
+          reminders.push(
+            `Heads up: the last ${repeatCount} tool call(s) failed with the same error signature: "${detail ?? ""}". ` +
+              `Please analyze the root cause before attempting the same approach again.`,
+          );
+        } else if (reason === "readonly_stall") {
+          reminders.push(
+            `Heads up: ${detail ?? "prolonged read-only exploration without changes"}. ` +
+              `If you have gathered enough context, start implementing changes or provide a final answer to the user.`,
+          );
+        } else {
+          const argSummary = formatCallArguments(call.arguments);
+          reminders.push(
+            `Heads up: the previous ${repeatCount} call(s) to ${call.name}(${argSummary}) look identical. ` +
+              `If this is not intentional, approach the task differently. Repeating ${limit} times will pause the task.`,
+          );
+        }
       }
       // 轮次开始：通知队列已并入本轮系统提醒后派发
       await this.fireHook({ event: "turn_start", workspace: task.workspace, model: this.config.model.model, userPrompt: task.prompt });
@@ -376,6 +394,8 @@ export class TaskController {
           }
           try {
             workspaceMutated ||= await this.runTools(task, messages, response.toolCalls, loop);
+            const allReadonly = response.toolCalls.every((c) => inferToolKind(c.name) === "readonly");
+            loop.recordTurnActivity({ hasMutation: workspaceMutated, isReadonly: allReadonly });
           } catch (error) {
             const cancelled = isAbortError(error) || this.abortController?.signal.aborted === true;
             await this.reconcileToolCalls(
@@ -1125,6 +1145,23 @@ export class TaskController {
   ): Promise<void> {
     const executed = options.executed ?? true;
     const output = result.output || result.error || "";
+    this.loop?.recordResult(call, result);
+    if (call.name === "update_plan" && result.ok && result.output) {
+      try {
+        const parsed = JSON.parse(result.output) as { goal?: string; steps?: TaskPlanStep[]; currentStepIndex?: number };
+        if (parsed && typeof parsed.goal === "string" && Array.isArray(parsed.steps)) {
+          const planState: TaskPlanState = {
+            goal: parsed.goal,
+            steps: parsed.steps,
+            currentStepIndex: parsed.currentStepIndex ?? 0,
+            updatedAt: new Date().toISOString(),
+          };
+          task.planState = planState;
+          await this.persist(task);
+          await this.emit("task_plan_updated", { planState });
+        }
+      } catch { /* best effort */ }
+    }
     this.trace.appendToolCall(task.id, call.name, call.arguments, output, result.ok, duration, this.modelResponseStepId);
     await this.emit("tool_result", { call, index, result: { ...result, durationMs: duration } });
     if (executed) {
@@ -1183,12 +1220,20 @@ export class TaskController {
   }
 
   private async pauseForNoProgress(task: Task, diagnostic: NoProgressDiagnostic): Promise<void> {
-    const { call, repeatCount } = diagnostic;
-    const argSummary = formatCallArguments(call.arguments);
+    const { call, repeatCount, reason, detail } = diagnostic;
     transitionTask(task, "paused");
     await this.persist(task);
+    let pauseMessage = "";
+    if (reason === "repeated_error") {
+      pauseMessage = `No progress detected; task paused after ${repeatCount} consecutive tool calls failed with identical error: "${detail ?? ""}".`;
+    } else if (reason === "readonly_stall") {
+      pauseMessage = `No progress detected; task paused after ${repeatCount} consecutive read-only exploration turns without workspace changes.`;
+    } else {
+      const argSummary = formatCallArguments(call.arguments);
+      pauseMessage = `No progress detected; task paused before executing a repeated tool call. Repeated ${call.name}(${argSummary}) ${repeatCount} time(s).`;
+    }
     await this.emit("log", {
-      message: `No progress detected; task paused before executing a repeated tool call. Repeated ${call.name}(${argSummary}) ${repeatCount} time(s).`,
+      message: pauseMessage,
     });
   }
 

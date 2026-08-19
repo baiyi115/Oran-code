@@ -3,7 +3,7 @@ import { existsSync } from "node:fs";
 import { appendFile, mkdir, readFile, readdir, rename, stat, unlink, utimes, writeFile } from "node:fs/promises";
 import { dirname, extname, resolve } from "node:path";
 import type { TranscriptMessage } from "./tui/types.js";
-import type { Message, ModelReference, SessionTitleMode } from "./types.js";
+import type { Message, ModelReference, SessionTitleMode, TaskPlanState } from "./types.js";
 import { isPermissionMode, isReasoningEffort, type PermissionMode, type ReasoningEffort, type WorkMode } from "./types.js";
 import { ensureProjectStateRoot, migrateUserDataOutOfWorkspace, projectStateRoot, userSessionsRoot } from "./paths.js";
 
@@ -13,6 +13,7 @@ export interface StoredSession {
   titleGenerationAttempted?: boolean; workspace: string; createdAt: string; updatedAt: string;
   messages: TranscriptMessage[]; history: string[]; workMode?: WorkMode; permissionMode?: PermissionMode;
   reasoningEffort?: ReasoningEffort; modelReference?: ModelReference; conversation?: Message[];
+  planState?: TaskPlanState | undefined;
   /** Derived archive metadata used for metadata-first session listing. */
   archiveMessageCount?: number; archiveTitle?: string; archiveSize?: number;
 }
@@ -25,10 +26,11 @@ export interface SessionCompactionBoundaryRecord {
   type: "compaction-boundary"; role: "system"; timestamp: string; content: SessionCompactionBoundaryContent;
 }
 export interface SessionResetRecord { type: "session-reset"; role: "system"; timestamp: string; content: { messages: Message[] } }
-export type SessionJsonlRecord = SessionStateRecord | SessionMessageRecord | LegacySessionMessageRecord | SessionCompactionBoundaryRecord | SessionResetRecord;
+export interface SessionTaskPlanRecord { type: "task-plan"; timestamp: string; plan: TaskPlanState }
+export type SessionJsonlRecord = SessionStateRecord | SessionMessageRecord | LegacySessionMessageRecord | SessionCompactionBoundaryRecord | SessionResetRecord | SessionTaskPlanRecord;
 
 const DEFAULT_SESSION_NAMES = new Set(["Current session", "New session"]);
-export type StoredSessionPatch = Partial<Pick<StoredSession, "name" | "autoNamed" | "titleSource" | "titleGenerationAttempted" | "messages" | "history" | "workMode" | "permissionMode" | "reasoningEffort" | "conversation">> & { modelReference?: ModelReference | null };
+export type StoredSessionPatch = Partial<Pick<StoredSession, "name" | "autoNamed" | "titleSource" | "titleGenerationAttempted" | "messages" | "history" | "workMode" | "permissionMode" | "reasoningEffort" | "conversation" | "planState">> & { modelReference?: ModelReference | null };
 
 export interface SessionStoreOptions {
   sessionsRoot?: string;
@@ -105,7 +107,7 @@ export class SessionStore {
     return this.find(id);
   }
 
-  async create(name = "New session", defaults: Pick<StoredSession, "workMode" | "permissionMode" | "reasoningEffort" | "modelReference" | "conversation"> = {}): Promise<StoredSession> {
+  async create(name = "New session", defaults: Pick<StoredSession, "workMode" | "permissionMode" | "reasoningEffort" | "modelReference" | "conversation" | "planState"> = {}): Promise<StoredSession> {
     const now = new Date().toISOString();
     let id = generateSessionId();
     while (this.sessions.some((item) => item.id === id) || existsSync(this.archivePath(id))) id = generateSessionId();
@@ -118,13 +120,19 @@ export class SessionStore {
       ...(defaults.permissionMode !== undefined ? { permissionMode: defaults.permissionMode } : {}),
       ...(defaults.reasoningEffort !== undefined ? { reasoningEffort: defaults.reasoningEffort } : {}),
       ...(defaults.modelReference !== undefined ? { modelReference: { ...defaults.modelReference } } : {}),
+      ...(defaults.planState !== undefined ? { planState: structuredClone(defaults.planState) } : {}),
       ...(defaults.conversation !== undefined ? { conversation: cloneMessages(defaults.conversation) } : {}),
     };
     // Derived counter must be set before persist so the sidecar snapshot carries it.
     session.archiveMessageCount = countArchiveMessages(session.conversation ?? []);
+    const initialRecords: SessionJsonlRecord[] = [stateRecord(session, now)];
+    if (session.planState) {
+      initialRecords.push(planRecord(session.planState, now));
+    }
+    initialRecords.push(...messageRecords(session.conversation ?? [], now));
     session.archiveSize = await this.persistRecordsAndState(
       id,
-      [stateRecord(session, now), ...messageRecords(session.conversation ?? [], now)],
+      initialRecords,
       session,
       now,
     );
@@ -134,7 +142,7 @@ export class SessionStore {
     return cloneSession(session);
   }
 
-  async ensureCurrent(name = "Current session", defaults: Pick<StoredSession, "workMode" | "permissionMode" | "reasoningEffort" | "modelReference" | "conversation"> = {}): Promise<StoredSession> {
+  async ensureCurrent(name = "Current session", defaults: Pick<StoredSession, "workMode" | "permissionMode" | "reasoningEffort" | "modelReference" | "conversation" | "planState"> = {}): Promise<StoredSession> {
     return this.current() ?? this.create(name, defaults);
   }
 
@@ -156,14 +164,22 @@ export class SessionStore {
       if (patch.modelReference === null) delete next.modelReference;
       else next.modelReference = structuredClone(patch.modelReference);
     }
+    if (patch.planState !== undefined) {
+      if (patch.planState === null || patch.planState === undefined) delete next.planState;
+      else next.planState = structuredClone(patch.planState);
+    }
     if (patch.conversation !== undefined) next.conversation = cloneMessages(patch.conversation);
     const now = new Date().toISOString();
     next.updatedAt = now;
     const before = existing.conversation ?? [];
     const after = next.conversation ?? [];
-    const changes: SessionJsonlRecord[] = patch.conversation === undefined ? []
+    const planRecords: SessionJsonlRecord[] = patch.planState
+      ? [planRecord(patch.planState, now)]
+      : [];
+    const conversationChanges: SessionJsonlRecord[] = patch.conversation === undefined ? []
       : isMessagePrefix(before, after) ? messageRecords(after.slice(before.length), now)
         : [compactionBoundaryRecord(after, now) ?? { type: "session-reset", role: "system", timestamp: now, content: { messages: cloneMessages(after) } }];
+    const changes: SessionJsonlRecord[] = [...planRecords, ...conversationChanges];
     // Derived counters must be set before persist so the sidecar snapshot carries them.
     // When neither the archive counter nor the conversation body is known (metadata-first
     // legacy session), leave the counter untouched instead of resetting it to 0.
@@ -178,6 +194,18 @@ export class SessionStore {
     next.archiveSize = await this.persistRecordsAndState(id, [...changes, stateRecord(next, now)], next, now);
     this.sessions[this.sessions.indexOf(existing)] = next;
     if (patch.conversation !== undefined) this.loadedConversations.add(id);
+    await this.refreshMtime(id);
+    return cloneSession(next);
+  }
+
+  async appendPlan(id: string, plan: TaskPlanState, timestamp = new Date().toISOString()): Promise<StoredSession | undefined> {
+    const existing = this.sessions.find((item) => item.id === id && normalizeWorkspace(item.workspace) === normalizeWorkspace(this.workspace));
+    if (!existing) return undefined;
+    const next = cloneSession(existing);
+    next.planState = structuredClone(plan);
+    next.updatedAt = timestamp;
+    next.archiveSize = await this.persistRecordsAndState(id, [planRecord(plan, timestamp), stateRecord(next, timestamp)], next, timestamp);
+    this.sessions[this.sessions.indexOf(existing)] = next;
     await this.refreshMtime(id);
     return cloneSession(next);
   }
@@ -365,6 +393,8 @@ export class SessionStore {
     else if (full.session.reasoningEffort !== undefined) merged.reasoningEffort = full.session.reasoningEffort;
     if (previous.modelReference !== undefined) merged.modelReference = previous.modelReference;
     else if (full.session.modelReference !== undefined) merged.modelReference = full.session.modelReference;
+    if (previous.planState !== undefined) merged.planState = previous.planState;
+    else if (full.session.planState !== undefined) merged.planState = full.session.planState;
     this.sessions[index] = merged;
     this.mtimes.set(id, full.mtimeMs);
     this.loadedConversations.add(id);
@@ -379,6 +409,8 @@ export class SessionStore {
       ]);
       const records = parseSessionJsonl(contents);
       const conversation = rebuildConversation(records);
+      const planRecords = records.filter((record): record is SessionTaskPlanRecord => record.type === "task-plan");
+      const latestPlan = planRecords.at(-1)?.plan;
       const stateRecords = records.filter((record): record is SessionStateRecord => record.type === "state");
       const archiveState = stateRecords.at(-1);
       // Trust the sidecar only for the exact archive size it describes.
@@ -387,9 +419,10 @@ export class SessionStore {
         ? matchingSnapshot
         : archiveState;
       const latest = latestRecord?.session;
+      const effectivePlan = latest?.planState ?? latestPlan;
       const base: StoredSession | undefined = latest && isStoredSessionState(latest) && latest.id === fileId
-        ? { ...structuredClone(latest), conversation }
-        : conversation.length
+        ? { ...structuredClone(latest), conversation, ...(effectivePlan ? { planState: structuredClone(effectivePlan) } : {}) }
+        : conversation.length || effectivePlan
           ? {
               id: fileId,
               name: "Current session",
@@ -401,6 +434,7 @@ export class SessionStore {
               messages: [],
               history: [],
               conversation,
+              ...(effectivePlan ? { planState: structuredClone(effectivePlan) } : {})
             }
           : undefined;
       if (!base) return undefined;
@@ -550,11 +584,15 @@ function truncateIncompleteToolChains(messages: readonly Message[]): Message[] {
 }
 
 function recordMessage(record: SessionJsonlRecord | undefined): Message | undefined {
-  if (!record || record.type === "state" || record.type === "compaction-boundary" || record.type === "session-reset" || !isMessageRole(record.role)) return undefined;
+  if (!record || record.type === "state" || record.type === "compaction-boundary" || record.type === "session-reset" || record.type === "task-plan" || !isMessageRole(record.role)) return undefined;
   const hasCalls = Array.isArray(record.toolCalls) && record.toolCalls.length > 0;
   if (!(typeof record.content === "string" && record.content.trim()) && !hasCalls && record.role !== "tool") return undefined;
   const { type: _type, timestamp: _timestamp, role, ...rest } = record;
   return { role, ...structuredClone(rest) };
+}
+
+function planRecord(plan: TaskPlanState, timestamp: string): SessionTaskPlanRecord {
+  return { type: "task-plan", timestamp, plan: structuredClone(plan) };
 }
 
 function stateRecord(session: StoredSession, timestamp: string): SessionStateRecord {
@@ -634,6 +672,7 @@ function isSessionJsonlRecord(value: unknown): value is SessionJsonlRecord {
   if (item.type === "state") return typeof item.timestamp === "string" && isStoredSessionState(item.session);
   if (item.type === "compaction-boundary") return item.role === "system" && typeof item.timestamp === "string" && isBoundaryContent(item.content);
   if (item.type === "session-reset") return item.role === "system" && typeof item.timestamp === "string" && isResetContent(item.content);
+  if (item.type === "task-plan") return typeof item.timestamp === "string" && isTaskPlanState(item.plan);
   return (item.type === undefined || item.type === "message") && isMessageRole(item.role)
     && (item.timestamp === undefined || typeof item.timestamp === "string") && isPersistedMessage(item);
 }
@@ -650,6 +689,22 @@ function isResetContent(value: unknown): value is SessionResetRecord["content"] 
   const messages = (value as { messages?: unknown }).messages;
   return Array.isArray(messages) && messages.every(isPersistedMessage);
 }
+function isTaskPlanState(value: unknown): value is TaskPlanState {
+  if (!value || typeof value !== "object") return false;
+  const item = value as Partial<TaskPlanState>;
+  return typeof item.goal === "string"
+    && typeof item.currentStepIndex === "number"
+    && typeof item.updatedAt === "string"
+    && Array.isArray(item.steps)
+    && item.steps.every((s) => (
+      Boolean(s) && typeof s === "object"
+      && typeof s.id === "string"
+      && typeof s.title === "string"
+      && (s.status === "pending" || s.status === "in_progress" || s.status === "completed" || s.status === "skipped")
+      && (s.description === undefined || typeof s.description === "string")
+    ));
+}
+
 function isSafeSessionId(id: string): boolean { return /^[A-Za-z0-9._-]+$/.test(id) && id !== "." && id !== ".."; }
 function normalizeWorkspace(workspace: string): string { return resolve(workspace).replace(/[\\/]+$/, "").toLowerCase(); }
 function isStoredSession(value: unknown): value is StoredSession {
@@ -669,6 +724,7 @@ function isStoredSessionState(value: unknown): value is StoredSessionState {
     && (item.titleSource === undefined || item.titleSource === "local" || item.titleSource === "model" || item.titleSource === "manual")
     && (item.titleGenerationAttempted === undefined || typeof item.titleGenerationAttempted === "boolean")
     && (item.modelReference === undefined || isModelReference(item.modelReference))
+    && (item.planState === undefined || isTaskPlanState(item.planState))
     && (item.archiveMessageCount === undefined || (typeof item.archiveMessageCount === "number" && Number.isFinite(item.archiveMessageCount)))
     && (item.archiveTitle === undefined || typeof item.archiveTitle === "string")
     && (item.archiveSize === undefined || (typeof item.archiveSize === "number" && Number.isFinite(item.archiveSize)));

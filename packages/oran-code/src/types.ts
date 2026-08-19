@@ -35,6 +35,22 @@ export type TaskState =
 
 export const TERMINAL_TASK_STATES: readonly TaskState[] = ["completed", "failed", "paused", "cancelled"];
 
+export type TaskPlanStepStatus = "pending" | "in_progress" | "completed" | "skipped";
+
+export interface TaskPlanStep {
+  id: string;
+  title: string;
+  status: TaskPlanStepStatus;
+  description?: string | undefined;
+}
+
+export interface TaskPlanState {
+  goal: string;
+  steps: TaskPlanStep[];
+  currentStepIndex: number;
+  updatedAt: string;
+}
+
 export interface Task {
   id: string;
   workspace: string;
@@ -43,6 +59,7 @@ export interface Task {
   prompt: string;
   state: TaskState;
   plan?: string;
+  planState?: TaskPlanState;
   model?: string;
   result?: string;
   createdAt: string;
@@ -330,6 +347,7 @@ export interface RuntimeEventPayloads {
   };
   plan: { plan: string; streamed?: boolean; complete?: boolean };
   plan_complete: { plan: string; autoExecute: boolean };
+  task_plan_updated: { planState: TaskPlanState };
   approval_request: {
     requestId: string;
     call: ToolCall;
@@ -383,6 +401,7 @@ export interface AgentEvent {
   result?: ToolResult;
   message?: string;
   steps?: number;
+  planState?: TaskPlanState;
 }
 
 export interface AgentOptions {

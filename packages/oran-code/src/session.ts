@@ -565,7 +565,14 @@ export class TerminalSession {
     this.controller = controller;
     let completed = false;
     try {
-      const task = await controller.execute(createTask(this.workspace, prompt));
+      const initialTask = createTask(this.workspace, prompt);
+      if (this.currentSession?.planState) {
+        initialTask.planState = structuredClone(this.currentSession.planState);
+      }
+      const task = await controller.execute(initialTask);
+      if (task.planState && this.currentSession) {
+        this.currentSession.planState = structuredClone(task.planState);
+      }
       if (structuredScope) {
         await structuredScope.waitForChildren(runtimeConfig.subagent.forkWaitTimeoutMs);
         const summary = structuredScope.summary();
@@ -929,6 +936,7 @@ export class TerminalSession {
           permissionMode: view?.permissionMode ?? this.permissionMode,
           reasoningEffort: view?.reasoningEffort ?? this.reasoningEffort,
           ...(modelReference ? { modelReference } : {}),
+          ...(this.currentSession?.planState !== undefined ? { planState: this.currentSession.planState } : {}),
           conversation,
         });
         if (updated && this.currentSession?.id === sessionId && this.sessionGeneration === sessionGeneration) {
@@ -1096,6 +1104,11 @@ export class TerminalSession {
         prompt: buildPlanExecutePrompt(event.plan),
       };
       this.renderer.status("Plan complete. Use /do to leave plan mode and execute it.", "cyan");
+    }
+    if (event.type === "task_plan_updated") {
+      if (this.currentSession) {
+        this.currentSession.planState = structuredClone(event.planState);
+      }
     }
     this.renderer.render(event);
     await this.tui?.flushPendingRender(requiresPaintBarrier(event));

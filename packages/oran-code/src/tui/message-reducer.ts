@@ -168,6 +168,11 @@ export function reduceRuntimeEvent(state: TuiState, event: RuntimeEvent): void {
       }
       break;
     }
+    case "task_plan_updated": {
+      const completed = event.planState.steps.filter((s) => s.status === "completed").length;
+      state.session.status = `plan ${completed}/${event.planState.steps.length}`;
+      break;
+    }
    case "tool_start":
      appendToolStart(state, event.call, event.permissionLevel, event.timestamp, event.taskId);
      state.session.currentTool = event.call.name;
