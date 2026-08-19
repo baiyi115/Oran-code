@@ -41,3 +41,8 @@ export const ANSI = {
 export function horizontalRule(width: number, char = "─"): string {
   return char.repeat(Math.max(1, width));
 }
+
+/** A dimmed horizontal rule for low-emphasis separators (overlay titles, etc.). */
+export function dimHorizontalRule(width: number, char = "─"): string {
+  return `${ANSI.dim}${horizontalRule(width, char)}${ANSI.reset}`;
+}

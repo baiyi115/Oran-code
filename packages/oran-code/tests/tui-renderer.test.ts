@@ -2,7 +2,7 @@ import { describe, expect, it } from "vitest";
 import { TuiTranscriptRenderer, type TuiRendererLayout } from "../src/tui/renderer.js";
 import { createTuiState } from "../src/tui/state.js";
 import { workingIndicatorLine } from "../src/tui/status-indicator.js";
-import { TranscriptView, toolGroupId, toolGroups } from "../src/tui/transcript/transcript-view.js";
+import { collapsibleSegments, TranscriptView } from "../src/tui/transcript/transcript-view.js";
 import { renderMessage } from "../src/tui/transcript/message-renderer.js";
 import { ANSI } from "../src/tui/theme.js";
 import type { TuiState } from "../src/tui/types.js";
@@ -79,10 +79,17 @@ describe("TuiTranscriptRenderer", () => {
     expect(workingIndicatorLine(state, 0)).toBeUndefined();
   });
 
-  it("collapses three consecutive successful tool calls into a count summary", () => {
+  it("collapses a finished thought and consecutive successful tools into one expandable segment", () => {
     const state = createState();
     state.transcript.push(
-      ...["read_file", "search_code", "run_command"].map((name, index) => ({
+      {
+        id: "thought-0",
+        kind: "thought" as const,
+        text: "Inspect the relevant files.",
+        durationMs: 2_200,
+        expanded: false,
+      },
+      ...["read_file", "search_code", "list_files"].map((name, index) => ({
         id: `tool-${index}`,
         kind: "tool" as const,
         callId: `call-${index}`,
@@ -95,15 +102,19 @@ describe("TuiTranscriptRenderer", () => {
     );
     const view = new TranscriptView();
 
-    expect(view.lines(state, 80).join("\n")).toContain("Called 3 tools");
+    const collapsed = view.lines(state, 80).join("\n");
+    expect(collapsed).toContain("Thought for 2.2s");
+    expect(collapsed).toContain("3 tools");
+    expect(collapsed).not.toContain("Inspect the relevant files.");
 
-    const group = toolGroups(state.transcript)[0]!;
-    state.expandedToolGroupIds.add(toolGroupId(group));
+    const segment = collapsibleSegments(state.transcript)[0]!;
+    state.expandedToolGroupIds.add(segment.id);
     const expanded = view.lines(state, 80).join("\n");
-    expect(expanded).not.toContain("Called 3 tools");
+    expect(expanded).not.toContain("3 tools");
+    expect(expanded).toContain("Inspect the relevant files.");
     expect(expanded).toContain("Read");
     expect(expanded).toContain("Search");
-    expect(expanded).toContain("Bash");
+    expect(expanded).toContain("List");
   });
 
   it("keeps the primary error visible and mutes retry details", () => {

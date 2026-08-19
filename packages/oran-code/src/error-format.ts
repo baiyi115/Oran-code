@@ -8,7 +8,7 @@ export function formatErrorDetail(error: unknown, options: { includeStack?: bool
   const includeStack = options.includeStack === true;
   if (error instanceof Error) {
     const lines: string[] = [];
-    const headline = error.message.trim() || error.name || "Error";
+    const headline = simplifyModelRequestMessage(error.message) ?? (error.message.trim() || error.name || "Error");
     lines.push(headline);
 
     const record = error as Error & Record<string, unknown>;
@@ -61,6 +61,35 @@ export function formatErrorDetail(error: unknown, options: { includeStack?: bool
   } catch {
     return String(error);
   }
+}
+
+/**
+ * Providers commonly put a JSON error envelope after the HTTP status. Keep
+ * the useful nested message, but do not print the whole envelope in the TUI.
+ */
+function simplifyModelRequestMessage(message: string): string | undefined {
+  const match = /^model API returned (\d{3}):\s*([\s\S]+)$/.exec(message.trim());
+  if (!match) return undefined;
+  const status = match[1];
+  const detail = match[2]?.trim() ?? "";
+  try {
+    const parsed = JSON.parse(detail) as unknown;
+    const nested = findReadableErrorMessage(parsed);
+    if (nested) return `model API returned ${status}: ${nested}`;
+  } catch {
+    // Some providers return plain text; the original message is already useful.
+  }
+  return undefined;
+}
+
+function findReadableErrorMessage(value: unknown): string | undefined {
+  if (!value || typeof value !== "object") return undefined;
+  const record = value as Record<string, unknown>;
+  for (const key of ["message", "detail", "error_description"]) {
+    if (typeof record[key] === "string" && record[key].trim()) return record[key].trim();
+  }
+  if (record.error && typeof record.error === "object") return findReadableErrorMessage(record.error);
+  return undefined;
 }
 
 /**

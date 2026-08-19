@@ -48,69 +48,74 @@ export function reduceRuntimeEvent(state: TuiState, event: RuntimeEvent): void {
        state.session.currentTool = undefined;
      }
       break;
-    case "assistant_start":
-      if (state.streaming && state.assistantMessageId) break;
-      if (event.turnId && findAssistantByTurnId(state, event.turnId, event.taskId)) break;
-      finishAssistant(state);
-      clearRetryErrorNotices(state);
-      clearAbortOnlyAssistants(state);
-      state.streaming = true;
-      state.session.currentStep = event.step;
-      state.assistantMessageId = appendTranscriptMessage(state, {
-        kind: "assistant",
-        text: "",
-        streaming: true,
-        ...(event.turnId ? { turnId: event.turnId } : {}),
-        taskId: event.taskId,
-      });
-      break;
-    case "assistant_delta": {
-      clearRetryErrorNotices(state);
-      const assistant = ensureAssistant(state, event.turnId, event.taskId);
-      assistant.text = stripPlanCompleteMarkers(assistant.text + redactSecretText(event.text));
-      assistant.streaming = true;
-      state.streaming = true;
-      state.session.currentStep = event.step;
-      break;
-    }
-    case "assistant_end": {
-      const assistant = activeAssistant(state, event.turnId, event.taskId);
-      if (!assistant && hasCompletedAssistant(state, event.turnId, event.taskId)) break;
-      const target = assistant ?? ensureAssistant(state, event.turnId, event.taskId);
-      target.text = stripPlanCompleteMarkers(redactSecretText(event.text));
-      target.streaming = false;
-      state.streaming = false;
-      const usage = usageDelta(event.usage);
-      state.session.usage = addUsage(state.session.usage, usage);
-      state.activeTaskUsage = addUsage(state.activeTaskUsage, usage);
-      state.assistantMessageId = undefined;
-      if (!target.text.trim() && event.toolCalls.length) removeTranscriptMessage(state, target.id);
-      break;
-    }
-    case "assistant_abort": {
-      const assistant = activeAssistant(state, event.turnId, event.taskId);
-      if (!assistant && hasCompletedAssistant(state, event.turnId, event.taskId)) break;
-      const target = assistant ?? ensureAssistant(state, event.turnId, event.taskId);
-      const abortMessage = redactSecretText(event.message);
-      target.text = `${target.text}${target.text ? "\n" : ""}[${abortMessage}]`;
-      target.abortMessage = abortMessage;
-      target.streaming = false;
-      state.streaming = false;
-      state.assistantMessageId = undefined;
-      break;
-    }
-    case "thought_start":
-      finishThought(state);
-      state.thoughtMessageId = appendTranscriptMessage(state, {
-        kind: "thought",
-        text: "",
-        streaming: true,
-        expanded: true,
-        ...(event.turnId ? { turnId: event.turnId } : {}),
-        taskId: event.taskId,
-      });
-      placeThoughtBeforeAssistant(state, state.thoughtMessageId, event.turnId, event.taskId);
-      break;
+   case "assistant_start":
+     if (state.streaming && state.assistantMessageId) break;
+     if (event.turnId && findAssistantByTurnId(state, event.turnId, event.taskId)) break;
+     finishAssistant(state);
+     clearRetryErrorNotices(state);
+     clearAbortOnlyAssistants(state);
+     state.streaming = true;
+     state.waitingForFirstChunk = true;
+     state.session.currentStep = event.step;
+     state.assistantMessageId = appendTranscriptMessage(state, {
+       kind: "assistant",
+       text: "",
+       streaming: true,
+       ...(event.turnId ? { turnId: event.turnId } : {}),
+       taskId: event.taskId,
+     });
+     break;
+   case "assistant_delta": {
+     clearRetryErrorNotices(state);
+     state.waitingForFirstChunk = false;
+     const assistant = ensureAssistant(state, event.turnId, event.taskId);
+     assistant.text = stripPlanCompleteMarkers(assistant.text + redactSecretText(event.text));
+     assistant.streaming = true;
+     state.streaming = true;
+     state.session.currentStep = event.step;
+     break;
+   }
+   case "assistant_end": {
+     const assistant = activeAssistant(state, event.turnId, event.taskId);
+     if (!assistant && hasCompletedAssistant(state, event.turnId, event.taskId)) break;
+     const target = assistant ?? ensureAssistant(state, event.turnId, event.taskId);
+     target.text = stripPlanCompleteMarkers(redactSecretText(event.text));
+     target.streaming = false;
+     state.streaming = false;
+     state.waitingForFirstChunk = false;
+     const usage = usageDelta(event.usage);
+     state.session.usage = addUsage(state.session.usage, usage);
+     state.activeTaskUsage = addUsage(state.activeTaskUsage, usage);
+     state.assistantMessageId = undefined;
+     if (!target.text.trim() && event.toolCalls.length) removeTranscriptMessage(state, target.id);
+     break;
+   }
+   case "assistant_abort": {
+     const assistant = activeAssistant(state, event.turnId, event.taskId);
+     if (!assistant && hasCompletedAssistant(state, event.turnId, event.taskId)) break;
+     const target = assistant ?? ensureAssistant(state, event.turnId, event.taskId);
+     const abortMessage = redactSecretText(event.message);
+     target.text = `${target.text}${target.text ? "\n" : ""}[${abortMessage}]`;
+     target.abortMessage = abortMessage;
+     target.streaming = false;
+     state.streaming = false;
+     state.waitingForFirstChunk = false;
+     state.assistantMessageId = undefined;
+     break;
+   }
+   case "thought_start":
+     finishThought(state);
+     state.waitingForFirstChunk = false;
+     state.thoughtMessageId = appendTranscriptMessage(state, {
+       kind: "thought",
+       text: "",
+       streaming: true,
+       expanded: true,
+       ...(event.turnId ? { turnId: event.turnId } : {}),
+       taskId: event.taskId,
+     });
+     placeThoughtBeforeAssistant(state, state.thoughtMessageId, event.turnId, event.taskId);
+     break;
     case "thought_delta": {
       const thought = ensureThought(state, event.taskId, event.turnId);
       thought.text += redactSecretText(event.text);
@@ -163,11 +168,12 @@ export function reduceRuntimeEvent(state: TuiState, event: RuntimeEvent): void {
       }
       break;
     }
-    case "tool_start":
-      appendToolStart(state, event.call, event.permissionLevel, event.timestamp, event.taskId);
-      state.session.currentTool = event.call.name;
-      finishAssistant(state);
-      break;
+   case "tool_start":
+     appendToolStart(state, event.call, event.permissionLevel, event.timestamp, event.taskId);
+     state.session.currentTool = event.call.name;
+     state.waitingForFirstChunk = false;
+     finishAssistant(state);
+     break;
     case "tool_result":
       updateToolResult(state, event.call, event.result, event.taskId);
       state.session.currentTool = undefined;

@@ -1,4 +1,4 @@
-import type { TuiState } from "./types.js";
+import type { TranscriptMessage, TuiState } from "./types.js";
 import { abbreviatePath, truncateVisible, visibleWidth } from "./text-width.js";
 import { isSessionBusy } from "./status-indicator.js";
 import { formatCompactDuration } from "./status-indicator.js";
@@ -54,24 +54,41 @@ export function workSummaryLine(state: TuiState): string | undefined {
       : state.session.taskState === "paused"
         ? "■ Paused"
         : "✓ Done";
-  return `${label} · ${formatCompactDuration(elapsed)}`;
+  const details = [label, formatCompactDuration(elapsed)];
+  const toolCount = currentTaskMessages(state).filter((message) => message.kind === "tool").length;
+  if (toolCount > 0) details.push(`${toolCount} tool${toolCount === 1 ? "" : "s"}`);
+  if (state.activeTaskUsage.totalTokens > 0) details.push(`${compactNumber(state.activeTaskUsage.totalTokens)} tokens`);
+  return details.join(" · ");
 }
 
 function shouldShowCompletedSummary(state: TuiState): boolean {
-  let lastUserIndex = -1;
-  for (let index = state.transcript.length - 1; index >= 0; index -= 1) {
-    const message = state.transcript[index];
-    if (message?.kind === "user" && !message.queued) {
-      lastUserIndex = index;
-      break;
-    }
-  }
+  const lastUserIndex = latestUserMessageIndex(state);
   if (lastUserIndex < 0) return false;
   const userMessage = state.transcript[lastUserIndex];
   if (userMessage?.kind === "user" && isCasualConversationPrompt(userMessage.text)) return false;
   return state.transcript.slice(lastUserIndex + 1).some((message) => (
     message.kind === "tool" || message.kind === "verification" || message.kind === "plan"
   ));
+}
+
+function currentTaskMessages(state: TuiState): readonly TranscriptMessage[] {
+  if (state.activeTaskId) {
+    const taskMessages = state.transcript.filter((message) => (
+      (message.kind === "assistant" || message.kind === "thought" || message.kind === "tool")
+      && message.taskId === state.activeTaskId
+    ));
+    if (taskMessages.length > 0) return taskMessages;
+  }
+  const lastUserIndex = latestUserMessageIndex(state);
+  return lastUserIndex < 0 ? [] : state.transcript.slice(lastUserIndex + 1);
+}
+
+function latestUserMessageIndex(state: TuiState): number {
+  for (let index = state.transcript.length - 1; index >= 0; index -= 1) {
+    const message = state.transcript[index];
+    if (message?.kind === "user" && !message.queued) return index;
+  }
+  return -1;
 }
 
 export function formatFooter(state: TuiState, width: number): string {

@@ -14,6 +14,8 @@ export interface TuiAppOptions {
   onCancel: () => boolean;
   loadModels: () => Promise<string[]>;
   onModelSelected: (reference: string) => Promise<boolean | void>;
+  loadRemoteModels?: (baseURL: string, apiKey: string, protocol: "openai" | "anthropic") => Promise<ConnectModelOption[]>;
+  onConnect?: (input: ConnectInput) => Promise<boolean | void>;
   loadSessions?: () => Promise<SessionOption[]>;
   onSessionSelected?: (id: string) => Promise<SessionView | undefined>;
   onSessionCreated?: (name?: string) => Promise<SessionView | undefined>;
@@ -37,7 +39,7 @@ export interface TuiAppOptions {
   getCommands?: () => readonly SlashCommand[];
 }
 
-export type TuiOverlay = "none" | "commands" | "models" | "sessions" | "session-delete-confirm" | "follow-ups" | "files" | "approval";
+export type TuiOverlay = "none" | "commands" | "models" | "sessions" | "session-delete-confirm" | "follow-ups" | "files" | "approval" | "connect";
 
 export interface CursorPosition {
   line: number;
@@ -183,7 +185,25 @@ export type OverlayState =
   | { kind: "session-delete-confirm"; sessionId: string; sessionName: string; selectedIndex: number; returnSelectedIndex: number; options: SessionOption[] }
   | { kind: "follow-ups"; selectedIndex: number; options: FollowUpOption[] }
   | { kind: "files"; query: string; selectedIndex: number; options: string[]; loading: boolean; tokenStart: number }
-  | { kind: "approval"; approval: ApprovalDetails; selectedIndex: number };
+  | { kind: "approval"; approval: ApprovalDetails; selectedIndex: number }
+  | { kind: "connect"; step: ConnectStep; providerName: string; baseURL: string; apiKey: string; protocol: "openai" | "anthropic" | ""; reasoningEffort: ReasoningEffort; models: ConnectModelOption[]; selectedIndex: number; loading: boolean; error?: string | undefined };
+
+export type ConnectStep = "providerName" | "baseURL" | "apiKey" | "protocol" | "reasoningEffort" | "models";
+
+export interface ConnectModelOption {
+  id: string;
+  contextWindow?: number;
+  selected: boolean;
+}
+
+export interface ConnectInput {
+  providerName: string;
+  baseURL: string;
+  apiKey: string;
+  protocol: "openai" | "anthropic";
+  reasoningEffort: ReasoningEffort;
+  models: ConnectModelOption[];
+}
 
 export interface SessionOption {
   id: string;
@@ -223,6 +243,8 @@ export interface TuiState {
   streaming: boolean;
   assistantMessageId: string | undefined;
   thoughtMessageId: string | undefined;
+  /** True between assistant_start and the first chunk (thought/assistant/tool) — fills the pre-first-chunk gap with a waiting indicator. */
+  waitingForFirstChunk: boolean;
   nextMessageId: number;
   lastSequence: number;
   activeTaskId: string | undefined;

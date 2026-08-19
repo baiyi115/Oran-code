@@ -28,6 +28,13 @@ export function isSessionBusy(state: TuiState): boolean {
  */
 export function workingIndicatorLine(state: TuiState, tick: number, now = Date.now()): string | undefined {
   if (!isSessionBusy(state)) return undefined;
+  // Between assistant_start and the first chunk/thought/tool, fill the gap
+  // with a waiting spinner so the working line never goes blank.
+  if (state.waitingForFirstChunk) {
+    const frame = spinnerFrame(tick);
+    const elapsed = formatWorkingElapsed(state, now);
+    return elapsed ? `${frame} Waiting... ${elapsed}` : `${frame} Waiting...`;
+  }
   // Thought, assistant, and tool rows already carry their own live state.
   // A second spinner duplicates the same information and forces frequent
   // full-frame Ink updates while content is streaming.

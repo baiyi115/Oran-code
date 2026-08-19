@@ -8,12 +8,14 @@ import { spinnerFrame } from "../status-indicator.js";
 export interface MessageRenderContext {
   markdownRenderer?: MarkdownRenderer;
   liveTick?: number;
+  /** Render finished thoughts with their full body (used by expanded thought-segments). */
+  forceExpandThoughts?: boolean;
 }
 
 export function renderMessage(message: TranscriptMessage, width: number, context: MessageRenderContext = {}): string[] {
   if (message.kind === "tool") return withMessageSpacing(renderToolMessage(message, width, context.liveTick));
   if (message.kind === "verification") return withMessageSpacing(renderVerification(message, width));
-  if (message.kind === "thought") return withMessageSpacing(renderThought(message, width, context.liveTick));
+  if (message.kind === "thought") return withMessageSpacing(renderThought(message, width, context.liveTick, context.forceExpandThoughts === true));
   if (message.kind === "error") return withMessageSpacing(renderError(message.text, width));
   if (message.kind === "assistant" && !message.text.trim() && !message.streaming) return [];
 
@@ -50,13 +52,6 @@ export function renderMessage(message: TranscriptMessage, width: number, context
     }
   }
 
-  // While the assistant turn streams, show a small blinking block so a long
-  // buffered paragraph never looks like the agent is stuck.
-  if (message.kind === "assistant" && message.streaming) {
-    const frame = (context.liveTick ?? 0) % 2 === 0 ? "▋" : "▌";
-    if (contentEmpty) lines = [];
-    lines.push(`${" ".repeat(prefixWidth)}${ANSI.gray}${frame}${ANSI.reset}`);
-  }
   return withMessageSpacing(lines);
 }
 
@@ -115,7 +110,7 @@ function renderError(text: string, width: number): string[] {
   return primary.map((line, index) => `${index === 0 ? prefix : indent}${line}`).concat(details);
 }
 
-function renderThought(message: Extract<TranscriptMessage, { kind: "thought" }>, width: number, liveTick = 0): string[] {
+function renderThought(message: Extract<TranscriptMessage, { kind: "thought" }>, width: number, liveTick = 0, forceExpand = false): string[] {
   const body = stripTerminalMarkup(message.text).trim();
   // No body and not actively streaming => hide. Models without reasoning never show a row.
   if (!body && !message.streaming) return [];
@@ -134,7 +129,7 @@ function renderThought(message: Extract<TranscriptMessage, { kind: "thought" }>,
     return lines;
   }
 
-  if (message.expanded) {
+  if (message.expanded || forceExpand) {
     const lines = [styleThoughtLabel(`◆ ${label}`)];
     lines.push(...wrapDisplayText(body, contentWidth).map((line) => styleThought(`  ${line}`)));
     return lines;

@@ -37,7 +37,8 @@ export function renderToolMessage(message: ToolMessage, width: number, liveTick 
   const heading = `${indicatorColor}${indicator}${ANSI.reset} ${call}${status}${duration}${summary}`;
   const lines = wrapDisplayText(heading, width);
   const output = message.error || message.output || "";
-  if (message.expanded && output) {
+  const changeDiff = writeToolDiff(message);
+  if (message.expanded && output && !changeDiff) {
     const preview = output.split(/\r?\n/).filter(Boolean);
     const limit = 12;
     lines.push(...preview.slice(0, limit).flatMap((line) => wrapDisplayText(`  \u2502 ${line}`, width)));
@@ -46,10 +47,9 @@ export function renderToolMessage(message: ToolMessage, width: number, liveTick 
     const error = truncateVisible(output.replace(/\s+/g, " ").trim(), Math.max(40, width * 2));
     lines.push(...wrapDisplayText(`  \u2502 ${error}`, width).slice(0, 2));
   }
-  if (message.expanded && (message.name === "apply_patch" || message.name === "write_file")) {
-    const contentValue = typeof message.arguments.content === "string" ? message.arguments.content : "";
-    if (contentValue) lines.push(...renderDiff(contentValue, width, true));
-  }
+  // File-modifying tools always surface what changed (diff-style), collapsed
+  // to a short preview; ctrl+t on the row expands it to more lines.
+  if (changeDiff) lines.push(...renderDiff(changeDiff, width, message.expanded));
   return lines;
 }
 
@@ -68,6 +68,31 @@ function toolDisplayName(name: string): string {
     case "get_diff": return "Diff";
     default: return name;
   }
+}
+
+/** Synthetic unified-diff text for file-modifying tools, or undefined for read-only tools. */
+function writeToolDiff(message: ToolMessage): string | undefined {
+  // Failed, rejected, cancelled, and running calls did not produce a confirmed
+  // file change, so do not present their requested arguments as an applied diff.
+  if (message.status !== "success") return undefined;
+  if (message.name === "edit_file") {
+    const oldString = typeof message.arguments.old_string === "string" ? message.arguments.old_string : "";
+    const newString = typeof message.arguments.new_string === "string" ? message.arguments.new_string : "";
+    if (!oldString && !newString) return undefined;
+    const removals = oldString.split(/\r?\n/).map((line) => `-${line}`);
+    const additions = newString.split(/\r?\n/).map((line) => `+${line}`);
+    return [...removals, ...additions].join("\n");
+  }
+  if (message.name === "apply_diff") {
+    const diff = typeof message.arguments.diff === "string" ? message.arguments.diff : "";
+    return diff.trim() ? diff : undefined;
+  }
+  if (message.name === "write_file" || message.name === "apply_patch") {
+    const content = typeof message.arguments.content === "string" ? message.arguments.content : "";
+    if (!content.trim()) return undefined;
+    return content.split(/\r?\n/).map((line) => `+${line}`).join("\n");
+  }
+  return undefined;
 }
 
 function toolArgumentSummary(message: ToolMessage): string {
