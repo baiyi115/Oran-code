@@ -13,6 +13,8 @@ import { PERMISSION_MODES, createTask } from "./types.js";
 import { displaySessionName, firstConversationPrompt, isAutomaticSessionName, SessionStore, truncateSessionName, type StoredSession } from "./session-store.js";
 import type { ApprovalResponse, Message, ModelConfig, ModelProvider, ModelReference, OptionalSystemPromptModules, PermissionMode, ReasoningEffort, RuntimeEvent, RuntimeEventPayloads, SessionTitleMode, Task, ToolCall, ToolDefinition, ToolResult, UserConfig, WorkMode } from "./types.js";
 import type { SessionOption, SessionView } from "./tui/types.js";
+import type { ConnectInput, ConnectModelOption } from "./tui/types.js";
+import type { ModelProfile, ProviderOptions, ProviderProfile } from "./types.js";
 import { WorkspaceFileIndex } from "./tui/composer/file-completion.js";
 import { formatErrorMessage } from "./error-format.js";
 import { registerDynamicMarkdownCommands } from "./dynamic-commands.js";
@@ -20,7 +22,7 @@ import { CommandUsageTracker } from "./command-usage.js";
 import { assertSkillTools, registerSkillCommands, renderSkillPrompt, SkillLoader, type SkillDefinition } from "./skills.js";
 import { MemoryManager } from "./memory-manager.js";
 import type { HookEngine, HookNoticeQueue, HookSubAgentExecutor } from "./hook/index.js";
-import { CLI_NAME, ensureProjectStateRoot, PRODUCT_NAME, projectStateRoot } from "./paths.js";
+import { CLI_NAME, ensureProjectStateRoot, migrateUserDataOutOfWorkspace, PRODUCT_NAME, projectStateRoot, userTraceRoot } from "./paths.js";
 import type { SubagentOrigin } from "./subagent/types.js";
 import type { ContextManager } from "./context-manager.js";
 import type { TaskController } from "./controller.js";
@@ -37,8 +39,6 @@ import type { SnapshotStore } from "./snapshot.js";
 import type { AgentStateStore } from "./subagent/state-store.js";
 
 const execAsync = promisify(exec);
-const HISTORY_FILE = userHistoryPath();
-const LEGACY_HISTORY_FILE = legacyUserHistoryPath();
 const SESSION_EXPIRY_DAYS = 30;
 const SESSION_GAP_REMINDER_DAYS = 7;
 
@@ -1294,6 +1294,9 @@ export class TerminalSession {
       case "model":
         await this.handleModel(argument);
         return;
+      case "connect":
+        await this.handleConnect(argument);
+        return;
       case "session":
         await this.handleSessionCommand(argument);
         return;
@@ -1701,6 +1704,45 @@ export class TerminalSession {
     return true;
   }
 
+  private async handleConnect(_argument = ""): Promise<void> {
+    if (this.interactionRunning() || this.hasPendingApprovals()) {
+      this.renderer.status("finish or cancel the current task before connecting a provider", "yellow");
+      return;
+    }
+    if (this.tui) await this.tui.openConnect();
+  }
+
+  private async applyConnectProvider(input: ConnectInput): Promise<boolean | void> {
+    try {
+      const configPath = userConfigReadPath();
+      const config = await loadConfigFile(configPath);
+      const providerName = input.providerName;
+      const options: Record<string, unknown> = {
+        baseURL: input.baseURL,
+        protocol: input.protocol,
+      };
+      if (input.apiKey) options.apiKey = input.apiKey;
+      const models: Record<string, ModelProfile> = {};
+      for (const model of input.models) {
+        const modelOptions: Record<string, unknown> = { reasoningEffort: input.reasoningEffort };
+        if (model.contextWindow !== undefined) modelOptions.contextWindow = model.contextWindow;
+        models[model.id] = { options: modelOptions };
+      }
+      const profile: ProviderProfile = { options: options as ProviderOptions, models };
+      config.providers = { ...config.providers, [providerName]: profile };
+      const firstSelectedModel = input.models.find((m) => m.selected) ?? input.models[0];
+      await saveConfig(config, configPath);
+      this.config = await loadConfig(this.workspace);
+      if (firstSelectedModel) {
+        await this.handleModel(`${providerName}/${firstSelectedModel.id}`);
+      }
+      return true;
+    } catch (error) {
+      this.renderer.error(formatErrorMessage(error));
+      return false;
+    }
+  }
+
   private async handleModel(argument: string): Promise<boolean> {
     if (this.interactionRunning() || this.hasPendingApprovals()) {
       this.renderer.status("finish or cancel the current task before changing the model", "yellow");
@@ -1736,6 +1778,7 @@ export class TerminalSession {
 
   private async handleSessionCommand(argument = ""): Promise<void> {
     const id = argument.trim();
+
     if (id) {
       const restored = await this.selectSession(id);
       if (restored) {
@@ -1874,6 +1917,16 @@ export class TerminalSession {
         return modelCandidates(fresh.providers);
       },
       onModelSelected: (reference) => this.handleModel(reference),
+      loadRemoteModels: async (baseURL, apiKey, protocol) => {
+        const { fetchRemoteModels } = await import("./provider.js");
+        const remote = await fetchRemoteModels(baseURL, apiKey, protocol);
+        return remote.map((model): ConnectModelOption => {
+          const next: ConnectModelOption = { id: model.id, selected: false };
+          if (model.contextWindow !== undefined) next.contextWindow = model.contextWindow;
+          return next;
+        });
+      },
+      onConnect: async (input) => this.applyConnectProvider(input),
       loadSessions: () => this.loadSessionOptions(),
       onSessionSelected: (id) => this.selectSession(id),
       onSessionCreated: (name) => this.createSession(name),
@@ -2210,7 +2263,10 @@ export class TerminalSession {
     this.traceOpen ??= (async () => {
       const { SqliteTraceStore } = await loadTrace();
       if (this.trace) return;
-      this.trace = await SqliteTraceStore.open(resolve(projectStateRoot(this.workspace), "trace.db"), this.workspace);
+      await migrateUserDataOutOfWorkspace(this.workspace);
+      const traceRoot = userTraceRoot(this.workspace);
+      await mkdir(traceRoot, { recursive: true });
+      this.trace = await SqliteTraceStore.open(resolve(traceRoot, "trace.db"), this.workspace);
     })().catch((error) => {
       // Allow a later attempt to retry a transient open failure.
       this.traceOpen = undefined;
@@ -2425,7 +2481,7 @@ function countPromptEntries(value: string | undefined): number {
 }
 
 async function loadHistory(): Promise<string[]> {
-  for (const path of [HISTORY_FILE, LEGACY_HISTORY_FILE]) {
+  for (const path of [userHistoryPath(), legacyUserHistoryPath()]) {
     try {
       return (await readFile(path, "utf8")).split(/\r?\n/).filter(Boolean).reverse();
     } catch {
@@ -2448,8 +2504,9 @@ async function saveHistory(readline: Interface): Promise<void> {
 
 async function saveHistoryEntries(history: readonly string[]): Promise<void> {
   if (!history.length) return;
-  await mkdir(dirname(HISTORY_FILE), { recursive: true });
-  await writeFile(HISTORY_FILE, `${history.slice(0, 1000).reverse().join("\n")}\n`, "utf8");
+  const file = userHistoryPath();
+  await mkdir(dirname(file), { recursive: true });
+  await writeFile(file, `${history.slice(0, 1000).reverse().join("\n")}\n`, "utf8");
 }
 
 export function supportsTui(input: NodeJS.ReadableStream, output: NodeJS.WriteStream): boolean {

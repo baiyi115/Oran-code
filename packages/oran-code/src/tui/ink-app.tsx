@@ -8,15 +8,16 @@ import { approvalResponse, moveSelection, navigateHistory } from "./interaction.
 import { TuiTranscriptRenderer } from "./renderer.js";
 import { composerValue, createTuiState, setComposerValue, setOverlay } from "./state.js";
 import type { ComposerState, PasteBlock, SessionOption, SessionView, TuiAppOptions, TuiState, TranscriptMessage } from "./types.js";
+import type { ConnectInput, ConnectModelOption } from "./types.js";
 import { appendSystemMessage } from "./message-reducer.js";
 import { composerCursorOffset, cursorVisualPosition, deleteBackward, deleteForward, insertText, moveCursor, moveToLineEdge, visualLines } from "./composer.js";
-import { TranscriptView, toolGroupId, toolGroups } from "./transcript/transcript-view.js";
+import { TranscriptView, collapsibleSegments } from "./transcript/transcript-view.js";
 import { footerLines, workSummaryLine } from "./footer.js";
 import { approvalDialogLines } from "./approval-dialog.js";
 import type { SubagentOrigin } from "../subagent/types.js";
 import { modelSelectorLines } from "./model-selector.js";
 import { commandPaletteLines } from "./command-palette.js";
-import { ANSI, COLORS, horizontalRule } from "./theme.js";
+import { ANSI, COLORS, dimHorizontalRule, horizontalRule } from "./theme.js";
 import { highlightSelection } from "./overlay/select-list.js";
 import { abbreviatePath, graphemes, truncateVisible, visibleWidth } from "./text-width.js";
 import { scrollPercent, scrollTranscript, syncTranscriptScroll } from "./scroll-controller.js";
@@ -245,6 +246,10 @@ export class InkTuiApp {
       this.handleModelKey(input, key);
       return;
     }
+    if (this.state.overlay.kind === "connect") {
+      this.handleConnectKey(input, key);
+      return;
+    }
     if (this.state.overlay.kind === "sessions") {
       this.handleSessionKey(input, key);
       return;
@@ -272,11 +277,12 @@ export class InkTuiApp {
     if (key.ctrl && input === "t") {
       const reversed = [...this.state.transcript].reverse();
       const target = reversed.find((message) => message.kind === "thought" || message.kind === "tool");
-      const latestGroup = toolGroups(this.state.transcript).at(-1);
-      if (latestGroup && target?.kind === "tool" && latestGroup.at(-1)?.id === target.id) {
-        const groupId = toolGroupId(latestGroup);
-        if (this.state.expandedToolGroupIds.has(groupId)) this.state.expandedToolGroupIds.delete(groupId);
-        else this.state.expandedToolGroupIds.add(groupId);
+      const segment = target
+        ? collapsibleSegments(this.state.transcript).find((entry) => entry.messages.some((message) => message.id === target.id))
+        : undefined;
+      if (segment) {
+        if (this.state.expandedToolGroupIds.has(segment.id)) this.state.expandedToolGroupIds.delete(segment.id);
+        else this.state.expandedToolGroupIds.add(segment.id);
         this.staticTranscriptGeneration += 1;
         this.resetTranscriptViewport();
         this.invalidate();
@@ -284,6 +290,8 @@ export class InkTuiApp {
       }
       if (target && (target.kind === "tool" || target.kind === "thought")) {
         target.expanded = !target.expanded;
+        this.staticTranscriptGeneration += 1;
+        this.resetTranscriptViewport();
         this.invalidate();
       }
       return;
@@ -320,6 +328,255 @@ export class InkTuiApp {
       setOverlay(this.state, { kind: "sessions", query: "", selectedIndex: 0, options });
     } catch (error) {
       this.state.session.status = errorMessage(error);
+    }
+    this.invalidate();
+  }
+
+  async openConnect(): Promise<void> {
+    if (this.rejectIfBlocked("finish or cancel the current task before connecting a provider")) return;
+    if (!this.options.onConnect || !this.options.loadRemoteModels) return;
+    setOverlay(this.state, {
+      kind: "connect",
+      step: "providerName",
+      providerName: "",
+      baseURL: "",
+      apiKey: "",
+      protocol: "",
+      reasoningEffort: "medium",
+      models: [],
+      selectedIndex: 0,
+      loading: false,
+    });
+    this.invalidate();
+  }
+
+  private handleConnectKey(input: string, key: Key): void {
+    if (this.state.overlay.kind !== "connect") return;
+    const overlay = this.state.overlay;
+
+    if (key.escape) {
+      this.state.overlay = { kind: "none" };
+      this.invalidate();
+      return;
+    }
+
+    if (overlay.step !== "models" && key.tab) {
+      this.advanceConnectStep(input);
+      this.invalidate();
+      return;
+    }
+
+    if (overlay.step === "models") {
+      // Ctrl+S or Tab finishes the wizard from the models step.
+      if ((key.ctrl && input === "s") || key.tab) {
+        void this.confirmConnect();
+        this.invalidate();
+        return;
+      }
+      this.handleConnectModelsKey(input, key);
+      this.invalidate();
+      return;
+    }
+
+    // List-selection steps (protocol / reasoningEffort): arrow keys move,
+    // Enter/Tab confirms and advances. They must not fall through to the
+    // free-text editor below, otherwise arrow keys get swallowed.
+    if (overlay.step === "protocol" || overlay.step === "reasoningEffort") {
+      this.handleConnectListStepKey(input, key);
+      this.invalidate();
+      return;
+    }
+
+    // Free-text steps (providerName / baseURL / apiKey): edit in place, Enter advances.
+    if (key.backspace || key.delete) {
+      this.deleteConnectFieldChar(overlay.step, key.delete);
+      this.invalidate();
+      return;
+    }
+    if (isSubmitKey(input, key)) {
+      this.advanceConnectStep(input);
+      this.invalidate();
+      return;
+    }
+    if (input && !key.ctrl && !key.meta && input !== "\t") {
+      this.appendConnectFieldChar(overlay.step, input);
+      this.invalidate();
+    }
+  }
+
+  private deleteConnectFieldChar(step: typeof this.state.overlay extends { kind: "connect" } ? never : string, _isDelete: boolean): void {
+    if (this.state.overlay.kind !== "connect") return;
+    const overlay = this.state.overlay;
+    const trim = (value: string) => (value.length ? value.slice(0, -1) : value);
+    if (step === "providerName") overlay.providerName = trim(overlay.providerName);
+    else if (step === "baseURL") overlay.baseURL = trim(overlay.baseURL);
+    else if (step === "apiKey") overlay.apiKey = trim(overlay.apiKey);
+  }
+
+  private appendConnectFieldChar(step: string, input: string): void {
+    if (this.state.overlay.kind !== "connect") return;
+    const overlay = this.state.overlay;
+    if (input === "\r" || input === "\n") return;
+    if (step === "providerName") overlay.providerName += input;
+    else if (step === "baseURL") overlay.baseURL += input;
+    else if (step === "apiKey") overlay.apiKey += input;
+  }
+
+  private advanceConnectStep(_input: string): void {
+    if (this.state.overlay.kind !== "connect") return;
+    const overlay = this.state.overlay;
+    switch (overlay.step) {
+      case "providerName": {
+        const name = overlay.providerName.trim() || safeHostName(overlay.baseURL, "provider");
+        overlay.providerName = name;
+        overlay.step = "baseURL";
+        break;
+      }
+      case "baseURL": {
+        if (!overlay.baseURL.trim()) return;
+        // Pre-select protocol from URL hint when empty.
+        if (!overlay.protocol) {
+          const hint = overlay.baseURL.toLowerCase();
+          if (hint.includes("anthropic") || hint.includes("claude")) overlay.protocol = "anthropic";
+          else overlay.protocol = "openai";
+        }
+        overlay.step = "apiKey";
+        break;
+      }
+      case "apiKey": {
+        overlay.step = "protocol";
+        overlay.selectedIndex = overlay.protocol === "anthropic" ? 1 : 0;
+        break;
+      }
+      case "protocol": {
+        const choices: ("openai" | "anthropic")[] = ["openai", "anthropic"];
+        overlay.protocol = choices[overlay.selectedIndex] ?? "openai";
+        overlay.step = "reasoningEffort";
+        overlay.selectedIndex = REASONING_EFFORTS.indexOf(overlay.reasoningEffort);
+        if (overlay.selectedIndex < 0) overlay.selectedIndex = 1;
+        break;
+      }
+      case "reasoningEffort": {
+        overlay.reasoningEffort = REASONING_EFFORTS[overlay.selectedIndex] ?? "medium";
+        overlay.step = "models";
+        overlay.selectedIndex = 0;
+        void this.fetchConnectModels();
+        break;
+      }
+      case "models": {
+        void this.confirmConnect();
+        break;
+      }
+    }
+  }
+
+  private async fetchConnectModels(): Promise<void> {
+    if (this.state.overlay.kind !== "connect") return;
+    const overlay = this.state.overlay;
+    const protocol = (overlay.protocol || "openai") as "openai" | "anthropic";
+    overlay.loading = true;
+    overlay.error = undefined;
+    this.invalidate();
+    try {
+     const remote = await this.options.loadRemoteModels?.(overlay.baseURL.trim(), overlay.apiKey.trim(), protocol) ?? [];
+     if (this.state.overlay.kind !== "connect") return;
+     const existing = new Map(this.state.overlay.models.map((model) => [model.id, model]));
+      this.state.overlay.models = remote.map((model): ConnectModelOption => {
+        const next: ConnectModelOption = { id: model.id, selected: existing.get(model.id)?.selected ?? false };
+        if (model.contextWindow !== undefined) next.contextWindow = model.contextWindow;
+        return next;
+      });
+      this.state.overlay.selectedIndex = 0;
+      this.state.overlay.loading = false;
+    } catch (error) {
+      if (this.state.overlay.kind !== "connect") return;
+      this.state.overlay.loading = false;
+      this.state.overlay.error = errorMessage(error);
+    }
+    this.invalidate();
+  }
+
+  private handleConnectModelsKey(input: string, key: Key): void {
+    if (this.state.overlay.kind !== "connect") return;
+    const overlay = this.state.overlay;
+    const options = overlay.models;
+    if (key.upArrow) {
+      overlay.selectedIndex = Math.max(0, overlay.selectedIndex - 1);
+      return;
+    }
+    if (key.downArrow) {
+      overlay.selectedIndex = Math.min(Math.max(0, options.length - 1), overlay.selectedIndex + 1);
+      return;
+    }
+    if (input === "f" || input === "F") {
+      void this.fetchConnectModels();
+      return;
+    }
+    if (input === "d" || input === "D") {
+      const selected = options[overlay.selectedIndex];
+      if (selected) {
+        overlay.models = options.filter((_, index) => index !== overlay.selectedIndex);
+        overlay.selectedIndex = Math.min(overlay.selectedIndex, Math.max(0, overlay.models.length - 1));
+      }
+      return;
+    }
+    if (isSubmitKey(input, key)) {
+      const selected = options[overlay.selectedIndex];
+      if (selected) {
+        selected.selected = !selected.selected;
+      }
+      return;
+    }
+  }
+
+  private handleConnectListStepKey(input: string, key: Key): void {
+    if (this.state.overlay.kind !== "connect") return;
+    const overlay = this.state.overlay;
+    const choices: readonly string[] = overlay.step === "protocol"
+      ? ["openai", "anthropic"]
+      : REASONING_EFFORTS;
+    if (key.upArrow) {
+      overlay.selectedIndex = Math.max(0, overlay.selectedIndex - 1);
+      return;
+    }
+    if (key.downArrow) {
+      overlay.selectedIndex = Math.min(Math.max(0, choices.length - 1), overlay.selectedIndex + 1);
+      return;
+    }
+    if (isSubmitKey(input, key)) {
+      this.advanceConnectStep(input);
+    }
+  }
+
+  private async confirmConnect(): Promise<void> {
+    if (this.state.overlay.kind !== "connect") return;
+    const overlay = this.state.overlay;
+    const protocol = (overlay.protocol || "openai") as "openai" | "anthropic";
+    const selected = overlay.models.filter((model) => model.selected);
+    if (!selected.length) {
+      overlay.error = "select at least one model with Enter first";
+      this.invalidate();
+      return;
+    }
+    const payload: ConnectInput = {
+      providerName: overlay.providerName.trim() || safeHostName(overlay.baseURL, "provider"),
+      baseURL: overlay.baseURL.trim(),
+      apiKey: overlay.apiKey.trim(),
+      protocol,
+      reasoningEffort: overlay.reasoningEffort,
+      models: selected,
+    };
+    try {
+      const ok = await this.options.onConnect?.(payload);
+      this.state.overlay = { kind: "none" };
+      const activeModel = selected[0]?.id ? `${payload.providerName}/${selected[0].id}` : undefined;
+      this.state.session.status = ok === false
+        ? "provider connection failed"
+        : `Connected ${payload.providerName} (${selected.length} model${selected.length === 1 ? "" : "s"})${activeModel ? `. Active model: ${activeModel}` : ""}`;
+    } catch (error) {
+      if (this.state.overlay.kind === "connect") {
+        this.state.overlay.error = errorMessage(error);
+      }
     }
     this.invalidate();
   }
@@ -1177,6 +1434,19 @@ function expandPastes(value: string, pastes: readonly PasteBlock[]): string {
 }
 
 
+function safeHostName(input: string, fallback = "provider"): string {
+  const trimmed = input.trim();
+  if (!trimmed) return fallback;
+  try {
+    const url = trimmed.startsWith("http://") || trimmed.startsWith("https://")
+      ? new URL(trimmed)
+      : new URL(`http://${trimmed}`);
+    return url.hostname || fallback;
+  } catch {
+    return fallback;
+  }
+}
+
 function isSubmitKey(input: string, key: Key): boolean {
   // Ink only marks CR as return; some terminals still deliver bare LF on Enter.
   return key.return || input === "\n" || input === "\r";
@@ -1284,6 +1554,7 @@ function InkRoot({ app, revision }: { app: InkTuiApp; revision: number }): React
   const summaryLine = summary;
   const baseChromeLines = 4
     + welcomeLines.length
+    + 1 // extra breathing room above the composer
     + Math.max(0, footer.length - 1)
     + (editorLines.length > 1 ? editorLines.length - 1 : 0)
     + (workingLine ? 1 : 0)
@@ -1422,6 +1693,7 @@ function oranWelcomeLines(state: TuiState, availableWidth: number): string[] {
     "",
     `${ANSI.bold}${"model:".padEnd(labelWidth)}${ANSI.reset}${truncateVisible(model, valueWidth)}`,
     `${ANSI.bold}${"directory:".padEnd(labelWidth)}${ANSI.reset}${abbreviatePath(state.session.workspace, valueWidth)}`,
+    "",
   ];
   const top = `${ANSI.gray}╭${"─".repeat(cardWidth - 2)}╮${ANSI.reset}`;
   const bottom = `${ANSI.gray}╰${"─".repeat(cardWidth - 2)}╯${ANSI.reset}`;
@@ -1450,7 +1722,7 @@ function ghostCommandSuggestion(state: TuiState, input: string): string {
 function renderOverlayLines(state: TuiState, commandLines: string[], width: number): string[] {
   switch (state.overlay.kind) {
     case "models":
-      return [horizontalRule(width), "Select model", horizontalRule(width), ...modelSelectorLines(state.overlay.options, state.overlay.selectedIndex)];
+      return ["Select model", dimHorizontalRule(width), ...modelSelectorLines(state.overlay.options, state.overlay.selectedIndex)];
     case "approval":
       return approvalDialogLines(
         state.overlay.approval.call,
@@ -1461,66 +1733,124 @@ function renderOverlayLines(state: TuiState, commandLines: string[], width: numb
         state.overlay.selectedIndex,
         width,
       );
-    case "sessions":
-      {
-        const overlay = state.overlay;
-        return [
-          horizontalRule(width),
-          currentSessionLine(overlay.options, width),
-          "Enter Resume   Del Remove   Esc Close",
-          "",
-          ...overlay.options.map((item, index) => highlightSelection(
-            `  ${sessionOptionLabel(item, Math.max(1, width - 2))}`,
-            index === overlay.selectedIndex,
-          )),
-        ];
-      }
-    case "session-delete-confirm":
-      {
-        const overlay = state.overlay;
-      return [
-        horizontalRule(width),
-        "Delete session?",
-        `  ${truncateVisible(overlay.sessionName, Math.max(1, width - 2))}`,
-        "Enter/Del Confirm   Esc Cancel",
-        "",
-        highlightSelection("  Delete", overlay.selectedIndex === 0),
-        highlightSelection("  Cancel", overlay.selectedIndex === 1),
-      ];
-      }
-    case "follow-ups":
-      {
-        const overlay = state.overlay;
-      return [
-        horizontalRule(width),
-        "Follow-ups",
-        "Enter Cancel selected   Esc Close",
-        "",
-        ...(overlay.options.length
-          ? overlay.options.map((item, index) => highlightSelection(`  ${item.id}  ${truncateVisible(item.prompt.replace(/\s+/g, " ").trim(), Math.max(1, width - 2))}`, index === overlay.selectedIndex))
-          : ["  (no queued follow-ups)"]),
-      ];
-      }
-    case "files":
-      {
-        const overlay = state.overlay;
-      return [
-        horizontalRule(width),
-        `@${overlay.query}`,
-        "Enter Insert   Esc Close",
-        "",
-        ...(overlay.loading && !overlay.options.length
-          ? ["  loading..."]
-          : overlay.options.length
-            ? overlay.options.map((item, index) => highlightSelection(`  ${truncateVisible(item, Math.max(1, width - 2))}`, index === overlay.selectedIndex))
-            : ["  (no matching files)"]),
+   case "sessions":
+     {
+       const overlay = state.overlay;
+       return [
+         currentSessionLine(overlay.options, width),
+         dimHorizontalRule(width),
+         "Enter Resume   Del Remove   Esc Close",
+         "",
+         ...overlay.options.map((item, index) => highlightSelection(
+           `  ${sessionOptionLabel(item, Math.max(1, width - 2))}`,
+           index === overlay.selectedIndex,
+         )),
+       ];
+     }
+   case "session-delete-confirm":
+     {
+       const overlay = state.overlay;
+     return [
+       "Delete session?",
+       `  ${truncateVisible(overlay.sessionName, Math.max(1, width - 2))}`,
+       dimHorizontalRule(width),
+       "Enter/Del Confirm   Esc Cancel",
+       "",
+       highlightSelection("  Delete", overlay.selectedIndex === 0),
+       highlightSelection("  Cancel", overlay.selectedIndex === 1),
+     ];
+     }
+   case "follow-ups":
+     {
+       const overlay = state.overlay;
+     return [
+       "Follow-ups",
+       dimHorizontalRule(width),
+       "Enter Cancel selected   Esc Close",
+       "",
+       ...(overlay.options.length
+         ? overlay.options.map((item, index) => highlightSelection(`  ${item.id}  ${truncateVisible(item.prompt.replace(/\s+/g, " ").trim(), Math.max(1, width - 2))}`, index === overlay.selectedIndex))
+         : ["  (no queued follow-ups)"]),
+     ];
+     }
+   case "files":
+     {
+       const overlay = state.overlay;
+     return [
+       `@${overlay.query}`,
+       dimHorizontalRule(width),
+       "Enter Insert   Esc Close",
+       "",
+       ...(overlay.loading && !overlay.options.length
+         ? ["  loading..."]
+         : overlay.options.length
+           ? overlay.options.map((item, index) => highlightSelection(`  ${truncateVisible(item, Math.max(1, width - 2))}`, index === overlay.selectedIndex))
+           : ["  (no matching files)"]),
       ];
       }
     case "commands":
       return commandLines;
+    case "connect":
+      return renderConnectLines(state.overlay, width);
     default:
       return [];
   }
+}
+
+function renderConnectLines(overlay: Extract<TuiState["overlay"], { kind: "connect" }>, width: number): string[] {
+  function protocolLabel(protocol: "openai" | "anthropic"): string {
+    return protocol === "anthropic" ? "Anthropic Messages" : "OpenAI Chat Completions";
+  }
+  const lines: string[] = [];
+  switch (overlay.step) {
+    case "providerName":
+      lines.push("Add provider — name", dimHorizontalRule(width), `  ${overlay.providerName || "(e.g. openai)"}`, "Enter/Tab Next   Esc Close");
+      break;
+    case "baseURL":
+      lines.push(`Provider: ${overlay.providerName}`, dimHorizontalRule(width), "Base URL", `  ${overlay.baseURL || "(e.g. https://api.openai.com/v1 or https://api.anthropic.com)"}`, "Enter/Tab Next   Esc Close");
+      break;
+    case "apiKey":
+      lines.push(`Provider: ${overlay.providerName} — ${overlay.baseURL}`, dimHorizontalRule(width), "API key (optional)", `  ${overlay.apiKey ? "*".repeat(Math.min(40, overlay.apiKey.length)) : "(leave blank to skip)"}`, "Enter/Tab Next   Esc Close");
+      break;
+   case "protocol": {
+     const choices: ("openai" | "anthropic")[] = ["openai", "anthropic"];
+      lines.push(`Provider: ${overlay.providerName}`, dimHorizontalRule(width), "Protocol", "Enter/Tab Confirm   Esc Close", "");
+      choices.forEach((choice, index) => {
+        lines.push(highlightSelection(`  ${protocolLabel(choice)}`, index === overlay.selectedIndex));
+      });
+      break;
+   }
+   case "reasoningEffort": {
+      lines.push(`Provider: ${overlay.providerName} (${protocolLabel(overlay.protocol || "openai")})`, dimHorizontalRule(width), "Reasoning effort", "Enter/Tab Confirm   Esc Close", "");
+     REASONING_EFFORTS.forEach((effort, index) => {
+        lines.push(highlightSelection(`  ${effort}`, index === overlay.selectedIndex));
+      });
+      break;
+    }
+   case "models": {
+      lines.push(`Provider: ${overlay.providerName} (${protocolLabel(overlay.protocol || "openai")}) — effort ${overlay.reasoningEffort}`, dimHorizontalRule(width));
+      lines.push("F Fetch all   D Delete   Enter Toggle select   Ctrl+S/Tab Save   Esc Close");
+      lines.push("");
+      if (overlay.loading) {
+        lines.push("  fetching models...");
+      } else if (overlay.error) {
+        lines.push(`  error: ${truncateVisible(overlay.error, Math.max(1, width - 2))}`);
+        lines.push("  press F to retry");
+      } else if (overlay.models.length === 0) {
+        lines.push("  (no models yet — press F to fetch)");
+      } else {
+        overlay.models.forEach((model, index) => {
+          const mark = model.selected ? "✓" : " ";
+          const ctx = model.contextWindow ? `  [ctx ${model.contextWindow}]` : "";
+          lines.push(highlightSelection(`${mark} ${truncateVisible(model.id, Math.max(1, width - 4))}${ctx}`, index === overlay.selectedIndex));
+        });
+      }
+      const selectedCount = overlay.models.filter((model) => model.selected).length;
+      if (selectedCount > 0) lines.push("", `${selectedCount} selected — Ctrl+S/Tab to save`);
+      break;
+    }
+  }
+  return lines;
 }
 
 function fitOverlayLines(lines: readonly string[], capacity: number): string[] {
@@ -1570,7 +1900,7 @@ function HighlightedLine({ value }: { value: string }): React.JSX.Element {
 function composerPrefix(kind: TuiState["overlay"]["kind"]): string {
   // Keep the exclusive-overlay bang only for modal overlays that own the input.
   // Commands/files still edit the free-form composer and should keep the prompt.
-  return kind === "none" || kind === "commands" || kind === "files" ? "> " : "! ";
+  return kind === "none" || kind === "commands" || kind === "files" ? "> " : kind === "connect" ? "connect> " : "! ";
 }
 
 function renderComposerLines(

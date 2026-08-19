@@ -2,9 +2,10 @@ import { mkdir, mkdtemp, readFile, readdir, rm, writeFile } from "node:fs/promis
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { Readable, Writable } from "node:stream";
-import { describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { supportsTui, TerminalSession } from "../src/session.js";
 import { parseSessionJsonl } from "../src/session-store.js";
+import { userSessionsRoot } from "../src/paths.js";
 import type { Message, ModelConfig, ModelProvider, ModelStreamChunk } from "../src/types.js";
 
 const model: ModelConfig = {
@@ -34,6 +35,21 @@ class FakeProvider implements ModelProvider {
 }
 
 describe("TerminalSession", () => {
+  let originalUserDataDir: string | undefined;
+  let testUserDataDir: string | undefined;
+
+  beforeEach(async () => {
+    originalUserDataDir = process.env.ORAN_USER_DATA_DIR;
+    testUserDataDir = await mkdtemp(join(tmpdir(), "oran-test-session-userdata-"));
+    process.env.ORAN_USER_DATA_DIR = testUserDataDir;
+  });
+
+  afterEach(async () => {
+    if (originalUserDataDir !== undefined) process.env.ORAN_USER_DATA_DIR = originalUserDataDir;
+    else delete process.env.ORAN_USER_DATA_DIR;
+    if (testUserDataDir) await rm(testUserDataDir, { recursive: true, force: true }).catch(() => undefined);
+  });
+
   it("selects the TUI only when both streams are TTYs", () => {
     const ttyInput = Object.assign(Readable.from([]), { isTTY: true });
     const nonTtyInput = Object.assign(Readable.from([]), { isTTY: false });
@@ -47,8 +63,9 @@ describe("TerminalSession", () => {
 
   it("rejects a task until the user explicitly selects a model", async () => {
     const workspace = await mkdtemp(join(tmpdir(), "liteagent-session-"));
+    let session: TerminalSession | undefined;
     try {
-      const session = new TerminalSession({
+      session = new TerminalSession({
         workspace,
         config: { providers: {} },
         approveAll: true,
@@ -56,6 +73,7 @@ describe("TerminalSession", () => {
 
       await expect(session.runOnce("do work")).rejects.toThrow("no model selected");
     } finally {
+      await (session as any)?.shutdown?.().catch(() => undefined);
       await rm(workspace, { recursive: true, force: true });
     }
   });
@@ -64,6 +82,7 @@ describe("TerminalSession", () => {
     const workspace = await mkdtemp(join(tmpdir(), "liteagent-session-"));
     const projectConfig = join(workspace, ".oran", "config.json");
     const seenModels: ModelConfig[] = [];
+    let session: TerminalSession | undefined;
     try {
       await mkdir(join(workspace, ".oran"), { recursive: true });
       await writeFile(projectConfig, JSON.stringify({
@@ -74,7 +93,7 @@ describe("TerminalSession", () => {
           },
         },
       }), "utf8");
-      const session = new TerminalSession({
+      session = new TerminalSession({
         workspace,
         config: { providers: {} },
         approveAll: true,
@@ -95,18 +114,20 @@ describe("TerminalSession", () => {
         reasoningEffort: "high",
       });
     } finally {
+      await (session as any)?.shutdown?.().catch(() => undefined);
       await rm(workspace, { recursive: true, force: true });
     }
   });
 
   it("does not auto-select a model when the catalog is opened", async () => {
     const workspace = await mkdtemp(join(tmpdir(), "liteagent-session-"));
+    let session: TerminalSession | undefined;
     try {
       await mkdir(join(workspace, ".oran"), { recursive: true });
       await writeFile(join(workspace, ".oran", "config.json"), JSON.stringify({
         providers: { demo: { models: { chat: {} } } },
       }), "utf8");
-      const session = new TerminalSession({
+      session = new TerminalSession({
         workspace,
         config: { providers: {} },
         approveAll: true,
@@ -116,6 +137,7 @@ describe("TerminalSession", () => {
 
       await expect(session.runOnce("do work")).rejects.toThrow("no model selected");
     } finally {
+      await (session as any)?.shutdown?.().catch(() => undefined);
       await rm(workspace, { recursive: true, force: true });
     }
   });
@@ -123,8 +145,9 @@ describe("TerminalSession", () => {
   it("uses an injected providerFactory for task execution", async () => {
     const workspace = await mkdtemp(join(tmpdir(), "liteagent-session-"));
     const provider = new FakeProvider();
+    let session: TerminalSession | undefined;
     try {
-      const session = new TerminalSession(
+      session = new TerminalSession(
         {
           workspace,
           model,
@@ -142,6 +165,7 @@ describe("TerminalSession", () => {
       expect(provider.requests.length).toBeGreaterThanOrEqual(1);
       expect(provider.requests.every((messages) => messages[0]?.role === "system")).toBe(true);
     } finally {
+      await (session as any)?.shutdown?.().catch(() => undefined);
       await rm(workspace, { recursive: true, force: true });
     }
   });
@@ -160,8 +184,9 @@ describe("TerminalSession", () => {
         for (const chunk of textChunks(`handled ${String(messages.at(-1)?.content ?? "")}`)) yield chunk;
       },
     };
+    let session: TerminalSession | undefined;
     try {
-      const session = new TerminalSession({
+      session = new TerminalSession({
         workspace,
         model,
         config: { providers: {}, agent: { maxSteps: 2, skipVerify: false } },
@@ -171,8 +196,11 @@ describe("TerminalSession", () => {
       const taskPromise = session.runOnce("persist before response");
       await started;
 
-      const archives = await readdir(join(workspace, ".oran", "sessions"));
-      const records = parseSessionJsonl(await readFile(join(workspace, ".oran", "sessions", archives[0]!), "utf8"));
+      const sessionsDir = userSessionsRoot(workspace);
+      const archives = await readdir(sessionsDir);
+      const jsonlFile = archives.find((a) => a.endsWith(".jsonl"));
+      expect(jsonlFile).toBeDefined();
+      const records = parseSessionJsonl(await readFile(join(sessionsDir, jsonlFile!), "utf8"));
       expect(records.filter((record) => record.type === "message")).toEqual([
         expect.objectContaining({ role: "user", content: "User message:\npersist before response" }),
       ]);
@@ -181,6 +209,7 @@ describe("TerminalSession", () => {
       await expect(taskPromise).resolves.toMatchObject({ state: "completed" });
     } finally {
       release?.();
+      await (session as any)?.shutdown?.().catch(() => undefined);
       await rm(workspace, { recursive: true, force: true });
     }
   });
@@ -189,8 +218,9 @@ describe("TerminalSession", () => {
     const workspace = await mkdtemp(join(tmpdir(), "liteagent-session-"));
     const input = Readable.from(["/model\n", "/clear\n"]);
     const output = new Writable({ write(_chunk, _encoding, callback) { callback(); } });
+    let session: TerminalSession | undefined;
     try {
-      const session = new TerminalSession({
+      session = new TerminalSession({
         workspace,
         config: { providers: {} },
         approveAll: true,
@@ -198,6 +228,7 @@ describe("TerminalSession", () => {
 
       await expect(session.run()).resolves.toBeUndefined();
     } finally {
+      await (session as any)?.shutdown?.().catch(() => undefined);
       await rm(workspace, { recursive: true, force: true });
     }
   });

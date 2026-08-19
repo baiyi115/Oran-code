@@ -12,11 +12,12 @@ const call: ToolCall = {
 
 describe("TUI overlays", () => {
   it("renders slash command candidates with a selection marker", () => {
-    expect(commandCandidates("/mo").map((command) => command.name)).toEqual(["/model", "/do", "/memory", "/plan"]);
+    expect(commandCandidates("/mo").map((command) => command.name)).toEqual(["/model", "/connect", "/do", "/memory", "/plan"]);
     const lines = commandPaletteLines("/", 0).join("\n");
     expect(commandCandidates("/").map((command) => command.name)).toEqual([
       "/clear",
       "/compact",
+      "/connect",
       "/do",
       "/exit",
       "/help",

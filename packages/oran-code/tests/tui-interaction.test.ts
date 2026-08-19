@@ -9,10 +9,11 @@ describe("TUI interaction helpers", () => {
   });
 
   it("filters slash commands by the typed command", () => {
-    expect(filterCommands("/mo").map((command) => command.name)).toEqual(["/model", "/do", "/memory", "/plan"]);
+    expect(filterCommands("/mo").map((command) => command.name)).toEqual(["/model", "/connect", "/do", "/memory", "/plan"]);
     expect(filterCommands("/").map((command) => command.name)).toEqual([
       "/clear",
       "/compact",
+      "/connect",
       "/do",
       "/exit",
       "/help",
