@@ -74,6 +74,13 @@ export class ToolRegistry {
     return tool;
   }
 
+  /** Unlock all deferred tools (used by tests or privileged runners). */
+  activateAll(): void {
+    for (const tool of this.tools.values()) {
+      this.activated.add(tool.name);
+    }
+  }
+
   listExposed(): ToolDefinition[] {
     return [...this.tools.values()].filter((tool) => this.isExposed(tool.name));
   }
@@ -89,7 +96,7 @@ export class ToolRegistry {
 
   async invoke(call: ToolCall, context?: ToolExecutionContext): Promise<ToolResult> {
     const tool = this.get(call.name);
-    if (this.isDeferred(tool) && !this.activated.has(call.name)) {
+    if (this.isDeferred(tool) && !this.activated.has(call.name) && context?.bypassActivation !== true) {
       return { ok: false, output: "", error: `tool is not activated: ${call.name}; discover it with search_tools first`, summary: "not activated" };
     }
     return tool.invoke(call, context);
@@ -207,13 +214,14 @@ export function registerBuiltinTools(registry: ToolRegistry, workspace: string):
         path: { type: "string", description: "Path relative to workspace root." },
         content: { type: "string", description: "Full file content to write." },
       },
-      required: ["path", "content"],
-    },
-    permissionLevel: 2,
-    kind: "write",
-    maxOutputChars: 16_000,
-    invoke: async (call, context) => writeTextFile(activeRoot(context), (raw) => pathFor(context, raw), call.arguments.path, call.arguments.content),
-  });
+     required: ["path", "content"],
+   },
+   permissionLevel: 2,
+   kind: "write",
+   maxOutputChars: 16_000,
+    deferred: true,
+   invoke: async (call, context) => writeTextFile(activeRoot(context), (raw) => pathFor(context, raw), call.arguments.path, call.arguments.content),
+ });
 
   register({
     name: "write_plan",
@@ -225,13 +233,14 @@ export function registerBuiltinTools(registry: ToolRegistry, workspace: string):
         path: { type: "string", description: `Workspace-relative path inside ${planDirectory}.` },
         content: { type: "string", description: "Full plan content to write." },
       },
-      required: ["path", "content"],
-    },
-    permissionLevel: 2,
-    kind: "write",
-    maxOutputChars: 16_000,
-    invoke: async (call, context) => writePlanFile(activeRoot(context), call.arguments.path, call.arguments.content),
-  });
+     required: ["path", "content"],
+   },
+   permissionLevel: 2,
+   kind: "write",
+   maxOutputChars: 16_000,
+    deferred: true,
+   invoke: async (call, context) => writePlanFile(activeRoot(context), call.arguments.path, call.arguments.content),
+ });
 
   register({
     name: "edit_file",
@@ -245,12 +254,13 @@ export function registerBuiltinTools(registry: ToolRegistry, workspace: string):
         new_string: { type: "string", description: "Replacement text." },
         replace_all: { type: "boolean", description: "Replace every match instead of requiring a unique match.", default: false },
       },
-      required: ["path", "old_string", "new_string"],
-    },
-    permissionLevel: 2,
-    kind: "write",
-    maxOutputChars: 16_000,
-    invoke: async (call, context) => {
+     required: ["path", "old_string", "new_string"],
+   },
+   permissionLevel: 2,
+   kind: "write",
+   maxOutputChars: 16_000,
+    deferred: true,
+   invoke: async (call, context) => {
       try {
         const workspace = activeRoot(context);
         const path = pathFor(context, call.arguments.path);
@@ -310,16 +320,17 @@ export function registerBuiltinTools(registry: ToolRegistry, workspace: string):
         path: { type: "string", description: "Path relative to workspace root." },
         content: { type: "string", description: "Full file content to write." },
       },
-      required: ["path", "content"],
-    },
-    permissionLevel: 2,
-    kind: "write",
-    maxOutputChars: 16_000,
-    invoke: async (call, context) => writeTextFile(activeRoot(context), (raw) => pathFor(context, raw), call.arguments.path, call.arguments.content),
-  });
+     required: ["path", "content"],
+   },
+   permissionLevel: 2,
+   kind: "write",
+   maxOutputChars: 16_000,
+    deferred: true,
+   invoke: async (call, context) => writeTextFile(activeRoot(context), (raw) => pathFor(context, raw), call.arguments.path, call.arguments.content),
+ });
 
-  register({
-    name: "apply_diff",
+ register({
+   name: "apply_diff",
     description:
       "Apply a unified diff to an existing UTF-8 text file. The diff must contain one or more @@ hunks; file header lines (index/---/+++) are ignored and the target comes from the path argument. Hunk line numbers may be approximate: each hunk is located by matching its context lines against the file. Returns the number of hunks applied and a summary of added/removed lines.",
     parameters: {
@@ -328,12 +339,13 @@ export function registerBuiltinTools(registry: ToolRegistry, workspace: string):
         path: { type: "string", description: "Path relative to workspace root." },
         diff: { type: "string", description: "Unified diff text with @@ hunks." },
       },
-      required: ["path", "diff"],
-    },
-    permissionLevel: 2,
-    kind: "write",
-    maxOutputChars: 16_000,
-    invoke: async (call, context) => {
+     required: ["path", "diff"],
+   },
+   permissionLevel: 2,
+   kind: "write",
+   maxOutputChars: 16_000,
+    deferred: true,
+   invoke: async (call, context) => {
       try {
         const workspace = activeRoot(context);
         const path = pathFor(context, call.arguments.path);
@@ -493,13 +505,14 @@ export function registerBuiltinTools(registry: ToolRegistry, workspace: string):
     ["get_diff", ["diff", "--stat"], "git"],
   ] as const) {
     register({
-      name,
-      description: name === "git_status" ? "Show short git status and branch." : "Show the workspace diff stat.",
-      parameters: { type: "object", properties: {} },
-      permissionLevel: 0,
-      kind: "readonly",
-      maxOutputChars: 16_000,
-      invoke: async (_call, context) => {
+     name,
+     description: name === "git_status" ? "Show short git status and branch." : "Show the workspace diff stat.",
+     parameters: { type: "object", properties: {} },
+     permissionLevel: 0,
+     kind: "readonly",
+     maxOutputChars: 16_000,
+    deferred: true,
+     invoke: async (_call, context) => {
         try {
           const result = await execFileAsync(command, ["-C", activeRoot(context), ...args], { encoding: "utf8" });
           return { ok: true, output: result.stdout.trim() || "(empty)", summary: "ok" };
@@ -522,13 +535,14 @@ export function registerBuiltinTools(registry: ToolRegistry, workspace: string):
         cwd: { type: "string", description: "Optional working directory, relative or absolute, that must remain inside the workspace root. Defaults to the workspace root." },
       },
       required: ["command"],
-    },
-    permissionLevel: 3,
-    kind: "command",
+   },
+   permissionLevel: 3,
+   kind: "command",
     maxOutputChars: 32_000,
-      invoke: async (call, context) => {
-        const timeout = Math.max(1, numberArg(call.arguments.timeout, 60)) * 1000;
-        try {
+    deferred: true,
+    invoke: async (call, context) => {
+      const timeout = Math.max(1, numberArg(call.arguments.timeout, 60)) * 1000;
+      try {
         const cwd = await resolveCommandCwd(activeRoot(context), call.arguments.cwd);
         const result = await execAsync(String(call.arguments.command), {
           cwd,

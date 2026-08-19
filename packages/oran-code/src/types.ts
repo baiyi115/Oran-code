@@ -264,6 +264,7 @@ export interface ToolResult {
 export interface ToolExecutionContext {
   signal?: AbortSignal;
   workspace: string;
+  bypassActivation?: boolean;
 }
 
 export interface ToolDefinition {

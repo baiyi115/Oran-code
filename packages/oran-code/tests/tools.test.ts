@@ -10,6 +10,7 @@ describe("builtin tools", () => {
     try {
       const registry = new ToolRegistry();
       registerBuiltinTools(registry, workspace);
+      registry.activateAll();
       await expect(registry.invoke({ name: "apply_patch", arguments: { path: "note.txt", content: "ok" }, createdAt: new Date().toISOString() })).resolves.toMatchObject({ ok: true });
       await expect(readFile(join(workspace, "note.txt"), "utf8")).resolves.toBe("ok");
       await expect(registry.invoke({ name: "apply_patch", arguments: { path: "../escape.txt", content: "bad" }, createdAt: new Date().toISOString() })).resolves.toMatchObject({ ok: false, error: expect.stringContaining("escapes workspace") });
@@ -23,6 +24,7 @@ describe("builtin tools", () => {
     try {
       const registry = new ToolRegistry();
       registerBuiltinTools(registry, workspace);
+      registry.activateAll();
       await registry.invoke({ name: "write_file", arguments: { path: "src/a.txt", content: "one\ntwo\nthree\n" }, createdAt: new Date().toISOString() });
       const result = await registry.invoke({
         name: "apply_diff",
@@ -44,6 +46,7 @@ describe("builtin tools", () => {
     try {
       const registry = new ToolRegistry();
       registerBuiltinTools(registry, workspace);
+      registry.activateAll();
       await registry.invoke({ name: "write_file", arguments: { path: "a.txt", content: "one\ntwo\n" }, createdAt: new Date().toISOString() });
       const result = await registry.invoke({
         name: "apply_diff",
@@ -65,6 +68,7 @@ describe("builtin tools", () => {
     try {
       const registry = new ToolRegistry();
       registerBuiltinTools(registry, workspace);
+      registry.activateAll();
       const result = await registry.invoke({
         name: "apply_diff",
         arguments: { path: "../escape.txt", diff: "@@ -1,1 +1,1 @@\n-a\n+b\n" },
@@ -72,6 +76,53 @@ describe("builtin tools", () => {
       });
       expect(result.ok).toBe(false);
       expect(String(result.error ?? "")).toContain("escapes workspace");
+    } finally {
+      await rm(workspace, { recursive: true, force: true });
+    }
+  });
+
+  it("defers non-core tools and activates them on demand via search_tools", async () => {
+    const workspace = await mkdtemp(join(tmpdir(), "liteagent-deferred-"));
+    try {
+      const registry = new ToolRegistry();
+      registerBuiltinTools(registry, workspace);
+
+      // Direct invocation before activation is rejected
+      const directResult = await registry.invoke({
+        name: "write_file",
+        arguments: { path: "hello.txt", content: "hello" },
+        createdAt: new Date().toISOString(),
+      });
+      expect(directResult.ok).toBe(false);
+      expect(directResult.error).toContain("tool is not activated: write_file");
+
+      // Search tools returns matching deferred tools
+      const searchResult = await registry.invoke({
+        name: "search_tools",
+        arguments: { query: "write" },
+        createdAt: new Date().toISOString(),
+      });
+      expect(searchResult.ok).toBe(true);
+      expect(searchResult.output).toContain("write_file");
+
+      // Selecting the tool activates it and returns its parameter schema
+      const selectResult = await registry.invoke({
+        name: "search_tools",
+        arguments: { query: "select:write_file" },
+        createdAt: new Date().toISOString(),
+      });
+      expect(selectResult.ok).toBe(true);
+      expect(selectResult.output).toContain("parameters");
+      expect(registry.isExposed("write_file")).toBe(true);
+
+      // Now invocation succeeds
+      const writeResult = await registry.invoke({
+        name: "write_file",
+        arguments: { path: "hello.txt", content: "hello" },
+        createdAt: new Date().toISOString(),
+      });
+      expect(writeResult.ok).toBe(true);
+      await expect(readFile(join(workspace, "hello.txt"), "utf8")).resolves.toBe("hello");
     } finally {
       await rm(workspace, { recursive: true, force: true });
     }

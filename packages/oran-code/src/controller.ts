@@ -803,7 +803,12 @@ export class TaskController {
         }, turnId);
       }
       const aborted = isAbortError(error) || this.abortController?.signal.aborted;
-      await this.emit("assistant_abort", { step, source, attempt, message: formatErrorMessage(error), ...(finishReason !== undefined ? { finishReason } : {}) }, turnId);
+      // A non-cancellation model error is reported by the outer `error` event.
+      // Emitting assistant_abort as well makes the TUI show the same failure
+      // twice: once as a bracketed assistant suffix and once as an Error block.
+      if (aborted) {
+        await this.emit("assistant_abort", { step, source, attempt, message: formatErrorMessage(error), ...(finishReason !== undefined ? { finishReason } : {}) }, turnId);
+      }
       if (aborted && (textParts.length || latestToolCalls.length || reasoningParts.length)) {
         // Preserve partial assistant output so conversation history stays usable after cancel.
         loop.recordUsage(usage);
@@ -1258,6 +1263,14 @@ export class TaskController {
   }
 
   private toolSchemasForMode(): Record<string, unknown>[] {
+    // Plan mode must always expose write_plan even though it is now deferred.
+    // Activate it once before computing schemas so isExposed() lets it through.
+    if (this.config.workMode === "plan") {
+      const planTool = this.registry.list().find((tool) => tool.name === "write_plan");
+      if (planTool && this.registry.isDeferred(planTool) && !this.registry.isExposed("write_plan")) {
+        this.registry.activate("write_plan");
+      }
+    }
     return this.registry.schemas((tool) => (
       this.isToolVisible(tool)
       && (this.config.workMode !== "plan" || isPlanModeTool(tool))

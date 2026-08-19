@@ -200,6 +200,7 @@ describe("deferred worktree tools", () => {
     await mkdir(subdirectory, { recursive: true });
     const registry = new ToolRegistry();
     registerBuiltinTools(registry, workspace);
+    registry.activateAll();
 
     const result = await invoke(registry, "run_command", { command: "node -e \"console.log(process.cwd())\"", cwd: "subdir" });
     expect(result.ok).toBe(true);

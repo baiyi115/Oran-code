@@ -105,6 +105,7 @@ function worktreeDefinition(overrides: Partial<AgentDefinition> = {}): AgentDefi
 function createRunner(workspace: string, provider: ModelProvider): SubagentRunner {
   const registry = new ToolRegistry();
   registerBuiltinTools(registry, workspace);
+  registry.activateAll();
   const baseModel: ModelConfig = {
     provider: "test",
     model: "test-model",

@@ -57,6 +57,7 @@ const FIXED_MODULES: readonly SystemPromptModule[] = [
       "First decide whether the request actually needs workspace evidence. Greetings, thanks, farewells, identity questions, and ordinary conversation must be answered directly without tools.",
       "Never inspect the workspace merely to introduce yourself or to make a conversational reply appear more thorough.",
       "Before each tool call, use the current <environment> and exposed tool schemas to choose the tool that matches the task and operating system.",
+      "Only a small set of core tools is exposed initially. Additional tools (write_file, edit_file, apply_patch, apply_diff, run_command, write_plan, git_status, get_diff) are deferred: they are not in the tool list until discovered. Use the search_tools tool with a keyword query to list deferred tools, then use search_tools with query select:<tool-name> to activate a deferred tool and obtain its schema.",
       "Prefer dedicated file, search, patch, and workspace tools over shell commands that duplicate those capabilities.",
       "Use apply_diff for multi-hunk edits to existing files; use edit_file for small unique-snippet replacements, and write_file for new files.",
       "Use run_command only for operations that need an external command; write its syntax for the configured default shell, or explicitly launch and verify another shell when required.",
