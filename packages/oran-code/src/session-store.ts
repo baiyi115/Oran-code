@@ -5,7 +5,7 @@ import { dirname, extname, resolve } from "node:path";
 import type { TranscriptMessage } from "./tui/types.js";
 import type { Message, ModelReference, SessionTitleMode } from "./types.js";
 import { isPermissionMode, isReasoningEffort, type PermissionMode, type ReasoningEffort, type WorkMode } from "./types.js";
-import { ensureProjectStateRoot, projectStateRoot } from "./paths.js";
+import { ensureProjectStateRoot, migrateUserDataOutOfWorkspace, projectStateRoot, userSessionsRoot } from "./paths.js";
 
 export type SessionTitleSource = "local" | "model" | "manual";
 export interface StoredSession {
@@ -30,9 +30,14 @@ export type SessionJsonlRecord = SessionStateRecord | SessionMessageRecord | Leg
 const DEFAULT_SESSION_NAMES = new Set(["Current session", "New session"]);
 export type StoredSessionPatch = Partial<Pick<StoredSession, "name" | "autoNamed" | "titleSource" | "titleGenerationAttempted" | "messages" | "history" | "workMode" | "permissionMode" | "reasoningEffort" | "conversation">> & { modelReference?: ModelReference | null };
 
+export interface SessionStoreOptions {
+  sessionsRoot?: string;
+}
+
 export class SessionStore {
   readonly path: string;
   readonly directory: string;
+  private readonly sessionsRoot: string;
   private sessions: StoredSession[] = [];
   private readonly mtimes = new Map<string, number>();
   /** Sessions whose conversation body has been materialised from the jsonl archive. */
@@ -40,14 +45,15 @@ export class SessionStore {
   private readonly conversationLoads = new Map<string, Promise<void>>();
   private writeTail: Promise<void> = Promise.resolve();
 
-  constructor(private readonly workspace: string) {
-    const stateRoot = projectStateRoot(workspace);
-    this.path = resolve(stateRoot, "sessions.json");
-    this.directory = resolve(stateRoot, "sessions");
+  constructor(private readonly workspace: string, options?: SessionStoreOptions) {
+    this.sessionsRoot = resolve(options?.sessionsRoot ?? userSessionsRoot(workspace));
+    this.path = resolve(projectStateRoot(workspace), "sessions.json");
+    this.directory = this.sessionsRoot;
   }
 
   async open(): Promise<void> {
     await ensureProjectStateRoot(this.workspace);
+    await migrateUserDataOutOfWorkspace(this.workspace);
     await this.migrateLegacyStore();
     let names: string[];
     try { names = await readdir(this.directory); } catch {
@@ -433,29 +439,35 @@ export class SessionStore {
   }
 
   private async migrateLegacyStore(): Promise<void> {
-    if (!existsSync(this.path)) return;
-    let legacy: StoredSession[];
-    try {
-      const parsed = JSON.parse(await readFile(this.path, "utf8")) as unknown;
-      legacy = Array.isArray(parsed) ? parsed.filter(isStoredSession) : [];
-    } catch { return; }
-    try {
-      await mkdir(this.directory, { recursive: true });
-      for (const session of legacy) {
-        if (!isSafeSessionId(session.id)) continue;
-        const destination = this.archivePath(session.id);
-        if (existsSync(destination)) continue;
-        const timestamp = session.updatedAt || new Date().toISOString();
-        const prompt = firstConversationPrompt(session.conversation ?? []);
-        const migrated = { ...session,
-          archiveMessageCount: countArchiveMessages(session.conversation ?? []),
-          ...(prompt ? { archiveTitle: truncateSessionName(prompt, 48) } : {}),
-        };
-        const records: SessionJsonlRecord[] = [stateRecord(migrated, timestamp), ...messageRecords(migrated.conversation ?? [], timestamp)];
-        await this.persistRecordsAndState(session.id, records, migrated, timestamp);
-      }
-      await rename(this.path, `${this.path}.migrated`);
-    } catch { /* retain the legacy file so migration can be retried */ }
+    const candidatePaths = [
+      this.path,
+      resolve(this.sessionsRoot, "sessions.json"),
+    ].filter((p, i, arr) => arr.indexOf(p) === i && existsSync(p));
+
+    for (const legacyFile of candidatePaths) {
+      let legacy: StoredSession[];
+      try {
+        const parsed = JSON.parse(await readFile(legacyFile, "utf8")) as unknown;
+        legacy = Array.isArray(parsed) ? parsed.filter(isStoredSession) : [];
+      } catch { continue; }
+      try {
+        await mkdir(this.directory, { recursive: true });
+        for (const session of legacy) {
+          if (!isSafeSessionId(session.id)) continue;
+          const destination = this.archivePath(session.id);
+          if (existsSync(destination)) continue;
+          const timestamp = session.updatedAt || new Date().toISOString();
+          const prompt = firstConversationPrompt(session.conversation ?? []);
+          const migrated = { ...session,
+            archiveMessageCount: countArchiveMessages(session.conversation ?? []),
+            ...(prompt ? { archiveTitle: truncateSessionName(prompt, 48) } : {}),
+          };
+          const records: SessionJsonlRecord[] = [stateRecord(migrated, timestamp), ...messageRecords(migrated.conversation ?? [], timestamp)];
+          await this.persistRecordsAndState(session.id, records, migrated, timestamp);
+        }
+        await rename(legacyFile, `${legacyFile}.migrated`);
+      } catch { /* retain the legacy file so migration can be retried */ }
+    }
   }
 }
 

@@ -1,7 +1,7 @@
 import { appendFile, mkdir, mkdtemp, readFile, rm, stat, utimes, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import {
   generateSessionId,
   parseSessionJsonl,
@@ -13,6 +13,21 @@ import {
 import type { Message } from "../src/types.js";
 
 describe("SessionStore JSONL archives", () => {
+  let originalUserDataDir: string | undefined;
+  let testUserDataDir: string | undefined;
+
+  beforeEach(async () => {
+    originalUserDataDir = process.env.ORAN_USER_DATA_DIR;
+    testUserDataDir = await mkdtemp(join(tmpdir(), "oran-test-userdata-"));
+    process.env.ORAN_USER_DATA_DIR = testUserDataDir;
+  });
+
+  afterEach(async () => {
+    if (originalUserDataDir !== undefined) process.env.ORAN_USER_DATA_DIR = originalUserDataDir;
+    else delete process.env.ORAN_USER_DATA_DIR;
+    if (testUserDataDir) await rm(testUserDataDir, { recursive: true, force: true });
+  });
+
   it("appends state and new messages, then restores the same session", async () => {
     const root = await mkdtemp(join(tmpdir(), "liteagent-store-"));
     try {
@@ -135,7 +150,7 @@ describe("SessionStore JSONL archives", () => {
           { role: "assistant", content: "legacy answer" },
         ],
       });
-      expect(restored?.archiveSize).toBe((await stat(archive)).size);
+      expect(restored?.archiveSize).toBe((await stat(join(store.directory, `${id}.jsonl`))).size);
     } finally {
       await rm(root, { recursive: true, force: true });
     }

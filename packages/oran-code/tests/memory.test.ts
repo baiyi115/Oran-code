@@ -1,7 +1,7 @@
 import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { MemoryExtractor, parseExtractedMemories } from "../src/memory-extractor.js";
 import { MemoryManager } from "../src/memory-manager.js";
 import type { Message, ModelProvider, ModelResponse, ModelStreamChunk } from "../src/types.js";
@@ -22,6 +22,21 @@ class ResponseProvider implements ModelProvider {
 }
 
 describe("MemoryManager", () => {
+  let originalUserDataDir: string | undefined;
+  let testUserDataDir: string | undefined;
+
+  beforeEach(async () => {
+    originalUserDataDir = process.env.ORAN_USER_DATA_DIR;
+    testUserDataDir = await mkdtemp(join(tmpdir(), "oran-test-memory-userdata-"));
+    process.env.ORAN_USER_DATA_DIR = testUserDataDir;
+  });
+
+  afterEach(async () => {
+    if (originalUserDataDir !== undefined) process.env.ORAN_USER_DATA_DIR = originalUserDataDir;
+    else delete process.env.ORAN_USER_DATA_DIR;
+    if (testUserDataDir) await rm(testUserDataDir, { recursive: true, force: true });
+  });
+
   it("routes notes, supports legacy metadata, and builds bounded summary and index shapes", async () => {
     const root = await mkdtemp(join(tmpdir(), "liteagent-memory-"));
     const workspace = join(root, "workspace");
@@ -66,7 +81,8 @@ describe("MemoryManager", () => {
       const index = await manager.rebuildIndex();
       const savedIndex = await readFile(manager.indexPath, "utf8");
       expect(savedIndex.trim()).toBe(index);
-      expect(index).toContain("project-conventions | .oran/memory/Project-Conventions.md");
+      expect(index).toContain("project-conventions | ~/.oran/memory/");
+      expect(index).toContain("Project-Conventions.md");
       expect(index).toContain("concise-output | ~/.oran/memory/concise-output.md");
       expect(index).not.toContain("Keep progress messages compact");
 
@@ -101,6 +117,21 @@ describe("MemoryManager", () => {
 });
 
 describe("MemoryExtractor", () => {
+  let originalUserDataDir: string | undefined;
+  let testUserDataDir: string | undefined;
+
+  beforeEach(async () => {
+    originalUserDataDir = process.env.ORAN_USER_DATA_DIR;
+    testUserDataDir = await mkdtemp(join(tmpdir(), "oran-test-extractor-userdata-"));
+    process.env.ORAN_USER_DATA_DIR = testUserDataDir;
+  });
+
+  afterEach(async () => {
+    if (originalUserDataDir !== undefined) process.env.ORAN_USER_DATA_DIR = originalUserDataDir;
+    else delete process.env.ORAN_USER_DATA_DIR;
+    if (testUserDataDir) await rm(testUserDataDir, { recursive: true, force: true });
+  });
+
   it("parses fixed blocks and merges concurrent requests into one latest tail run", async () => {
     const root = await mkdtemp(join(tmpdir(), "liteagent-memory-extract-"));
     const manager = new MemoryManager(root, { userDirectory: join(root, "user") });

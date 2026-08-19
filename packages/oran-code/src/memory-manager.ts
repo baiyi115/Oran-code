@@ -4,7 +4,7 @@ import { mkdir, readFile, readdir, rename, stat, unlink, writeFile } from "node:
 import { parse, stringify } from "yaml";
 import type { ModelProvider } from "./types.js";
 import { isRecord } from "./types.js";
-import { compatibleUserDataPath, projectStateRoot, USER_DATA_DIRECTORY } from "./paths.js";
+import { compatibleUserDataPath, projectHash, userMemoryRoot, USER_DATA_DIRECTORY } from "./paths.js";
 
 export const MEMORY_NOTE_TYPES = ["user-preference", "correction-feedback", "project-knowledge", "reference-material"] as const;
 export type MemoryNoteType = (typeof MEMORY_NOTE_TYPES)[number];
@@ -44,7 +44,7 @@ export class MemoryManager {
 
   constructor(workspace: string, options: MemoryManagerOptions = {}) {
     this.workspace = resolve(workspace);
-    this.projectDirectory = resolve(options.projectDirectory ?? resolve(projectStateRoot(this.workspace), "memory"));
+    this.projectDirectory = resolve(options.projectDirectory ?? userMemoryRoot(this.workspace));
     this.userDirectory = resolve(options.userDirectory ?? compatibleUserDataPath("memory"));
     this.indexPath = resolve(this.projectDirectory, MEMORY_INDEX_FILE);
     this.maxIndexLines = positiveInteger(options.maxIndexLines, DEFAULT_MEMORY_INDEX_LINES);
@@ -132,6 +132,9 @@ export class MemoryManager {
 
   private displayPath(note: Pick<MemoryNote, "path" | "scope">): string {
     if (note.scope === "user") return `~/${USER_DATA_DIRECTORY}/memory/${toPortablePath(relative(this.userDirectory, note.path))}`;
+    if (!relative(this.projectDirectory, note.path).startsWith("..")) {
+      return `~/${USER_DATA_DIRECTORY}/memory/${projectHash(this.workspace)}/${toPortablePath(relative(this.projectDirectory, note.path))}`;
+    }
     return toPortablePath(relative(this.workspace, note.path));
   }
 }
