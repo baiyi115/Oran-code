@@ -59,6 +59,279 @@ const TOOL_ALIASES: Readonly<Record<string, string>> = {
   grep: "search_code",
 };
 
+export interface ShellCommandNode {
+  raw: string;
+  executable: string;
+  args: string[];
+  hasSubshell: boolean;
+  redirects: Array<{ type: ">" | ">>" | "<"; target: string }>;
+}
+
+export interface ShellPipelineNode {
+  commands: ShellCommandNode[];
+}
+
+export interface ShellCompoundNode {
+  pipelines: Array<{
+    op?: "&&" | "||" | ";" | undefined;
+    pipeline: ShellPipelineNode;
+  }>;
+  hasSubshell: boolean;
+  hasParseError?: boolean | undefined;
+}
+
+const DANGEROUS_PIPELINE_DESTINATIONS = new Set([
+  "sh", "bash", "zsh", "pwsh", "powershell", "eval", "source", "cmd",
+]);
+
+export function parseShellCommand(input: string): ShellCompoundNode {
+  const text = input.trim();
+  if (!text) return { pipelines: [], hasSubshell: false };
+
+  try {
+    let index = 0;
+    let hasGlobalSubshell = false;
+
+    type Token =
+      | { type: "word"; value: string; hasSubshell: boolean }
+      | { type: "op"; value: "&&" | "||" | "|" | ";" }
+      | { type: "redirect"; op: ">" | ">>" | "<"; target?: string };
+
+    const tokens: Token[] = [];
+
+    while (index < text.length) {
+      while (index < text.length && /\s/.test(text[index]!)) {
+        if (text[index] === "\n" || text[index] === "\r") {
+          if (tokens.length > 0 && tokens[tokens.length - 1]?.type !== "op") {
+            tokens.push({ type: "op", value: ";" });
+          }
+        }
+        index++;
+      }
+      if (index >= text.length) break;
+
+      const char = text[index]!;
+
+      if (char === "&" && text[index + 1] === "&") {
+        tokens.push({ type: "op", value: "&&" });
+        index += 2;
+        continue;
+      }
+      if (char === "|" && text[index + 1] === "|") {
+        tokens.push({ type: "op", value: "||" });
+        index += 2;
+        continue;
+      }
+      if (char === "|") {
+        tokens.push({ type: "op", value: "|" });
+        index += 1;
+        continue;
+      }
+      if (char === ";") {
+        tokens.push({ type: "op", value: ";" });
+        index += 1;
+        continue;
+      }
+      if (char === ">" && text[index + 1] === ">") {
+        tokens.push({ type: "redirect", op: ">>" });
+        index += 2;
+        continue;
+      }
+      if (char === ">") {
+        tokens.push({ type: "redirect", op: ">" });
+        index += 1;
+        continue;
+      }
+      if (char === "<") {
+        tokens.push({ type: "redirect", op: "<" });
+        index += 1;
+        continue;
+      }
+
+      let word = "";
+      let inSingleQuote = false;
+      let inDoubleQuote = false;
+      let wordHasSubshell = false;
+
+      while (index < text.length) {
+        const c = text[index]!;
+        if (!inSingleQuote && !inDoubleQuote) {
+          if (/[\s;&|<>]/.test(c)) break;
+        }
+
+        if (c === "'" && !inDoubleQuote) {
+          inSingleQuote = !inSingleQuote;
+          index++;
+          continue;
+        }
+
+        if (c === '"' && !inSingleQuote) {
+          inDoubleQuote = !inDoubleQuote;
+          index++;
+          continue;
+        }
+
+        if (c === "\\" && !inSingleQuote && index + 1 < text.length) {
+          word += text[index + 1];
+          index += 2;
+          continue;
+        }
+
+        if (!inSingleQuote) {
+          if (c === "$" && text[index + 1] === "(") {
+            wordHasSubshell = true;
+            hasGlobalSubshell = true;
+          } else if (c === "`") {
+            wordHasSubshell = true;
+            hasGlobalSubshell = true;
+          }
+        }
+
+        word += c;
+        index++;
+      }
+
+      tokens.push({ type: "word", value: word, hasSubshell: wordHasSubshell });
+    }
+
+    const pipelines: ShellCompoundNode["pipelines"] = [];
+    let currentPipeline: ShellPipelineNode = { commands: [] };
+    let currentCommandWords: Array<{ value: string; hasSubshell: boolean }> = [];
+    let currentRedirects: ShellCommandNode["redirects"] = [];
+    let currentOp: "&&" | "||" | ";" | undefined = undefined;
+
+    function flushCommand() {
+      if (currentCommandWords.length === 0 && currentRedirects.length === 0) return;
+      const executable = currentCommandWords[0]?.value ?? "";
+      const args = currentCommandWords.slice(1).map((w) => w.value);
+      const hasSubshell = currentCommandWords.some((w) => w.hasSubshell);
+      currentPipeline.commands.push({
+        raw: currentCommandWords.map((w) => w.value).join(" "),
+        executable,
+        args,
+        hasSubshell,
+        redirects: [...currentRedirects],
+      });
+      currentCommandWords = [];
+      currentRedirects = [];
+    }
+
+    function flushPipeline(nextOp?: "&&" | "||" | ";") {
+      flushCommand();
+      if (currentPipeline.commands.length > 0) {
+        pipelines.push({ op: currentOp, pipeline: currentPipeline });
+        currentPipeline = { commands: [] };
+      }
+      currentOp = nextOp;
+    }
+
+    for (let i = 0; i < tokens.length; i++) {
+      const tok = tokens[i]!;
+      if (tok.type === "word") {
+        currentCommandWords.push({ value: tok.value, hasSubshell: tok.hasSubshell });
+      } else if (tok.type === "redirect") {
+        let target = "";
+        const nextTok = tokens[i + 1];
+        if (nextTok && nextTok.type === "word") {
+          target = nextTok.value;
+          i++;
+        }
+        currentRedirects.push({ type: tok.op, target });
+      } else if (tok.type === "op") {
+        if (tok.value === "|") {
+          flushCommand();
+        } else {
+          flushPipeline(tok.value);
+        }
+      }
+    }
+
+    flushPipeline();
+
+    return {
+      pipelines,
+      hasSubshell: hasGlobalSubshell,
+    };
+  } catch {
+    return {
+      pipelines: [],
+      hasSubshell: true,
+      hasParseError: true,
+    };
+  }
+}
+
+export function inspectShellAst(ast: ShellCompoundNode): {
+  dangerousReason?: string;
+  isStrictlySafe: boolean;
+  hasSubshell: boolean;
+} {
+  if (ast.hasParseError) {
+    return { isStrictlySafe: false, hasSubshell: true };
+  }
+
+  for (const entry of ast.pipelines) {
+    const cmds = entry.pipeline.commands;
+    if (cmds.length > 1) {
+      for (let i = 1; i < cmds.length; i++) {
+        const execName = (cmds[i]?.executable ?? "").toLowerCase().replace(/\.exe$/, "");
+        if (DANGEROUS_PIPELINE_DESTINATIONS.has(execName) || (execName === "sudo" && cmds[i]?.args.some((a) => DANGEROUS_PIPELINE_DESTINATIONS.has(a.toLowerCase())))) {
+          return {
+            dangerousReason: "remote script or dynamic input piped directly into shell interpreter",
+            isStrictlySafe: false,
+            hasSubshell: ast.hasSubshell,
+          };
+        }
+      }
+    }
+  }
+
+  if (ast.hasSubshell || ast.pipelines.length === 0) {
+    return { isStrictlySafe: false, hasSubshell: ast.hasSubshell };
+  }
+
+  let allSafe = true;
+  for (const entry of ast.pipelines) {
+    for (const cmd of entry.pipeline.commands) {
+      if (cmd.redirects.some((r) => r.type === ">" || r.type === ">>")) {
+        allSafe = false;
+        break;
+      }
+      if (!isSafeCommandNode(cmd)) {
+        allSafe = false;
+        break;
+      }
+    }
+    if (!allSafe) break;
+  }
+
+  return {
+    isStrictlySafe: allSafe,
+    hasSubshell: ast.hasSubshell,
+  };
+}
+
+function isSafeCommandNode(cmd: ShellCommandNode): boolean {
+  if (cmd.hasSubshell) return false;
+  const exec = cmd.executable.toLowerCase().replace(/\.exe$/, "");
+  const full = `${exec} ${cmd.args.join(" ")}`.trim();
+
+  if (exec === "git") {
+    const sub = (cmd.args[0] ?? "").toLowerCase();
+    const safeGitSubs = ["status", "log", "diff", "show", "branch", "rev-parse", "ls-files"];
+    if (!safeGitSubs.includes(sub)) return false;
+    if (full.includes("--output") || full.includes("--ext-diff") || full.includes("--textconv")) return false;
+    if (sub === "branch") {
+      const hasBranchMutation = cmd.args.some((arg) => /^(?:-[dDmMfFcC]|--(?:delete|move|rename|force|copy|edit|set-upstream|unset-upstream))/.test(arg));
+      if (hasBranchMutation) return false;
+    }
+    return true;
+  }
+
+  if (exec === "pwd") return true;
+  return false;
+}
+
 export class PermissionPolicy {
   private readonly taskAllows = new Set<string>();
   private readonly registeredKinds = new Map<string, ToolKind>();
@@ -93,6 +366,11 @@ export class PermissionPolicy {
       const dangerous = DANGEROUS_COMMANDS.find((item) => item.pattern.test(command));
       if (dangerous) {
         return decision("deny", `blocked dangerous command: ${dangerous.label}`, "dangerous-command", level);
+      }
+      const ast = parseShellCommand(command);
+      const astCheck = inspectShellAst(ast);
+      if (astCheck.dangerousReason) {
+        return decision("deny", `blocked dangerous command: ${astCheck.dangerousReason}`, "dangerous-command", level);
       }
       if (isSafeCommand(command)) {
         return decision("allow", "recognized read-only command without shell metacharacters", "safe-command", level);
