@@ -207,7 +207,10 @@ export class TerminalRenderer implements SessionRenderer {
       case "assistant_end": this.assistantEnd(event.text); break;
       case "assistant_abort": this.assistantAbort(event.message); break;
       case "plan": if (!event.streamed) this.plan(event.plan); break;
-      case "plan_complete": this.status(event.autoExecute ? "Plan complete; executing..." : "Plan complete.", "cyan"); break;
+      case "plan_complete": this.status(
+        event.autoExecute ? "Plan complete; executing..." : "Plan complete. Reply y to execute it or n to discard it.",
+        "cyan",
+      ); break;
       case "tool_start": this.toolStart(event.call, event.permissionLevel); break;
       case "tool_result": this.toolResult(event.call, event.result); break;
       case "verify": this.verify(event.results); break;

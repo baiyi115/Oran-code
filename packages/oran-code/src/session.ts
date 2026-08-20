@@ -141,8 +141,9 @@ export class TerminalSession {
   private readonly workspaceFileIndex: WorkspaceFileIndex;
   private currentSession: StoredSession | undefined;
   private readonly followUps: FollowUpItem[] = [];
-  /** Plan completed in plan mode; auto-execute once idle if still current. */
+  /** Plan completed in plan mode and is waiting for an explicit user decision. */
   private pendingPlanExecute: { sessionId: string; plan: string; prompt: string } | undefined;
+  private previousPlanPermissionMode: PermissionMode | undefined;
   private queuePaused = false;
   private sessionSave: Promise<void> = Promise.resolve();
   private debugLogTail: Promise<void> = Promise.resolve();
@@ -317,6 +318,11 @@ export class TerminalSession {
   async handleInput(value: string): Promise<void> {
     const input = value.trim();
     if (!input) return;
+
+    if (this.pendingPlanExecute) {
+      await this.resolvePendingPlan(input);
+      return;
+    }
 
     if (input.startsWith("/")) {
       // Dynamic/skills commands may still be scanning after first paint.
@@ -643,13 +649,13 @@ export class TerminalSession {
         if (printErrors) return undefined as unknown as Task;
         throw error;
       })
-      .finally(() => {
+      .finally(async () => {
         this.taskPromise = undefined;
         this.queuePaused = false;
         this.setPrompt();
         this.refreshTui();
         void this.persistTuiSession();
-        void this.drainFollowUps();
+        await this.drainFollowUps();
         this.prompt();
       });
   }
@@ -670,10 +676,23 @@ export class TerminalSession {
   }
 
 
-  private async executePendingPlan(): Promise<boolean> {
+  private async resolvePendingPlan(input: string): Promise<boolean> {
     const pending = this.pendingPlanExecute;
     const sessionId = this.currentSession?.id ?? "session-current";
-    if (!pending || pending.sessionId !== sessionId) return false;
+    if (!pending || pending.sessionId !== sessionId || this.taskRunning() || this.hasPendingApprovals()) return false;
+    const answer = input.trim().toLowerCase();
+    if (answer === "n" || answer === "no" || answer === "esc" || answer === "") {
+      this.pendingPlanExecute = undefined;
+      this.renderer.status("Plan discarded.", "cyan");
+      this.refreshTui();
+      await this.persistTuiSession();
+      await this.drainFollowUps();
+      return true;
+    }
+    if (answer !== "y" && answer !== "yes") {
+      this.renderer.status("Reply y to execute the plan or n to discard it.", "yellow");
+      return false;
+    }
     this.pendingPlanExecute = undefined;
     if (!this.model) {
       this.renderer.error("plan execution skipped: no model selected");
@@ -685,7 +704,7 @@ export class TerminalSession {
   }
 
   private async drainFollowUps(): Promise<void> {
-    if (this.queuePaused || this.taskRunning() || this.hasPendingApprovals() || this.quitRequested) return;
+    if (this.queuePaused || this.taskRunning() || this.hasPendingApprovals() || this.pendingPlanExecute || this.quitRequested) return;
     const sessionId = this.currentSession?.id ?? "session-current";
     let next: FollowUpItem | undefined;
     while (this.followUps.length) {
@@ -824,6 +843,7 @@ export class TerminalSession {
     this.hookEngine?.resetOnce();
     this.hookEngine?.drainNotices();
     this.currentSession = structuredClone(stored);
+    this.previousPlanPermissionMode = undefined;
     this.permissionMode = stored.permissionMode
       ?? (stored.workMode === "plan" ? "plan" : configuredPermissionMode(this.config, this.approveAll));
     this.workMode = workModeForPermission(this.permissionMode);
@@ -1007,6 +1027,7 @@ export class TerminalSession {
     await this.persistTuiSession(false);
     this.followUps.splice(0);
     this.pendingPlanExecute = undefined;
+    this.previousPlanPermissionMode = undefined;
     this.refreshTui();
     return this.toSessionView(this.currentSession ?? stored);
   }
@@ -1020,6 +1041,7 @@ export class TerminalSession {
     this.contextManagers.delete(id);
     this.followUps.splice(0);
     this.pendingPlanExecute = undefined;
+    this.previousPlanPermissionMode = undefined;
     if (id === activeId) {
       const replacement = await this.sessionStore.ensureCurrent("Current session", {
         workMode: this.workMode,
@@ -1063,6 +1085,7 @@ export class TerminalSession {
     this.reasoningEffort = stored.reasoningEffort ?? "medium";
     this.followUps.splice(0);
     this.pendingPlanExecute = undefined;
+    this.previousPlanPermissionMode = undefined;
     this.refreshTui();
     return this.toSessionView(stored);
   }
@@ -1103,7 +1126,14 @@ export class TerminalSession {
         plan: event.plan,
         prompt: buildPlanExecutePrompt(event.plan),
       };
-      this.renderer.status("Plan complete. Use /do to leave plan mode and execute it.", "cyan");
+      if (this.permissionMode === "plan") {
+        this.permissionMode = this.permissionModeAfterPlan();
+        this.workMode = workModeForPermission(this.permissionMode);
+        event.permissionMode = this.permissionMode;
+        event.workMode = this.workMode;
+        this.refreshTui();
+        await this.persistTuiSession();
+      }
     }
     if (event.type === "task_plan_updated") {
       if (this.currentSession) {
@@ -1319,14 +1349,6 @@ export class TerminalSession {
       case "plan":
         if (argument) this.renderer.error("/plan does not accept arguments");
         else await this.changePermissionMode("plan");
-        return;
-      case "do":
-        if (argument) {
-          this.renderer.error("/do does not accept arguments");
-          return;
-        }
-        if (!await this.changePermissionMode("default")) return;
-        await this.executePendingPlan();
         return;
       case "compact":
         if (argument) {
@@ -1708,13 +1730,27 @@ export class TerminalSession {
       this.renderer.status("finish or cancel the current task before changing permission mode", "yellow");
       return false;
     }
-    if (mode === "plan" && this.permissionMode !== "plan") this.pendingPlanExecute = undefined;
+    if (mode === "plan" && this.permissionMode !== "plan") {
+      this.previousPlanPermissionMode = this.permissionMode;
+      this.pendingPlanExecute = undefined;
+    } else if (mode !== "plan" && this.permissionMode === "plan") {
+      this.previousPlanPermissionMode = undefined;
+    }
+    if (mode !== this.permissionMode) this.pendingPlanExecute = undefined;
     this.permissionMode = mode;
     this.workMode = workModeForPermission(mode);
     this.refreshTui();
     await this.persistTuiSession();
     this.renderer.status(`Permission mode set to ${mode}.`, "cyan");
     return true;
+  }
+
+  private permissionModeAfterPlan(): PermissionMode {
+    const previous = this.previousPlanPermissionMode;
+    this.previousPlanPermissionMode = undefined;
+    if (previous && previous !== "plan") return previous;
+    const configured = configuredPermissionMode(this.config, this.approveAll);
+    return configured === "plan" ? "default" : configured;
   }
 
   private async handleConnect(_argument = ""): Promise<void> {
@@ -1921,7 +1957,15 @@ export class TerminalSession {
       getModelLabel: () => this.modelLabel(),
       onInput: (value) => this.handleInput(value),
       onCancel: () => {
-        const hadWork = isRunning();
+        const hadPendingPlan = this.pendingPlanExecute !== undefined;
+        const hadWork = isRunning() || hadPendingPlan;
+        if (hadPendingPlan) {
+          this.pendingPlanExecute = undefined;
+          this.renderer.status("Plan discarded.", "cyan");
+          this.refreshTui();
+          void this.persistTuiSession();
+          return true;
+        }
         this.cancelTask();
         return hadWork;
       },
@@ -1955,18 +1999,32 @@ export class TerminalSession {
       getPermissionMode: () => this.permissionMode,
       onWorkModeChanged: async (mode) => {
         if (this.interactionRunning() || this.hasPendingApprovals()) return false;
-        this.workMode = mode;
         if (mode === "plan") {
+          if (this.permissionMode !== "plan") {
+            this.previousPlanPermissionMode = this.permissionMode;
+            this.pendingPlanExecute = undefined;
+          }
           this.permissionMode = "plan";
-        } else if (this.permissionMode === "plan") {
-          const configured = configuredPermissionMode(this.config, this.approveAll);
-          this.permissionMode = configured === "plan" ? "default" : configured;
+          this.workMode = "plan";
+        } else {
+          if (mode !== this.workMode) this.pendingPlanExecute = undefined;
+          this.permissionMode = this.permissionMode === "plan"
+            ? this.permissionModeAfterPlan()
+            : this.permissionMode;
+          this.workMode = mode;
         }
         await this.persistTuiSession();
         return true;
       },
       onPermissionModeChanged: async (mode) => {
         if (this.interactionRunning() || this.hasPendingApprovals()) return false;
+        if (mode === "plan" && this.permissionMode !== "plan") {
+          this.previousPlanPermissionMode = this.permissionMode;
+          this.pendingPlanExecute = undefined;
+        } else if (mode !== "plan") {
+          this.previousPlanPermissionMode = undefined;
+        }
+        if (mode !== this.permissionMode) this.pendingPlanExecute = undefined;
         this.permissionMode = mode;
         this.workMode = workModeForPermission(mode);
         await this.persistTuiSession();
@@ -1983,7 +2041,7 @@ export class TerminalSession {
         ? this.modelReference(this.model)
         : this.currentSession?.modelReference,
       getModelWarning: () => this.modelWarning,
-      isInteractionBlocked: () => this.interactionRunning() || this.hasPendingApprovals(),
+      isInteractionBlocked: () => this.interactionRunning() || this.hasPendingApprovals() || this.pendingPlanExecute !== undefined,
       history: this.currentSession?.history ?? history,
       ...(this.currentSession ? { initialSession: this.toSessionView(this.currentSession) } : {}),
     });
@@ -2044,6 +2102,13 @@ export class TerminalSession {
   }
 
   cancel(): void {
+    if (this.pendingPlanExecute) {
+      this.pendingPlanExecute = undefined;
+      this.renderer.status("Plan discarded.", "cyan");
+      this.refreshTui();
+      void this.persistTuiSession();
+      return;
+    }
     const hadWork = this.interactionRunning() || this.hasPendingApprovals();
     this.cancelTask();
     if (hadWork) return;
@@ -2551,4 +2616,3 @@ function normalizeGeneratedSessionTitle(value: string): string | undefined {
     .trim();
   return normalized ? truncateSessionName(normalized, 48) : undefined;
 }
-

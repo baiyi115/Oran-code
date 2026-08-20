@@ -111,7 +111,7 @@ describe("TerminalRenderer", () => {
     const text = captured.text();
     expect(text).not.toContain("PLAN_COMPLETE");
     expect(text.match(/1\. Do work/g)).toHaveLength(1);
-    expect(text).toContain("Plan complete.");
+    expect(text).toContain("Reply y to execute it or n to discard it.");
   });
 
   it("renders tool results, approvals, and verification status", () => {

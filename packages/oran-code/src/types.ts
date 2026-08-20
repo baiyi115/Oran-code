@@ -346,7 +346,7 @@ export interface RuntimeEventPayloads {
     finishReason?: string;
   };
   plan: { plan: string; streamed?: boolean; complete?: boolean };
-  plan_complete: { plan: string; autoExecute: boolean };
+  plan_complete: { plan: string; autoExecute: boolean; permissionMode?: PermissionMode; workMode?: WorkMode };
   task_plan_updated: { planState: TaskPlanState };
   approval_request: {
     requestId: string;

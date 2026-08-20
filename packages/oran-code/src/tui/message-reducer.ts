@@ -153,18 +153,21 @@ export function reduceRuntimeEvent(state: TuiState, event: RuntimeEvent): void {
       } else if (cleaned) {
         appendTranscriptMessage(state, { kind: "plan", text: cleaned });
       }
+      if (event.workMode) state.session.workMode = event.workMode;
+      if (event.permissionMode) state.session.permissionMode = event.permissionMode;
       appendTranscriptMessage(state, {
         kind: "system",
         text: event.autoExecute
-          ? "Plan complete. Switching to auto mode and executing..."
-          : "Plan complete. Waiting for execution.",
+          ? "Plan complete. Restored the previous mode and executing..."
+          : "Plan complete. Restored the previous mode. Reply y to execute it or n to discard it.",
       });
       if (event.autoExecute) {
-        state.session.workMode = "auto";
-        state.session.permissionMode = "default";
+        state.session.workMode = event.workMode ?? "auto";
+        state.session.permissionMode = event.permissionMode
+          ?? (state.session.workMode === "plan" ? "plan" : "default");
         state.session.status = "executing plan";
       } else {
-        state.session.status = "plan ready";
+        state.session.status = "plan decision required";
       }
       break;
     }
