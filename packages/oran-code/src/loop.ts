@@ -71,6 +71,8 @@ export class AgentLoop {
   readonly executionHistory: Array<{ call: ToolCall; result: ToolResult; errorSig?: string | undefined }> = [];
   consecutiveReadonlyTurns = 0;
 
+  private static readonly MAX_EXECUTION_HISTORY = 50;
+
   constructor(config: LoopConfig, seedCalls: readonly ToolCall[] = []) {
     this.config = config;
     this.toolCalls = [...seedCalls];
@@ -123,6 +125,9 @@ export class AgentLoop {
   recordResult(call: ToolCall, result: ToolResult): void {
     const errorSig = errorSignature(result);
     this.executionHistory.push({ call, result, errorSig });
+    if (this.executionHistory.length > AgentLoop.MAX_EXECUTION_HISTORY) {
+      this.executionHistory.splice(0, this.executionHistory.length - AgentLoop.MAX_EXECUTION_HISTORY);
+    }
   }
 
   recordTurnActivity(activity: { hasMutation: boolean; isReadonly: boolean }): void {
@@ -238,7 +243,7 @@ export class AgentLoop {
 
   private currentReadonlyStallWarning(): NoProgressDiagnostic | undefined {
     if (this.consecutiveReadonlyTurns >= 5 && this.consecutiveReadonlyTurns < 8) {
-      const last = this.toolCalls[this.toolCalls.length - 1] ?? { name: "readonly_stall", arguments: {}, createdAt: "" };
+      const last = this.toolCalls[this.toolCalls.length - 1] ?? { name: "readonly_stall", arguments: {}, createdAt: new Date().toISOString() };
       return {
         call: last,
         repeatCount: this.consecutiveReadonlyTurns,
@@ -252,7 +257,7 @@ export class AgentLoop {
 
   private currentReadonlyStallDiagnostic(): NoProgressDiagnostic | undefined {
     if (this.consecutiveReadonlyTurns >= 8) {
-      const last = this.toolCalls[this.toolCalls.length - 1] ?? { name: "readonly_stall", arguments: {}, createdAt: "" };
+      const last = this.toolCalls[this.toolCalls.length - 1] ?? { name: "readonly_stall", arguments: {}, createdAt: new Date().toISOString() };
       return {
         call: last,
         repeatCount: this.consecutiveReadonlyTurns,

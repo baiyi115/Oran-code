@@ -1160,7 +1160,9 @@ export class TaskController {
           await this.persist(task);
           await this.emit("task_plan_updated", { planState });
         }
-      } catch { /* best effort */ }
+      } catch (error) {
+        this.debugLogger(JSON.stringify({ event: "update_plan_parse_failed", taskId: task.id, error: error instanceof Error ? error.message : String(error) }));
+      }
     }
     this.trace.appendToolCall(task.id, call.name, call.arguments, output, result.ok, duration, this.modelResponseStepId);
     await this.emit("tool_result", { call, index, result: { ...result, durationMs: duration } });

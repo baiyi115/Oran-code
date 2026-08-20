@@ -198,18 +198,6 @@ export class SessionStore {
     return cloneSession(next);
   }
 
-  async appendPlan(id: string, plan: TaskPlanState, timestamp = new Date().toISOString()): Promise<StoredSession | undefined> {
-    const existing = this.sessions.find((item) => item.id === id && normalizeWorkspace(item.workspace) === normalizeWorkspace(this.workspace));
-    if (!existing) return undefined;
-    const next = cloneSession(existing);
-    next.planState = structuredClone(plan);
-    next.updatedAt = timestamp;
-    next.archiveSize = await this.persistRecordsAndState(id, [planRecord(plan, timestamp), stateRecord(next, timestamp)], next, timestamp);
-    this.sessions[this.sessions.indexOf(existing)] = next;
-    await this.refreshMtime(id);
-    return cloneSession(next);
-  }
-
   /** Durably append one semantic message before the Agent loop continues. */
   async appendMessage(id: string, message: Message, timestamp = new Date().toISOString()): Promise<StoredSession | undefined> {
     await this.ensureConversation(id);
