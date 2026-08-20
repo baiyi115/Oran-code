@@ -40,6 +40,17 @@ export interface ContextOffloadResult {
   failedCount: number;
 }
 
+export interface ToolResultOffloadCandidate {
+  id: string;
+  content: string;
+}
+
+export interface ToolResultOffloadResult {
+  replacements: ReadonlyMap<string, string>;
+  offloadedCount: number;
+  failedCount: number;
+}
+
 export interface ContextCompactOptions {
   messages: readonly Message[];
   provider: ModelProvider;
@@ -176,6 +187,14 @@ export class ContextManager {
     return this.withLedgerLock(() => this.offloadUnlocked(messages));
   }
 
+  /**
+   * Applies the active-context tool-result limits before callers publish a
+   * completed tool round to the trace, UI, or conversation.
+   */
+  async offloadToolResults(candidates: readonly ToolResultOffloadCandidate[]): Promise<ToolResultOffloadResult> {
+    return this.withLedgerLock(() => this.offloadToolResultsUnlocked(candidates));
+  }
+
   async compact(options: ContextCompactOptions): Promise<ContextCompactResult> {
     return this.withCompactionLock(() => this.compactUnlocked(options));
   }
@@ -268,6 +287,68 @@ export class ContextManager {
     }
 
     return { messages: copy, replacementCount, offloadedCount, failedCount };
+  }
+
+  private async offloadToolResultsUnlocked(candidates: readonly ToolResultOffloadCandidate[]): Promise<ToolResultOffloadResult> {
+    const replacements = new Map<string, string>();
+    const unique = new Map<string, ToolCandidate>();
+    let retainedBytes = 0;
+
+    for (const [index, candidate] of candidates.entries()) {
+      if (!candidate.content || !isSafeToolCallId(candidate.id)) continue;
+      const frozenReplacement = this.replacements.get(candidate.id);
+      if (frozenReplacement !== undefined) {
+        replacements.set(candidate.id, frozenReplacement);
+        continue;
+      }
+      const bytes = Buffer.byteLength(candidate.content, "utf8");
+      const existing = unique.get(candidate.id);
+      if (existing) {
+        existing.indices.push(index);
+        existing.totalBytes += bytes;
+      } else {
+        unique.set(candidate.id, {
+          indices: [index],
+          id: candidate.id,
+          content: candidate.content,
+          bytes,
+          totalBytes: bytes,
+        });
+      }
+      retainedBytes += bytes;
+    }
+
+    const ordered = [...unique.values()]
+      .sort((left, right) => right.bytes - left.bytes || left.indices[0]! - right.indices[0]!);
+    const attempted = new Set<string>();
+    let offloadedCount = 0;
+    let failedCount = 0;
+    const replace = async (candidate: ToolCandidate): Promise<void> => {
+      attempted.add(candidate.id);
+      const replacement = await this.persistToolResult(candidate);
+      if (replacement === undefined) {
+        failedCount += 1;
+        return;
+      }
+      replacements.set(candidate.id, replacement);
+      this.replacements.set(candidate.id, replacement);
+      this.seenIds.add(candidate.id);
+      retainedBytes -= candidate.totalBytes;
+      offloadedCount += 1;
+    };
+
+    for (const candidate of ordered) {
+      if (candidate.bytes > CONTEXT_LIMITS.singleToolResultBytes) await replace(candidate);
+    }
+    for (const candidate of ordered) {
+      if (retainedBytes <= CONTEXT_LIMITS.toolRoundBytes) break;
+      if (!attempted.has(candidate.id)) await replace(candidate);
+    }
+    for (const candidate of ordered) {
+      if (!attempted.has(candidate.id)) this.seenIds.add(candidate.id);
+    }
+
+    return { replacements, offloadedCount, failedCount };
   }
 
   private async persistToolResult(candidate: ToolCandidate): Promise<string | undefined> {

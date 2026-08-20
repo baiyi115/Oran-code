@@ -4,7 +4,7 @@ import { readdir, readFile, stat } from "node:fs/promises";
 import { resolve, relative, sep } from "node:path";
 import { promisify } from "node:util";
 import { AgentLoop, toolCallSignature, type NoProgressDiagnostic } from "./loop.js";
-import { ContextManager } from "./context-manager.js";
+import { CONTEXT_LIMITS, ContextManager } from "./context-manager.js";
 import { PermissionPolicy, structuredPermissionDenial, type ApprovalDecision } from "./security.js";
 import { discoverWorkspace } from "./workspace.js";
 import { Verifier } from "./verifier.js";
@@ -97,6 +97,14 @@ const BUDGET_COMPACTION_GROWTH_FACTOR = 1.25;
 const BUDGET_COMPACTION_COOLDOWN_TURNS = 3;
 const execFileAsync = promisify(execFile);
 
+interface DeferredToolRecord {
+  call: ToolCall;
+  index: number;
+  result: ToolResult;
+  duration: number;
+  executed: boolean;
+}
+
 export class TaskController {
   private readonly config: RuntimeConfig;
   private readonly provider: ModelProvider;
@@ -128,6 +136,7 @@ export class TaskController {
   private lastContextCompactionTurn = Number.NEGATIVE_INFINITY;
   private contextCompactionFloorTokens = 0;
   private conversation: Message[];
+  private deferredToolRecords: DeferredToolRecord[] | undefined;
 
   constructor(options: TaskControllerOptions) {
     this.config = options.config;
@@ -850,6 +859,10 @@ export class TaskController {
   private async runTools(task: Task, messages: Message[], calls: ToolCall[], loop: AgentLoop): Promise<boolean> {
     let workspaceMutated = false;
     const concurrency = Math.max(1, this.config.loop.readonlyConcurrency || 1);
+    const deferredRecords: DeferredToolRecord[] = [];
+    this.deferredToolRecords = deferredRecords;
+
+    try {
 
     // Partition into ordered batches: consecutive readonly tools share a concurrent batch;
     // write/command/unknown tools run as singleton serial batches.
@@ -1011,6 +1024,7 @@ export class TaskController {
           if (before && after && before.hash !== after.hash) {
             this.trace.appendFileChange(task.id, before.path, before.hash, after.hash);
           }
+          result = await this.offloadLargeToolResult(task, item.call, result);
           const executedResult = { ...result, durationMs: duration };
           if (result.ok && (this.registry.get(item.call.name)?.kind ?? inferToolKind(item.call.name)) === "readonly") {
             const cacheKey = toolCallSignature(item.call);
@@ -1038,7 +1052,14 @@ export class TaskController {
       }
       this.throwIfCancelled();
     }
-    return workspaceMutated;
+      return workspaceMutated;
+    } finally {
+      try {
+        await this.flushDeferredToolRecords(task, messages, deferredRecords);
+      } finally {
+        if (this.deferredToolRecords === deferredRecords) this.deferredToolRecords = undefined;
+      }
+    }
   }
 
   private async reconcileToolCalls(
@@ -1143,7 +1164,97 @@ export class TaskController {
     duration: number,
     options: { executed?: boolean } = {},
   ): Promise<void> {
-    const executed = options.executed ?? true;
+    const deferredRecords = this.deferredToolRecords;
+    if (deferredRecords) {
+      deferredRecords.push({
+        call,
+        index,
+        result,
+        duration,
+        executed: options.executed ?? true,
+      });
+      return;
+    }
+    await this.recordToolNow(task, messages, call, index, result, duration, options.executed ?? true);
+  }
+
+  private async flushDeferredToolRecords(
+    task: Task,
+    messages: Message[],
+    records: readonly DeferredToolRecord[],
+  ): Promise<void> {
+    if (!records.length) return;
+    const offload = await this.contextManager.offloadToolResults(records.map((record) => ({
+      id: record.call.id ?? `call_${record.call.name}`,
+      content: record.result.output || record.result.error || "",
+    })));
+    if (offload.offloadedCount > 0 || offload.failedCount > 0) {
+      const payload: RuntimeEventPayloads["context_compaction"] = {
+        phase: "offloaded",
+        reason: "auto",
+        replacementCount: offload.offloadedCount,
+      };
+      if (offload.failedCount > 0) payload.message = `${offload.failedCount} tool result(s) could not be offloaded.`;
+      await this.emit("context_compaction", payload);
+    }
+    for (const record of records) {
+      const replacement = offload.replacements.get(record.call.id ?? `call_${record.call.name}`);
+      const result = replacement === undefined
+        ? record.result
+        : {
+            ...record.result,
+            output: replacement,
+            ...(record.result.error ? { error: "tool failed; details offloaded" } : {}),
+            metadata: {
+              ...record.result.metadata,
+              offloaded: true,
+              originalBytes: record.result.metadata?.originalBytes
+                ?? Buffer.byteLength(record.result.output || record.result.error || "", "utf8"),
+            },
+          };
+      await this.recordToolNow(task, messages, record.call, record.index, result, record.duration, record.executed);
+    }
+  }
+
+  private async offloadLargeToolResult(task: Task, call: ToolCall, result: ToolResult): Promise<ToolResult> {
+    const content = result.output || result.error || "";
+    const bytes = Buffer.byteLength(content, "utf8");
+    if (bytes <= CONTEXT_LIMITS.singleToolResultBytes) return result;
+    const id = call.id ?? `call_${call.name}`;
+    const offload = await this.contextManager.offloadToolResults([{ id, content }]);
+    const replacement = offload.replacements.get(id);
+    if (replacement === undefined) return result;
+    await this.emit("context_compaction", {
+      phase: "offloaded",
+      reason: "auto",
+      replacementCount: 1,
+      ...(offload.failedCount > 0 ? { message: "A large tool result could not be offloaded." } : {}),
+    });
+    this.debugLogger(JSON.stringify({
+      event: "tool_result_offloaded_immediately",
+      taskId: task.id,
+      turn: this.turnSequence,
+      callId: call.id,
+      tool: call.name,
+      originalBytes: bytes,
+    }));
+    return {
+      ...result,
+      output: replacement,
+      ...(result.error ? { error: "tool failed; details offloaded" } : {}),
+      metadata: { ...result.metadata, offloaded: true, originalBytes: bytes },
+    };
+  }
+
+  private async recordToolNow(
+    task: Task,
+    messages: Message[],
+    call: ToolCall,
+    index: number,
+    result: ToolResult,
+    duration: number,
+    executed: boolean,
+  ): Promise<void> {
     const output = result.output || result.error || "";
     this.loop?.recordResult(call, result);
     if (call.name === "update_plan" && result.ok && result.output) {
