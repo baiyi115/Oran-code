@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { homedir } from "node:os";
-import { resolve } from "node:path";
+import { join, resolve } from "node:path";
 import { ensureUserConfig, loadConfigFile, resolveModelConfig, saveConfig, userConfigPath, userHistoryPath } from "../src/config.js";
 import type { UserConfig } from "../src/types.js";
 import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
@@ -36,8 +36,8 @@ describe("resolveModelConfig", () => {
   });
 
   it("reads OpenCode-shaped JSON and writes the same public shape without defaults", async () => {
-    const directory = await mkdtemp(`${tmpdir()}\\liteagent-config-`);
-    const path = `${directory}\\config.json`;
+    const directory = await mkdtemp(join(tmpdir(), "liteagent-config-"));
+    const path = join(directory, "config.json");
     try {
       await writeFile(path, JSON.stringify({
         providers: {
