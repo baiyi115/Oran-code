@@ -18,8 +18,9 @@ const model: ModelConfig = {
 function textChunks(text: string): ModelStreamChunk[] {
   const mid = Math.ceil(text.length / 2);
   return [
-    { text: text.slice(0, mid), streamed: true },
-    { text: text.slice(mid), streamed: true, finishReason: "stop" },
+    { type: "text_delta", text: text.slice(0, mid), streamed: true },
+    { type: "text_delta", text: text.slice(mid), streamed: true },
+    { type: "response_complete", streamed: true, finishReason: "stop" },
   ];
 }
 

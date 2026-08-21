@@ -22,6 +22,7 @@ import type {
   TaskPlanState,
   TaskPlanStep,
   ToolCall,
+  ToolCallComplete,
   ToolDefinition,
   ToolKind,
   ToolResult,
@@ -711,15 +712,13 @@ export class TaskController {
     let thoughtStarted = false;
     await this.emit("assistant_start", { step, source, attempt, model: this.config.model.model }, turnId);
     const textParts: string[] = [];
-    // Providers may emit toolCalls as a complete snapshot on every chunk rather
-    // than as deltas. Keep the latest snapshot instead of appending snapshots
-    // together, otherwise one model response can execute the same call multiple times.
-    let latestToolCalls: ToolCall[] = [];
+    const completedToolCalls = new Map<number, ToolCall>();
     let toolCallChunkCount = 0;
     const usage: Record<string, number> = {};
     const reasoningParts: string[] = [];
     let streamed = false;
     let finishReason: string | undefined;
+    let responseCompleted = false;
     try {
       const requestFingerprint = fingerprintRequest(messages);
       const estimatedRequestTokens = this.contextManager.estimateTokens(messages, tools);
@@ -753,27 +752,46 @@ export class TaskController {
         : undefined;
       for await (const chunk of this.provider.streamResponse(messages, tools, providerOptions)) {
         streamed ||= chunk.streamed;
-        if (chunk.reasoning) {
-          if (!thoughtStarted) {
-            thoughtStarted = true;
-            await this.emit("thought_start", { step, source, attempt }, turnId);
+        switch (chunk.type) {
+          case "reasoning_delta":
+            if (!thoughtStarted) {
+              thoughtStarted = true;
+              await this.emit("thought_start", { step, source, attempt }, turnId);
+            }
+            reasoningParts.push(chunk.text);
+            await this.emit("thought_delta", { step, source, attempt, text: chunk.text }, turnId);
+            break;
+          case "text_delta":
+            textParts.push(chunk.text);
+            await this.emit("assistant_delta", { step, source, attempt, text: chunk.text }, turnId);
+            break;
+          case "tool_call_complete": {
+            const call = parseCompletedToolCall(chunk.toolCall);
+            const existing = completedToolCalls.get(chunk.toolCall.index);
+            if (existing && !sameToolCall(existing, call)) {
+              throw new Error(`provider emitted conflicting completed tool calls for index ${chunk.toolCall.index}`);
+            }
+            if (!existing) {
+              completedToolCalls.set(chunk.toolCall.index, call);
+              toolCallChunkCount += 1;
+            }
+            break;
           }
-          reasoningParts.push(chunk.reasoning);
-          await this.emit("thought_delta", { step, source, attempt, text: chunk.reasoning }, turnId);
+          case "usage":
+            Object.assign(usage, chunk.usage);
+            break;
+          case "response_complete":
+            if (responseCompleted) throw new Error("provider emitted response_complete more than once");
+            responseCompleted = true;
+            finishReason = chunk.finishReason;
+            break;
         }
-        if (chunk.text) {
-          textParts.push(chunk.text);
-          await this.emit("assistant_delta", { step, source, attempt, text: chunk.text }, turnId);
-        }
-        if (chunk.toolCalls?.length) {
-          latestToolCalls = chunk.toolCalls.map(cloneToolCall);
-          toolCallChunkCount += 1;
-        }
-        if (chunk.usage) Object.assign(usage, chunk.usage);
-        if (chunk.finishReason !== undefined) finishReason = chunk.finishReason;
       }
+      if (!responseCompleted) throw new Error("provider stream ended without a response_complete event");
       loop.recordUsage(usage);
-      const normalizedCalls = latestToolCalls.map((call) => normalizeCallId(call, this.contextManager));
+      const normalizedCalls = [...completedToolCalls.entries()]
+        .sort(([left], [right]) => left - right)
+        .map(([, call]) => normalizeCallId(call, this.contextManager));
       const response: ModelResponse = {
         text: textParts.join(""),
         ...(reasoningParts.length ? { reasoning: reasoningParts.join("") } : {}),
@@ -838,15 +856,15 @@ export class TaskController {
       if (aborted) {
         await this.emit("assistant_abort", { step, source, attempt, message: formatErrorMessage(error), ...(finishReason !== undefined ? { finishReason } : {}) }, turnId);
       }
-      if (aborted && (textParts.length || latestToolCalls.length || reasoningParts.length)) {
+      if (aborted && (textParts.length || completedToolCalls.size || reasoningParts.length)) {
         // Preserve partial assistant output so conversation history stays usable after cancel.
+        // Tool execution is only safe after the full provider response completed.
         loop.recordUsage(usage);
-        const normalizedCalls = latestToolCalls.map((call) => normalizeCallId(call, this.contextManager));
         return {
           text: textParts.join(""),
           ...(reasoningParts.length ? { reasoning: reasoningParts.join("") } : {}),
-          toolCalls: normalizedCalls,
-          raw: { usage, finishReason, toolCalls: normalizedCalls, aborted: true },
+          toolCalls: [],
+          raw: { usage, finishReason, toolCalls: [], aborted: true },
           usage,
           streamed,
           ...(finishReason !== undefined ? { finishReason } : {}),
@@ -1539,6 +1557,34 @@ function normalizeCallId(call: ToolCall, contextManager: ContextManager): ToolCa
   return { ...call, id: contextManager.claimToolCallId(call.id) };
 }
 
+function parseCompletedToolCall(raw: ToolCallComplete): ToolCall {
+  if (!Number.isInteger(raw.index) || raw.index < 0) {
+    throw new Error(`invalid completed tool-call index: ${String(raw.index)}`);
+  }
+  if (!raw.name.trim()) throw new Error(`completed tool call ${raw.index} is missing a name`);
+  let argumentsValue: unknown;
+  try {
+    argumentsValue = JSON.parse(raw.argumentsJson);
+  } catch (error) {
+    throw new Error(`invalid arguments for completed tool call ${raw.index}: ${formatErrorMessage(error)}`);
+  }
+  if (!argumentsValue || typeof argumentsValue !== "object" || Array.isArray(argumentsValue)) {
+    throw new Error(`invalid arguments for completed tool call ${raw.index}: expected an object`);
+  }
+  return {
+    ...(raw.id ? { id: raw.id } : {}),
+    name: raw.name,
+    arguments: argumentsValue as Record<string, unknown>,
+    createdAt: new Date().toISOString(),
+  };
+}
+
+function sameToolCall(left: ToolCall, right: ToolCall): boolean {
+  return left.id === right.id
+    && left.name === right.name
+    && JSON.stringify(left.arguments) === JSON.stringify(right.arguments);
+}
+
 function cloneMessages(messages: readonly Message[]): Message[] {
   return messages.map((message) => ({
     ...message,
@@ -1571,13 +1617,6 @@ function usageAnchorMessages(messages: readonly Message[], response: ModelRespon
     ...messages,
     { role: "assistant", content: response.text, toolCalls: response.toolCalls },
   ];
-}
-
-function cloneToolCall(call: ToolCall): ToolCall {
-  return {
-    ...call,
-    arguments: structuredClone(call.arguments),
-  };
 }
 
 function summarizeArguments(argumentsValue: Record<string, unknown>): Record<string, unknown> {

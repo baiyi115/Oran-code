@@ -33,25 +33,15 @@ export class OpenAICompatibleProvider implements ModelProvider {
     if (!response.ok) throw new ModelRequestError(response.status, await boundedError(response));
     const contentType = response.headers.get("content-type") ?? "";
     if (!contentType.includes("text/event-stream") || !response.body) {
-      yield parseCompletion(await response.json() as Record<string, unknown>, false);
+      yield* modelResponseChunks(parseCompletion(await response.json() as Record<string, unknown>, false));
       return;
     }
     const state: OpenAiStreamState = {
       calls: new Map<number, { id?: string; name: string; arguments: string }>(),
-      finishReason: undefined,
     };
     for await (const event of readSseEvents(response.body as AsyncIterable<Uint8Array>)) {
       for (const update of parseOpenAiStreamEvent(event, state)) yield update;
     }
-    const toolCalls = [...state.calls.entries()]
-      .sort(([left], [right]) => left - right)
-      .map(([, call]) => parseToolCall(call));
-    yield {
-      text: "",
-      toolCalls,
-      streamed: true,
-      ...(state.finishReason !== undefined ? { finishReason: state.finishReason } : {}),
-    };
   }
 
   private headers(): Record<string, string> {
@@ -89,7 +79,6 @@ export class OpenAICompatibleProvider implements ModelProvider {
 
 interface OpenAiStreamState {
   readonly calls: Map<number, { id?: string; name: string; arguments: string }>;
-  finishReason: string | undefined;
 }
 
 function parseOpenAiStreamEvent(event: string, state: OpenAiStreamState): ModelStreamChunk[] {
@@ -98,15 +87,15 @@ function parseOpenAiStreamEvent(event: string, state: OpenAiStreamState): ModelS
   if (parsed.error !== undefined) throw new Error(streamErrorMessage(parsed.error, "OpenAI-compatible stream error"));
   const updates: ModelStreamChunk[] = [];
   const usage = numericUsage(parsed.usage);
-  if (Object.keys(usage).length) updates.push({ usage, streamed: true });
+  if (Object.keys(usage).length) updates.push({ type: "usage", usage, streamed: true });
 
   const choices = Array.isArray(parsed.choices) ? parsed.choices : [];
   const choice = choices[0] as Record<string, unknown> | undefined;
   const delta = choice?.delta as Record<string, unknown> | undefined;
   const reasoning = reasoningText(delta);
-  if (reasoning) updates.push({ reasoning, streamed: true });
+  if (reasoning) updates.push({ type: "reasoning_delta", text: reasoning, streamed: true });
   if (typeof delta?.content === "string" && delta.content) {
-    updates.push({ text: delta.content, streamed: true });
+    updates.push({ type: "text_delta", text: delta.content, streamed: true });
   }
 
   const rawCalls = Array.isArray(delta?.tool_calls) ? delta.tool_calls : [];
@@ -122,7 +111,24 @@ function parseOpenAiStreamEvent(event: string, state: OpenAiStreamState): ModelS
     if (typeof fn.arguments === "string") current.arguments += fn.arguments;
     state.calls.set(index, current);
   }
-  if (typeof choice?.finish_reason === "string") state.finishReason = choice.finish_reason;
+  if (typeof choice?.finish_reason === "string") {
+    const finishReason = choice.finish_reason;
+    if (finishReason === "tool_calls") {
+      for (const [index, call] of [...state.calls.entries()].sort(([left], [right]) => left - right)) {
+        updates.push({
+          type: "tool_call_complete",
+          toolCall: {
+            index,
+            ...(call.id ? { id: call.id } : {}),
+            name: call.name,
+            argumentsJson: call.arguments || "{}",
+          },
+          streamed: true,
+        });
+      }
+    }
+    updates.push({ type: "response_complete", streamed: true, finishReason });
+  }
   return updates;
 }
 
@@ -259,7 +265,7 @@ function toApiMessage(message: Message): Record<string, unknown> {
   return result;
 }
 
-function parseCompletion(data: Record<string, unknown>, streamed: boolean): ModelResponse & ModelStreamChunk {
+function parseCompletion(data: Record<string, unknown>, streamed: boolean): ModelResponse {
   const choices = Array.isArray(data.choices) ? data.choices : [];
   const choice = choices[0] as Record<string, unknown> | undefined;
   const message = (choice?.message ?? {}) as Record<string, unknown>;
@@ -352,6 +358,29 @@ export function createModelProvider(config: ModelConfig): ModelProvider {
   const protocol = resolveProviderProtocol(config);
   if (protocol === "anthropic") return new AnthropicProvider(config);
   return new OpenAICompatibleProvider(config);
+}
+
+function* modelResponseChunks(response: ModelResponse): Generator<ModelStreamChunk> {
+  if (response.reasoning) yield { type: "reasoning_delta", text: response.reasoning, streamed: response.streamed };
+  if (response.text) yield { type: "text_delta", text: response.text, streamed: response.streamed };
+  for (const [index, call] of response.toolCalls.entries()) {
+    yield {
+      type: "tool_call_complete",
+      toolCall: {
+        index,
+        ...(call.id ? { id: call.id } : {}),
+        name: call.name,
+        argumentsJson: JSON.stringify(call.arguments),
+      },
+      streamed: response.streamed,
+    };
+  }
+  if (Object.keys(response.usage).length) yield { type: "usage", usage: response.usage, streamed: response.streamed };
+  yield {
+    type: "response_complete",
+    streamed: response.streamed,
+    ...(response.finishReason !== undefined ? { finishReason: response.finishReason } : {}),
+  };
 }
 
 export type RemoteProviderProtocol = "openai" | "anthropic";
@@ -462,7 +491,7 @@ export class AnthropicProvider implements ModelProvider {
     if (!response.ok) throw new ModelRequestError(response.status, await boundedError(response));
     const contentType = response.headers.get("content-type") ?? "";
     if (!contentType.includes("text/event-stream") || !response.body) {
-      yield parseAnthropicMessage(await response.json() as Record<string, unknown>, false);
+      yield* modelResponseChunks(parseAnthropicMessage(await response.json() as Record<string, unknown>, false));
       return;
     }
 
@@ -478,7 +507,7 @@ export class AnthropicProvider implements ModelProvider {
         if (type === "message_start") {
           const message = parsed.message as Record<string, unknown> | undefined;
           const usage = numericUsage(message?.usage ?? parsed.usage);
-          if (Object.keys(usage).length) yield { usage, streamed: true };
+          if (Object.keys(usage).length) yield { type: "usage", usage, streamed: true };
           continue;
         }
         if (type === "content_block_start") {
@@ -500,10 +529,10 @@ export class AnthropicProvider implements ModelProvider {
           const deltaType = typeof delta.type === "string" ? delta.type : "";
           if (deltaType === "text_delta" || typeof delta.text === "string") {
             const text = typeof delta.text === "string" ? delta.text : "";
-            if (text) yield { text, streamed: true };
+            if (text) yield { type: "text_delta", text, streamed: true };
           } else if (deltaType === "thinking_delta" || typeof delta.thinking === "string") {
             const reasoning = typeof delta.thinking === "string" ? delta.thinking : "";
-            if (reasoning) yield { reasoning, streamed: true };
+            if (reasoning) yield { type: "reasoning_delta", text: reasoning, streamed: true };
           } else if (deltaType === "input_json_delta" || typeof delta.partial_json === "string") {
             if (index === undefined) continue;
             const current = toolUses.get(index) ?? { name: "", arguments: "" };
@@ -513,6 +542,20 @@ export class AnthropicProvider implements ModelProvider {
           continue;
         }
         if (type === "content_block_stop") {
+          const index = typeof parsed.index === "number" ? parsed.index : currentBlockIndex;
+          const call = index === undefined ? undefined : toolUses.get(index);
+          if (currentBlockType === "tool_use" && index !== undefined && call) {
+            yield {
+              type: "tool_call_complete",
+              toolCall: {
+                index,
+                ...(call.id ? { id: call.id } : {}),
+                name: call.name,
+                argumentsJson: call.arguments || "{}",
+              },
+              streamed: true,
+            };
+          }
           currentBlockIndex = undefined;
           currentBlockType = undefined;
           continue;
@@ -521,10 +564,11 @@ export class AnthropicProvider implements ModelProvider {
           const delta = (parsed.delta ?? {}) as Record<string, unknown>;
           if (typeof delta.stop_reason === "string") finishReason = delta.stop_reason;
           const usage = numericUsage(parsed.usage);
-          if (Object.keys(usage).length) yield { usage, streamed: true };
+          if (Object.keys(usage).length) yield { type: "usage", usage, streamed: true };
           continue;
         }
         if (type === "message_stop") {
+          yield { type: "response_complete", streamed: true, ...(finishReason !== undefined ? { finishReason } : {}) };
           continue;
         }
         if (type === "error") {
@@ -532,18 +576,6 @@ export class AnthropicProvider implements ModelProvider {
         }
     }
 
-    const toolCalls = [...toolUses.entries()]
-      .sort((a, b) => a[0] - b[0])
-      .map(([, call]) => parseToolCall({
-        ...(call.id ? { id: call.id } : {}),
-        function: { name: call.name, arguments: call.arguments || "{}" },
-      }));
-    yield {
-      text: "",
-      toolCalls,
-      streamed: true,
-      ...(finishReason !== undefined ? { finishReason } : {}),
-    };
   }
 
   private headers(): Record<string, string> {
@@ -698,7 +730,7 @@ function toAnthropicMessages(messages: Message[]): { system: Record<string, unkn
   return { system, conversation };
 }
 
-function parseAnthropicMessage(data: Record<string, unknown>, streamed: boolean): ModelResponse & ModelStreamChunk {
+function parseAnthropicMessage(data: Record<string, unknown>, streamed: boolean): ModelResponse {
   const content = Array.isArray(data.content) ? data.content : [];
   const textParts: string[] = [];
   const reasoningParts: string[] = [];

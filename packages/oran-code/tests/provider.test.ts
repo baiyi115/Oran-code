@@ -106,15 +106,17 @@ describe("OpenAICompatibleProvider", () => {
     ].join(""), true));
 
     const chunks = await collect(new OpenAICompatibleProvider(model()).streamResponse(messages));
-    const final = chunks.at(-1);
+    const completedCalls = chunks.filter((chunk) => chunk.type === "tool_call_complete");
+    const completed = chunks.find((chunk) => chunk.type === "response_complete");
 
     expect(fetchMock).toHaveBeenCalledOnce();
-    expect(chunks.filter((chunk) => chunk.text).map((chunk) => chunk.text).join("")).toBe("你");
-    expect(chunks.filter((chunk) => chunk.reasoning).map((chunk) => chunk.reasoning).join("")).toBe("think");
-    expect(chunks.find((chunk) => chunk.usage?.prompt_tokens === 3)?.usage).toMatchObject({ prompt_tokens: 3, completion_tokens: 4 });
-    expect(final?.finishReason).toBe("tool_calls");
-    expect(final?.toolCalls?.map((call) => call.name)).toEqual(["first", "second"]);
-    expect(final?.toolCalls?.map((call) => call.id)).toEqual(["call_first", "call_second"]);
+    expect(chunks.filter((chunk) => chunk.type === "text_delta").map((chunk) => chunk.text).join("")).toBe("你");
+    expect(chunks.filter((chunk) => chunk.type === "reasoning_delta").map((chunk) => chunk.text).join("")).toBe("think");
+    expect(chunks.find((chunk) => chunk.type === "usage" && chunk.usage.prompt_tokens === 3)).toMatchObject({ usage: { prompt_tokens: 3, completion_tokens: 4 } });
+    expect(completed).toMatchObject({ type: "response_complete", finishReason: "tool_calls" });
+    expect(completedCalls.map((chunk) => chunk.toolCall.name)).toEqual(["first", "second"]);
+    expect(completedCalls.map((chunk) => chunk.toolCall.id)).toEqual(["call_first", "call_second"]);
+    expect(completedCalls.map((chunk) => chunk.toolCall.argumentsJson)).toEqual(['{"value":1}', '{"value":2}']);
   });
 });
 
@@ -127,17 +129,18 @@ describe("AnthropicProvider", () => {
       `data: ${JSON.stringify({ type: "content_block_start", index: 1, content_block: { type: "tool_use", id: "call_1", name: "lookup" } })}\n\n`,
       `data: ${JSON.stringify({ type: "content_block_delta", index: 1, delta: { type: "input_json_delta", partial_json: '{"query":' } })}\n\n`,
       `data: ${JSON.stringify({ type: "content_block_delta", index: 1, delta: { type: "input_json_delta", partial_json: '"status"}' } })}\n\n`,
+      `data: ${JSON.stringify({ type: "content_block_stop", index: 1 })}\n\n`,
       `data: ${JSON.stringify({ type: "message_delta", delta: { stop_reason: "tool_use" }, usage: { output_tokens: 4 } })}`,
+      `\n\ndata: ${JSON.stringify({ type: "message_stop" })}`,
     ].join(""), true));
 
     const chunks = await collect(new AnthropicProvider(model({ provider: "anthropic" })).streamResponse(messages));
-    const final = chunks.at(-1);
+    const completedCall = chunks.find((chunk) => chunk.type === "tool_call_complete");
+    const completed = chunks.find((chunk) => chunk.type === "response_complete");
 
-    expect(chunks.filter((chunk) => chunk.text).map((chunk) => chunk.text).join("")).toBe("hello");
-    expect(chunks.find((chunk) => chunk.usage?.input_tokens === 3)?.usage).toMatchObject({ input_tokens: 3 });
-    expect(final?.usage).toBeUndefined();
-    expect(final?.finishReason).toBe("tool_use");
-    expect(final?.toolCalls).toHaveLength(1);
-    expect(final?.toolCalls?.[0]).toMatchObject({ id: "call_1", name: "lookup", arguments: { query: "status" } });
+    expect(chunks.filter((chunk) => chunk.type === "text_delta").map((chunk) => chunk.text).join("")).toBe("hello");
+    expect(chunks.find((chunk) => chunk.type === "usage" && chunk.usage.input_tokens === 3)).toMatchObject({ usage: { input_tokens: 3 } });
+    expect(completed).toMatchObject({ type: "response_complete", finishReason: "tool_use" });
+    expect(completedCall).toMatchObject({ type: "tool_call_complete", toolCall: { id: "call_1", name: "lookup", argumentsJson: '{"query":"status"}' } });
   });
 });

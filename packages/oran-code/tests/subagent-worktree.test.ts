@@ -79,13 +79,26 @@ class FakeProvider implements ModelProvider {
 
 function textResponse(text: string): ModelStreamChunk[] {
   return [
-    { text: text.slice(0, Math.ceil(text.length / 2)), streamed: true },
-    { text: text.slice(Math.ceil(text.length / 2)), streamed: true, finishReason: "stop" },
+    { type: "text_delta", text: text.slice(0, Math.ceil(text.length / 2)), streamed: true },
+    { type: "text_delta", text: text.slice(Math.ceil(text.length / 2)), streamed: true },
+    { type: "response_complete", streamed: true, finishReason: "stop" },
   ];
 }
 
 function toolResponse(call: ToolCall): ModelStreamChunk[] {
-  return [{ toolCalls: [call], streamed: true, finishReason: "tool_calls" }];
+  return [
+    {
+      type: "tool_call_complete",
+      toolCall: {
+        index: 0,
+        ...(call.id ? { id: call.id } : {}),
+        name: call.name,
+        argumentsJson: JSON.stringify(call.arguments),
+      },
+      streamed: true,
+    },
+    { type: "response_complete", streamed: true, finishReason: "tool_calls" },
+  ];
 }
 
 function worktreeDefinition(overrides: Partial<AgentDefinition> = {}): AgentDefinition {

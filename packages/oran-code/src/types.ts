@@ -96,6 +96,14 @@ export interface ToolCall {
   createdAt: string;
 }
 
+/** A provider-normalized tool call whose JSON arguments are complete but unparsed. */
+export interface ToolCallComplete {
+  index: number;
+  id?: string;
+  name: string;
+  argumentsJson: string;
+}
+
 export interface Message {
   role: MessageRole;
   content?: string;
@@ -115,14 +123,18 @@ export interface ModelResponse {
   streamed: boolean;
 }
 
-export interface ModelStreamChunk {
-  text?: string;
-  reasoning?: string;
-  toolCalls?: ToolCall[];
-  usage?: Record<string, number>;
-  finishReason?: string;
-  streamed: boolean;
-}
+/**
+ * Provider-independent events emitted while a model response is produced.
+ *
+ * Tool arguments stay raw until a provider signals that a call is complete.
+ * This prevents partially streamed JSON from reaching the execution layer.
+ */
+export type ModelStreamChunk =
+  | { type: "text_delta"; text: string; streamed: boolean }
+  | { type: "reasoning_delta"; text: string; streamed: boolean }
+  | { type: "tool_call_complete"; toolCall: ToolCallComplete; streamed: boolean }
+  | { type: "usage"; usage: Record<string, number>; streamed: boolean }
+  | { type: "response_complete"; streamed: boolean; finishReason?: string };
 
 export interface ProviderRequestOptions {
   signal?: AbortSignal;
