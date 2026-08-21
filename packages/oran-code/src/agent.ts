@@ -141,5 +141,16 @@ function forwardRuntimeEvent(event: import("./types.js").RuntimeEvent, emit: (ev
   else if (event.type === "tool_start") emit({ type: "tool_start", call: event.call, permissionLevel: event.permissionLevel });
   else if (event.type === "tool_result") emit({ type: "tool_result", call: event.call, result: event.result });
   else if (event.type === "error") emit({ type: "error", message: event.message });
-  else if (event.type === "completed") emit({ type: "completed", steps: event.steps, tokensUsed: event.tokensUsed });
+  else if (event.type === "completed") emit({
+    type: "completed",
+    steps: event.steps,
+    tokensUsed: event.tokensUsed,
+    inputTokens: event.inputTokens,
+    outputTokens: event.outputTokens,
+    cacheReadTokens: event.cacheReadTokens,
+    cacheWriteTokens: event.cacheWriteTokens,
+    elapsedMs: event.elapsedMs,
+    modelElapsedMs: event.modelElapsedMs,
+    ...(event.outputTokensPerSecond === undefined ? {} : { outputTokensPerSecond: event.outputTokensPerSecond }),
+  });
 }

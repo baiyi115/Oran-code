@@ -244,7 +244,15 @@ export class TerminalRenderer implements SessionRenderer {
       case "completed": {
         const inT = event.inputTokens;
         const outT = event.outputTokens;
-        this.status(`[completed in ${event.steps} step(s), ${event.tokensUsed} tokens (in ${inT}, out ${outT})]`, "green");
+        const details = [
+          `completed in ${event.steps} step(s)`,
+          formatElapsed(event.elapsedMs),
+          `${event.tokensUsed} tokens (in ${inT}, out ${outT})`,
+        ];
+        if (event.outputTokensPerSecond !== undefined && event.outputTokensPerSecond > 0) {
+          details.push(`${formatRate(event.outputTokensPerSecond)} output tok/s`);
+        }
+        this.status(`[${details.join(" · ")}]`, "green");
         break;
       }
       case "cancelled": this.status(`[cancelled] ${event.message}`, "yellow"); break;
@@ -307,6 +315,18 @@ export class TerminalRenderer implements SessionRenderer {
   private write(text: string): void {
     this.output.write(text);
   }
+}
+
+function formatElapsed(value: number): string {
+  if (value < 1000) return `${Math.max(0, Math.round(value))}ms`;
+  if (value < 60_000) return `${(value / 1000).toFixed(1)}s`;
+  const minutes = Math.floor(value / 60_000);
+  const seconds = Math.round((value % 60_000) / 1000);
+  return `${minutes}m ${seconds}s`;
+}
+
+function formatRate(value: number): string {
+  return value < 10 ? value.toFixed(1) : String(Math.round(value));
 }
 
 

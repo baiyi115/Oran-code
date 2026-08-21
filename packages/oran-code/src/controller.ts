@@ -133,6 +133,7 @@ export class TaskController {
   private activeTask: Task | undefined;
   private sequence = 0;
   private turnSequence = 0;
+  private taskStartedAt = 0;
   private modelResponseStepId: number | undefined;
   private lastContextCompactionTurn = Number.NEGATIVE_INFINITY;
   private contextCompactionFloorTokens = 0;
@@ -192,6 +193,7 @@ export class TaskController {
     this.abortController = new AbortController();
     this.sequence = 0;
     this.turnSequence = 0;
+    this.taskStartedAt = Date.now();
     this.modelResponseStepId = undefined;
     this.lastContextCompactionTurn = Number.NEGATIVE_INFINITY;
     this.contextCompactionFloorTokens = 0;
@@ -377,7 +379,7 @@ export class TaskController {
             // reducer does not append a duplicate plan block.
             await this.emit("plan", { plan: planText, streamed: true, complete: true });
             await this.emit("plan_complete", { plan: planText, autoExecute: false });
-            await this.emit("completed", { steps: Math.max(1, loop.turns), tokensUsed: loop.tokensUsed, inputTokens: loop.inputTokens, outputTokens: loop.outputTokens });
+            await this.emitCompleted(loop);
             return task;
           }
           this.throwIfCancelled();
@@ -385,7 +387,7 @@ export class TaskController {
           transitionTask(task, "completed");
           await this.persist(task);
           this.throwIfCancelled();
-          await this.emit("completed", { steps: Math.max(1, loop.turns), tokensUsed: loop.tokensUsed, inputTokens: loop.inputTokens, outputTokens: loop.outputTokens });
+          await this.emitCompleted(loop);
           return task;
         }
         if (response.toolCalls.length) {
@@ -434,7 +436,7 @@ export class TaskController {
           transitionTask(task, "completed");
           await this.persist(task);
           this.throwIfCancelled();
-          await this.emit("completed", { steps: Math.max(1, loop.turns), tokensUsed: loop.tokensUsed, inputTokens: loop.inputTokens, outputTokens: loop.outputTokens });
+          await this.emitCompleted(loop);
           return task;
         } else if (!workspaceMutated || this.config.workMode === "plan") {
           // Read-only exploration and ordinary conversation do not need a
@@ -445,7 +447,7 @@ export class TaskController {
           transitionTask(task, "completed");
           await this.persist(task);
           this.throwIfCancelled();
-          await this.emit("completed", { steps: Math.max(1, loop.turns), tokensUsed: loop.tokensUsed, inputTokens: loop.inputTokens, outputTokens: loop.outputTokens });
+          await this.emitCompleted(loop);
           return task;
         } else {
           const verification = await this.verify(task, messages);
@@ -455,7 +457,7 @@ export class TaskController {
             transitionTask(task, "completed");
             await this.persist(task);
             this.throwIfCancelled();
-            await this.emit("completed", { steps: Math.max(1, loop.turns), tokensUsed: loop.tokensUsed, inputTokens: loop.inputTokens, outputTokens: loop.outputTokens });
+            await this.emitCompleted(loop);
             return task;
           }
           messages.push({ role: "user", content: `Verification failed:\n${verification.output}` });
@@ -750,6 +752,7 @@ export class TaskController {
       const providerOptions = this.abortController?.signal
         ? { signal: this.abortController.signal }
         : undefined;
+      const modelStartedAt = Date.now();
       for await (const chunk of this.provider.streamResponse(messages, tools, providerOptions)) {
         streamed ||= chunk.streamed;
         switch (chunk.type) {
@@ -788,6 +791,7 @@ export class TaskController {
         }
       }
       if (!responseCompleted) throw new Error("provider stream ended without a response_complete event");
+      loop.recordModelElapsed(Math.max(1, Date.now() - modelStartedAt));
       loop.recordUsage(usage);
       const normalizedCalls = [...completedToolCalls.entries()]
         .sort(([left], [right]) => left - right)
@@ -1430,6 +1434,24 @@ export class TaskController {
   private async persist(task: Task): Promise<void> {
     this.trace.saveTask(task);
     await this.emit("state", { state: task.state });
+  }
+
+  private async emitCompleted(loop: AgentLoop): Promise<void> {
+    const elapsedMs = Math.max(0, Date.now() - this.taskStartedAt);
+    const outputTokensPerSecond = loop.modelElapsedMs > 0 && loop.outputTokens > 0
+      ? loop.outputTokens / (loop.modelElapsedMs / 1000)
+      : undefined;
+    await this.emit("completed", {
+      steps: Math.max(1, loop.turns),
+      tokensUsed: loop.tokensUsed,
+      inputTokens: loop.inputTokens,
+      outputTokens: loop.outputTokens,
+      cacheReadTokens: loop.cacheReadTokens,
+      cacheWriteTokens: loop.cacheWriteTokens,
+      elapsedMs,
+      modelElapsedMs: loop.modelElapsedMs,
+      ...(outputTokensPerSecond === undefined ? {} : { outputTokensPerSecond }),
+    });
   }
 
   private async emit<K extends keyof RuntimeEventPayloads>(type: K, payload: RuntimeEventPayloads[K], turnId?: string): Promise<void> {

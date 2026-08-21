@@ -1,4 +1,5 @@
 import type { LoopConfig, ToolCall, ToolResult } from "./types.js";
+import { normalizeTokenUsage } from "./token-usage.js";
 
 export type NoProgressReason = "identical_call" | "repeated_error" | "readonly_stall";
 
@@ -68,6 +69,9 @@ export class AgentLoop {
   tokensUsed = 0;
   inputTokens = 0;
   outputTokens = 0;
+  cacheReadTokens = 0;
+  cacheWriteTokens = 0;
+  modelElapsedMs = 0;
   consecutiveUnknownTools = 0;
   readonly toolCalls: ToolCall[];
   readonly executionHistory: Array<{ call: ToolCall; result: ToolResult; errorSig?: string | undefined }> = [];
@@ -109,14 +113,16 @@ export class AgentLoop {
 
   recordUsage(usage: Record<string, number>): void {
     if (!Object.keys(usage).length) return;
-    const total = usageValue(usage.total_tokens)
-      ?? usageValue(usage.prompt_tokens ?? usage.input_tokens) ?? 0;
-    const output = usageValue(usage.completion_tokens ?? usage.output_tokens) ?? 0;
-    const counted = usageValue(usage.total_tokens) ?? total + output;
-    if (counted <= 0) return;
-    this.tokensUsed += counted;
-    this.inputTokens += total;
-    this.outputTokens += output;
+    const normalized = normalizeTokenUsage(usage);
+    this.tokensUsed += normalized.totalTokens;
+    this.inputTokens += normalized.inputTokens;
+    this.outputTokens += normalized.outputTokens;
+    this.cacheReadTokens += normalized.cacheReadTokens;
+    this.cacheWriteTokens += normalized.cacheWriteTokens;
+  }
+
+  recordModelElapsed(durationMs: number): void {
+    if (Number.isFinite(durationMs) && durationMs > 0) this.modelElapsedMs += durationMs;
   }
 
   record(call: ToolCall): void {
@@ -272,11 +278,6 @@ export class AgentLoop {
     }
     return undefined;
   }
-}
-
-function usageValue(value: unknown): number | undefined {
-  if (typeof value !== "number" || !Number.isFinite(value)) return undefined;
-  return Math.max(0, Math.trunc(value));
 }
 
 function stableStringify(value: unknown): string {

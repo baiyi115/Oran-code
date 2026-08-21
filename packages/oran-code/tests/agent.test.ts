@@ -32,7 +32,10 @@ describe("runTask", () => {
     const requests: Record<string, unknown>[] = [];
     vi.stubGlobal("fetch", vi.fn(async (_input: unknown, init?: RequestInit) => {
       requests.push(JSON.parse(String(init?.body)) as Record<string, unknown>);
-      return response({ choices: [{ message: { role: "assistant", content: "done" }, finish_reason: "stop" }] });
+      return response({
+        choices: [{ message: { role: "assistant", content: "done" }, finish_reason: "stop" }],
+        usage: { prompt_tokens: 10, completion_tokens: 2, total_tokens: 12 },
+      });
     }));
     const events: AgentEvent[] = [];
 
@@ -40,7 +43,16 @@ describe("runTask", () => {
 
     expect(requests).toHaveLength(1);
     expect(eventsOfType(events, "assistant_delta")).toEqual([{ type: "assistant_delta", text: "done" }]);
-    expect(eventsOfType(events, "completed")).toEqual([{ type: "completed", steps: 1 }]);
+    expect(eventsOfType(events, "completed")).toHaveLength(1);
+    expect(eventsOfType(events, "completed")[0]).toMatchObject({
+      type: "completed",
+      steps: 1,
+      tokensUsed: 12,
+      inputTokens: 10,
+      outputTokens: 2,
+      cacheReadTokens: 0,
+      cacheWriteTokens: 0,
+    });
   });
 
   it("preserves tool calls and continues with the tool result", async () => {
@@ -59,9 +71,13 @@ describe("runTask", () => {
             },
             finish_reason: "tool_calls",
           }],
+          usage: { prompt_tokens: 10, completion_tokens: 2, total_tokens: 12 },
         });
       }
-      return response({ choices: [{ message: { role: "assistant", content: "verified" }, finish_reason: "stop" }] });
+      return response({
+        choices: [{ message: { role: "assistant", content: "verified" }, finish_reason: "stop" }],
+        usage: { input_tokens: 20, output_tokens: 4, total_tokens: 24 },
+      });
     }));
     const tool: ToolDefinition = {
       name: "workspace_echo",
@@ -88,6 +104,15 @@ describe("runTask", () => {
       message.role === "tool" && message.tool_call_id === "call_1" && message.content === "ok",
     )).toBe(true);
     expect(eventsOfType(events, "tool_result")).toHaveLength(1);
-    expect(eventsOfType(events, "completed")).toEqual([{ type: "completed", steps: 2 }]);
+    expect(eventsOfType(events, "completed")).toHaveLength(1);
+    expect(eventsOfType(events, "completed")[0]).toMatchObject({
+      type: "completed",
+      steps: 2,
+      tokensUsed: 36,
+      inputTokens: 30,
+      outputTokens: 6,
+      cacheReadTokens: 0,
+      cacheWriteTokens: 0,
+    });
   });
 });

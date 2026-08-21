@@ -379,8 +379,18 @@ export interface RuntimeEventPayloads {
     message?: string;
   };
   error: { message: string; step?: number; source?: string; attempt?: number };
-  completed: { steps: number; tokensUsed: number; inputTokens: number; outputTokens: number };
- cancelled: { message: string };
+  completed: {
+    steps: number;
+    tokensUsed: number;
+    inputTokens: number;
+    outputTokens: number;
+    cacheReadTokens: number;
+    cacheWriteTokens: number;
+    elapsedMs: number;
+    modelElapsedMs: number;
+    outputTokensPerSecond?: number;
+  };
+  cancelled: { message: string };
 }
 
 export type RuntimeEvent = {
@@ -414,6 +424,13 @@ export interface AgentEvent {
   message?: string;
   steps?: number;
   tokensUsed?: number;
+  inputTokens?: number;
+  outputTokens?: number;
+  cacheReadTokens?: number;
+  cacheWriteTokens?: number;
+  elapsedMs?: number;
+  modelElapsedMs?: number;
+  outputTokensPerSecond?: number;
   planState?: TaskPlanState;
 }
 

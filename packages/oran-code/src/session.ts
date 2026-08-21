@@ -2431,6 +2431,7 @@ export class TerminalSession {
 function requiresPaintBarrier(event: RuntimeEvent): boolean {
   switch (event.type) {
     case "assistant_start":
+    case "assistant_end":
     case "thought_start":
     case "tool_start":
     case "retry":
