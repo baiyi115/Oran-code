@@ -217,9 +217,17 @@ export function reduceRuntimeEvent(state: TuiState, event: RuntimeEvent): void {
       finishRunningTools(state, event.taskId, "failure", "ended without a tool result");
       state.session.taskState = "completed";
       state.session.status = `completed in ${event.steps} step(s), ${event.tokensUsed} token(s)`;
-      if (event.tokensUsed > state.activeTaskUsage.totalTokens) {
-        state.session.usage.totalTokens += event.tokensUsed - state.activeTaskUsage.totalTokens;
-        state.activeTaskUsage.totalTokens = event.tokensUsed;
+     if (event.tokensUsed > state.activeTaskUsage.totalTokens) {
+       state.session.usage.totalTokens += event.tokensUsed - state.activeTaskUsage.totalTokens;
+       state.activeTaskUsage.totalTokens = event.tokensUsed;
+     }
+      if (event.inputTokens > state.activeTaskUsage.inputTokens) {
+        state.session.usage.inputTokens += event.inputTokens - state.activeTaskUsage.inputTokens;
+        state.activeTaskUsage.inputTokens = event.inputTokens;
+      }
+      if (event.outputTokens > state.activeTaskUsage.outputTokens) {
+        state.session.usage.outputTokens += event.outputTokens - state.activeTaskUsage.outputTokens;
+        state.activeTaskUsage.outputTokens = event.outputTokens;
       }
       state.session.elapsedMs = state.session.startedAt === undefined ? undefined : Math.max(0, Date.now() - state.session.startedAt);
       finishAssistant(state);

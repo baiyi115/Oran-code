@@ -66,6 +66,8 @@ export class AgentLoop {
   steps = 0;
   turns = 0;
   tokensUsed = 0;
+  inputTokens = 0;
+  outputTokens = 0;
   consecutiveUnknownTools = 0;
   readonly toolCalls: ToolCall[];
   readonly executionHistory: Array<{ call: ToolCall; result: ToolResult; errorSig?: string | undefined }> = [];
@@ -113,6 +115,8 @@ export class AgentLoop {
     const counted = usageValue(usage.total_tokens) ?? total + output;
     if (counted <= 0) return;
     this.tokensUsed += counted;
+    this.inputTokens += total;
+    this.outputTokens += output;
   }
 
   record(call: ToolCall): void {

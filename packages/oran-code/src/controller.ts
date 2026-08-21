@@ -376,7 +376,7 @@ export class TaskController {
             // reducer does not append a duplicate plan block.
             await this.emit("plan", { plan: planText, streamed: true, complete: true });
             await this.emit("plan_complete", { plan: planText, autoExecute: false });
-            await this.emit("completed", { steps: Math.max(1, loop.turns), tokensUsed: loop.tokensUsed });
+            await this.emit("completed", { steps: Math.max(1, loop.turns), tokensUsed: loop.tokensUsed, inputTokens: loop.inputTokens, outputTokens: loop.outputTokens });
             return task;
           }
           this.throwIfCancelled();
@@ -384,7 +384,7 @@ export class TaskController {
           transitionTask(task, "completed");
           await this.persist(task);
           this.throwIfCancelled();
-          await this.emit("completed", { steps: Math.max(1, loop.turns), tokensUsed: loop.tokensUsed });
+          await this.emit("completed", { steps: Math.max(1, loop.turns), tokensUsed: loop.tokensUsed, inputTokens: loop.inputTokens, outputTokens: loop.outputTokens });
           return task;
         }
         if (response.toolCalls.length) {
@@ -433,7 +433,7 @@ export class TaskController {
           transitionTask(task, "completed");
           await this.persist(task);
           this.throwIfCancelled();
-          await this.emit("completed", { steps: Math.max(1, loop.turns), tokensUsed: loop.tokensUsed });
+          await this.emit("completed", { steps: Math.max(1, loop.turns), tokensUsed: loop.tokensUsed, inputTokens: loop.inputTokens, outputTokens: loop.outputTokens });
           return task;
         } else if (!workspaceMutated || this.config.workMode === "plan") {
           // Read-only exploration and ordinary conversation do not need a
@@ -444,7 +444,7 @@ export class TaskController {
           transitionTask(task, "completed");
           await this.persist(task);
           this.throwIfCancelled();
-          await this.emit("completed", { steps: Math.max(1, loop.turns), tokensUsed: loop.tokensUsed });
+          await this.emit("completed", { steps: Math.max(1, loop.turns), tokensUsed: loop.tokensUsed, inputTokens: loop.inputTokens, outputTokens: loop.outputTokens });
           return task;
         } else {
           const verification = await this.verify(task, messages);
@@ -454,7 +454,7 @@ export class TaskController {
             transitionTask(task, "completed");
             await this.persist(task);
             this.throwIfCancelled();
-            await this.emit("completed", { steps: Math.max(1, loop.turns), tokensUsed: loop.tokensUsed });
+            await this.emit("completed", { steps: Math.max(1, loop.turns), tokensUsed: loop.tokensUsed, inputTokens: loop.inputTokens, outputTokens: loop.outputTokens });
             return task;
           }
           messages.push({ role: "user", content: `Verification failed:\n${verification.output}` });

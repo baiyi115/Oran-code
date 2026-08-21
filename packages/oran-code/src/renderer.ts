@@ -241,7 +241,12 @@ export class TerminalRenderer implements SessionRenderer {
         break;
       }
       case "error": this.error(event.message); break;
-      case "completed": this.status(`[completed in ${event.steps} step(s), ${event.tokensUsed} token(s)]`, "green"); break;
+      case "completed": {
+        const inT = event.inputTokens;
+        const outT = event.outputTokens;
+        this.status(`[completed in ${event.steps} step(s), ${event.tokensUsed} tokens (in ${inT}, out ${outT})]`, "green");
+        break;
+      }
       case "cancelled": this.status(`[cancelled] ${event.message}`, "yellow"); break;
       case "approval_request": break;
       case "log": this.status(event.message); break;

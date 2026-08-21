@@ -54,11 +54,20 @@ export function workSummaryLine(state: TuiState): string | undefined {
       : state.session.taskState === "paused"
         ? "■ Paused"
         : "✓ Done";
-  const details = [label, formatCompactDuration(elapsed)];
-  const toolCount = currentTaskMessages(state).filter((message) => message.kind === "tool").length;
-  if (toolCount > 0) details.push(`${toolCount} tool${toolCount === 1 ? "" : "s"}`);
-  if (state.activeTaskUsage.totalTokens > 0) details.push(`${compactNumber(state.activeTaskUsage.totalTokens)} tokens`);
-  return details.join(" · ");
+ const details = [label, formatCompactDuration(elapsed)];
+ const toolCount = currentTaskMessages(state).filter((message) => message.kind === "tool").length;
+ if (toolCount > 0) details.push(`${toolCount} tool${toolCount === 1 ? "" : "s"}`);
+ const usage = state.activeTaskUsage;
+ if (usage.totalTokens > 0) {
+   const tokenParts = [`in ${compactNumber(usage.inputTokens)}`, `out ${compactNumber(usage.outputTokens)}`];
+   details.push(`${compactNumber(usage.totalTokens)} tokens (${tokenParts.join(", ")})`);
+   const seconds = elapsed / 1000;
+   if (seconds > 0.1) {
+     const tps = Math.round(usage.totalTokens / seconds);
+     details.push(`${compactNumber(tps)} tps`);
+   }
+ }
+ return details.join(" · ");
 }
 
 function shouldShowCompletedSummary(state: TuiState): boolean {
