@@ -45,6 +45,8 @@ export function createTuiSessionState(
     currentTool: undefined,
     startedAt: undefined,
     elapsedMs: undefined,
+    modelElapsedMs: undefined,
+    outputTokensPerSecond: undefined,
     usage: { inputTokens: 0, outputTokens: 0, totalTokens: 0, cacheReadTokens: 0, cacheWriteTokens: 0 },
     followUpCount: 0,
   };
@@ -81,7 +83,7 @@ export function createTuiState(
     activeTaskUsage: { inputTokens: 0, outputTokens: 0, totalTokens: 0, cacheReadTokens: 0, cacheWriteTokens: 0 },
     processedSequences: new Set<string>(),
     retiredTaskIds: new Set<string>(),
-    retryErrorIds: new Set<string>(),
+    retryErrorId: undefined,
     transcriptScroll: { offsetFromBottom: 0, followBottom: true },
     lastTranscriptLines: 0,
     lastTranscriptViewportLines: 0,

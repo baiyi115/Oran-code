@@ -2,6 +2,8 @@ import { describe, expect, it } from "vitest";
 import { TuiTranscriptRenderer, type TuiRendererLayout } from "../src/tui/renderer.js";
 import { createTuiState } from "../src/tui/state.js";
 import { workingIndicatorLine } from "../src/tui/status-indicator.js";
+import { workSummaryLine } from "../src/tui/footer.js";
+import { staticTranscriptCount } from "../src/tui/ink-app.js";
 import { collapsibleSegments, TranscriptView } from "../src/tui/transcript/transcript-view.js";
 import { renderMessage } from "../src/tui/transcript/message-renderer.js";
 import { ANSI } from "../src/tui/theme.js";
@@ -69,6 +71,66 @@ describe("TuiTranscriptRenderer", () => {
 
     expect(state.transcript).toHaveLength(1);
     expect(state.transcript[0]).toMatchObject({ kind: "assistant", text: "hello", streaming: false });
+  });
+
+  it("keeps the current numbered-list tail visible while streaming", () => {
+    const state = createState();
+    state.transcript.push({
+      id: "assistant-1",
+      kind: "assistant",
+      text: "1. first item\n2. second item is still streaming",
+      streaming: true,
+    });
+
+    const rendered = new TranscriptView().lines(state, 80).join("\n");
+
+    expect(rendered).toContain("first item");
+    expect(rendered).toContain("second item is still streaming");
+  });
+
+  it("moves completed activity to Static even when the final assistant reply follows tools", () => {
+    const state = createState();
+    state.transcript.push(
+      {
+        id: "tool-1",
+        kind: "tool",
+        callId: "call-1",
+        name: "read_file",
+        arguments: {},
+        permissionLevel: 0,
+        status: "success",
+        expanded: false,
+      },
+      { id: "assistant-1", kind: "assistant", text: "complete reply" },
+    );
+
+    expect(staticTranscriptCount(state.transcript)).toBe(2);
+
+    state.transcript.push({
+      id: "assistant-2",
+      kind: "assistant",
+      text: "partial",
+      streaming: true,
+    });
+    expect(staticTranscriptCount(state.transcript)).toBe(2);
+  });
+
+  it("shows metrics after every completed task, including conversation-only turns", () => {
+    const state = createState();
+    state.session.taskState = "completed";
+    state.session.elapsedMs = 1_500;
+    state.session.outputTokensPerSecond = 20;
+    state.activeTaskUsage = {
+      inputTokens: 10,
+      outputTokens: 2,
+      totalTokens: 12,
+      cacheReadTokens: 0,
+      cacheWriteTokens: 0,
+    };
+    state.transcript.push({ id: "user-1", kind: "user", text: "hello" });
+    state.transcript.push({ id: "assistant-1", kind: "assistant", text: "hi" });
+
+    expect(workSummaryLine(state)).toBe("✓ Done · 1.5s · 12 tokens (in 10, out 2) · 20 output tok/s");
   });
 
   it("hides the footer spinner while an assistant row streams", () => {

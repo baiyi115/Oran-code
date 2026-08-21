@@ -43,10 +43,9 @@ interface InlineUnit {
 }
 
 /**
- * Streamed markdown is buffered at block granularity: while streaming, only
- * completed blocks are rendered (blank-line-terminated paragraphs and closed
- * code fences). The in-progress block stays hidden until it completes or the
- * assistant turn ends, so partial syntax like a bare "####" never flashes.
+ * Completed Markdown blocks are cached while the current tail is rendered by
+ * the tolerant streaming parser. This keeps long paragraphs and list items
+ * visible as they arrive without exposing incomplete Markdown delimiters.
  */
 export class MarkdownRenderer {
   private width = 0;
@@ -75,10 +74,6 @@ export class MarkdownRenderer {
     }
 
     const tail = normalized.slice(this.stableEnd);
-    // While streaming, show only completed blocks. The in-progress block is
-    // buffered until it terminates (blank line, closing fence) or the turn
-    // ends and a final non-streaming render seals the message.
-    if (options.streaming) return this.stableLines;
     if (!tail) return this.stableLines;
     const tailLines = renderMarkdownInternal(tail, safeWidth, options);
     if (this.stableLines[this.stableLines.length - 1] === "" && tailLines[0] === "") {

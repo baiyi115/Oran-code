@@ -86,4 +86,78 @@ describe("TUI runtime event reducer", () => {
     expect(state.streaming).toBe(false);
     expect(state.transcript).toHaveLength(1);
   });
+
+  it("reconciles completed usage and stores authoritative timing metrics", () => {
+    const state = createTuiState("D:\\workspace", "demo/chat");
+
+    reduceRuntimeEvent(state, event({ type: "assistant_start", step: 0, source: "turn", attempt: 0, model: "chat" }));
+    reduceRuntimeEvent(state, event({
+      type: "assistant_end",
+      step: 0,
+      source: "turn",
+      attempt: 0,
+      text: "done",
+      toolCalls: [],
+      usage: { prompt_tokens: 10, completion_tokens: 2, total_tokens: 12 },
+      streamed: true,
+    }));
+    reduceRuntimeEvent(state, event({
+      type: "completed",
+      steps: 1,
+      tokensUsed: 12,
+      inputTokens: 10,
+      outputTokens: 2,
+      cacheReadTokens: 3,
+      cacheWriteTokens: 1,
+      elapsedMs: 2_500,
+      modelElapsedMs: 100,
+      outputTokensPerSecond: 20,
+    }));
+
+    expect(state.activeTaskUsage).toEqual({
+      inputTokens: 10,
+      outputTokens: 2,
+      totalTokens: 12,
+      cacheReadTokens: 3,
+      cacheWriteTokens: 1,
+    });
+    expect(state.session.usage).toEqual(state.activeTaskUsage);
+    expect(state.session.elapsedMs).toBe(2_500);
+    expect(state.session.modelElapsedMs).toBe(100);
+    expect(state.session.outputTokensPerSecond).toBe(20);
+  });
+
+  it("updates one retry notice and removes it before the terminal error", () => {
+    const state = createTuiState("D:\\workspace", "demo/chat");
+
+    reduceRuntimeEvent(state, event({
+      type: "retry",
+      step: 0,
+      source: "turn",
+      attempt: 1,
+      nextAttempt: 2,
+      maxRetries: 5,
+      message: "first failure",
+    }));
+    reduceRuntimeEvent(state, event({
+      type: "retry",
+      step: 0,
+      source: "turn",
+      attempt: 2,
+      nextAttempt: 3,
+      maxRetries: 5,
+      message: "second failure",
+    }));
+
+    expect(state.transcript).toEqual([
+      expect.objectContaining({ kind: "error", text: "retrying (3/5): second failure" }),
+    ]);
+
+    reduceRuntimeEvent(state, event({ type: "error", message: "request exhausted retries" }));
+
+    expect(state.transcript).toEqual([
+      expect.objectContaining({ kind: "error", text: "request exhausted retries" }),
+    ]);
+    expect(state.retryErrorId).toBeUndefined();
+  });
 });

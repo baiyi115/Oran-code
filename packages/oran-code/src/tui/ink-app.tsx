@@ -33,6 +33,16 @@ interface StaticTranscriptItem {
   text: string;
 }
 
+/** Only in-progress transcript entries need Ink's height-bounded live frame. */
+export function staticTranscriptCount(messages: readonly TranscriptMessage[]): number {
+  const firstMutableIndex = messages.findIndex((message) =>
+    (message.kind === "assistant" && message.streaming)
+    || (message.kind === "thought" && message.streaming)
+    || (message.kind === "tool" && message.status === "running"),
+  );
+  return firstMutableIndex >= 0 ? firstMutableIndex : messages.length;
+}
+
 // Mouse reporting prevents the terminal emulator from starting its native text
 // selection. Clear every common tracking mode in case a previous process exited
 // before restoring the terminal.
@@ -270,30 +280,19 @@ export class InkTuiApp {
       this.handleFileKey(input, key);
       return;
     }
+    if (this.state.overlay.kind === "details") {
+      if (key.escape || (key.ctrl && input === "t")) {
+        setOverlay(this.state, { kind: "none" });
+        this.invalidate();
+      }
+      return;
+    }
     if (key.ctrl && input === "q") {
       void this.openFollowUps();
       return;
     }
     if (key.ctrl && input === "t") {
-      const reversed = [...this.state.transcript].reverse();
-      const target = reversed.find((message) => message.kind === "thought" || message.kind === "tool");
-      const segment = target
-        ? collapsibleSegments(this.state.transcript).find((entry) => entry.messages.some((message) => message.id === target.id))
-        : undefined;
-      if (segment) {
-        if (this.state.expandedToolGroupIds.has(segment.id)) this.state.expandedToolGroupIds.delete(segment.id);
-        else this.state.expandedToolGroupIds.add(segment.id);
-        this.staticTranscriptGeneration += 1;
-        this.resetTranscriptViewport();
-        this.invalidate();
-        return;
-      }
-      if (target && (target.kind === "tool" || target.kind === "thought")) {
-        target.expanded = !target.expanded;
-        this.staticTranscriptGeneration += 1;
-        this.resetTranscriptViewport();
-        this.invalidate();
-      }
+      this.openLatestActivityDetails();
       return;
     }
     if (key.shift && key.tab) {
@@ -978,6 +977,8 @@ export class InkTuiApp {
     this.state.session.currentTool = undefined;
     this.state.session.startedAt = undefined;
     this.state.session.elapsedMs = undefined;
+    this.state.session.modelElapsedMs = undefined;
+    this.state.session.outputTokensPerSecond = undefined;
     this.state.session.usage = { inputTokens: 0, outputTokens: 0, totalTokens: 0, cacheReadTokens: 0, cacheWriteTokens: 0 };
     this.state.session.followUpCount = this.options.getFollowUpCount?.() ?? 0;
     this.state.overlay = { kind: "none" };
@@ -1294,23 +1295,7 @@ export class InkTuiApp {
     liveLines: ReturnType<TranscriptView["linesWithAnchors"]>;
   } {
     const lines = this.transcript.linesWithAnchors(this.state, Math.max(12, width), liveTick);
-    const firstMutableIndex = this.state.transcript.findIndex((message) =>
-      (message.kind === "assistant" && message.streaming)
-      || (message.kind === "thought" && message.streaming)
-      || (message.kind === "tool" && message.status === "running"),
-    );
-    let latestExpandableIndex = -1;
-    for (let index = this.state.transcript.length - 1; index >= 0; index -= 1) {
-      const message = this.state.transcript[index];
-      if (message?.kind === "thought" || message?.kind === "tool") {
-        latestExpandableIndex = index;
-        break;
-      }
-    }
-    const boundaryCandidates = [firstMutableIndex, latestExpandableIndex].filter((index) => index >= 0);
-    const staticCount = boundaryCandidates.length > 0
-      ? Math.min(...boundaryCandidates)
-      : this.state.transcript.length;
+    const staticCount = staticTranscriptCount(this.state.transcript);
     const staticMessages = this.state.transcript.slice(0, staticCount);
     const staticIds = new Set(staticMessages.map((message) => message.id));
     const groupedLines = new Map<string, string[]>();
@@ -1334,6 +1319,37 @@ export class InkTuiApp {
 
   staticTranscriptKey(): number {
     return this.staticTranscriptGeneration;
+  }
+
+  private openLatestActivityDetails(): void {
+    const target = [...this.state.transcript]
+      .reverse()
+      .find((message) => message.kind === "thought" || message.kind === "tool");
+    if (!target) {
+      this.state.session.status = "no thought or tool details available";
+      this.invalidate();
+      return;
+    }
+
+    const segment = collapsibleSegments(this.state.transcript)
+      .find((entry) => entry.messages.some((message) => message.id === target.id));
+    const detailMessages = (segment?.messages ?? [target]).map((message) => (
+      message.kind === "thought" || message.kind === "tool"
+        ? { ...message, expanded: true }
+        : { ...message }
+    ));
+    const width = Math.max(20, (this.options.output.columns || 80) - 2);
+    const lines = new TranscriptView()
+      .renderLines(detailMessages, width, 0, segment ? new Set([segment.id]) : new Set())
+      .map((line) => line.text);
+    const title = segment
+      ? "Latest activity"
+      : target.kind === "tool"
+        ? `Tool: ${target.name}`
+        : "Thought";
+
+    setOverlay(this.state, { kind: "details", title, lines });
+    this.invalidate();
   }
 
   private pageScrollDelta(): number {
@@ -1733,6 +1749,8 @@ function renderOverlayLines(state: TuiState, commandLines: string[], width: numb
         state.overlay.selectedIndex,
         width,
       );
+    case "details":
+      return [state.overlay.title, dimHorizontalRule(width), ...state.overlay.lines, "", "Ctrl+T/Esc Close"];
    case "sessions":
      {
        const overlay = state.overlay;

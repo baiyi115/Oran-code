@@ -3,6 +3,7 @@ import { appendTranscriptMessage, getToolMessage } from "./state.js";
 import { truncateVisible } from "./text-width.js";
 import type { TuiState } from "./types.js";
 import type { RuntimeEvent, ToolCall, ToolResult, VerificationResult } from "../types.js";
+import { normalizeTokenUsage } from "../token-usage.js";
 
 export function reduceRuntimeEvent(state: TuiState, event: RuntimeEvent): void {
   if (event.type === "context_compaction") {
@@ -18,6 +19,7 @@ export function reduceRuntimeEvent(state: TuiState, event: RuntimeEvent): void {
       finishRunningTools(state, state.activeTaskId, "cancelled", "superseded by a new task");
       state.retiredTaskIds.add(state.activeTaskId);
     }
+    clearRetryErrorNotice(state);
     finishAssistant(state);
     finishThought(state);
     state.activeTaskId = event.taskId;
@@ -36,6 +38,8 @@ export function reduceRuntimeEvent(state: TuiState, event: RuntimeEvent): void {
         && ["ready", "completed", "failed", "cancelled", "paused"].includes(state.session.taskState)) {
         state.session.startedAt = Date.now();
         state.session.elapsedMs = undefined;
+        state.session.modelElapsedMs = undefined;
+        state.session.outputTokensPerSecond = undefined;
         state.session.currentTool = undefined;
       }
       state.session.taskState = event.state;
@@ -52,7 +56,7 @@ export function reduceRuntimeEvent(state: TuiState, event: RuntimeEvent): void {
      if (state.streaming && state.assistantMessageId) break;
      if (event.turnId && findAssistantByTurnId(state, event.turnId, event.taskId)) break;
      finishAssistant(state);
-     clearRetryErrorNotices(state);
+     clearRetryErrorNotice(state);
      clearAbortOnlyAssistants(state);
      state.streaming = true;
      state.waitingForFirstChunk = true;
@@ -66,7 +70,7 @@ export function reduceRuntimeEvent(state: TuiState, event: RuntimeEvent): void {
      });
      break;
    case "assistant_delta": {
-     clearRetryErrorNotices(state);
+     clearRetryErrorNotice(state);
      state.waitingForFirstChunk = false;
      const assistant = ensureAssistant(state, event.turnId, event.taskId);
      assistant.text = stripPlanCompleteMarkers(assistant.text + redactSecretText(event.text));
@@ -194,16 +198,18 @@ export function reduceRuntimeEvent(state: TuiState, event: RuntimeEvent): void {
       const detail = redactSecretText(event.message).trim() || "request failed";
       // Keep the notice to a single short line; a later successful response clears it.
       const reason = detail.split(/\r?\n/)[0] ?? "";
-      const id = appendTranscriptMessage(state, {
-        kind: "error",
-        text: `retrying (${event.nextAttempt}/${event.maxRetries})${reason ? `: ${truncateVisible(reason, 60)}` : ""}`,
-      });
-      state.retryErrorIds.add(id);
+      const text = `retrying (${event.nextAttempt}/${event.maxRetries})${reason ? `: ${truncateVisible(reason, 60)}` : ""}`;
+      const existing = state.retryErrorId
+        ? state.transcript.find((message) => message.id === state.retryErrorId)
+        : undefined;
+      if (existing?.kind === "error") existing.text = text;
+      else state.retryErrorId = appendTranscriptMessage(state, { kind: "error", text });
       state.session.status = `retrying (${event.nextAttempt}/${event.maxRetries})`;
       break;
     }
     case "error": {
       const detail = redactSecretText(event.message);
+      clearRetryErrorNotice(state);
       finishRunningTools(state, event.taskId, "failure", `stopped: ${detail}`);
       finishAssistant(state);
       finishThought(state);
@@ -213,28 +219,27 @@ export function reduceRuntimeEvent(state: TuiState, event: RuntimeEvent): void {
       state.retiredTaskIds.add(event.taskId);
       break;
     }
-    case "completed":
+    case "completed": {
       finishRunningTools(state, event.taskId, "failure", "ended without a tool result");
       state.session.taskState = "completed";
       state.session.status = `completed in ${event.steps} step(s), ${event.tokensUsed} token(s)`;
-     if (event.tokensUsed > state.activeTaskUsage.totalTokens) {
-       state.session.usage.totalTokens += event.tokensUsed - state.activeTaskUsage.totalTokens;
-       state.activeTaskUsage.totalTokens = event.tokensUsed;
-     }
-      if (event.inputTokens > state.activeTaskUsage.inputTokens) {
-        state.session.usage.inputTokens += event.inputTokens - state.activeTaskUsage.inputTokens;
-        state.activeTaskUsage.inputTokens = event.inputTokens;
-      }
-      if (event.outputTokens > state.activeTaskUsage.outputTokens) {
-        state.session.usage.outputTokens += event.outputTokens - state.activeTaskUsage.outputTokens;
-        state.activeTaskUsage.outputTokens = event.outputTokens;
-      }
-      state.session.elapsedMs = state.session.startedAt === undefined ? undefined : Math.max(0, Date.now() - state.session.startedAt);
+      reconcileTaskUsage(state, {
+        inputTokens: event.inputTokens,
+        outputTokens: event.outputTokens,
+        totalTokens: event.tokensUsed,
+        cacheReadTokens: event.cacheReadTokens,
+        cacheWriteTokens: event.cacheWriteTokens,
+      });
+      state.session.elapsedMs = event.elapsedMs;
+      state.session.modelElapsedMs = event.modelElapsedMs;
+      state.session.outputTokensPerSecond = event.outputTokensPerSecond;
       finishAssistant(state);
       finishThought(state);
       state.retiredTaskIds.add(event.taskId);
       break;
+    }
     case "cancelled":
+      clearRetryErrorNotice(state);
       finishRunningTools(state, event.taskId, "cancelled", "cancelled");
       state.session.taskState = "cancelled";
       state.session.status = `cancelled: ${redactSecretText(event.message)}`;
@@ -498,11 +503,11 @@ function removeTranscriptMessage(state: TuiState, id: string): void {
   if (index >= 0) state.transcript.splice(index, 1);
 }
 
-/** Remove transient retry-failure notices once a fresh response starts streaming. */
-function clearRetryErrorNotices(state: TuiState): void {
-  if (state.retryErrorIds.size === 0) return;
-  for (const id of state.retryErrorIds) removeTranscriptMessage(state, id);
-  state.retryErrorIds.clear();
+/** Remove the transient retry-failure notice once the task continues or ends. */
+function clearRetryErrorNotice(state: TuiState): void {
+  if (!state.retryErrorId) return;
+  removeTranscriptMessage(state, state.retryErrorId);
+  state.retryErrorId = undefined;
 }
 
 /**
@@ -524,21 +529,7 @@ function clearAbortOnlyAssistants(state: TuiState): void {
 }
 
 function usageDelta(next: Record<string, number>): TuiState["session"]["usage"] {
-  const input = numberFrom(next, "input_tokens", "prompt_tokens", "inputTokens");
-  const output = numberFrom(next, "output_tokens", "completion_tokens", "outputTokens");
-  const reportedTotal = numberFrom(next, "total_tokens", "totalTokens");
-  const cacheRead = numberFrom(next, "cache_read_input_tokens", "cache_read_tokens", "cached_tokens", "cacheReadTokens");
-  const cacheWrite = numberFrom(next, "cache_creation_input_tokens", "cache_write_tokens", "cacheWriteTokens");
-  const inputTokens = input ?? 0;
-  const outputTokens = output ?? 0;
-  const totalTokens = reportedTotal ?? inputTokens + outputTokens;
-  return {
-    inputTokens,
-    outputTokens,
-    totalTokens,
-    cacheReadTokens: cacheRead ?? 0,
-    cacheWriteTokens: cacheWrite ?? 0,
-  };
+  return normalizeTokenUsage(next);
 }
 
 function addUsage(current: TuiState["session"]["usage"], delta: TuiState["session"]["usage"]): TuiState["session"]["usage"] {
@@ -551,12 +542,14 @@ function addUsage(current: TuiState["session"]["usage"], delta: TuiState["sessio
   };
 }
 
-function numberFrom(value: Record<string, number>, ...keys: string[]): number | undefined {
-  for (const key of keys) {
-    const number = value[key];
-    if (typeof number === "number" && Number.isFinite(number)) return Math.max(0, number);
+function reconcileTaskUsage(state: TuiState, completed: TuiState["session"]["usage"]): void {
+  for (const key of Object.keys(completed) as Array<keyof typeof completed>) {
+    state.session.usage[key] = Math.max(
+      0,
+      state.session.usage[key] + completed[key] - state.activeTaskUsage[key],
+    );
+    state.activeTaskUsage[key] = completed[key];
   }
-  return undefined;
 }
 
 function isRejected(result: ToolResult): boolean {

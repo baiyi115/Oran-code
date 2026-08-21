@@ -39,7 +39,7 @@ export interface TuiAppOptions {
   getCommands?: () => readonly SlashCommand[];
 }
 
-export type TuiOverlay = "none" | "commands" | "models" | "sessions" | "session-delete-confirm" | "follow-ups" | "files" | "approval" | "connect";
+export type TuiOverlay = "none" | "commands" | "models" | "sessions" | "session-delete-confirm" | "follow-ups" | "files" | "approval" | "details" | "connect";
 
 export interface CursorPosition {
   line: number;
@@ -98,6 +98,8 @@ export interface TuiSessionState {
   currentTool: string | undefined;
   startedAt: number | undefined;
   elapsedMs: number | undefined;
+  modelElapsedMs: number | undefined;
+  outputTokensPerSecond: number | undefined;
   usage: UsageState;
   followUpCount: number;
 }
@@ -186,6 +188,7 @@ export type OverlayState =
   | { kind: "follow-ups"; selectedIndex: number; options: FollowUpOption[] }
   | { kind: "files"; query: string; selectedIndex: number; options: string[]; loading: boolean; tokenStart: number }
   | { kind: "approval"; approval: ApprovalDetails; selectedIndex: number }
+  | { kind: "details"; title: string; lines: string[] }
   | { kind: "connect"; step: ConnectStep; providerName: string; baseURL: string; apiKey: string; protocol: "openai" | "anthropic" | ""; reasoningEffort: ReasoningEffort; models: ConnectModelOption[]; selectedIndex: number; loading: boolean; error?: string | undefined };
 
 export type ConnectStep = "providerName" | "baseURL" | "apiKey" | "protocol" | "reasoningEffort" | "models";
@@ -251,8 +254,8 @@ export interface TuiState {
   activeTaskUsage: UsageState;
   processedSequences: Set<string>;
   retiredTaskIds: Set<string>;
-  /** Transient retry-failure notice ids, cleared once a fresh response streams. */
-  retryErrorIds: Set<string>;
+  /** Transient retry-failure notice, cleared once a fresh response streams. */
+  retryErrorId: string | undefined;
   transcriptScroll: TranscriptScrollState;
   lastTranscriptLines: number;
   lastTranscriptViewportLines: number;

@@ -2,7 +2,6 @@ import type { TranscriptMessage, TuiState } from "./types.js";
 import { abbreviatePath, truncateVisible, visibleWidth } from "./text-width.js";
 import { isSessionBusy } from "./status-indicator.js";
 import { formatCompactDuration } from "./status-indicator.js";
-import { isCasualConversationPrompt } from "../prompt-intent.js";
 
 /**
  * Footer layout (bottom chrome):
@@ -45,8 +44,7 @@ export function footerLines(state: TuiState, width: number): string[] {
 export function workSummaryLine(state: TuiState): string | undefined {
   if (isSessionBusy(state)) return undefined;
   const elapsed = state.session.elapsedMs;
-  if (elapsed === undefined || elapsed <= 0) return undefined;
-  if (state.session.taskState === "completed" && !shouldShowCompletedSummary(state)) return undefined;
+  if (elapsed === undefined || elapsed < 0) return undefined;
   const label = state.session.taskState === "failed"
     ? "× Failed"
     : state.session.taskState === "cancelled"
@@ -54,30 +52,17 @@ export function workSummaryLine(state: TuiState): string | undefined {
       : state.session.taskState === "paused"
         ? "■ Paused"
         : "✓ Done";
- const details = [label, formatCompactDuration(elapsed)];
- const toolCount = currentTaskMessages(state).filter((message) => message.kind === "tool").length;
- if (toolCount > 0) details.push(`${toolCount} tool${toolCount === 1 ? "" : "s"}`);
- const usage = state.activeTaskUsage;
- if (usage.totalTokens > 0) {
-   const tokenParts = [`in ${compactNumber(usage.inputTokens)}`, `out ${compactNumber(usage.outputTokens)}`];
-   details.push(`${compactNumber(usage.totalTokens)} tokens (${tokenParts.join(", ")})`);
-   const seconds = elapsed / 1000;
-   if (seconds > 0.1) {
-     const tps = Math.round(usage.totalTokens / seconds);
-     details.push(`${compactNumber(tps)} tps`);
-   }
- }
- return details.join(" · ");
-}
-
-function shouldShowCompletedSummary(state: TuiState): boolean {
-  const lastUserIndex = latestUserMessageIndex(state);
-  if (lastUserIndex < 0) return false;
-  const userMessage = state.transcript[lastUserIndex];
-  if (userMessage?.kind === "user" && isCasualConversationPrompt(userMessage.text)) return false;
-  return state.transcript.slice(lastUserIndex + 1).some((message) => (
-    message.kind === "tool" || message.kind === "verification" || message.kind === "plan"
-  ));
+  const details = [label, formatCompactDuration(elapsed)];
+  const toolCount = currentTaskMessages(state).filter((message) => message.kind === "tool").length;
+  if (toolCount > 0) details.push(`${toolCount} tool${toolCount === 1 ? "" : "s"}`);
+  const usage = state.activeTaskUsage;
+  if (usage.totalTokens > 0) {
+    const tokenParts = [`in ${compactNumber(usage.inputTokens)}`, `out ${compactNumber(usage.outputTokens)}`];
+    details.push(`${compactNumber(usage.totalTokens)} tokens (${tokenParts.join(", ")})`);
+  }
+  const outputRate = state.session.outputTokensPerSecond;
+  if (outputRate !== undefined && outputRate > 0) details.push(`${formatRate(outputRate)} output tok/s`);
+  return details.join(" · ");
 }
 
 function currentTaskMessages(state: TuiState): readonly TranscriptMessage[] {
@@ -127,6 +112,11 @@ function compactNumber(value: number): string {
   if (value < 10_000) return `${(value / 1000).toFixed(1)}k`;
   if (value < 1_000_000) return `${Math.round(value / 1000)}k`;
   return `${(value / 1_000_000).toFixed(1)}m`;
+}
+
+function formatRate(value: number): string {
+  if (value < 10) return value.toFixed(1);
+  return compactNumber(Math.round(value));
 }
 
 function explicitStatus(state: TuiState): string | undefined {
