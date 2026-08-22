@@ -59,6 +59,14 @@ function textResponse(text: string): ModelStreamChunk[] {
   ];
 }
 
+function responseWithTrailingDelta(): ModelStreamChunk[] {
+  return [
+    { type: "text_delta", text: "done", streamed: true },
+    { type: "response_complete", streamed: true, finishReason: "stop" },
+    { type: "text_delta", text: "late", streamed: true },
+  ];
+}
+
 function toolResponse(call: ToolCall): ModelStreamChunk[] {
   return [
     {
@@ -226,6 +234,23 @@ describe("TaskController", () => {
       expect(events.some((event) => event.type === "plan")).toBe(false);
       expect(events).toContainEqual(expect.objectContaining({ type: "tool_result", result: expect.objectContaining({ ok: false }) }));
       expect(trace.exportTrace(task.id).toolCalls[0]).toMatchObject({ name: "dangerous_change", ok: 0 });
+    } finally {
+      await rm(workspace, { recursive: true, force: true });
+    }
+  });
+
+  it("rejects provider output emitted after response_complete", async () => {
+    const workspace = await mkdtemp(join(tmpdir(), "liteagent-controller-"));
+    try {
+      const provider = new FakeProvider([responseWithTrailingDelta()]);
+      const events: RuntimeEvent[] = [];
+      const { controller } = createController(workspace, provider, new ToolRegistry(), events);
+
+      await expect(controller.execute(createTask(workspace, "hi")))
+        .rejects.toThrow("provider emitted text_delta after response_complete");
+      expect(events.find((event) => event.type === "error")?.message).toBe(
+        "provider emitted text_delta after response_complete",
+      );
     } finally {
       await rm(workspace, { recursive: true, force: true });
     }

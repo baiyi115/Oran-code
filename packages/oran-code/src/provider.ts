@@ -42,6 +42,10 @@ export class OpenAICompatibleProvider implements ModelProvider {
     for await (const event of readSseEvents(response.body as AsyncIterable<Uint8Array>)) {
       for (const update of parseOpenAiStreamEvent(event, state)) yield update;
     }
+    if (state.finishReason === undefined) {
+      throw new Error("OpenAI-compatible stream ended without a finish_reason");
+    }
+    yield { type: "response_complete", streamed: true, finishReason: state.finishReason };
   }
 
   private headers(): Record<string, string> {
@@ -79,6 +83,7 @@ export class OpenAICompatibleProvider implements ModelProvider {
 
 interface OpenAiStreamState {
   readonly calls: Map<number, { id?: string; name: string; arguments: string }>;
+  finishReason?: string;
 }
 
 function parseOpenAiStreamEvent(event: string, state: OpenAiStreamState): ModelStreamChunk[] {
@@ -113,6 +118,7 @@ function parseOpenAiStreamEvent(event: string, state: OpenAiStreamState): ModelS
   }
   if (typeof choice?.finish_reason === "string") {
     const finishReason = choice.finish_reason;
+    state.finishReason = finishReason;
     if (finishReason === "tool_calls") {
       for (const [index, call] of [...state.calls.entries()].sort(([left], [right]) => left - right)) {
         updates.push({
@@ -127,7 +133,6 @@ function parseOpenAiStreamEvent(event: string, state: OpenAiStreamState): ModelS
         });
       }
     }
-    updates.push({ type: "response_complete", streamed: true, finishReason });
   }
   return updates;
 }
@@ -497,6 +502,7 @@ export class AnthropicProvider implements ModelProvider {
 
     const toolUses = new Map<number, { id?: string; name: string; arguments: string }>();
     let finishReason: string | undefined;
+    let streamCompleted = false;
     let currentBlockIndex: number | undefined;
     let currentBlockType: string | undefined;
 
@@ -568,13 +574,17 @@ export class AnthropicProvider implements ModelProvider {
           continue;
         }
         if (type === "message_stop") {
-          yield { type: "response_complete", streamed: true, ...(finishReason !== undefined ? { finishReason } : {}) };
-          continue;
+          streamCompleted = true;
+          break;
         }
         if (type === "error") {
           throw new Error(streamErrorMessage(parsed.error ?? parsed, "anthropic stream error"));
         }
     }
+    if (!streamCompleted) {
+      throw new Error("anthropic stream ended without a message_stop event");
+    }
+    yield { type: "response_complete", streamed: true, ...(finishReason !== undefined ? { finishReason } : {}) };
 
   }
 

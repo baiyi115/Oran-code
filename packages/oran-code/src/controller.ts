@@ -755,6 +755,9 @@ export class TaskController {
       const modelStartedAt = Date.now();
       for await (const chunk of this.provider.streamResponse(messages, tools, providerOptions)) {
         streamed ||= chunk.streamed;
+        if (responseCompleted) {
+          throw new Error(`provider emitted ${chunk.type} after response_complete`);
+        }
         switch (chunk.type) {
           case "reasoning_delta":
             if (!thoughtStarted) {

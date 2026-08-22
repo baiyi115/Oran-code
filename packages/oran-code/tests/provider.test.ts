@@ -118,6 +118,28 @@ describe("OpenAICompatibleProvider", () => {
     expect(completedCalls.map((chunk) => chunk.toolCall.id)).toEqual(["call_first", "call_second"]);
     expect(completedCalls.map((chunk) => chunk.toolCall.argumentsJson)).toEqual(['{"value":1}', '{"value":2}']);
   });
+
+  it("emits response_complete only after finish_reason and trailing usage", async () => {
+    vi.spyOn(globalThis, "fetch").mockResolvedValue(sseResponse([
+      `data: ${JSON.stringify({ choices: [{ delta: { content: "ok" } }] })}\n\n`,
+      `data: ${JSON.stringify({ choices: [{ delta: {}, finish_reason: "stop" }] })}\n\n`,
+      `data: ${JSON.stringify({ usage: { prompt_tokens: 1, completion_tokens: 2 }, choices: [] })}\n\n`,
+    ].join("")));
+
+    const chunks = await collect(new OpenAICompatibleProvider(model()).streamResponse(messages));
+
+    expect(chunks.at(-1)).toEqual({ type: "response_complete", streamed: true, finishReason: "stop" });
+    expect(chunks.map((chunk) => chunk.type).lastIndexOf("usage")).toBeLessThan(chunks.length - 1);
+  });
+
+  it("rejects an OpenAI-compatible stream that ends without finish_reason", async () => {
+    vi.spyOn(globalThis, "fetch").mockResolvedValue(sseResponse(
+      `data: ${JSON.stringify({ choices: [{ delta: { content: "partial" } }] })}`,
+    ));
+
+    await expect(collect(new OpenAICompatibleProvider(model()).streamResponse(messages)))
+      .rejects.toThrow("OpenAI-compatible stream ended without a finish_reason");
+  });
 });
 
 describe("AnthropicProvider", () => {
@@ -142,5 +164,15 @@ describe("AnthropicProvider", () => {
     expect(chunks.find((chunk) => chunk.type === "usage" && chunk.usage.input_tokens === 3)).toMatchObject({ usage: { input_tokens: 3 } });
     expect(completed).toMatchObject({ type: "response_complete", finishReason: "tool_use" });
     expect(completedCall).toMatchObject({ type: "tool_call_complete", toolCall: { id: "call_1", name: "lookup", argumentsJson: '{"query":"status"}' } });
+  });
+
+  it("rejects an Anthropic stream that ends without message_stop", async () => {
+    vi.spyOn(globalThis, "fetch").mockResolvedValue(sseResponse([
+      `data: ${JSON.stringify({ type: "content_block_start", index: 0, content_block: { type: "text" } })}\n\n`,
+      `data: ${JSON.stringify({ type: "content_block_delta", index: 0, delta: { type: "text_delta", text: "partial" } })}\n\n`,
+    ].join("")));
+
+    await expect(collect(new AnthropicProvider(model({ provider: "anthropic" })).streamResponse(messages)))
+      .rejects.toThrow("anthropic stream ended without a message_stop event");
   });
 });
