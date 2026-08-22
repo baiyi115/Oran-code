@@ -20,7 +20,7 @@ import { registerDynamicMarkdownCommands } from "./dynamic-commands.js";
 import { CommandUsageTracker } from "./command-usage.js";
 import { assertSkillTools, registerSkillCommands, renderSkillPrompt, SkillLoader, type SkillDefinition } from "./skills.js";
 import { MemoryManager } from "./memory-manager.js";
-import type { HookEngine, HookNoticeQueue, HookSubAgentExecutor } from "./hook/index.js";
+import type { HookEngine, HookSubAgentExecutor } from "./hook/index.js";
 import { CLI_NAME, ensureProjectStateRoot, migrateUserDataOutOfWorkspace, PRODUCT_NAME, projectStateRoot, userTraceRoot } from "./paths.js";
 import type { SubagentOrigin } from "./subagent/types.js";
 import type { ContextManager } from "./context-manager.js";
@@ -177,7 +177,6 @@ export class TerminalSession {
   private readonly debugStreamSequences = new Map<string, number>();
   private readonly debugStreamTurns = new Map<string, { deltaEvents: number; deltaChars: number }>();
   private hookEngine: HookEngine | undefined;
-  private hookNotices: HookNoticeQueue | undefined;
   private hookWarningsShown = false;
   private readonly hookSubagentAbortControllers = new Set<AbortController>();
   private readonly hookSubagentJobs = new Set<Promise<void>>();
@@ -410,7 +409,6 @@ export class TerminalSession {
         subAgentExecutor,
       });
       this.hookEngine = built.engine;
-      this.hookNotices = built.notices;
       // 校验错误聚合后通过会话系统提示一次性呈现
       if (!this.hookWarningsShown && built.errors.length) {
         this.hookWarningsShown = true;
@@ -1507,8 +1505,6 @@ export class TerminalSession {
           return "Git worktree information is unavailable for this workspace.";
         }
       }
-      case "/code-review":
-        return "No local code-review team runtime is configured. Use /review to run an Agent review in the current session.";
       case "/mcp": {
         await this.ensureMcpReady();
         const servers = this.mcpManager?.connectedServers() ?? [];

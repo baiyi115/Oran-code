@@ -17,7 +17,6 @@ export interface SlashCommand {
 
 export const DEFAULT_COMMANDS: readonly SlashCommand[] = [
   { name: "/clear", description: "clear the transcript", kind: "ui", action: "clear" },
-  { name: "/code-review", description: "manage the local code-review team", kind: "local", argumentHint: "COMMAND", hidden: true },
   { name: "/compact", description: "compact conversation context", kind: "ui", action: "compact" },
   { name: "/connect", description: "add a custom model provider", kind: "ui", action: "connect" },
   { name: "/exit", aliases: ["/quit"], description: "exit the session", kind: "ui", action: "exit" },

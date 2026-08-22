@@ -24,8 +24,11 @@ export interface AgentDefinition {
   readonly workMode?: WorkMode;
   readonly forceBackground?: boolean;
   readonly isolationMode?: AgentIsolationMode;
+  /** 预留字段:已解析并校验,当前运行时尚未消费。 */
   readonly skills?: readonly string[];
+  /** 预留字段:已解析并校验,当前运行时尚未消费。 */
   readonly memory?: boolean;
+  /** 预留字段:已解析并校验,当前运行时尚未消费。 */
   readonly mcpServers?: readonly string[];
   readonly scope: AgentDefinitionScope;
   readonly filePath?: string;

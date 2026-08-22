@@ -1,6 +1,5 @@
 import type { ComposerState } from "./types.js";
 import {
-  graphemeIndexAtOffset,
   graphemeLength,
   graphemeOffset,
   graphemes,
@@ -153,20 +152,4 @@ export function composerCursorOffset(composer: ComposerState): number {
     offset += (composer.lines[index] ?? "").length + 1;
   }
   return offset + graphemeOffset(composer.lines[composer.cursor.line] ?? "", composer.cursor.column);
-}
-
-export function setComposerCursorOffset(composer: ComposerState, offset: number): void {
-  let remaining = Math.max(0, Math.min(offset, composer.lines.join("\n").length));
-  for (let line = 0; line < composer.lines.length; line += 1) {
-    const value = composer.lines[line] ?? "";
-    if (remaining <= value.length) {
-      composer.cursor = { line, column: graphemeIndexAtOffset(value, remaining) };
-      composer.preferredDisplayColumn = undefined;
-      return;
-    }
-    remaining -= value.length + 1;
-  }
-  const lastLine = Math.max(0, composer.lines.length - 1);
-  composer.cursor = { line: lastLine, column: graphemeLength(composer.lines[lastLine] ?? "") };
-  composer.preferredDisplayColumn = undefined;
 }
