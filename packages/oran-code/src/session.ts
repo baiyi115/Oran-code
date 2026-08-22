@@ -5,7 +5,7 @@ import { appendFile, mkdir, readFile, readdir, writeFile } from "node:fs/promise
 import { promisify } from "node:util";
 import { dirname, resolve } from "node:path";
 import { legacyUserHistoryPath, loadConfig, loadConfigFile, resolveModelConfig, saveConfig, userConfigReadPath, userHistoryPath } from "./config.js";
-import { CommandRegistry, commandHelp, completeInput, formatModelReference, modelCandidates, parseSlashCommand, type SlashCommand } from "./commands.js";
+import { CommandRegistry, completeInput, formatModelReference, modelCandidates, type SlashCommand } from "./commands.js";
 import { createModelProvider } from "./provider.js";
 import { createRuntimeConfig } from "./runtime.js";
 import { isAbortError } from "./utils/abort-error.js";
@@ -13,6 +13,13 @@ import { ApprovalQueue, isApprovalAnswer } from "./approval-queue.js";
 import { SessionTitleService } from "./session-title.js";
 import { MemoryExtractionScheduler } from "./memory-extraction.js";
 import { McpSessionIntegration } from "./mcp/session-integration.js";
+import { SessionCommandRouter } from "./session-commands.js";
+import {
+  createSessionGapReminder,
+  isReusableBlankSession,
+  sessionOptionsFromStore,
+  toSessionView as toSessionViewOf,
+} from "./session-lifecycle.js";
 import { TerminalRenderer, createPromptHooks, type SessionRenderer } from "./renderer.js";
 import { PERMISSION_MODES, createTask } from "./types.js";
 import { displaySessionName, firstConversationPrompt, isAutomaticSessionName, SessionStore, truncateSessionName, type StoredSession } from "./session-store.js";
@@ -43,7 +50,6 @@ import type { AgentStateStore } from "./subagent/state-store.js";
 
 const execAsync = promisify(exec);
 const SESSION_EXPIRY_DAYS = 30;
-const SESSION_GAP_REMINDER_DAYS = 7;
 
 /** Cached dynamic imports so cold-start stays light but first use pays once. */
 const loadInkApp = () => import("./tui/ink-app.js");
@@ -165,6 +171,7 @@ export class TerminalSession {
   private readonly hookSubagentAbortControllers = new Set<AbortController>();
   private readonly hookSubagentJobs = new Set<Promise<void>>();
   private readonly mcp: McpSessionIntegration;
+  private readonly commandRouter: SessionCommandRouter;
   private agentRuntime: AgentRuntimeServices | undefined;
   private agentRuntimePromise: Promise<AgentRuntimeServices> | undefined;
   private agentStateRestore: Promise<void> | undefined;
@@ -221,6 +228,77 @@ export class TerminalSession {
         this.currentSession = updated;
         if (refreshTui) this.refreshTui();
       },
+    });
+    this.commandRouter = new SessionCommandRouter({
+      workspace: this.workspace,
+      renderer: () => this.renderer,
+      initializeCommandIntegrations: () => this.initializeCommandIntegrations(),
+      commands: () => this.commandRegistry,
+      recordCommandUsage: (name) => { this.commandUsage?.record(name); },
+      handleSkillCommand: (name, argument) => this.handleSkillCommand(name, argument),
+      submitUserPrompt: (prompt) => this.submitUserPrompt(prompt),
+      interactionRunning: () => this.interactionRunning(),
+      hasPendingApprovals: () => this.hasPendingApprovals(),
+      runIsolatedSkill: async (prompt) => {
+        this.setPrompt();
+        await this.launchTask(prompt, true, false, true);
+      },
+      createSession: (name) => this.createSession(name),
+      handleModel: async (argument) => { await this.handleModel(argument); },
+      handleConnect: (argument) => this.handleConnect(argument),
+      handleSessionCommand: (argument) => this.handleSessionCommand(argument),
+      handlePermissionCommand: (argument) => this.handlePermissionCommand(argument),
+      changePermissionMode: async (mode) => { await this.changePermissionMode(mode); },
+      runManualCompaction: () => this.runManualCompaction(),
+      clearTranscript: async () => {
+        this.renderer.clearTranscript();
+        this.conversation = [];
+        (await this.currentContextManager()).reset();
+        await this.persistTuiSession();
+      },
+      renameSession: (id, name) => this.renameSession(id, name),
+      currentSessionId: () => this.currentSession?.id,
+      undoLatestChanges: async () => {
+        const sessionId = this.currentSession?.id;
+        if (!sessionId) return { ok: false, output: "No active session is available for undo." };
+        const runtime = await this.ensureAgentRuntime();
+        return runtime.snapshotStore.undoLatest(sessionId);
+      },
+      requestExit: () => {
+        this.quitRequested = true;
+        if (this.tui) this.tui.destroy();
+        else if (this.readline) this.closeReadline();
+      },
+      mcpStatus: async () => {
+        await this.ensureMcpReady();
+        return {
+          servers: this.mcp.connectedServers(),
+          failures: this.mcp.failures(),
+          toolCount: this.mcp.toolCount,
+        };
+      },
+      toolCountForCurrentMode: async () => {
+        const { ToolRegistry, registerBuiltinTools } = await loadTools();
+        const registry = new ToolRegistry();
+        registerBuiltinTools(registry, this.workspace);
+        this.registerMcpTools(registry);
+        return (await this.toolSchemasForCurrentMode(registry)).length;
+      },
+      usageSummary: () => {
+        const usage = this.tui?.snapshot().session.usage;
+        return {
+          inputTokens: usage?.inputTokens ?? tokenValue(this.latestUsage, "input_tokens", "inputTokens"),
+          outputTokens: usage?.outputTokens ?? tokenValue(this.latestUsage, "output_tokens", "outputTokens"),
+        };
+      },
+      permissionMode: () => this.permissionMode,
+      longTermMemory: () => this.stablePromptModules.longTermMemory,
+      clearLongTermMemory: () => {
+        const { longTermMemory: _discarded, ...remainingModules } = this.stablePromptModules;
+        this.stablePromptModules = remainingModules;
+      },
+      skillList: () => this.skillLoader.list(),
+      modelLabel: () => this.modelLabel(),
     });
     this.skillLoader = new SkillLoader(this.workspace);
     this.configuredActiveSkills = options.stablePromptModules?.activeSkills;
@@ -979,31 +1057,16 @@ export class TerminalSession {
 
   private async loadSessionOptions(): Promise<SessionOption[]> {
     await this.persistTuiSession();
-    return this.sessionStore.list().map((session) => ({
-      id: session.id,
-      name: this.sessionName(session),
-      updatedAt: session.updatedAt,
-      messageCount: session.archiveMessageCount ?? session.conversation?.length ?? session.messages.length,
-      isCurrent: session.id === this.currentSession?.id,
-    }));
+    return sessionOptionsFromStore(this.sessionStore.list(), this.currentSession?.id, (session) => this.sessionName(session));
   }
 
   private toSessionView(session: StoredSession): SessionView {
-    const activeModelReference = this.currentSession?.id === session.id && this.model
-      ? this.modelReference(this.model)
-      : session.modelReference;
-    return {
-      id: session.id,
-      name: this.sessionName(session),
-      messages: session.messages,
-      history: session.history,
-      ...(session.workMode !== undefined ? { workMode: session.workMode } : {}),
-      ...(session.permissionMode !== undefined ? { permissionMode: session.permissionMode } : {}),
-      ...(session.reasoningEffort !== undefined ? { reasoningEffort: session.reasoningEffort } : {}),
-      ...(activeModelReference !== undefined ? { modelReference: { ...activeModelReference } } : {}),
-      ...(session.conversation !== undefined ? { conversation: structuredClone(session.conversation) } : {}),
-      ...(this.currentSession?.id === session.id && this.modelWarning ? { modelWarning: this.modelWarning } : {}),
-    };
+    const active = this.currentSession?.id === session.id;
+    return toSessionViewOf(session, {
+      displayName: this.sessionName(session),
+      ...(active && this.model ? { activeModelReference: this.modelReference(this.model) } : {}),
+      ...(active && this.modelWarning ? { activeModelWarning: this.modelWarning } : {}),
+    });
   }
 
   private async selectSession(id: string): Promise<SessionView | undefined> {
@@ -1254,209 +1317,7 @@ export class TerminalSession {
   }
 
   private async handleCommand(value: string): Promise<void> {
-    await this.initializeCommandIntegrations();
-    const parsed = parseSlashCommand(value);
-    if (!parsed) return;
-    const command = this.commandRegistry.get(parsed.name);
-    if (!command) {
-      this.renderer.error(`Unknown command: ${parsed.name}. Use /help.`);
-      return;
-    }
-    this.commandUsage?.record(command.name);
-    const { name } = command;
-    const { argument } = parsed;
-
-    if (command.description.endsWith("[skill]")) {
-      await this.handleSkillCommand(name, argument);
-      return;
-    }
-
-    if (command.kind === "prompt") {
-      const prompt = command.handler ? await command.handler(argument) : argument;
-      if (!prompt.trim()) this.renderer.error(`Command ${name} did not produce a prompt.`);
-      else await this.submitUserPrompt(prompt);
-      return;
-    }
-    if (command.kind === "isolated-skill") {
-      if (this.interactionRunning() || this.hasPendingApprovals()) {
-        this.renderer.status("finish or cancel the current interaction before running an isolated skill", "yellow");
-        return;
-      }
-      const prompt = command.handler ? await command.handler(argument) : argument;
-      if (!prompt.trim()) {
-        this.renderer.error(`Command ${name} did not produce a skill prompt.`);
-        return;
-      }
-      this.renderer.user(`[isolated skill] ${name}${argument ? ` ${argument}` : ""}`);
-      this.setPrompt();
-      this.launchTask(prompt, true, false, true);
-      return;
-    }
-    if (command.kind === "local") {
-      const output = await this.handleLocalCommand(command, argument);
-      this.renderer.markdown(name, output);
-      return;
-    }
-
-    switch (command.action) {
-      case "skills": {
-        const output = await this.handleLocalCommand(command, argument);
-        this.renderer.markdown(name, output);
-        return;
-      }
-      case "new": {
-        const session = await this.createSession(argument || undefined);
-        if (session) this.renderer.status(`Started session ${session.name}.`, "cyan");
-        return;
-      }
-      case "model":
-        await this.handleModel(argument);
-        return;
-      case "connect":
-        await this.handleConnect(argument);
-        return;
-      case "session":
-        await this.handleSessionCommand(argument);
-        return;
-      case "permission":
-        await this.handlePermissionCommand(argument);
-        return;
-      case "plan":
-        if (argument) this.renderer.error("/plan does not accept arguments");
-        else await this.changePermissionMode("plan");
-        return;
-      case "compact":
-        if (argument) {
-          this.renderer.error("/compact does not accept arguments");
-          return;
-        }
-        await this.runManualCompaction();
-        return;
-      case "clear":
-        if (this.interactionRunning() || this.hasPendingApprovals()) {
-          this.renderer.status("finish or cancel the current task before clearing the transcript", "yellow");
-          return;
-        }
-        this.renderer.clearTranscript();
-        this.conversation = [];
-        (await this.currentContextManager()).reset();
-        await this.persistTuiSession();
-        this.renderer.status("Transcript cleared.", "cyan");
-        return;
-      case "rename": {
-        const nameValue = argument.trim();
-        if (!nameValue) {
-          this.renderer.error("usage: /rename NAME");
-          return;
-        }
-        const session = this.currentSession ? await this.renameSession(this.currentSession.id, nameValue) : undefined;
-        if (session) this.renderer.status(`Session renamed to ${session.name}.`, "cyan");
-        else this.renderer.error("cannot rename the active session while a task is running");
-        return;
-      }
-      case "undo": {
-        if (argument) {
-          this.renderer.error(`${name} does not accept arguments`);
-          return;
-        }
-        if (this.interactionRunning() || this.hasPendingApprovals()) {
-          this.renderer.status("finish or cancel the current task before undoing files", "yellow");
-          return;
-        }
-        const sessionId = this.currentSession?.id;
-        if (!sessionId) {
-          this.renderer.error("No active session is available for undo.");
-          return;
-        }
-        const runtime = await this.ensureAgentRuntime();
-        const result = await runtime.snapshotStore.undoLatest(sessionId);
-        if (result.ok) this.renderer.status(result.output, "cyan");
-        else this.renderer.error(result.output);
-        return;
-      }
-      case "exit":
-        this.quitRequested = true;
-        if (this.tui) this.tui.destroy();
-        else if (this.readline) this.closeReadline();
-        return;
-      default:
-        this.renderer.error(`Command ${name} has no UI action configured.`);
-    }
-  }
-
-  private async handleLocalCommand(command: SlashCommand, argument: string): Promise<string> {
-    switch (command.name) {
-      case "/help": {
-        const target = argument ? this.commandRegistry.get(argument) : undefined;
-        if (argument && !target) return `Unknown command: ${argument}. Use /help.`;
-        if (!target) return commandHelp(this.commandRegistry.list());
-        const aliases = target.aliases?.length ? target.aliases.join(", ") : "(none)";
-        const usage = target.usage ?? `${target.name}${target.argumentHint ? ` ${target.argumentHint}` : ""}`;
-        return `${usage}\n${target.description}\nAliases: ${aliases}\nType: ${target.kind}`;
-      }
-      case "/status": {
-        await this.ensureMcpReady();
-        const usage = this.tui?.snapshot().session.usage;
-        const inputTokens = usage?.inputTokens ?? tokenValue(this.latestUsage, "input_tokens", "inputTokens");
-        const outputTokens = usage?.outputTokens ?? tokenValue(this.latestUsage, "output_tokens", "outputTokens");
-        const { ToolRegistry, registerBuiltinTools } = await loadTools();
-        const registry = new ToolRegistry();
-        registerBuiltinTools(registry, this.workspace);
-        this.registerMcpTools(registry);
-        const servers = this.mcp.connectedServers();
-        return [
-          `permission: ${this.permissionMode}`,
-          `tokens.input: ${inputTokens}`,
-          `tokens.output: ${outputTokens}`,
-          `tools: ${(await this.toolSchemasForCurrentMode(registry)).length}`,
-          `mcp: ${servers.length} servers, ${this.mcp.toolCount} tools`,
-          `memory.entries: ${countPromptEntries(this.stablePromptModules.longTermMemory)}`,
-          `model: ${this.modelLabel()}`,
-          `workspace: ${this.workspace}`,
-        ].join("\n");
-      }
-      case "/memory": {
-        if (argument.trim().toLowerCase() === "clear") {
-          const { longTermMemory: _discarded, ...remainingModules } = this.stablePromptModules;
-          this.stablePromptModules = remainingModules;
-          return "Loaded long-term memory cleared for subsequent tasks.";
-        }
-        if (argument) return "Usage: /memory [clear]";
-        return this.stablePromptModules.longTermMemory?.trim() || "No long-term memory is loaded.";
-      }
-      case "/skills": {
-        if (argument) return "Usage: /skills";
-        const skills = this.skillLoader.list();
-        return skills.length
-          ? ["Available Skills:", ...skills.map((skill) => `/${skill.name} — ${skill.description}`)].join("\n")
-          : "No Skills were found in the built-in, user, or project Skill directories.";
-      }
-      case "/worktree": {
-        try {
-          const result = await execAsync("git worktree list --porcelain", { cwd: this.workspace, windowsHide: true });
-          return result.stdout.trim() || "No Git worktrees were reported.";
-        } catch {
-          return "Git worktree information is unavailable for this workspace.";
-        }
-      }
-      case "/mcp": {
-        await this.ensureMcpReady();
-        const servers = this.mcp.connectedServers();
-        const failures = this.mcp.failures();
-        if (!servers.length) {
-          return failures.length
-            ? ["No MCP servers are connected.", ...failures.map((item) => `- ${item.name}: ${item.error}`)].join("\n")
-            : "No MCP servers are connected.";
-        }
-        return [
-          ...servers.map((server) => `- ${server.name}: ${server.toolCount} tools`),
-          `Total: ${servers.length} servers, ${this.mcp.toolCount} tools`,
-          ...(failures.length ? ["Failed:", ...failures.map((item) => `- ${item.name}: ${item.error}`)] : []),
-        ].join("\n");
-      }
-      default:
-        return command.handler ? await command.handler(argument) : `Command ${command.name} has no local handler configured.`;
-    }
+    await this.commandRouter.dispatch(value);
   }
 
   private async handleSkillCommand(commandName: string, argument: string): Promise<void> {
@@ -2283,44 +2144,12 @@ function workModeForPermission(mode: PermissionMode): WorkMode {
   return mode === "plan" ? "plan" : "auto";
 }
 
-function isReusableBlankSession(session: StoredSession): boolean {
-  if (!isAutomaticSessionName(session) || session.messages.length !== 0) return false;
-  // Prefer the derived archive counter written while the body was known.
-  if (session.archiveMessageCount !== undefined) return session.archiveMessageCount === 0;
-  // Conversation already materialised.
-  if (session.conversation !== undefined) return session.conversation.length === 0;
-  // Metadata-only open without a known body size must not look blank.
-  return false;
-}
-
-function createSessionGapReminder(updatedAt: string, now = new Date()): Message | undefined {
-  const previous = Date.parse(updatedAt);
-  if (!Number.isFinite(previous)) return undefined;
-  const elapsedDays = Math.floor((now.getTime() - previous) / 86_400_000);
-  if (elapsedDays < SESSION_GAP_REMINDER_DAYS) return undefined;
-  return {
-    role: "system",
-    content: [
-      "<system-reminder>",
-      `This session was last active on ${new Date(previous).toISOString().slice(0, 10)}, about ${elapsedDays} days ago.`,
-      "Re-check time-sensitive assumptions and the current workspace state before continuing unfinished work.",
-      "Do not respond to this reminder as a user message.",
-      "</system-reminder>",
-    ].join("\n"),
-    metadata: { promptBlock: "session-gap-reminder", contextManaged: true },
-  };
-}
-
 function tokenValue(usage: Readonly<Record<string, number>>, ...keys: string[]): number {
   for (const key of keys) {
     const value = usage[key];
     if (typeof value === "number" && Number.isFinite(value)) return value;
   }
   return 0;
-}
-
-function countPromptEntries(value: string | undefined): number {
-  return value?.split(/\r?\n/).filter((line) => line.trim().length > 0).length ?? 0;
 }
 
 async function loadHistory(): Promise<string[]> {
