@@ -2428,24 +2428,37 @@ export class TerminalSession {
   }
 }
 
-function requiresPaintBarrier(event: RuntimeEvent): boolean {
+type RenderCommitKind = "normal" | "boundary" | "terminal";
+
+function renderCommitKind(event: RuntimeEvent): RenderCommitKind {
   switch (event.type) {
     case "assistant_start":
     case "assistant_end":
     case "thought_start":
     case "tool_start":
     case "retry":
-      return true;
+      return "boundary";
+    case "assistant_abort":
+    case "error":
+    case "cancelled":
+      return "terminal";
     case "context_compaction":
-      return event.phase === "started";
+      return event.phase === "started" ? "boundary" : "normal";
     case "state":
+      if (event.state === "failed" || event.state === "cancelled" || event.state === "paused") return "terminal";
       return event.state === "planning"
         || event.state === "executing"
         || event.state === "verifying"
-        || event.state === "awaiting_approval";
+        || event.state === "awaiting_approval"
+        ? "boundary"
+        : "normal";
     default:
-      return false;
+      return "normal";
   }
+}
+
+function requiresPaintBarrier(event: RuntimeEvent): boolean {
+  return renderCommitKind(event) !== "normal";
 }
 
 function sameApprovalOrigin(left: SubagentOrigin, right: SubagentOrigin): boolean {
