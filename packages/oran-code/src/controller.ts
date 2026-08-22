@@ -1,15 +1,23 @@
-import { createHash } from "node:crypto";
-import { execFile } from "node:child_process";
-import { readdir, readFile, stat } from "node:fs/promises";
+import { readFile } from "node:fs/promises";
 import { resolve, relative, sep } from "node:path";
-import { promisify } from "node:util";
-import { AgentLoop, toolCallSignature, type NoProgressDiagnostic } from "./loop.js";
-import { CONTEXT_LIMITS, ContextManager } from "./context-manager.js";
-import { PermissionPolicy, structuredPermissionDenial, type ApprovalDecision } from "./security.js";
+import { AgentLoop, type NoProgressDiagnostic } from "./loop.js";
+import { ContextManager } from "./context-manager.js";
+import { PermissionPolicy } from "./security.js";
 import { discoverWorkspace } from "./workspace.js";
 import { Verifier } from "./verifier.js";
 import { isAbortError } from "./utils/abort-error.js";
 import { cloneMessages } from "./message-utils.js";
+import {
+  ensureCallId,
+  extractPlanText,
+  extractToolFilePath,
+  formatCallArguments,
+  inferToolKind,
+  isPlanComplete,
+  summarizeArguments,
+  summarizeToolCalls,
+  tokenBudgetMessage,
+} from "./controller-utils.js";
 import type { TraceStore } from "./trace.js";
 import type {
   ApprovalCallback,
@@ -21,24 +29,20 @@ import type {
   RuntimeEvent,
   RuntimeEventPayloads,
   Task,
-  TaskPlanState,
-  TaskPlanStep,
   ToolCall,
-  ToolCallComplete,
   ToolDefinition,
-  ToolKind,
   ToolResult,
   OptionalSystemPromptModules,
   HookEnginePort,
   HookEventPortContext,
 } from "./types.js";
 import { transitionTask } from "./types.js";
+import { ToolBatchExecutor } from "./controller/tool-executor.js";
+import { TurnRequester } from "./controller/turn-requester.js";
 import { formatErrorMessage } from "./error-format.js";
-import { repairToolMessagePairs } from "./message-utils.js";
-import { ModelRequestError } from "./provider.js";
 import { isCasualConversationPrompt } from "./prompt-intent.js";
-import { PRODUCT_VERSION, PROJECT_STATE_DIR_NAMES } from "./paths.js";
-import { isMutatingToolName, isPlanModeTool, isWriteToolName, type ToolRegistry } from "./tools.js";
+import { PRODUCT_VERSION } from "./paths.js";
+import { isPlanModeTool, type ToolRegistry } from "./tools.js";
 import type { SnapshotStorePort } from "./snapshot.js";
 import {
   buildEnvironmentPrompt,
@@ -86,28 +90,6 @@ export interface TaskControllerOptions {
   snapshotSessionId?: string;
 }
 
-/** Explicit plan-complete markers the model may emit to finish plan mode. */
-const PLAN_COMPLETE_MARKERS = [
-  "PLAN_COMPLETE",
-  "<<PLAN_COMPLETE>>",
-  "<plan_complete>",
-  "</plan_complete>",
-] as const;
-
-const BUDGET_COMPACTION_MIN_REQUEST_TOKENS = 32_000;
-const BUDGET_COMPACTION_HEADROOM = 1.5;
-const BUDGET_COMPACTION_GROWTH_FACTOR = 1.25;
-const BUDGET_COMPACTION_COOLDOWN_TURNS = 3;
-const execFileAsync = promisify(execFile);
-
-interface DeferredToolRecord {
-  call: ToolCall;
-  index: number;
-  result: ToolResult;
-  duration: number;
-  executed: boolean;
-}
-
 export class TaskController {
   private readonly config: RuntimeConfig;
   private readonly provider: ModelProvider;
@@ -134,13 +116,10 @@ export class TaskController {
   private abortController: AbortController | undefined;
   private activeTask: Task | undefined;
   private sequence = 0;
-  private turnSequence = 0;
   private taskStartedAt = 0;
-  private modelResponseStepId: number | undefined;
-  private lastContextCompactionTurn = Number.NEGATIVE_INFINITY;
-  private contextCompactionFloorTokens = 0;
   private conversation: Message[];
-  private deferredToolRecords: DeferredToolRecord[] | undefined;
+  private readonly toolExecutor: ToolBatchExecutor;
+  private readonly turnRequester: TurnRequester;
 
   constructor(options: TaskControllerOptions) {
     this.config = options.config;
@@ -171,6 +150,47 @@ export class TaskController {
     if (options.previousReadonlyResults) {
       for (const [key, value] of options.previousReadonlyResults) this.readonlyCache.set(key, value);
     }
+    this.turnRequester = new TurnRequester({
+      config: this.config,
+      provider: this.provider,
+      contextManager: this.contextManager,
+      logger: (message: string) => this.logger(message),
+      debugLogger: (message: string) => this.debugLogger(message),
+      emit: (type, payload, turnId) => this.emit(type, payload, turnId),
+      fireHook: (ctx) => this.fireHook(ctx),
+      syncConversation: (messages) => this.syncConversation(messages),
+      appendDiagnosticStep: (kind, payload) => this.appendDiagnosticStep(kind, payload),
+      throwIfCancelled: () => this.throwIfCancelled(),
+      getAbortSignal: () => this.abortController?.signal,
+      getActiveTaskId: () => this.activeTask?.id,
+      getHookUserPrompt: () => this.hookUserPrompt,
+    });
+    this.toolExecutor = new ToolBatchExecutor({
+      config: this.config,
+      registry: this.registry,
+      contextManager: this.contextManager,
+      trace: this.trace,
+      permission: this.permission,
+      logger: (message: string) => this.logger(message),
+      debugLogger: (message: string) => this.debugLogger(message),
+      readonlyCache: this.readonlyCache,
+      snapshotStore: this.snapshotStore,
+      snapshotSessionId: this.snapshotSessionId,
+      emit: (type, payload) => this.emit(type, payload),
+      persist: (task) => this.persist(task),
+      requestApproval: (call, level, description) => this.requestApproval(call, level, description),
+      fireHook: (ctx) => this.fireHook(ctx),
+      checkBeforeToolHook: (task, call) => this.checkBeforeToolHook(task, call),
+      isToolVisible: (tool) => this.isToolVisible(tool),
+      syncConversation: (messages) => this.syncConversation(messages),
+      appendDiagnosticStep: (kind, payload) => this.appendDiagnosticStep(kind, payload),
+      trackSuccessfulFileRead: (workspace, call) => this.trackSuccessfulFileRead(workspace, call),
+      throwIfCancelled: () => this.throwIfCancelled(),
+      getLoop: () => this.loop,
+      getAbortSignal: () => this.abortController?.signal,
+      getTurnSequence: () => this.turnRequester.currentTurnSequence,
+      getModelResponseStepId: () => this.turnRequester.currentModelResponseStepId,
+    });
   }
 
   cancel(): void {
@@ -194,11 +214,8 @@ export class TaskController {
     this.activeTask = task;
     this.abortController = new AbortController();
     this.sequence = 0;
-    this.turnSequence = 0;
     this.taskStartedAt = Date.now();
-    this.modelResponseStepId = undefined;
-    this.lastContextCompactionTurn = Number.NEGATIVE_INFINITY;
-    this.contextCompactionFloorTokens = 0;
+    this.turnRequester.resetForTask();
     const loop = new AgentLoop(this.config.loop, this.previousToolCalls);
     this.loop = loop;
     this.hookUserPrompt = task.prompt;
@@ -306,7 +323,7 @@ export class TaskController {
       await this.fireHook({ event: "turn_start", workspace: task.workspace, model: this.config.model.model, userPrompt: task.prompt });
       try {
         const tools = finalTurn || casualConversation ? [] : this.toolSchemasForMode();
-        const request = await this.requestWithContext(
+        const request = await this.turnRequester.requestWithContext(
           messages,
           reminders,
           loop,
@@ -323,7 +340,7 @@ export class TaskController {
           if (response.toolCalls.length) {
             for (const [index, call] of response.toolCalls.entries()) {
               ensureCallId(call, this.contextManager);
-              await this.recordTool(
+              await this.toolExecutor.recordTool(
                 task,
                 messages,
                 call,
@@ -340,7 +357,7 @@ export class TaskController {
         if (finalTurn && response.toolCalls.length) {
           for (const [index, call] of response.toolCalls.entries()) {
             ensureCallId(call, this.contextManager);
-            await this.recordTool(
+            await this.toolExecutor.recordTool(
               task,
               messages,
               call,
@@ -396,7 +413,7 @@ export class TaskController {
           const preExecutionNoProgress = loop.noProgressDiagnosticForNextCalls(response.toolCalls);
           if (preExecutionNoProgress) {
             this.recordNoProgressBlock(task, response.toolCalls, preExecutionNoProgress);
-            await this.reconcileToolCalls(
+            await this.toolExecutor.reconcileToolCalls(
               task,
               messages,
               response.toolCalls,
@@ -407,12 +424,12 @@ export class TaskController {
             return task;
           }
           try {
-            workspaceMutated ||= await this.runTools(task, messages, response.toolCalls, loop);
+            workspaceMutated ||= await this.toolExecutor.runTools(task, messages, response.toolCalls, loop);
             const allReadonly = response.toolCalls.every((c) => inferToolKind(c.name) === "readonly");
             loop.recordTurnActivity({ hasMutation: workspaceMutated, isReadonly: allReadonly });
           } catch (error) {
             const cancelled = isAbortError(error) || this.abortController?.signal.aborted === true;
-            await this.reconcileToolCalls(
+            await this.toolExecutor.reconcileToolCalls(
               task,
               messages,
               response.toolCalls,
@@ -489,858 +506,10 @@ export class TaskController {
     return task;
   }
 
-  private async requestWithContext(
-    messages: Message[],
-    reminders: readonly string[],
-    loop: AgentLoop,
-    step: number,
-    source: string,
-    tools: Record<string, unknown>[],
-  ): Promise<{ messages: Message[]; response: ModelResponse }> {
-    let managedMessages = repairToolMessagePairs(await this.prepareContext(messages, reminders, tools, loop));
-    this.syncConversation(managedMessages);
-    let requestMessages = withRuntimeReminders(managedMessages, reminders);
-    await this.fireHook({ event: "before_model_request", workspace: this.config.workspace, model: this.config.model.model, userPrompt: this.hookUserPrompt });
-    try {
-      const response = await this.streamWithRetry(requestMessages, loop, step, source, tools);
-      this.contextManager.recordUsage(response.usage, usageAnchorMessages(requestMessages, response), tools);
-      await this.fireHook({ event: "after_model_response", workspace: this.config.workspace, model: this.config.model.model, assistantText: response.text });
-      return { messages: managedMessages, response };
-    } catch (error) {
-      if (isAbortError(error) || this.abortController?.signal.aborted) throw error;
-      if (!this.contextManager.isPromptTooLongError(error)) throw error;
-
-      const contextWindow = this.contextManager.resolveContextWindow(this.config.model);
-      const beforeTokens = this.contextManager.estimateTokens(requestMessages, tools);
-      await this.emit("context_compaction", {
-        phase: "started",
-        reason: "emergency",
-        beforeTokens,
-        replacementCount: 0,
-        message: "The provider rejected the request because the context window was exceeded. Compacting now.",
-      });
-      try {
-        const compacted = await this.contextManager.compact({
-          messages: requestMessages,
-          provider: this.provider,
-          tools,
-          contextWindow,
-          reason: "emergency",
-          ...(this.abortController?.signal ? { signal: this.abortController.signal } : {}),
-        });
-        managedMessages = repairToolMessagePairs(compacted.messages);
-        this.syncConversation(managedMessages);
-        await this.emit("context_compaction", {
-          phase: "completed",
-          reason: "emergency",
-          beforeTokens: compacted.beforeTokens,
-          afterTokens: compacted.afterTokens,
-          replacementCount: compacted.replacementCount,
-        });
-      } catch (compactionError) {
-        await this.emit("context_compaction", {
-          phase: "failed",
-          reason: "emergency",
-          beforeTokens,
-          replacementCount: 0,
-          message: formatErrorMessage(compactionError),
-        });
-        throw compactionError;
-      }
-
-      this.throwIfCancelled();
-      requestMessages = withRuntimeReminders(managedMessages, reminders);
-      const response = await this.streamResponse(requestMessages, loop, step, source, 1, tools);
-      this.contextManager.recordUsage(response.usage, usageAnchorMessages(requestMessages, response), tools);
-      return { messages: managedMessages, response };
-    }
-  }
-
-  private async prepareContext(
-    messages: Message[],
-    reminders: readonly string[],
-    tools: Record<string, unknown>[],
-    loop: AgentLoop,
-  ): Promise<Message[]> {
-    let managedMessages = messages;
-    const beforeOffload = this.contextManager.estimateTokens(withRuntimeReminders(managedMessages, reminders), tools);
-    const offload = await this.contextManager.offloadAndSnip(managedMessages);
-    managedMessages = this.contextManager.refreshRecoveryMessage(offload.messages, tools);
-    if (offload.replacementCount > 0 || offload.failedCount > 0) {
-      const afterOffload = this.contextManager.estimateTokens(withRuntimeReminders(managedMessages, reminders), tools);
-      await this.emit("context_compaction", {
-        phase: "offloaded",
-        reason: "auto",
-        beforeTokens: beforeOffload,
-        afterTokens: afterOffload,
-        replacementCount: offload.replacementCount,
-        ...(offload.failedCount > 0
-          ? { message: `${offload.failedCount} tool result(s) could not be persisted and were kept in context.` }
-          : {}),
-      });
-      this.syncConversation(managedMessages);
-    }
-
-    const requestMessages = withRuntimeReminders(managedMessages, reminders);
-    const contextWindow = this.contextManager.resolveContextWindow(this.config.model);
-    const beforeTokens = this.contextManager.estimateTokens(requestMessages, tools);
-    const compactForContextWindow = this.contextManager.shouldAutoCompact(requestMessages, contextWindow, tools);
-
-    const tokenBudget = loop.config.tokenBudget;
-    const remainingBudget = Math.max(0, tokenBudget - loop.tokensUsed);
-    const remainingRequests = Math.max(1, loop.remainingTurns() + 1);
-    const sustainableRequestTokens = remainingBudget / remainingRequests;
-    const budgetCompactionThreshold = Math.max(
-      BUDGET_COMPACTION_MIN_REQUEST_TOKENS,
-      sustainableRequestTokens * BUDGET_COMPACTION_HEADROOM,
-      this.contextCompactionFloorTokens * BUDGET_COMPACTION_GROWTH_FACTOR,
-    );
-    const compactForTokenBudget = tokenBudget > 0
-      && remainingBudget > 0
-      && loop.turns - this.lastContextCompactionTurn >= BUDGET_COMPACTION_COOLDOWN_TURNS
-      && beforeTokens >= budgetCompactionThreshold;
-    if (!compactForContextWindow && !compactForTokenBudget) return managedMessages;
-
-    const budgetMessage = compactForTokenBudget && !compactForContextWindow
-      ? "Compacting early to keep the remaining model iterations within the task token budget."
-      : undefined;
-    this.lastContextCompactionTurn = loop.turns;
-    await this.emit("context_compaction", {
-      phase: "started",
-      reason: "auto",
-      beforeTokens,
-      replacementCount: 0,
-      ...(budgetMessage ? { message: budgetMessage } : {}),
-    });
-    try {
-      const compacted = await this.contextManager.compact({
-        messages: requestMessages,
-        provider: this.provider,
-        tools,
-        contextWindow,
-        reason: "auto",
-        ...(this.abortController?.signal ? { signal: this.abortController.signal } : {}),
-      });
-      managedMessages = compacted.messages;
-      this.contextCompactionFloorTokens = Math.max(1, compacted.afterTokens);
-      this.syncConversation(managedMessages);
-      await this.emit("context_compaction", {
-        phase: "completed",
-        reason: "auto",
-        beforeTokens: compacted.beforeTokens,
-        afterTokens: compacted.afterTokens,
-        replacementCount: compacted.replacementCount,
-        ...(budgetMessage ? { message: budgetMessage } : {}),
-      });
-    } catch (error) {
-      if (isAbortError(error) || this.abortController?.signal.aborted) throw error;
-      const message = formatErrorMessage(error);
-      await this.emit("context_compaction", {
-        phase: "failed",
-        reason: "auto",
-        beforeTokens,
-        replacementCount: 0,
-        message,
-      });
-      this.logger(`Automatic context compaction failed: ${message}`);
-    }
-    return managedMessages;
-  }
-
-  private async streamWithRetry(
-    messages: Message[],
-    loop: AgentLoop,
-    step: number,
-    source: string,
-    tools: Record<string, unknown>[],
-  ): Promise<ModelResponse> {
-    let lastError: unknown;
-    for (let attempt = 0; attempt <= this.config.loop.maxRetries; attempt += 1) {
-      this.throwIfCancelled();
-      try {
-        return await this.streamResponse(messages, loop, step, source, attempt, tools);
-      } catch (error) {
-        if (isAbortError(error) || this.abortController?.signal.aborted) throw error;
-        if (this.contextManager.isPromptTooLongError(error)) throw error;
-        if (error instanceof ModelRequestError && !isRetryableModelStatus(error.status)) throw error;
-        lastError = error;
-        const message = formatErrorMessage(error);
-        if (attempt >= this.config.loop.maxRetries) {
-          // Final failure is reported by the outer execute() error event.
-          throw error;
-        }
-        // Surface the concrete failure immediately, then announce the retry.
-        await this.emit("retry", {
-          step,
-          source,
-          attempt,
-          nextAttempt: attempt + 1,
-          maxRetries: this.config.loop.maxRetries,
-          message,
-        });
-        this.appendDiagnosticStep("model_retry", {
-          step,
-          source,
-          attempt,
-          nextAttempt: attempt + 1,
-          message,
-        });
-        this.debugLogger(JSON.stringify({
-          event: "model_retry",
-          taskId: this.activeTask?.id,
-          step,
-          source,
-          attempt,
-          nextAttempt: attempt + 1,
-          message,
-        }));
-        this.logger(`Retrying ${source} response (${attempt + 1}/${this.config.loop.maxRetries}): ${message}`);
-      }
-    }
-    throw lastError instanceof Error ? lastError : new Error(String(lastError));
-  }
-
-  private async streamResponse(
-    messages: Message[],
-    loop: AgentLoop,
-    step: number,
-    source: string,
-    attempt: number,
-    tools: Record<string, unknown>[],
-  ): Promise<ModelResponse> {
-    const turnId = `turn-${++this.turnSequence}`;
-    const startedAt = Date.now();
-    this.modelResponseStepId = undefined;
-    // Thought rows are model-adaptive: only open a thought bubble once the provider
-    // actually streams reasoning. Many chat models never send reasoning at all.
-    let thoughtStarted = false;
-    await this.emit("assistant_start", { step, source, attempt, model: this.config.model.model }, turnId);
-    const textParts: string[] = [];
-    const completedToolCalls = new Map<number, ToolCall>();
-    let toolCallChunkCount = 0;
-    const usage: Record<string, number> = {};
-    const reasoningParts: string[] = [];
-    let streamed = false;
-    let finishReason: string | undefined;
-    let responseCompleted = false;
-    try {
-      const requestFingerprint = fingerprintRequest(messages);
-      const estimatedRequestTokens = this.contextManager.estimateTokens(messages, tools);
-      this.appendDiagnosticStep("model_request", {
-        turnId,
-        step,
-        source,
-        attempt,
-        requestFingerprint,
-        estimatedRequestTokens,
-        taskTokensUsed: loop.tokensUsed,
-        messageCount: messages.length,
-        toolResultCount: messages.filter((message) => message.role === "tool").length,
-      });
-      this.debugLogger(JSON.stringify({
-        event: "model_request",
-        taskId: this.activeTask?.id,
-        turnId,
-        step,
-        source,
-        attempt,
-        requestFingerprint,
-        estimatedRequestTokens,
-        taskTokensUsed: loop.tokensUsed,
-        messageCount: messages.length,
-        toolResultCount: messages.filter((message) => message.role === "tool").length,
-        tail: summarizeMessageTail(messages),
-      }));
-      const providerOptions = this.abortController?.signal
-        ? { signal: this.abortController.signal }
-        : undefined;
-      const modelStartedAt = Date.now();
-      for await (const chunk of this.provider.streamResponse(messages, tools, providerOptions)) {
-        streamed ||= chunk.streamed;
-        if (responseCompleted) {
-          throw new Error(`provider emitted ${chunk.type} after response_complete`);
-        }
-        switch (chunk.type) {
-          case "reasoning_delta":
-            if (!thoughtStarted) {
-              thoughtStarted = true;
-              await this.emit("thought_start", { step, source, attempt }, turnId);
-            }
-            reasoningParts.push(chunk.text);
-            await this.emit("thought_delta", { step, source, attempt, text: chunk.text }, turnId);
-            break;
-          case "text_delta":
-            textParts.push(chunk.text);
-            await this.emit("assistant_delta", { step, source, attempt, text: chunk.text }, turnId);
-            break;
-          case "tool_call_complete": {
-            const call = parseCompletedToolCall(chunk.toolCall);
-            const existing = completedToolCalls.get(chunk.toolCall.index);
-            if (existing && !sameToolCall(existing, call)) {
-              throw new Error(`provider emitted conflicting completed tool calls for index ${chunk.toolCall.index}`);
-            }
-            if (!existing) {
-              completedToolCalls.set(chunk.toolCall.index, call);
-              toolCallChunkCount += 1;
-            }
-            break;
-          }
-          case "usage":
-            Object.assign(usage, chunk.usage);
-            break;
-          case "response_complete":
-            if (responseCompleted) throw new Error("provider emitted response_complete more than once");
-            responseCompleted = true;
-            finishReason = chunk.finishReason;
-            break;
-        }
-      }
-      if (!responseCompleted) throw new Error("provider stream ended without a response_complete event");
-      loop.recordModelElapsed(Math.max(1, Date.now() - modelStartedAt));
-      loop.recordUsage(usage);
-      const normalizedCalls = [...completedToolCalls.entries()]
-        .sort(([left], [right]) => left - right)
-        .map(([, call]) => normalizeCallId(call, this.contextManager));
-      const response: ModelResponse = {
-        text: textParts.join(""),
-        ...(reasoningParts.length ? { reasoning: reasoningParts.join("") } : {}),
-        toolCalls: normalizedCalls,
-        raw: { usage, finishReason, toolCalls: normalizedCalls },
-        usage,
-        streamed,
-        ...(finishReason !== undefined ? { finishReason } : {}),
-      };
-      this.modelResponseStepId = this.appendDiagnosticStep("model_response", {
-        turnId,
-        step,
-        source,
-        attempt,
-        toolCallChunkCount,
-        toolCalls: summarizeToolCalls(normalizedCalls),
-        responseFingerprint: fingerprintResponse(response),
-        finishReason,
-        usage,
-        taskTokensUsed: loop.tokensUsed,
-      });
-      this.debugLogger(JSON.stringify({
-        event: "model_response",
-        taskId: this.activeTask?.id,
-        turnId,
-        step,
-        source,
-        attempt,
-        toolCallChunkCount,
-        toolCalls: summarizeToolCalls(normalizedCalls),
-        responseFingerprint: fingerprintResponse(response),
-        finishReason,
-        usage,
-        taskTokensUsed: loop.tokensUsed,
-      }));
-      if (thoughtStarted) {
-        await this.emit("thought_end", {
-          step,
-          source,
-          attempt,
-          text: response.reasoning ?? "",
-          durationMs: Math.max(0, Date.now() - startedAt),
-        }, turnId);
-      }
-      const displayText = this.config.workMode === "plan" ? extractPlanText(response.text) || response.text : response.text;
-      await this.emit("assistant_end", { step, source, attempt, text: displayText, toolCalls: response.toolCalls, usage, streamed: response.streamed, ...(finishReason !== undefined ? { finishReason } : {}) }, turnId);
-      return response;
-    } catch (error) {
-      if (thoughtStarted) {
-        await this.emit("thought_end", {
-          step,
-          source,
-          attempt,
-          text: reasoningParts.join(""),
-          durationMs: Math.max(0, Date.now() - startedAt),
-        }, turnId);
-      }
-      const aborted = isAbortError(error) || this.abortController?.signal.aborted;
-      // A non-cancellation model error is reported by the outer `error` event.
-      // Emitting assistant_abort as well makes the TUI show the same failure
-      // twice: once as a bracketed assistant suffix and once as an Error block.
-      if (aborted) {
-        await this.emit("assistant_abort", { step, source, attempt, message: formatErrorMessage(error), ...(finishReason !== undefined ? { finishReason } : {}) }, turnId);
-      }
-      if (aborted && (textParts.length || completedToolCalls.size || reasoningParts.length)) {
-        // Preserve partial assistant output so conversation history stays usable after cancel.
-        // Tool execution is only safe after the full provider response completed.
-        loop.recordUsage(usage);
-        return {
-          text: textParts.join(""),
-          ...(reasoningParts.length ? { reasoning: reasoningParts.join("") } : {}),
-          toolCalls: [],
-          raw: { usage, finishReason, toolCalls: [], aborted: true },
-          usage,
-          streamed,
-          ...(finishReason !== undefined ? { finishReason } : {}),
-        };
-      }
-      throw error;
-    }
-  }
-
-  private async runTools(task: Task, messages: Message[], calls: ToolCall[], loop: AgentLoop): Promise<boolean> {
-    let workspaceMutated = false;
-    const concurrency = Math.max(1, this.config.loop.readonlyConcurrency || 1);
-    const deferredRecords: DeferredToolRecord[] = [];
-    this.deferredToolRecords = deferredRecords;
-
-    try {
-
-    // Partition into ordered batches: consecutive readonly tools share a concurrent batch;
-    // write/command/unknown tools run as singleton serial batches.
-    type BatchItem = { index: number; call: ToolCall };
-    const batches: BatchItem[][] = [];
-    let readonlyBatch: BatchItem[] = [];
-    const flushReadonly = (): void => {
-      if (!readonlyBatch.length) return;
-      batches.push(readonlyBatch);
-      readonlyBatch = [];
-    };
-
-    for (const [index, call] of calls.entries()) {
-      ensureCallId(call, this.contextManager);
-      const known = this.registry.has(call.name);
-      const kind = known ? (this.registry.get(call.name).kind ?? inferToolKind(call.name)) : "command";
-      if (known && kind === "readonly") {
-        readonlyBatch.push({ index, call });
-      } else {
-        flushReadonly();
-        batches.push([{ index, call }]);
-      }
-    }
-    flushReadonly();
-
-    for (const batch of batches) {
-      this.throwIfCancelled();
-      if (batch.length === 1 && !this.registry.has(batch[0]!.call.name)) {
-        const { index, call } = batch[0]!;
-        await this.emit("tool_start", { call, index, permissionLevel: 4 });
-        const hookBlock = await this.checkBeforeToolHook(task, call);
-        if (hookBlock) {
-          await this.recordTool(task, messages, call, index, hookBlock, 0, { executed: false });
-          continue;
-        }
-        if (this.config.workMode === "plan") {
-          await this.recordTool(task, messages, call, index, planModeDeniedResult(call), 0, { executed: false });
-          continue;
-        }
-        const denied = await this.authorizeTool(task, call, 4, "command", "Unknown tool requested by the model.");
-        if (denied) {
-          await this.recordTool(task, messages, call, index, denied, 0, { executed: false });
-          continue;
-        }
-        const result: ToolResult = {
-          ok: false,
-          output: "",
-          error: `unknown tool: ${call.name}`,
-          summary: "unknown tool",
-        };
-        loop.recordUnknownTool(call);
-        await this.recordTool(task, messages, call, index, result, 0, { executed: false });
-        this.logger(`Tool ${call.name}: unknown tool`);
-        if (loop.shouldStopForUnknownTools()) return workspaceMutated;
-        continue;
-      }
-
-      // Prepare approvals serially to keep policy/UI deterministic, then execute.
-      type Prepared = {
-        index: number;
-        call: ToolCall;
-        skip?: ToolResult;
-      };
-      const prepared: Prepared[] = [];
-      for (const item of batch) {
-        this.throwIfCancelled();
-        const { index, call } = item;
-        const tool = this.registry.get(call.name);
-        const kind = tool.kind ?? inferToolKind(call.name);
-        await this.emit("tool_start", { call, index, permissionLevel: tool.permissionLevel });
-        const hookBlock = await this.checkBeforeToolHook(task, call);
-        if (hookBlock) {
-          prepared.push({ index, call, skip: hookBlock });
-          continue;
-        }
-        if (!this.isToolVisible(tool)) {
-          prepared.push({ index, call, skip: toolUnavailableResult(call) });
-          continue;
-        }
-        if (this.config.workMode === "plan" && !isPlanModeTool(tool)) {
-          prepared.push({ index, call, skip: planModeDeniedResult(call) });
-          continue;
-        }
-        const denied = tool.system
-          ? undefined
-          : await this.authorizeTool(task, call, tool.permissionLevel, kind, tool.description);
-        if (denied) {
-          prepared.push({ index, call, skip: denied });
-          continue;
-        }
-        const cacheKey = kind === "readonly" ? toolCallSignature(call) : undefined;
-        if (cacheKey && this.readonlyCache.has(cacheKey)) {
-          const cached = this.readonlyCache.get(cacheKey)!;
-          this.debugLogger(JSON.stringify({
-            event: "tool_cached_duplicate",
-            taskId: task.id,
-            turn: this.turnSequence,
-            index,
-            tool: call.name,
-            arguments: summarizeArguments(call.arguments),
-          }));
-          loop.record(call);
-          prepared.push({
-            index,
-            call,
-            skip: {
-              ...cached,
-              metadata: { ...cached.metadata, cached: true },
-            },
-          });
-          continue;
-        }
-        loop.record(call);
-        prepared.push({ index, call });
-      }
-
-      const executable = prepared.filter((item) => !item.skip);
-      if (this.snapshotStore && this.snapshotSessionId && executable.some((item) => this.isPotentiallyMutating(item.call))) {
-        try {
-          await this.snapshotStore.begin(this.snapshotSessionId, task);
-        } catch (error) {
-          this.debugLogger(JSON.stringify({ event: "snapshot_begin_failed", taskId: task.id, error: formatErrorMessage(error) }));
-        }
-      }
-      const results = new Map<number, { call: ToolCall; result: ToolResult; duration: number; mutated: boolean }>();
-      for (let offset = 0; offset < executable.length; offset += concurrency) {
-        this.throwIfCancelled();
-        const slice = executable.slice(offset, offset + concurrency);
-        await Promise.all(slice.map(async (item) => {
-          const started = Date.now();
-          this.debugLogger(JSON.stringify({
-            event: "tool_execute_start",
-            taskId: task.id,
-            turn: this.turnSequence,
-            index: item.index,
-            callId: item.call.id,
-            tool: item.call.name,
-            arguments: summarizeArguments(item.call.arguments),
-          }));
-          const beforeWorkspace = this.isPotentiallyMutating(item.call) ? await workspaceFingerprint(task.workspace) : undefined;
-          const before = await fileHash(task.workspace, item.call);
-          let result: ToolResult;
-          try {
-            const executionContext = this.abortController?.signal
-              ? { workspace: task.workspace, signal: this.abortController.signal }
-              : { workspace: task.workspace };
-            result = await this.registry.invoke(item.call, executionContext);
-          } catch (error) {
-            if (isAbortError(error) || this.abortController?.signal.aborted) {
-              result = { ok: false, output: "", error: "tool cancelled", summary: "cancelled", metadata: { cancelled: true } };
-            } else {
-              result = { ok: false, output: "", error: error instanceof Error ? error.message : String(error) };
-            }
-          }
-          const duration = Date.now() - started;
-          const after = await fileHash(task.workspace, item.call);
-          const afterWorkspace = beforeWorkspace === undefined ? undefined : await workspaceFingerprint(task.workspace);
-          const mutated = beforeWorkspace !== undefined && afterWorkspace !== undefined && beforeWorkspace !== afterWorkspace;
-          if (before && after && before.hash !== after.hash) {
-            this.trace.appendFileChange(task.id, before.path, before.hash, after.hash);
-          }
-          result = await this.offloadLargeToolResult(task, item.call, result);
-          const executedResult = { ...result, durationMs: duration };
-          if (result.ok && (this.registry.get(item.call.name)?.kind ?? inferToolKind(item.call.name)) === "readonly") {
-            const cacheKey = toolCallSignature(item.call);
-            this.readonlyCache.set(cacheKey, { ...executedResult, metadata: { ...executedResult.metadata, cached: false } });
-          }
-          results.set(item.index, { call: item.call, result: executedResult, duration, mutated });
-        }));
-      }
-
-      // Write back in original model order (skipped + executed).
-      for (const item of prepared) {
-        if (item.skip) {
-          await this.recordTool(task, messages, item.call, item.index, item.skip, 0, { executed: false });
-          continue;
-        }
-        const entry = results.get(item.index);
-        if (!entry) continue;
-        if (entry.mutated) workspaceMutated = true;
-        if (entry.result.ok && this.isPotentiallyMutating(entry.call)) this.readonlyCache.clear();
-        if (entry.result.ok && entry.call.name === "read_file") {
-          await this.trackSuccessfulFileRead(task.workspace, entry.call);
-        }
-        await this.recordTool(task, messages, entry.call, item.index, entry.result, entry.duration);
-        this.logger(`Tool ${entry.call.name}: ${entry.result.summary ?? entry.result.ok}`);
-      }
-      this.throwIfCancelled();
-    }
-      return workspaceMutated;
-    } finally {
-      try {
-        await this.flushDeferredToolRecords(task, messages, deferredRecords);
-      } finally {
-        if (this.deferredToolRecords === deferredRecords) this.deferredToolRecords = undefined;
-      }
-    }
-  }
-
-  private async reconcileToolCalls(
-    task: Task,
-    messages: Message[],
-    calls: readonly ToolCall[],
-    reason: string,
-    cancelled: boolean,
-  ): Promise<void> {
-    const pairedIds = new Set(
-      messages
-        .filter((message) => message.role === "tool" && message.toolCallId)
-        .map((message) => message.toolCallId!),
-    );
-    const blockedBeforeExecution = !cancelled && reason.includes("blocked before execution");
-    for (const [index, call] of calls.entries()) {
-      const id = ensureCallId(call, this.contextManager);
-      if (pairedIds.has(id)) continue;
-      await this.recordTool(task, messages, call, index, {
-        ok: false,
-        output: "",
-        error: reason,
-        summary: cancelled
-          ? "cancelled"
-          : blockedBeforeExecution
-            ? "blocked before execution"
-            : "not completed",
-        metadata: {
-          ...(cancelled ? { cancelled: true } : {}),
-          ...(blockedBeforeExecution ? { blockedBeforeExecution: true } : {}),
-          reconciled: true,
-        },
-      }, 0, { executed: false });
-      pairedIds.add(id);
-    }
-  }
-
-  private isPotentiallyMutating(call: ToolCall): boolean {
-    const tool = this.registry.has(call.name) ? this.registry.get(call.name) : undefined;
-    return tool
-      ? (tool.kind ?? inferToolKind(call.name)) !== "readonly"
-      : isMutatingToolName(call.name);
-  }
-
-  private async authorizeTool(
-    task: Task,
-    call: ToolCall,
-    level: number,
-    kind: ToolKind,
-    description: string,
-  ): Promise<ToolResult | undefined> {
-    const decision = await this.permission.decide(call, level, kind);
-    if (decision.verdict === "allow") return undefined;
-    if (decision.verdict === "deny") return permissionDeniedResult(call, decision);
-
-    const resumeState = task.state === "planning" ? "planning" : "executing";
-    transitionTask(task, "awaiting_approval");
-    await this.persist(task);
-    let approval: ApprovalResponse;
-    try {
-      approval = await this.requestApproval(call, level, `${description}\nReason: ${decision.reason}`);
-    } finally {
-      if (task.state === "awaiting_approval" && !this.abortController?.signal.aborted) {
-        transitionTask(task, resumeState);
-        await this.persist(task);
-      }
-    }
-    this.throwIfCancelled();
-
-    if (approval === true) return undefined;
-    if (approval === "task") {
-      this.permission.allowForTask(call);
-      return undefined;
-    }
-    if (approval === "always") {
-      try {
-        await this.permission.allowPermanently(call);
-        return undefined;
-      } catch (error) {
-        return permissionDeniedResult(call, {
-          ...decision,
-          verdict: "deny",
-          source: "user-decision",
-          reason: `permanent allow could not be saved: ${formatErrorMessage(error)}`,
-        });
-      }
-    }
-    return permissionDeniedResult(call, {
-      ...decision,
-      verdict: "deny",
-      source: "user-decision",
-      reason: "the user rejected this tool call",
-    });
-  }
-
-  private async recordTool(
-    task: Task,
-    messages: Message[],
-    call: ToolCall,
-    index: number,
-    result: ToolResult,
-    duration: number,
-    options: { executed?: boolean } = {},
-  ): Promise<void> {
-    const deferredRecords = this.deferredToolRecords;
-    if (deferredRecords) {
-      deferredRecords.push({
-        call,
-        index,
-        result,
-        duration,
-        executed: options.executed ?? true,
-      });
-      return;
-    }
-    await this.recordToolNow(task, messages, call, index, result, duration, options.executed ?? true);
-  }
-
-  private async flushDeferredToolRecords(
-    task: Task,
-    messages: Message[],
-    records: readonly DeferredToolRecord[],
-  ): Promise<void> {
-    if (!records.length) return;
-    const offload = await this.contextManager.offloadToolResults(records.map((record) => ({
-      id: record.call.id ?? `call_${record.call.name}`,
-      content: record.result.output || record.result.error || "",
-    })));
-    if (offload.offloadedCount > 0 || offload.failedCount > 0) {
-      const payload: RuntimeEventPayloads["context_compaction"] = {
-        phase: "offloaded",
-        reason: "auto",
-        replacementCount: offload.offloadedCount,
-      };
-      if (offload.failedCount > 0) payload.message = `${offload.failedCount} tool result(s) could not be offloaded.`;
-      await this.emit("context_compaction", payload);
-    }
-    for (const record of records) {
-      const replacement = offload.replacements.get(record.call.id ?? `call_${record.call.name}`);
-      const result = replacement === undefined
-        ? record.result
-        : {
-            ...record.result,
-            output: replacement,
-            ...(record.result.error ? { error: "tool failed; details offloaded" } : {}),
-            metadata: {
-              ...record.result.metadata,
-              offloaded: true,
-              originalBytes: record.result.metadata?.originalBytes
-                ?? Buffer.byteLength(record.result.output || record.result.error || "", "utf8"),
-            },
-          };
-      await this.recordToolNow(task, messages, record.call, record.index, result, record.duration, record.executed);
-    }
-  }
-
-  private async offloadLargeToolResult(task: Task, call: ToolCall, result: ToolResult): Promise<ToolResult> {
-    const content = result.output || result.error || "";
-    const bytes = Buffer.byteLength(content, "utf8");
-    if (bytes <= CONTEXT_LIMITS.singleToolResultBytes) return result;
-    const id = call.id ?? `call_${call.name}`;
-    const offload = await this.contextManager.offloadToolResults([{ id, content }]);
-    const replacement = offload.replacements.get(id);
-    if (replacement === undefined) return result;
-    await this.emit("context_compaction", {
-      phase: "offloaded",
-      reason: "auto",
-      replacementCount: 1,
-      ...(offload.failedCount > 0 ? { message: "A large tool result could not be offloaded." } : {}),
-    });
-    this.debugLogger(JSON.stringify({
-      event: "tool_result_offloaded_immediately",
-      taskId: task.id,
-      turn: this.turnSequence,
-      callId: call.id,
-      tool: call.name,
-      originalBytes: bytes,
-    }));
-    return {
-      ...result,
-      output: replacement,
-      ...(result.error ? { error: "tool failed; details offloaded" } : {}),
-      metadata: { ...result.metadata, offloaded: true, originalBytes: bytes },
-    };
-  }
-
-  private async recordToolNow(
-    task: Task,
-    messages: Message[],
-    call: ToolCall,
-    index: number,
-    result: ToolResult,
-    duration: number,
-    executed: boolean,
-  ): Promise<void> {
-    const output = result.output || result.error || "";
-    this.loop?.recordResult(call, result);
-    if (call.name === "update_plan" && result.ok && result.output) {
-      try {
-        const parsed = JSON.parse(result.output) as { goal?: string; steps?: TaskPlanStep[]; currentStepIndex?: number };
-        if (parsed && typeof parsed.goal === "string" && Array.isArray(parsed.steps)) {
-          const planState: TaskPlanState = {
-            goal: parsed.goal,
-            steps: parsed.steps,
-            currentStepIndex: parsed.currentStepIndex ?? 0,
-            updatedAt: new Date().toISOString(),
-          };
-          task.planState = planState;
-          await this.persist(task);
-          await this.emit("task_plan_updated", { planState });
-        }
-      } catch (error) {
-        this.debugLogger(JSON.stringify({ event: "update_plan_parse_failed", taskId: task.id, error: error instanceof Error ? error.message : String(error) }));
-      }
-    }
-    this.trace.appendToolCall(task.id, call.name, call.arguments, output, result.ok, duration, this.modelResponseStepId);
-    await this.emit("tool_result", { call, index, result: { ...result, durationMs: duration } });
-    if (executed) {
-      await this.fireHook({ event: "after_tool_call", workspace: task.workspace, model: this.config.model.model, tool: call, filePath: extractToolFilePath(call) });
-    }
-    messages.push({ role: "tool", content: output || "(empty result)", toolCallId: call.id ?? `call_${call.name}`, name: call.name });
-    this.syncConversation(messages);
-    this.appendDiagnosticStep("tool_result", {
-      step: this.turnSequence,
-      index,
-      callId: call.id,
-      tool: call.name,
-      arguments: summarizeArguments(call.arguments),
-      ok: result.ok,
-      outputBytes: Buffer.byteLength(output, "utf8"),
-      resultAppended: true,
-      executed,
-      metadata: result.metadata,
-    });
-    this.debugLogger(JSON.stringify({
-      event: "tool_result",
-      taskId: task.id,
-      turn: this.turnSequence,
-      index,
-      callId: call.id,
-      tool: call.name,
-      arguments: summarizeArguments(call.arguments),
-      ok: result.ok,
-      outputBytes: Buffer.byteLength(output, "utf8"),
-      resultAppended: true,
-      executed,
-      metadata: result.metadata,
-    }));
-  }
-
   private recordNoProgressBlock(task: Task, calls: readonly ToolCall[], diagnostic: NoProgressDiagnostic): void {
     const { call, repeatCount, limit } = diagnostic;
     const payload = {
-      turn: this.turnSequence,
+      turn: this.turnRequester.currentTurnSequence,
       blockedCall: {
         id: call.id,
         name: call.name,
@@ -1525,291 +694,4 @@ export class TaskController {
   private throwIfCancelled(): void {
     if (this.abortController?.signal.aborted) throw new DOMException("operation aborted", "AbortError");
   }
-}
-
-function permissionDeniedResult(call: ToolCall, decision: ApprovalDecision): ToolResult {
-  return {
-    ok: false,
-    output: structuredPermissionDenial(call, decision),
-    error: decision.reason,
-    summary: `permission denied: ${decision.reason}`,
-    metadata: { permissionDenied: true, permissionSource: decision.source },
-  };
-}
-
-function planModeDeniedResult(call: ToolCall): ToolResult {
-  return permissionDeniedResult(call, {
-    verdict: "deny",
-    reason: "plan mode only allows readonly tools and write_plan",
-    source: "permission-mode",
-    level: 4,
-  });
-}
-
-function toolUnavailableResult(call: ToolCall): ToolResult {
-  return {
-    ok: false,
-    output: "",
-    error: `tool unavailable in the current runtime: ${call.name}`,
-    summary: "tool unavailable",
-    metadata: { toolUnavailable: true },
-  };
-}
-
-function isRetryableModelStatus(status: number): boolean {
-  return status === 408 || status === 429 || status >= 500;
-}
-
-function ensureCallId(call: ToolCall, contextManager: ContextManager): string {
-  if (call.id) return call.id;
-  const id = contextManager.claimToolCallId();
-  call.id = id;
-  return id;
-}
-
-/** 从工具参数中提取文件路径，供 Hook 条件匹配与环境变量注入。 */
-function extractToolFilePath(call: ToolCall): string {
-  for (const key of ["path", "file_path", "target_path"]) {
-    const value = call.arguments[key];
-    if (typeof value === "string" && value.trim()) return value.trim().replaceAll("\\\\", "/");
-  }
-  return "";
-}
-
-function normalizeCallId(call: ToolCall, contextManager: ContextManager): ToolCall {
-  return { ...call, id: contextManager.claimToolCallId(call.id) };
-}
-
-function parseCompletedToolCall(raw: ToolCallComplete): ToolCall {
-  if (!Number.isInteger(raw.index) || raw.index < 0) {
-    throw new Error(`invalid completed tool-call index: ${String(raw.index)}`);
-  }
-  if (!raw.name.trim()) throw new Error(`completed tool call ${raw.index} is missing a name`);
-  let argumentsValue: unknown;
-  try {
-    argumentsValue = JSON.parse(raw.argumentsJson);
-  } catch (error) {
-    throw new Error(`invalid arguments for completed tool call ${raw.index}: ${formatErrorMessage(error)}`);
-  }
-  if (!argumentsValue || typeof argumentsValue !== "object" || Array.isArray(argumentsValue)) {
-    throw new Error(`invalid arguments for completed tool call ${raw.index}: expected an object`);
-  }
-  return {
-    ...(raw.id ? { id: raw.id } : {}),
-    name: raw.name,
-    arguments: argumentsValue as Record<string, unknown>,
-    createdAt: new Date().toISOString(),
-  };
-}
-
-function sameToolCall(left: ToolCall, right: ToolCall): boolean {
-  return left.id === right.id
-    && left.name === right.name
-    && JSON.stringify(left.arguments) === JSON.stringify(right.arguments);
-}
-
-
-function tokenBudgetMessage(loop: AgentLoop, budget: number): string {
-  return [
-    `Token budget reached after ${loop.turns} model iteration(s): ${loop.tokensUsed.toLocaleString("en-US")} / ${budget.toLocaleString("en-US")} task tokens.`,
-    "Oran code preserved the completed response and stopped before another model request.",
-    "Start a new session or use /compact (preferred) or /clear to reduce prior context, lower the reasoning effort, or increase agent.tokenBudget.",
-  ].join(" ");
-}
-
-function withRuntimeReminders(messages: readonly Message[], reminders: readonly string[]): Message[] {
-  const copy = cloneMessages(messages);
-  // 运行时提醒追加到请求末尾（而非插在对话之前）：每轮变化的提醒文本不再击穿
-  // 稳定前缀 [system + 对话] 的字节一致性，DeepSeek/OpenAI 前缀缓存可覆盖整段对话。
-  if (reminders.length) copy.push(systemReminderMessage(reminders));
-  return copy;
-}
-
-function usageAnchorMessages(messages: readonly Message[], response: ModelResponse): Message[] {
-  return [
-    ...messages,
-    { role: "assistant", content: response.text, toolCalls: response.toolCalls },
-  ];
-}
-
-function summarizeArguments(argumentsValue: Record<string, unknown>): Record<string, unknown> {
-  return Object.fromEntries(
-    Object.entries(argumentsValue).map(([key, value]) => [key, summarizeValue(value)]),
-  );
-}
-
-function formatCallArguments(argumentsValue: Record<string, unknown>): string {
-  return Object.entries(argumentsValue)
-    .map(([key, value]) => `${key}=${typeof value === "string" ? value : JSON.stringify(value)}`)
-    .join(" ");
-}
-
-function summarizeToolCalls(calls: readonly ToolCall[]): Array<Record<string, unknown>> {
-  return calls.map((call) => ({
-    id: call.id,
-    name: call.name,
-    arguments: summarizeArguments(call.arguments),
-  }));
-}
-
-function summarizeMessageTail(messages: readonly Message[]): Array<Record<string, unknown>> {
-  return messages.slice(-6).map((message) => ({
-    role: message.role,
-    name: message.name,
-    toolCallId: message.toolCallId,
-    toolCalls: message.toolCalls?.length ?? 0,
-    contentBytes: Buffer.byteLength(message.content ?? "", "utf8"),
-  }));
-}
-
-function fingerprintRequest(messages: readonly Message[]): string {
-  return createHash("sha256")
-    .update(JSON.stringify(messages.map((message) => ({
-      role: message.role,
-      name: message.name,
-      toolCallId: message.toolCallId,
-      content: message.content ?? "",
-      toolCalls: message.toolCalls?.map((call) => ({
-        id: call.id,
-        name: call.name,
-        arguments: call.arguments,
-      })),
-    }))))
-    .digest("hex")
-    .slice(0, 16);
-}
-
-function fingerprintResponse(response: ModelResponse): string {
-  return createHash("sha256")
-    .update(JSON.stringify({
-      text: response.text,
-      reasoning: response.reasoning ?? "",
-      toolCalls: response.toolCalls.map((call) => ({
-        id: call.id,
-        name: call.name,
-        arguments: call.arguments,
-      })),
-      finishReason: response.finishReason,
-    }))
-    .digest("hex")
-    .slice(0, 16);
-}
-
-function summarizeValue(value: unknown): unknown {
-  if (typeof value === "string") return value.length > 200 ? `${value.slice(0, 200)}…` : value;
-  if (Array.isArray(value)) return value.slice(0, 20).map((item) => summarizeValue(item));
-  if (value && typeof value === "object") {
-    return Object.fromEntries(
-      Object.entries(value as Record<string, unknown>)
-        .slice(0, 20)
-        .map(([key, item]) => [key, summarizeValue(item)]),
-    );
-  }
-  return value;
-}
-
-async function fileHash(workspace: string, call: ToolCall): Promise<{ path: string; hash: string | null } | undefined> {
-  if (!isWriteToolName(call.name)) return undefined;
-  const path = resolve(workspace, String(call.arguments.path ?? ""));
-  const root = resolve(workspace);
-  const rel = relative(root, path);
-  if (rel === ".." || rel.startsWith(`..${sep}`)) return undefined;
-  try {
-    const data = await readFile(path);
-    return { path, hash: createHash("sha256").update(data).digest("hex") };
-  } catch {
-    return { path, hash: null };
-  }
-}
-
-const FINGERPRINT_IGNORED = new Set([...PROJECT_STATE_DIR_NAMES, ".git", ".venv", "venv", "node_modules", "dist", "build", "__pycache__"]);
-const WORKSPACE_FINGERPRINT_TIMEOUT_MS = 750;
-const WORKSPACE_FINGERPRINT_MAX_ENTRIES = 10_000;
-
-function isPotentiallyMutating(call: ToolCall): boolean {
-  return isMutatingToolName(call.name);
-}
-
-function inferToolKind(name: string): "readonly" | "write" | "command" {
-  if (isWriteToolName(name)) return "write";
-  if (["list_files", "read_file", "glob_files", "search_code", "git_status", "get_diff"].includes(name)) return "readonly";
-  return "command";
-}
-
-async function workspaceFingerprint(root: string): Promise<string> {
-  try {
-    const result = await execFileAsync(
-      "git",
-      ["-C", root, "status", "--porcelain=v1", "--untracked-files=all"],
-      { encoding: "utf8", maxBuffer: 1024 * 1024, timeout: WORKSPACE_FINGERPRINT_TIMEOUT_MS, windowsHide: true },
-    );
-    return `git:${result.stdout.split(/\r?\n/).filter(Boolean).sort().join("\n")}`;
-  } catch {
-    return collectWorkspaceEntries(resolve(root));
-  }
-}
-
-async function collectWorkspaceEntries(root: string): Promise<string> {
-  const entries: string[] = [];
-  await collectWorkspaceEntriesRecursive(root, root, entries, Date.now() + WORKSPACE_FINGERPRINT_TIMEOUT_MS);
-  return `scan:${entries.sort().join("\n")}`;
-}
-
-async function collectWorkspaceEntriesRecursive(
-  root: string,
-  directory: string,
-  entries: string[],
-  deadline: number,
-): Promise<void> {
-  if (entries.length >= WORKSPACE_FINGERPRINT_MAX_ENTRIES || Date.now() > deadline) return;
-  let children;
-  try {
-    children = await readdir(directory, { withFileTypes: true });
-  } catch {
-    return;
-  }
-  for (const child of children) {
-    if (entries.length >= WORKSPACE_FINGERPRINT_MAX_ENTRIES || Date.now() > deadline) return;
-    if (FINGERPRINT_IGNORED.has(child.name)) continue;
-    const path = resolve(directory, child.name);
-    const relativePath = relative(root, path).replaceAll("\\", "/");
-    if (child.isDirectory()) {
-      entries.push(`d:${relativePath}`);
-      await collectWorkspaceEntriesRecursive(root, path, entries, deadline);
-      continue;
-    }
-    if (!child.isFile()) continue;
-    try {
-      const metadata = await stat(path);
-      entries.push(`f:${relativePath}:${metadata.size}:${metadata.mtimeMs}`);
-    } catch {
-      // Files disappearing during a command are represented by their absence.
-    }
-  }
-}
-
-function isPlanComplete(text: string): boolean {
-  // Require an explicit protocol marker. Free-form phrases such as
-  // "plan complete" in ordinary replies must not trigger auto-execution.
-  const normalized = text.replace(/\r/g, "");
-  for (const marker of PLAN_COMPLETE_MARKERS) {
-    if (normalized.includes(marker)) return true;
-  }
-  return false;
-}
-
-function extractPlanText(text: string): string {
-  let plan = text.replace(/\r/g, "");
-  for (const marker of PLAN_COMPLETE_MARKERS) {
-    plan = plan.split(marker).join("");
-  }
-  plan = plan
-    .split(/\r?\n/)
-    .filter((line) => {
-      const trimmed = line.trim();
-      if (!trimmed) return true;
-      return !/^plan\s+complete$/i.test(trimmed);
-    })
-    .join("\n");
-  return plan.trim();
 }
