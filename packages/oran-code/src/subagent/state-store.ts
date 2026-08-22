@@ -55,10 +55,14 @@ const EMPTY_STATE: PersistedAgentState = {
   teams: [],
 };
 
+const PERSIST_DEBOUNCE_MS = 500;
+
 export class AgentStateStore {
   private state: PersistedAgentState | undefined;
   private loadPromise: Promise<PersistedAgentState> | undefined;
   private mutationTail: Promise<void> = Promise.resolve();
+  private dirty = false;
+  private persistTimer: NodeJS.Timeout | undefined;
 
   constructor(private readonly workspace: string) {}
 
@@ -74,7 +78,7 @@ export class AgentStateStore {
       ...state,
       updatedAt: new Date().toISOString(),
       background: structuredClone(tasks),
-    }));
+    }), { persistNow: true });
   }
 
   async saveTeams(teams: readonly PersistedTeam[]): Promise<void> {
@@ -82,11 +86,40 @@ export class AgentStateStore {
       ...state,
       updatedAt: new Date().toISOString(),
       teams: structuredClone(teams),
-    }));
+    }), { persistNow: true });
+  }
+
+  /**
+   * 中间态写入:内存立即更新,磁盘写入防抖 500ms 合并。
+   * 崩溃最多丢失窗口内的中间状态,restore 会将其标记为 interrupted。
+   */
+  scheduleSaveBackground(tasks: readonly PersistedBackgroundTask[]): void {
+    void this.mutate((state) => ({
+      ...state,
+      updatedAt: new Date().toISOString(),
+      background: structuredClone(tasks),
+    }), { persistNow: false });
+  }
+
+  scheduleSaveTeams(teams: readonly PersistedTeam[]): void {
+    void this.mutate((state) => ({
+      ...state,
+      updatedAt: new Date().toISOString(),
+      teams: structuredClone(teams),
+    }), { persistNow: false });
   }
 
   async flush(): Promise<void> {
     await this.mutationTail;
+    if (this.persistTimer) {
+      clearTimeout(this.persistTimer);
+      this.persistTimer = undefined;
+    }
+    if (this.dirty) {
+      const job = this.mutationTail.then(() => this.writeSnapshot()).catch(() => undefined);
+      this.mutationTail = job;
+      await job;
+    }
   }
 
   private async readState(): Promise<PersistedAgentState> {
@@ -104,19 +137,45 @@ export class AgentStateStore {
     }
   }
 
-  private async mutate(mutator: (state: PersistedAgentState) => PersistedAgentState): Promise<void> {
+  private async mutate(
+    mutator: (state: PersistedAgentState) => PersistedAgentState,
+    options: { persistNow: boolean },
+  ): Promise<void> {
     const mutation = this.mutationTail.then(async () => {
       const state = await this.load();
       this.state = mutator(state);
-      const snapshot = structuredClone(this.state);
-      const path = this.path();
-      await mkdir(dirname(path), { recursive: true });
-      const temporary = `${path}.tmp-${process.pid}`;
-      await writeFile(temporary, `${JSON.stringify(snapshot, null, 2)}\n`, "utf8");
-      await rename(temporary, path);
+      this.dirty = true;
+      if (options.persistNow) {
+        await this.writeSnapshot();
+      } else {
+        this.scheduleWrite();
+      }
     });
     this.mutationTail = mutation.catch(() => undefined);
     await mutation;
+  }
+
+  /** 定时器到点后经串行链写入当前内存快照,避免旧快照覆盖新快照。 */
+  private scheduleWrite(): void {
+    if (this.persistTimer) return;
+    this.persistTimer = setTimeout(() => {
+      this.persistTimer = undefined;
+      const job = this.mutationTail.then(() => this.writeSnapshot()).catch(() => undefined);
+      this.mutationTail = job;
+    }, PERSIST_DEBOUNCE_MS);
+    // 保持进程可退出;flush/shutdown 负责最后的落盘。
+    this.persistTimer.unref?.();
+  }
+
+  private async writeSnapshot(): Promise<void> {
+    if (!this.state) return;
+    this.dirty = false;
+    const snapshot = structuredClone(this.state);
+    const path = this.path();
+    await mkdir(dirname(path), { recursive: true });
+    const temporary = `${path}.tmp-${process.pid}`;
+    await writeFile(temporary, `${JSON.stringify(snapshot, null, 2)}\n`, "utf8");
+    await rename(temporary, path);
   }
 
   private path(): string {

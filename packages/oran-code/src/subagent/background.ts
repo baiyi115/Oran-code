@@ -56,7 +56,7 @@ export class BackgroundAgentTaskManager {
       promise,
     };
     this.tasks.set(id, task);
-    void this.persist();
+    this.schedulePersist();
     void promise.then(async (result) => {
       this.finish(task, result);
       await this.persist();
@@ -111,7 +111,7 @@ export class BackgroundAgentTaskManager {
       task.endedAt = new Date().toISOString();
       task.abortController?.abort();
     }
-    void this.persist();
+    this.schedulePersist();
   }
 
   async waitForIdle(): Promise<void> {
@@ -125,7 +125,7 @@ export class BackgroundAgentTaskManager {
       task.notified = true;
       notifications.push(task);
     }
-    if (notifications.length) void this.persist();
+    if (notifications.length) this.schedulePersist();
     return notifications;
   }
 
@@ -148,6 +148,11 @@ export class BackgroundAgentTaskManager {
 
   private async persist(): Promise<void> {
     await this.stateStore?.saveBackground(this.list().map(serializeTask));
+  }
+
+  /** 中间态(登记任务、消费通知)落盘走防抖,终态仍立即持久化。 */
+  private schedulePersist(): void {
+    this.stateStore?.scheduleSaveBackground(this.list().map(serializeTask));
   }
 }
 

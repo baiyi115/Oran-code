@@ -72,7 +72,7 @@ export class TeamManager {
     if (!normalized) return { ok: false, output: "team name must contain letters, digits, or hyphens" };
     if (this.teams.has(normalized)) return { ok: false, output: `team already exists: ${normalized}` };
     this.teams.set(normalized, { name: normalized, members: new Map() });
-    void this.persist();
+    this.schedulePersist();
     return { ok: true, output: `Created team ${normalized}.` };
   }
 
@@ -128,7 +128,7 @@ export class TeamManager {
     delete member.currentPrompt;
     member.status = "idle";
     delete member.lastError;
-    void this.persist();
+    this.schedulePersist();
     this.schedule(team, member);
     return { ok: true, output: `Resumed teammate ${team.name}/${member.name}.` };
   }
@@ -183,7 +183,7 @@ export class TeamManager {
     const message = prompt.trim();
     if (!message) return;
     member.mailbox.push(message);
-    void this.persist();
+    this.schedulePersist();
     if (member.status === "idle") this.schedule(team, member);
   }
 
@@ -256,6 +256,11 @@ export class TeamManager {
 
   private async persist(): Promise<void> {
     await this.stateStore?.saveTeams([...this.teams.values()].map(serializeTeam));
+  }
+
+  /** 中间态(创建团队、入队、投递)落盘走防抖,完成/中断边界仍立即持久化。 */
+  private schedulePersist(): void {
+    this.stateStore?.scheduleSaveTeams([...this.teams.values()].map(serializeTeam));
   }
 }
 

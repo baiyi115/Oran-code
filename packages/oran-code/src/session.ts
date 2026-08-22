@@ -555,7 +555,9 @@ export class TerminalSession {
       ...(!isolated ? {
         conversationCallback: (messages: readonly Message[]) => {
           if (this.sessionGeneration !== sessionGeneration || this.taskGeneration !== taskGeneration || this.currentSession?.id !== sessionId) return;
-          this.conversation = [...structuredClone(messages)];
+          // controller 的 syncConversation 传来的已是 cloneMessages 私有副本,
+          // 这里浅拷贝数组即可隔离后续 push/splice,免去每轮一次全量深拷贝。
+          this.conversation = [...messages];
           this.scheduleTuiSessionPersist();
         },
       } : {}),
