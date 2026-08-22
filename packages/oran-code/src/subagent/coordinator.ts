@@ -81,7 +81,7 @@ export class SubagentCoordinator {
     if (args.team_name) {
       const definition = args.subagent_type ? this.options.roles.get(args.subagent_type) : undefined;
       if (args.subagent_type && !definition) return this.unknownRole(args.subagent_type);
-      const spawned = this.options.teams.spawn(this.options.runner, args.team_name, args.description, args.prompt, {
+      const spawned = this.options.teams.spawn(args.team_name, args.description, args.prompt, {
         ...(definition ? { definition } : {}),
         ...(model ? { model } : {}),
       });
@@ -152,7 +152,7 @@ export class SubagentCoordinator {
       } catch (error) {
         return failed(error instanceof Error ? error.message : String(error));
       }
-      const result = this.options.teams.spawn(this.options.runner, stringArg(args.team_name), stringArg(args.description), stringArg(args.prompt), {
+      const result = this.options.teams.spawn(stringArg(args.team_name), stringArg(args.description), stringArg(args.prompt), {
         ...(definition ? { definition } : {}), ...(model ? { model } : {}),
       });
       return result.ok ? success(result.output) : failed(result.output);

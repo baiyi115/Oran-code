@@ -31,6 +31,10 @@ const IGNORED_DIRS = new Set([
 const DEFAULT_READ_LIMIT = 200;
 const DEFAULT_GLOB_LIMIT = 200;
 const DEFAULT_SEARCH_LIMIT = 200;
+/** 灾难性回溯需要长输入;超长行只匹配前缀。 */
+const SEARCH_MAX_LINE_LENGTH = 4_096;
+/** 搜索总时间预算,超时返回部分结果。 */
+const SEARCH_TIME_BUDGET_MS = 2_000;
 
 export class ToolRegistry {
   private readonly tools = new Map<string, ToolDefinition>();
@@ -511,19 +515,27 @@ export function registerBuiltinTools(registry: ToolRegistry, workspace: string):
           : undefined;
         const hits: string[] = [];
         let total = 0;
+        // 模型提供的正则可能有灾难性回溯:长行截断 + 总时间预算双保险。
+        const startedAt = Date.now();
+        let timedOut = false;
         await walkFiles(base, async (filePath) => {
-          if (hits.length >= limit) return;
+          if (hits.length >= limit || timedOut) return;
           const rel = relative(workspace, filePath).replaceAll("\\", "/");
           const name = rel.split("/").pop() ?? rel;
           if (fileFilter && !fileFilter(rel) && !fileFilter(name)) return;
           try {
             const lines = (await readFile(filePath, "utf8")).split(/\r?\n/);
             for (let index = 0; index < lines.length; index += 1) {
+              if ((index & 0xff) === 0 && Date.now() - startedAt > SEARCH_TIME_BUDGET_MS) {
+                timedOut = true;
+                return;
+              }
+              const line = lines[index] ?? "";
               regex.lastIndex = 0;
-              if (!regex.test(lines[index] ?? "")) continue;
+              if (!regex.test(line.length > SEARCH_MAX_LINE_LENGTH ? line.slice(0, SEARCH_MAX_LINE_LENGTH) : line)) continue;
               total += 1;
               if (hits.length < limit) {
-                hits.push(`${rel}:${index + 1}:${(lines[index] ?? "").trim().slice(0, 200)}`);
+                hits.push(`${rel}:${index + 1}:${line.trim().slice(0, 200)}`);
               }
             }
           } catch {
@@ -532,11 +544,14 @@ export function registerBuiltinTools(registry: ToolRegistry, workspace: string):
         });
         const truncated = total > hits.length;
         if (truncated) hits.push(`...[truncated ${total - hits.length} more matches]`);
+        if (timedOut) hits.push(`...[search stopped after ${SEARCH_TIME_BUDGET_MS}ms; results may be incomplete]`);
         return {
           ok: true,
           output: hits.join("\n") || "no matches",
-          summary: truncated ? `${Math.min(total, limit)}/${total} matches` : `${total} matches`,
-          metadata: { total, returned: Math.min(total, limit), truncated },
+          summary: timedOut
+            ? `partial: ${Math.min(total, limit)}/${total}+ matches (time budget reached)`
+            : truncated ? `${Math.min(total, limit)}/${total} matches` : `${total} matches`,
+          metadata: { total, returned: Math.min(total, limit), truncated, ...(timedOut ? { timedOut: true } : {}) },
         };
       } catch (error) {
         return failedResult(error, "search_code failed");

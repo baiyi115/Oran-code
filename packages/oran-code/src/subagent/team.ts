@@ -77,7 +77,6 @@ export class TeamManager {
   }
 
   spawn(
-    runner: SubagentRunner,
     teamName: string,
     description: string,
     prompt: string,
@@ -86,6 +85,11 @@ export class TeamManager {
     const team = this.teams.get(normalizeTeamName(teamName) ?? "");
     if (!team) return { ok: false, output: `Unknown team ${teamName}. Create it with team_create first.` };
     const memberName = uniqueMemberName(team, deriveMemberName(description));
+    if (!this.runtime) {
+      // 运行时由 coordinator 在任务装配时 attach;尚未 attach 时宁可拒绝,
+      // 也不安装只认得本次 definition 的临时闭包(那会让后续 resume 静默失败)。
+      return { ok: false, output: "team runtime is not attached yet; start a task before spawning teammates" };
+    }
     const member: TeamMember = {
       name: memberName,
       status: "idle",
@@ -98,14 +102,6 @@ export class TeamManager {
       ...(options.model ? { modelReference: modelReference(options.model) } : {}),
     };
     team.members.set(memberName, member);
-    this.runtime = this.runtime ?? {
-      runner,
-      resolveDefinition: (name) => options.definition?.name === name ? options.definition : undefined,
-      resolveModel: (reference) => {
-        if (options.model && modelReference(options.model) === reference) return options.model;
-        throw new Error(`model is not available: ${reference}`);
-      },
-    };
     this.enqueue(team, member, prompt);
     return { ok: true, output: `Spawned teammate ${team.name}/${memberName}; work has started.`, memberName };
   }
