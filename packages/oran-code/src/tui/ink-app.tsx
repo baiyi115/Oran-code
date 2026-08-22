@@ -7,7 +7,7 @@ import { commandCandidates } from "./command-palette.js";
 import { approvalResponse, moveSelection, navigateHistory } from "./interaction.js";
 import { TuiTranscriptRenderer } from "./renderer.js";
 import { composerValue, createTuiState, setComposerValue, setOverlay } from "./state.js";
-import type { ComposerState, PasteBlock, SessionOption, SessionView, TuiAppOptions, TuiState, TranscriptMessage } from "./types.js";
+import type { ComposerState, PasteBlock, SessionOption, SessionView, TuiAppOptions, TuiRenderCommitKind, TuiState, TranscriptMessage } from "./types.js";
 import type { ConnectInput, ConnectModelOption } from "./types.js";
 import { appendSystemMessage } from "./message-reducer.js";
 import { composerCursorOffset, cursorVisualPosition, deleteBackward, deleteForward, insertText, moveCursor, moveToLineEdge, visualLines } from "./composer.js";
@@ -1149,13 +1149,12 @@ export class InkTuiApp {
     this.renderRevision += 1;
     if (!this.inkInstance || this.renderScheduled) return;
     this.renderScheduled = true;
-    // Runtime callbacks are awaited by the Agent loop. Queueing one root update
-    // per event-loop turn gives Ink a render opportunity between streamed deltas
-    // while still coalescing bursts that arrive in the same turn.
+    // Keep the scheduler occupied through Ink's deferred commit so bursted
+    // deltas collapse into one frame; boundary events explicitly wait here.
     queueMicrotask(() => {
-      this.renderScheduled = false;
       const revision = this.renderRevision;
       if (this.destroyed || !this.inkInstance) {
+        this.renderScheduled = false;
         this.resolveRenderWaiters(revision);
         return;
       }
@@ -1164,12 +1163,14 @@ export class InkTuiApp {
       } catch (error) {
         // Never leave an awaited runtime event blocked behind a failed render.
         // Resolve this revision before allowing Ink's render error to surface.
+        this.renderScheduled = false;
         this.resolveRenderWaiters(revision);
         throw error;
       }
       // Let Ink's reconciler/stdout writer commit before the awaited provider
       // callback accepts another streamed delta.
       setImmediate(() => {
+        this.renderScheduled = false;
         this.resolveRenderWaiters(revision);
         this.options.onRenderDebug?.({
           phase: "committed",
@@ -1181,15 +1182,16 @@ export class InkTuiApp {
     });
   }
 
-  async flushPendingRender(ensurePaint = false): Promise<void> {
+  async flushPendingRender(commit: TuiRenderCommitKind = "normal"): Promise<void> {
     const revision = this.renderRevision;
     if (!this.inkInstance || this.destroyed) return;
+    if (commit === "normal") return;
     if (this.committedRenderRevision < revision) {
       await new Promise<void>((resolve) => {
         this.renderWaiters.push({ revision, resolve });
       });
     }
-    if (ensurePaint && !this.destroyed && this.inkInstance) {
+    if (commit === "terminal" && !this.destroyed && this.inkInstance) {
       await new Promise<void>((resolve) => setTimeout(resolve, INK_PAINT_BARRIER_MS));
     }
   }

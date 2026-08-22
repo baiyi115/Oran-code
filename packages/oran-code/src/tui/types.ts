@@ -47,6 +47,8 @@ export interface TuiRenderDebugInfo {
   staticCount: number;
 }
 
+export type TuiRenderCommitKind = "normal" | "boundary" | "terminal";
+
 export type TuiOverlay = "none" | "commands" | "models" | "sessions" | "session-delete-confirm" | "follow-ups" | "files" | "approval" | "details" | "connect";
 
 export interface CursorPosition {

@@ -12,8 +12,7 @@ import { TerminalRenderer, createPromptHooks, type SessionRenderer } from "./ren
 import { PERMISSION_MODES, createTask } from "./types.js";
 import { displaySessionName, firstConversationPrompt, isAutomaticSessionName, SessionStore, truncateSessionName, type StoredSession } from "./session-store.js";
 import type { ApprovalResponse, Message, ModelConfig, ModelProvider, ModelReference, OptionalSystemPromptModules, PermissionMode, ReasoningEffort, RuntimeEvent, RuntimeEventPayloads, SessionTitleMode, Task, ToolCall, ToolDefinition, ToolResult, UserConfig, WorkMode } from "./types.js";
-import type { SessionOption, SessionView } from "./tui/types.js";
-import type { ConnectInput, ConnectModelOption } from "./tui/types.js";
+import type { ConnectInput, ConnectModelOption, SessionOption, SessionView, TuiRenderCommitKind } from "./tui/types.js";
 import type { ModelProfile, ProviderOptions, ProviderProfile } from "./types.js";
 import { WorkspaceFileIndex } from "./tui/composer/file-completion.js";
 import { formatErrorMessage } from "./error-format.js";
@@ -1144,7 +1143,7 @@ export class TerminalSession {
       }
     }
     this.renderer.render(event);
-    await this.tui?.flushPendingRender(requiresPaintBarrier(event));
+    await this.tui?.flushPendingRender(renderCommitKind(event));
     this.scheduleTuiSessionPersist();
   }
 
@@ -2473,20 +2472,20 @@ export class TerminalSession {
   }
 }
 
-type RenderCommitKind = "normal" | "boundary" | "terminal";
-
-function renderCommitKind(event: RuntimeEvent): RenderCommitKind {
+function renderCommitKind(event: RuntimeEvent): TuiRenderCommitKind {
   switch (event.type) {
     case "assistant_start":
-    case "assistant_end":
     case "thought_start":
     case "tool_start":
     case "retry":
       return "boundary";
+    case "assistant_end":
     case "assistant_abort":
     case "error":
     case "cancelled":
       return "terminal";
+    case "completed":
+      return "boundary";
     case "context_compaction":
       return event.phase === "started" ? "boundary" : "normal";
     case "state":
@@ -2500,10 +2499,6 @@ function renderCommitKind(event: RuntimeEvent): RenderCommitKind {
     default:
       return "normal";
   }
-}
-
-function requiresPaintBarrier(event: RuntimeEvent): boolean {
-  return renderCommitKind(event) !== "normal";
 }
 
 function sameApprovalOrigin(left: SubagentOrigin, right: SubagentOrigin): boolean {
