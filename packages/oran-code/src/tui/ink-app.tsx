@@ -150,6 +150,12 @@ export class InkTuiApp {
     this.inkInstance?.unmount();
     this.inkInstance = undefined;
     this.resolveRenderWaiters(this.renderRevision);
+    this.options.onRenderDebug?.({
+      phase: "destroyed",
+      revision: this.renderRevision,
+      committedRevision: this.committedRenderRevision,
+      staticCount: staticTranscriptCount(this.state.transcript),
+    });
     // Restore cursor/SGR and leave a clean line for the host shell.
     // Do not clear host scrollback: sealed chat history should remain reviewable.
     try {
@@ -1163,7 +1169,15 @@ export class InkTuiApp {
       }
       // Let Ink's reconciler/stdout writer commit before the awaited provider
       // callback accepts another streamed delta.
-      setImmediate(() => this.resolveRenderWaiters(revision));
+      setImmediate(() => {
+        this.resolveRenderWaiters(revision);
+        this.options.onRenderDebug?.({
+          phase: "committed",
+          revision,
+          committedRevision: this.committedRenderRevision,
+          staticCount: staticTranscriptCount(this.state.transcript),
+        });
+      });
     });
   }
 

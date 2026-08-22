@@ -175,6 +175,8 @@ export class TerminalSession {
   private commandUsage: CommandUsageTracker | undefined;
   private commandIntegrationPromise: Promise<void> | undefined;
   private latestUsage: Record<string, number> = {};
+  private readonly debugStreamSequences = new Map<string, number>();
+  private readonly debugStreamTurns = new Map<string, { deltaEvents: number; deltaChars: number }>();
   private hookEngine: HookEngine | undefined;
   private hookNotices: HookNoticeQueue | undefined;
   private hookWarningsShown = false;
@@ -1108,6 +1110,7 @@ export class TerminalSession {
 
   private async onEvent(event: RuntimeEvent): Promise<void> {
     if (event.type === "assistant_end") this.latestUsage = { ...event.usage };
+    this.debugRuntimeStream(event);
     if (event.type === "context_compaction") {
       this.writeDebugLog(JSON.stringify({
         event: "context_compaction",
@@ -1151,6 +1154,47 @@ export class TerminalSession {
       this.sessionPersistTimer = undefined;
       void this.persistTuiSession();
     }, 250);
+  }
+
+  private debugRuntimeStream(event: RuntimeEvent): void {
+    const taskSequenceKey = event.taskId;
+    const lastSequence = this.debugStreamSequences.get(taskSequenceKey);
+    const sequenceGap = lastSequence !== undefined && event.sequence !== lastSequence + 1;
+    this.debugStreamSequences.set(taskSequenceKey, event.sequence);
+    const turnKey = `${event.taskId}:${event.turnId ?? "current"}`;
+    if (event.type === "assistant_delta" || event.type === "assistant_end") {
+      if (event.type === "assistant_delta") {
+        const turn = this.debugStreamTurns.get(turnKey) ?? { deltaEvents: 0, deltaChars: 0 };
+        turn.deltaEvents += 1;
+        turn.deltaChars += event.text.length;
+        this.debugStreamTurns.set(turnKey, turn);
+      }
+      const turn = this.debugStreamTurns.get(turnKey) ?? { deltaEvents: 0, deltaChars: 0 };
+      this.writeDebugLog(JSON.stringify({
+        event: "runtime_stream",
+        type: event.type,
+        taskId: event.taskId,
+        ...(event.turnId ? { turnId: event.turnId } : {}),
+        sequence: event.sequence,
+        lastSequence,
+        sequenceGap,
+        deltaEvents: turn.deltaEvents,
+        deltaChars: turn.deltaChars,
+        ...(event.type === "assistant_end" ? {
+          finalChars: event.text.length,
+          finalCodePoints: [...event.text].length,
+        } : {}),
+      }));
+      if (event.type === "assistant_end") this.debugStreamTurns.delete(turnKey);
+    }
+    if (event.type === "completed"
+      || event.type === "cancelled"
+      || (event.type === "state" && (event.state === "failed" || event.state === "cancelled"))) {
+      this.debugStreamSequences.delete(event.taskId);
+      for (const key of [...this.debugStreamTurns.keys()]) {
+        if (key.startsWith(`${event.taskId}:`)) this.debugStreamTurns.delete(key);
+      }
+    }
   }
 
   private async flushBackgroundNotifications(): Promise<void> {
@@ -1955,6 +1999,7 @@ export class TerminalSession {
       getWorkspace: () => this.workspace,
       getCommands: () => this.commandSnapshot(),
       getModelLabel: () => this.modelLabel(),
+      onRenderDebug: (info) => this.writeDebugLog(JSON.stringify({ event: "tui_render", ...info })),
       onInput: (value) => this.handleInput(value),
       onCancel: () => {
         const hadPendingPlan = this.pendingPlanExecute !== undefined;

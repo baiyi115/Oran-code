@@ -37,6 +37,14 @@ export interface TuiAppOptions {
   isInteractionBlocked?: () => boolean;
   history?: readonly string[];
   getCommands?: () => readonly SlashCommand[];
+  onRenderDebug?: (info: TuiRenderDebugInfo) => void;
+}
+
+export interface TuiRenderDebugInfo {
+  phase: "committed" | "destroyed";
+  revision: number;
+  committedRevision: number;
+  staticCount: number;
 }
 
 export type TuiOverlay = "none" | "commands" | "models" | "sessions" | "session-delete-confirm" | "follow-ups" | "files" | "approval" | "details" | "connect";
