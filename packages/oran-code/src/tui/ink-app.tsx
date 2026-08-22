@@ -37,7 +37,7 @@ import {
   renderComposerLineWithCaret,
   renderComposerLines,
   renderOverlayLines,
-} from "./render.jsx";
+} from "./render.js";
 
 interface InkTuiAppDependencies {
   render?: typeof render;

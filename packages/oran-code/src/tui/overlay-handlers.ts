@@ -7,7 +7,7 @@ import { commandCandidates } from "./command-palette.js";
 import { approvalResponse, moveSelection } from "./interaction.js";
 import { formatErrorMessage } from "../error-format.js";
 import { isSessionDeleteKey, isSubmitKey } from "./keys.js";
-import { fileQuery } from "./render.jsx";
+import { fileQuery } from "./render.js";
 
 /**
  * Overlay 键处理状态机与 InkTuiApp 之间的上下文。app 保留渲染调度、composer
