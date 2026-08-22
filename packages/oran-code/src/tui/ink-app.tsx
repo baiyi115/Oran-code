@@ -24,6 +24,20 @@ import { abbreviatePath, graphemes, truncateVisible, visibleWidth } from "./text
 import { scrollPercent, scrollTranscript, syncTranscriptScroll } from "./scroll-controller.js";
 import { currentSessionLine, sessionOptionLabel } from "./session-list.js";
 import { isSessionBusy, workingIndicatorLine } from "./status-indicator.js";
+import { isDeleteBackward, isDeleteForward, isEndKey, isHomeKey, isSessionDeleteKey, isSubmitKey } from "./keys.js";
+import { ConnectWizard } from "./connect-wizard.js";
+import { OverlayHandlers } from "./overlay-handlers.js";
+import {
+  HighlightedLine,
+  composerPrefix,
+  fileQuery,
+  fitOverlayLines,
+  ghostCommandSuggestion,
+  oranWelcomeLines,
+  renderComposerLineWithCaret,
+  renderComposerLines,
+  renderOverlayLines,
+} from "./render.jsx";
 
 interface InkTuiAppDependencies {
   render?: typeof render;
@@ -63,6 +77,8 @@ const INK_PAINT_BARRIER_MS = 40;
 export class InkTuiApp {
   readonly renderer: TuiTranscriptRenderer;
   private readonly options: TuiAppOptions;
+  private readonly connectWizard: ConnectWizard;
+  private readonly overlayHandlers: OverlayHandlers;
   private readonly state: TuiState;
   private readonly transcript = new TranscriptView();
   private readonly renderInk: typeof render;
@@ -70,17 +86,11 @@ export class InkTuiApp {
   private resolveRun: (() => void) | undefined;
   private approvalResolve: ((response: ApprovalResponse) => void) | undefined;
   private destroyed = false;
-  private commandIndex = 0;
   private dismissedCommandInput: string | undefined;
-  private modelIndex = 0;
-  private sessionIndex = 0;
   private lastCancelAt = 0;
   /** True while the real caret is parked on the composer via DECSC/DECRC. */
   private parkedComposerCursor = false;
   private lastEscapeCancelAt = 0;
-  private followUpBusy = false;
-  private deletingSession = false;
-  private selectingSession = false;
   private submitBusy = false;
   private renderScheduled = false;
   private renderRevision = 0;
@@ -107,6 +117,33 @@ export class InkTuiApp {
       options.initialSession?.modelWarning ?? options.getModelWarning?.(),
     );
     this.state.session.approvalPolicy = options.getApprovalPolicy?.() ?? "ask";
+    this.overlayHandlers = new OverlayHandlers({
+      state: this.state,
+      loadModels: () => options.loadModels(),
+      ...(options.loadSessions ? { loadSessions: () => options.loadSessions!() } : {}),
+      ...(options.onSessionSelected ? { onSessionSelected: (id: string) => options.onSessionSelected!(id) } : {}),
+      ...(options.onSessionDeleted ? { onSessionDeleted: (id: string) => options.onSessionDeleted!(id) } : {}),
+      onModelSelected: (reference) => options.onModelSelected(reference),
+      ...(options.loadFollowUps ? { loadFollowUps: () => options.loadFollowUps!() } : {}),
+      ...(options.onFollowUpCancelled ? { onFollowUpCancelled: (id: string) => options.onFollowUpCancelled!(id) } : {}),
+      invalidate: () => this.invalidate(),
+      rejectIfBlocked: (message) => this.rejectIfBlocked(message),
+      refreshContext: () => this.refreshContext(),
+      restoreSessionView: (session, notice) => this.restoreSessionView(session, notice),
+      restoreSession: (session) => this.restoreSession(session),
+      submit: (forcedCommand) => this.submit(forcedCommand),
+      handleComposerKey: (input, key) => this.handleComposerKey(input, key),
+      detachInputHistory: () => this.detachInputHistory(),
+      noteDismissedCommandInput: (value) => { this.dismissedCommandInput = value; },
+      resolveApproval: (response) => this.resolveApproval(response),
+    });
+    this.connectWizard = new ConnectWizard({
+      state: this.state,
+      ...(options.loadRemoteModels ? { loadRemoteModels: (baseURL: string, apiKey: string, protocol: "openai" | "anthropic") => options.loadRemoteModels!(baseURL, apiKey, protocol) } : {}),
+      ...(options.onConnect ? { onConnect: (input: ConnectInput) => options.onConnect!(input) } : {}),
+      invalidate: () => this.invalidate(),
+      rejectIfBlocked: (message) => this.rejectIfBlocked(message),
+    });
     this.state.commands = [...(options.getCommands?.() ?? this.state.commands)];
     if (options.initialSession?.modelWarning) {
       appendSystemMessage(this.state, options.initialSession.modelWarning, "error");
@@ -256,35 +293,35 @@ export class InkTuiApp {
       return;
     }
     if (this.state.overlay.kind === "approval") {
-      this.handleApprovalKey(input, key);
+      this.overlayHandlers.handleApprovalKey(input, key);
       return;
     }
     if (this.state.overlay.kind === "models") {
-      this.handleModelKey(input, key);
+      this.overlayHandlers.handleModelKey(input, key);
       return;
     }
     if (this.state.overlay.kind === "connect") {
-      this.handleConnectKey(input, key);
+      this.connectWizard.handleKey(input, key);
       return;
     }
     if (this.state.overlay.kind === "sessions") {
-      this.handleSessionKey(input, key);
+      this.overlayHandlers.handleSessionKey(input, key);
       return;
     }
     if (this.state.overlay.kind === "session-delete-confirm") {
-      void this.handleSessionDeleteConfirmKey(input, key);
+      void this.overlayHandlers.handleSessionDeleteConfirmKey(input, key);
       return;
     }
     if (this.state.overlay.kind === "follow-ups") {
-      void this.handleFollowUpKey(input, key);
+      void this.overlayHandlers.handleFollowUpKey(input, key);
       return;
     }
     if (this.state.overlay.kind === "commands") {
-      this.handleCommandKey(input, key);
+      this.overlayHandlers.handleCommandKey(input, key);
       return;
     }
     if (this.state.overlay.kind === "files") {
-      this.handleFileKey(input, key);
+      this.overlayHandlers.handleFileKey(input, key);
       return;
     }
     if (this.state.overlay.kind === "details") {
@@ -295,7 +332,7 @@ export class InkTuiApp {
       return;
     }
     if (key.ctrl && input === "q") {
-      void this.openFollowUps();
+      void this.overlayHandlers.openFollowUps();
       return;
     }
     if (key.ctrl && input === "t") {
@@ -313,278 +350,16 @@ export class InkTuiApp {
     this.handleComposerKey(input, key);
   }
 
+  async openConnect(): Promise<void> {
+    this.connectWizard.open();
+  }
+
   async openModels(): Promise<void> {
-    if (this.rejectIfBlocked("finish or cancel the current task before switching models")) return;
-    try {
-      const options = await this.options.loadModels();
-      this.modelIndex = 0;
-      setOverlay(this.state, { kind: "models", query: "", selectedIndex: 0, options, loading: false });
-    } catch (error) {
-      setOverlay(this.state, { kind: "models", query: "", selectedIndex: 0, options: [], loading: false, error: errorMessage(error) });
-    }
-    this.invalidate();
+    await this.overlayHandlers.openModels();
   }
 
   async openSessions(): Promise<void> {
-    if (this.rejectIfBlocked("finish or cancel the current task before switching sessions")) return;
-    if (!this.options.loadSessions) return;
-    try {
-      const options = await this.options.loadSessions();
-      this.sessionIndex = 0;
-      setOverlay(this.state, { kind: "sessions", query: "", selectedIndex: 0, options });
-    } catch (error) {
-      this.state.session.status = errorMessage(error);
-    }
-    this.invalidate();
-  }
-
-  async openConnect(): Promise<void> {
-    if (this.rejectIfBlocked("finish or cancel the current task before connecting a provider")) return;
-    if (!this.options.onConnect || !this.options.loadRemoteModels) return;
-    setOverlay(this.state, {
-      kind: "connect",
-      step: "providerName",
-      providerName: "",
-      baseURL: "",
-      apiKey: "",
-      protocol: "",
-      reasoningEffort: "medium",
-      models: [],
-      selectedIndex: 0,
-      loading: false,
-    });
-    this.invalidate();
-  }
-
-  private handleConnectKey(input: string, key: Key): void {
-    if (this.state.overlay.kind !== "connect") return;
-    const overlay = this.state.overlay;
-
-    if (key.escape) {
-      this.state.overlay = { kind: "none" };
-      this.invalidate();
-      return;
-    }
-
-    if (overlay.step !== "models" && key.tab) {
-      this.advanceConnectStep(input);
-      this.invalidate();
-      return;
-    }
-
-    if (overlay.step === "models") {
-      // Ctrl+S or Tab finishes the wizard from the models step.
-      if ((key.ctrl && input === "s") || key.tab) {
-        void this.confirmConnect();
-        this.invalidate();
-        return;
-      }
-      this.handleConnectModelsKey(input, key);
-      this.invalidate();
-      return;
-    }
-
-    // List-selection steps (protocol / reasoningEffort): arrow keys move,
-    // Enter/Tab confirms and advances. They must not fall through to the
-    // free-text editor below, otherwise arrow keys get swallowed.
-    if (overlay.step === "protocol" || overlay.step === "reasoningEffort") {
-      this.handleConnectListStepKey(input, key);
-      this.invalidate();
-      return;
-    }
-
-    // Free-text steps (providerName / baseURL / apiKey): edit in place, Enter advances.
-    if (key.backspace || key.delete) {
-      this.deleteConnectFieldChar(overlay.step, key.delete);
-      this.invalidate();
-      return;
-    }
-    if (isSubmitKey(input, key)) {
-      this.advanceConnectStep(input);
-      this.invalidate();
-      return;
-    }
-    if (input && !key.ctrl && !key.meta && input !== "\t") {
-      this.appendConnectFieldChar(overlay.step, input);
-      this.invalidate();
-    }
-  }
-
-  private deleteConnectFieldChar(step: typeof this.state.overlay extends { kind: "connect" } ? never : string, _isDelete: boolean): void {
-    if (this.state.overlay.kind !== "connect") return;
-    const overlay = this.state.overlay;
-    const trim = (value: string) => (value.length ? value.slice(0, -1) : value);
-    if (step === "providerName") overlay.providerName = trim(overlay.providerName);
-    else if (step === "baseURL") overlay.baseURL = trim(overlay.baseURL);
-    else if (step === "apiKey") overlay.apiKey = trim(overlay.apiKey);
-  }
-
-  private appendConnectFieldChar(step: string, input: string): void {
-    if (this.state.overlay.kind !== "connect") return;
-    const overlay = this.state.overlay;
-    if (input === "\r" || input === "\n") return;
-    if (step === "providerName") overlay.providerName += input;
-    else if (step === "baseURL") overlay.baseURL += input;
-    else if (step === "apiKey") overlay.apiKey += input;
-  }
-
-  private advanceConnectStep(_input: string): void {
-    if (this.state.overlay.kind !== "connect") return;
-    const overlay = this.state.overlay;
-    switch (overlay.step) {
-      case "providerName": {
-        const name = overlay.providerName.trim() || safeHostName(overlay.baseURL, "provider");
-        overlay.providerName = name;
-        overlay.step = "baseURL";
-        break;
-      }
-      case "baseURL": {
-        if (!overlay.baseURL.trim()) return;
-        // Pre-select protocol from URL hint when empty.
-        if (!overlay.protocol) {
-          const hint = overlay.baseURL.toLowerCase();
-          if (hint.includes("anthropic") || hint.includes("claude")) overlay.protocol = "anthropic";
-          else overlay.protocol = "openai";
-        }
-        overlay.step = "apiKey";
-        break;
-      }
-      case "apiKey": {
-        overlay.step = "protocol";
-        overlay.selectedIndex = overlay.protocol === "anthropic" ? 1 : 0;
-        break;
-      }
-      case "protocol": {
-        const choices: ("openai" | "anthropic")[] = ["openai", "anthropic"];
-        overlay.protocol = choices[overlay.selectedIndex] ?? "openai";
-        overlay.step = "reasoningEffort";
-        overlay.selectedIndex = REASONING_EFFORTS.indexOf(overlay.reasoningEffort);
-        if (overlay.selectedIndex < 0) overlay.selectedIndex = 1;
-        break;
-      }
-      case "reasoningEffort": {
-        overlay.reasoningEffort = REASONING_EFFORTS[overlay.selectedIndex] ?? "medium";
-        overlay.step = "models";
-        overlay.selectedIndex = 0;
-        void this.fetchConnectModels();
-        break;
-      }
-      case "models": {
-        void this.confirmConnect();
-        break;
-      }
-    }
-  }
-
-  private async fetchConnectModels(): Promise<void> {
-    if (this.state.overlay.kind !== "connect") return;
-    const overlay = this.state.overlay;
-    const protocol = (overlay.protocol || "openai") as "openai" | "anthropic";
-    overlay.loading = true;
-    overlay.error = undefined;
-    this.invalidate();
-    try {
-     const remote = await this.options.loadRemoteModels?.(overlay.baseURL.trim(), overlay.apiKey.trim(), protocol) ?? [];
-     if (this.state.overlay.kind !== "connect") return;
-     const existing = new Map(this.state.overlay.models.map((model) => [model.id, model]));
-      this.state.overlay.models = remote.map((model): ConnectModelOption => {
-        const next: ConnectModelOption = { id: model.id, selected: existing.get(model.id)?.selected ?? false };
-        if (model.contextWindow !== undefined) next.contextWindow = model.contextWindow;
-        return next;
-      });
-      this.state.overlay.selectedIndex = 0;
-      this.state.overlay.loading = false;
-    } catch (error) {
-      if (this.state.overlay.kind !== "connect") return;
-      this.state.overlay.loading = false;
-      this.state.overlay.error = errorMessage(error);
-    }
-    this.invalidate();
-  }
-
-  private handleConnectModelsKey(input: string, key: Key): void {
-    if (this.state.overlay.kind !== "connect") return;
-    const overlay = this.state.overlay;
-    const options = overlay.models;
-    if (key.upArrow) {
-      overlay.selectedIndex = Math.max(0, overlay.selectedIndex - 1);
-      return;
-    }
-    if (key.downArrow) {
-      overlay.selectedIndex = Math.min(Math.max(0, options.length - 1), overlay.selectedIndex + 1);
-      return;
-    }
-    if (input === "f" || input === "F") {
-      void this.fetchConnectModels();
-      return;
-    }
-    if (input === "d" || input === "D") {
-      const selected = options[overlay.selectedIndex];
-      if (selected) {
-        overlay.models = options.filter((_, index) => index !== overlay.selectedIndex);
-        overlay.selectedIndex = Math.min(overlay.selectedIndex, Math.max(0, overlay.models.length - 1));
-      }
-      return;
-    }
-    if (isSubmitKey(input, key)) {
-      const selected = options[overlay.selectedIndex];
-      if (selected) {
-        selected.selected = !selected.selected;
-      }
-      return;
-    }
-  }
-
-  private handleConnectListStepKey(input: string, key: Key): void {
-    if (this.state.overlay.kind !== "connect") return;
-    const overlay = this.state.overlay;
-    const choices: readonly string[] = overlay.step === "protocol"
-      ? ["openai", "anthropic"]
-      : REASONING_EFFORTS;
-    if (key.upArrow) {
-      overlay.selectedIndex = Math.max(0, overlay.selectedIndex - 1);
-      return;
-    }
-    if (key.downArrow) {
-      overlay.selectedIndex = Math.min(Math.max(0, choices.length - 1), overlay.selectedIndex + 1);
-      return;
-    }
-    if (isSubmitKey(input, key)) {
-      this.advanceConnectStep(input);
-    }
-  }
-
-  private async confirmConnect(): Promise<void> {
-    if (this.state.overlay.kind !== "connect") return;
-    const overlay = this.state.overlay;
-    const protocol = (overlay.protocol || "openai") as "openai" | "anthropic";
-    const selected = overlay.models.filter((model) => model.selected);
-    if (!selected.length) {
-      overlay.error = "select at least one model with Enter first";
-      this.invalidate();
-      return;
-    }
-    const payload: ConnectInput = {
-      providerName: overlay.providerName.trim() || safeHostName(overlay.baseURL, "provider"),
-      baseURL: overlay.baseURL.trim(),
-      apiKey: overlay.apiKey.trim(),
-      protocol,
-      reasoningEffort: overlay.reasoningEffort,
-      models: selected,
-    };
-    try {
-      const ok = await this.options.onConnect?.(payload);
-      this.state.overlay = { kind: "none" };
-      const activeModel = selected[0]?.id ? `${payload.providerName}/${selected[0].id}` : undefined;
-      this.state.session.status = ok === false
-        ? "provider connection failed"
-        : `Connected ${payload.providerName} (${selected.length} model${selected.length === 1 ? "" : "s"})${activeModel ? `. Active model: ${activeModel}` : ""}`;
-    } catch (error) {
-      if (this.state.overlay.kind === "connect") {
-        this.state.overlay.error = errorMessage(error);
-      }
-    }
-    this.invalidate();
+    await this.overlayHandlers.openSessions();
   }
 
   private handleComposerKey(input: string, key: Key): void {
@@ -678,266 +453,14 @@ export class InkTuiApp {
       const previousQuery = this.state.overlay.kind === "commands" ? this.state.overlay.query : "";
       const previousIndex = this.state.overlay.kind === "commands" ? this.state.overlay.selectedIndex : 0;
       const candidates = commandCandidates(value, this.state.commands);
-      this.commandIndex = Math.min(candidates.length - 1, Math.max(0, previousQuery === value ? previousIndex : 0));
       setOverlay(this.state, {
         kind: "commands",
         query: value,
-        selectedIndex: this.commandIndex,
+        selectedIndex: Math.min(candidates.length - 1, Math.max(0, previousQuery === value ? previousIndex : 0)),
       });
       return;
     }
     if (this.state.overlay.kind === "commands" || this.state.overlay.kind === "files") this.state.overlay = { kind: "none" };
-  }
-
-  private handleCommandKey(input: string, key: Key): void {
-    const candidates = commandCandidates(composerValue(this.state.composer), this.state.commands);
-    if (key.upArrow) {
-      this.commandIndex = candidates.length ? (this.commandIndex - 1 + candidates.length) % candidates.length : 0;
-      if (this.state.overlay.kind === "commands") this.state.overlay = { ...this.state.overlay, selectedIndex: this.commandIndex };
-    }
-    else if (key.downArrow) {
-      this.commandIndex = candidates.length ? (this.commandIndex + 1) % candidates.length : 0;
-      if (this.state.overlay.kind === "commands") this.state.overlay = { ...this.state.overlay, selectedIndex: this.commandIndex };
-    }
-    else if (key.tab) {
-      const command = candidates[this.commandIndex];
-      if (command) {
-        this.detachInputHistory();
-        setComposerValue(this.state.composer, `${command.name} `);
-        this.commandIndex = 0;
-        this.state.overlay = { kind: "none" };
-      } else {
-        this.state.overlay = { kind: "none" };
-      }
-    } else if (isSubmitKey(input, key)) {
-      const command = candidates[this.commandIndex];
-      this.commandIndex = 0;
-      void this.submit(command?.name);
-      return;
-    } else if (key.escape) {
-      this.dismissedCommandInput = composerValue(this.state.composer);
-      this.state.overlay = { kind: "none" };
-    }
-    else {
-      this.handleComposerKey(input, key);
-      return;
-    }
-    this.invalidate();
-  }
-
-  private handleModelKey(input: string, key: Key): void {
-    if (this.state.overlay.kind !== "models") return;
-    const options = this.state.overlay.options;
-    if (key.upArrow) this.modelIndex = Math.max(0, this.modelIndex - 1);
-    else if (key.downArrow) this.modelIndex = Math.min(Math.max(0, options.length - 1), this.modelIndex + 1);
-    else if (key.escape) this.state.overlay = { kind: "none" };
-    else if (isSubmitKey(input, key)) {
-      const selected = options[this.modelIndex];
-      if (selected) void this.selectModel(selected);
-    }
-    this.state.overlay = this.state.overlay.kind === "models"
-      ? { ...this.state.overlay, selectedIndex: this.modelIndex }
-      : this.state.overlay;
-    this.invalidate();
-  }
-
-  private handleSessionKey(input: string, key: Key): void {
-    if (this.state.overlay.kind !== "sessions") return;
-    if (this.selectingSession) return;
-    const options = this.state.overlay.options;
-    if (key.upArrow) this.sessionIndex = Math.max(0, this.sessionIndex - 1);
-    else if (key.downArrow) this.sessionIndex = Math.min(Math.max(0, options.length - 1), this.sessionIndex + 1);
-    else if (key.escape) this.state.overlay = { kind: "none" };
-    else if (isSessionDeleteKey(input, key)) {
-      const selected = options[this.sessionIndex];
-      if (selected) this.requestSessionDelete(selected);
-    }
-    else if (isSubmitKey(input, key)) {
-      const selected = options[this.sessionIndex];
-      if (selected && this.options.onSessionSelected) void this.selectSession(selected.id);
-    }
-    this.state.overlay = this.state.overlay.kind === "sessions"
-      ? { ...this.state.overlay, selectedIndex: this.sessionIndex }
-      : this.state.overlay;
-    this.invalidate();
-  }
-
-  private handleFileKey(input: string, key: Key): void {
-    if (this.state.overlay.kind !== "files") return;
-    if (key.upArrow) this.state.overlay = { ...this.state.overlay, selectedIndex: moveSelection(this.state.overlay.selectedIndex, -1, this.state.overlay.options.length) };
-    else if (key.downArrow) this.state.overlay = { ...this.state.overlay, selectedIndex: moveSelection(this.state.overlay.selectedIndex, 1, this.state.overlay.options.length) };
-    else if (key.tab || isSubmitKey(input, key)) {
-      const file = this.state.overlay.options[this.state.overlay.selectedIndex];
-      if (file) {
-        const value = composerValue(this.state.composer);
-        const cursor = composerCursorOffset(this.state.composer);
-        const replacement = `@${file}`;
-        const next = `${value.slice(0, this.state.overlay.tokenStart)}${replacement}${value.slice(cursor)}`;
-        this.detachInputHistory();
-        setComposerValue(this.state.composer, `${next} `);
-        this.state.overlay = { kind: "none" };
-      }
-    } else if (key.escape) this.state.overlay = { kind: "none" };
-    else {
-      this.handleComposerKey(input, key);
-      return;
-    }
-    this.invalidate();
-  }
-
-  private requestSessionDelete(selected: SessionOption): void {
-    if (this.rejectIfBlocked("finish or cancel the current task before deleting a session")) return;
-    if (this.deletingSession || this.state.overlay.kind !== "sessions") return;
-    this.state.overlay = {
-      kind: "session-delete-confirm",
-      sessionId: selected.id,
-      sessionName: selected.name,
-      selectedIndex: 0,
-      returnSelectedIndex: this.sessionIndex,
-      options: [...this.state.overlay.options],
-    };
-    this.invalidate();
-  }
-
-  private async handleSessionDeleteConfirmKey(input: string, key: Key): Promise<void> {
-    if (this.state.overlay.kind !== "session-delete-confirm" || this.deletingSession) return;
-    const overlay = this.state.overlay;
-    if (key.leftArrow || key.upArrow) this.state.overlay = { ...overlay, selectedIndex: 0 };
-    else if (key.rightArrow || key.downArrow) this.state.overlay = { ...overlay, selectedIndex: 1 };
-    else if (key.escape) this.cancelSessionDeleteConfirmation();
-    else if (isSessionDeleteKey(input, key) || isSubmitKey(input, key)) {
-      if (isSessionDeleteKey(input, key) || overlay.selectedIndex === 0) {
-        this.deletingSession = true;
-        try {
-          const activeSessionId = this.state.session.sessionId;
-          const session = await this.options.onSessionDeleted?.(overlay.sessionId);
-          if (session) {
-            if (session.id !== activeSessionId) this.restoreSession(session);
-            this.state.session.status = "session deleted";
-            const options = await this.options.loadSessions?.();
-            if (options) {
-              this.sessionIndex = Math.min(overlay.returnSelectedIndex, Math.max(0, options.length - 1));
-              this.state.overlay = {
-                kind: "sessions",
-                query: "",
-                selectedIndex: this.sessionIndex,
-                options: [...options],
-              };
-            } else {
-              this.state.overlay = { kind: "none" };
-            }
-          } else {
-            this.state.session.status = "session could not be deleted";
-          }
-        } catch (error) {
-          this.state.session.status = errorMessage(error);
-          this.state.overlay = { kind: "sessions", query: "", selectedIndex: overlay.returnSelectedIndex, options: overlay.options };
-        } finally {
-          this.deletingSession = false;
-        }
-      } else this.cancelSessionDeleteConfirmation();
-    }
-    this.invalidate();
-  }
-
-  private cancelSessionDeleteConfirmation(): void {
-    if (this.state.overlay.kind !== "session-delete-confirm") return;
-    const overlay = this.state.overlay;
-    this.state.overlay = { kind: "sessions", query: "", selectedIndex: overlay.returnSelectedIndex, options: overlay.options };
-    this.sessionIndex = overlay.returnSelectedIndex;
-    this.invalidate();
-  }
-
-  async openFollowUps(): Promise<void> {
-    if (this.followUpBusy) return;
-    if (!this.options.loadFollowUps) {
-      this.state.session.status = "follow-up queue is unavailable";
-      this.invalidate();
-      return;
-    }
-    this.followUpBusy = true;
-    try {
-      const options = await this.options.loadFollowUps();
-      this.state.overlay = { kind: "follow-ups", selectedIndex: 0, options: [...options] };
-      this.state.session.status = options.length ? `${options.length} follow-up(s) queued` : "no queued follow-ups";
-    } catch (error) {
-      this.state.session.status = errorMessage(error);
-    } finally {
-      this.followUpBusy = false;
-    }
-    this.invalidate();
-  }
-
-  private async handleFollowUpKey(input: string, key: Key): Promise<void> {
-    if (this.state.overlay.kind !== "follow-ups" || this.followUpBusy) return;
-    const overlay = this.state.overlay;
-    if (key.upArrow) this.state.overlay = { ...overlay, selectedIndex: moveSelection(overlay.selectedIndex, -1, overlay.options.length) };
-    else if (key.downArrow) this.state.overlay = { ...overlay, selectedIndex: moveSelection(overlay.selectedIndex, 1, overlay.options.length) };
-    else if (key.escape) this.state.overlay = { kind: "none" };
-    else if (isSubmitKey(input, key)) {
-      const selected = overlay.options[overlay.selectedIndex];
-      if (selected && this.options.onFollowUpCancelled) {
-        this.followUpBusy = true;
-        try {
-          if (await this.options.onFollowUpCancelled(selected.id)) {
-            const options = await this.options.loadFollowUps?.() ?? overlay.options.filter((item) => item.id !== selected.id);
-            this.state.overlay = { kind: "follow-ups", selectedIndex: Math.min(overlay.selectedIndex, Math.max(0, options.length - 1)), options: [...options] };
-          }
-        } catch (error) {
-          this.state.session.status = errorMessage(error);
-        } finally {
-          this.followUpBusy = false;
-        }
-      }
-    }
-    this.invalidate();
-  }
-
-  private handleApprovalKey(input: string, key: Key): void {
-    if (this.state.overlay.kind !== "approval") return;
-    const selected = this.state.overlay.selectedIndex;
-    const next = key.upArrow ? Math.max(0, selected - 1) : key.downArrow ? Math.min(3, selected + 1) : selected;
-    if (key.escape) this.resolveApproval(false);
-    else if (isSubmitKey(input, key)) this.resolveApproval(approvalResponse(next));
-    else this.state.overlay = { ...this.state.overlay, selectedIndex: next };
-    this.invalidate();
-  }
-
-  private async selectModel(reference: string): Promise<void> {
-    const changed = await this.options.onModelSelected(reference);
-    if (changed !== false) this.state.overlay = { kind: "none" };
-    this.refreshContext();
-  }
-
-  private async selectSession(id: string): Promise<void> {
-    if (this.selectingSession) return;
-    this.selectingSession = true;
-    try {
-      const session = await this.options.onSessionSelected?.(id);
-      if (session) this.restoreSessionView(session, `Restored session ${session.id}: ${session.name}.`);
-      else this.state.overlay = { kind: "none" };
-    } finally {
-      this.selectingSession = false;
-      this.invalidate();
-    }
-  }
-
-  private async createSession(): Promise<void> {
-    if (this.rejectIfBlocked("finish or cancel the current task before creating a session")) return;
-    if (!this.options.onSessionCreated) {
-      await this.submit("/new");
-      return;
-    }
-    try {
-      const session = await this.options.onSessionCreated();
-      if (session) {
-        this.restoreSession(session);
-        this.state.session.status = `started ${session.name}`;
-      }
-    } catch (error) {
-      this.state.session.status = errorMessage(error);
-    }
-    this.invalidate();
   }
 
   restoreSessionView(session: SessionView, notice?: string): void {
@@ -1467,56 +990,6 @@ function expandPastes(value: string, pastes: readonly PasteBlock[]): string {
 }
 
 
-function safeHostName(input: string, fallback = "provider"): string {
-  const trimmed = input.trim();
-  if (!trimmed) return fallback;
-  try {
-    const url = trimmed.startsWith("http://") || trimmed.startsWith("https://")
-      ? new URL(trimmed)
-      : new URL(`http://${trimmed}`);
-    return url.hostname || fallback;
-  } catch {
-    return fallback;
-  }
-}
-
-function isSubmitKey(input: string, key: Key): boolean {
-  // Ink only marks CR as return; some terminals still deliver bare LF on Enter.
-  return key.return || input === "\n" || input === "\r";
-}
-
-function isSessionDeleteKey(input: string, key: Key): boolean {
-  return (key.ctrl && input === "d") || key.delete || key.backspace;
-}
-
-
-
-
-function isHomeKey(input: string, key: Key): boolean {
-  // Ink Key has no home flag; accept Ctrl+A and common terminal sequences.
-  return (key.ctrl && input === "a") || input === "\x1b[H" || input === "\x1b[1~" || input === "\x1bOH";
-}
-
-function isEndKey(input: string, key: Key): boolean {
-  // Ink Key has no end flag; accept Ctrl+E and common terminal sequences.
-  return (key.ctrl && input === "e") || input === "\x1b[F" || input === "\x1b[4~" || input === "\x1bOF";
-}
-
-function isDeleteBackward(_input: string, key: Key): boolean {
-  // Ink clears `input` for non-alphanumeric keys. On Windows, physical Backspace is
-  // usually reported as key.delete (raw DEL 0x7f), so both flags must erase backward.
-  return key.backspace || key.delete;
-}
-
-function isDeleteForward(input: string, key: Key): boolean {
-  // Prefer backward delete for bare Windows Backspace/DEL.
-  // Treat explicit forward-delete sequences (often delivered as "\x1b[3~") as forward.
-  if (key.backspace) return false;
-  if (input === "\x1b[3~" || input === "\x1b[3;1~") return true;
-  // Some hosts set delete without backspace for Fn+Backspace / Del.
-  return Boolean(key.delete && input.length > 1);
-}
-
 function errorMessage(error: unknown): string {
   // Footer/status lines are single-line truncated; keep the headline only there.
   return formatErrorMessage(error);
@@ -1695,286 +1168,5 @@ function InkRoot({ app, revision }: { app: InkTuiApp; revision: number }): React
         ))}
       </Box>
     </Box>
-  );
-}
-
-function oranWelcomeLines(state: TuiState, availableWidth: number): string[] {
-  const model = welcomeModelLabel(state);
-  const labelWidth = 11;
-  const modelLine = `${"model:".padEnd(labelWidth)}${model}`;
-  const directoryLine = `${"directory:".padEnd(labelWidth)}${state.session.workspace}`;
-  const preferredWidth = Math.max(
-    48,
-    visibleWidth(">_ Oran code") + 4,
-    visibleWidth(modelLine) + 4,
-    visibleWidth(directoryLine) + 4,
-  );
-  const cardWidth = Math.max(20, Math.min(72, availableWidth, preferredWidth));
-  const contentWidth = Math.max(1, cardWidth - 4);
-  const valueWidth = Math.max(1, contentWidth - labelWidth);
-  const content = [
-    `${ANSI.orangeBold}>_ Oran code${ANSI.reset}`,
-    "",
-    `${ANSI.bold}${"model:".padEnd(labelWidth)}${ANSI.reset}${truncateVisible(model, valueWidth)}`,
-    `${ANSI.bold}${"directory:".padEnd(labelWidth)}${ANSI.reset}${abbreviatePath(state.session.workspace, valueWidth)}`,
-    "",
-  ];
-  const top = `${ANSI.gray}╭${"─".repeat(cardWidth - 2)}╮${ANSI.reset}`;
-  const bottom = `${ANSI.gray}╰${"─".repeat(cardWidth - 2)}╯${ANSI.reset}`;
-  const rows = content.map((line) => {
-    const padding = " ".repeat(Math.max(0, contentWidth - visibleWidth(line)));
-    return `${ANSI.gray}│${ANSI.reset} ${line}${padding} ${ANSI.gray}│${ANSI.reset}`;
-  });
-  return [top, ...rows, bottom];
-}
-
-function welcomeModelLabel(state: TuiState): string {
-  const fullLabel = state.session.modelLabel || "(not selected)";
-  if (fullLabel.startsWith("(")) return fullLabel;
-  const separator = fullLabel.indexOf("/");
-  const model = separator >= 0 ? fullLabel.slice(separator + 1) : fullLabel;
-  return `${model} ${state.session.reasoningEffort}`;
-}
-
-function ghostCommandSuggestion(state: TuiState, input: string): string {
-  if (state.overlay.kind !== "commands" || !input.startsWith("/") || /\s/.test(input)) return "";
-  const candidate = commandCandidates(input, state.commands)[0];
-  if (!candidate || !candidate.name.startsWith(input) || candidate.name === input) return "";
-  return candidate.name.slice(input.length);
-}
-
-function renderOverlayLines(state: TuiState, commandLines: string[], width: number): string[] {
-  switch (state.overlay.kind) {
-    case "models":
-      return ["Select model", dimHorizontalRule(width), ...modelSelectorLines(state.overlay.options, state.overlay.selectedIndex)];
-    case "approval":
-      return approvalDialogLines(
-        state.overlay.approval.call,
-        state.overlay.approval.level,
-        state.overlay.approval.description,
-        state.overlay.approval.workspace,
-        state.overlay.approval.origin,
-        state.overlay.selectedIndex,
-        width,
-      );
-    case "details":
-      return [state.overlay.title, dimHorizontalRule(width), ...state.overlay.lines, "", "Ctrl+T/Esc Close"];
-   case "sessions":
-     {
-       const overlay = state.overlay;
-       return [
-         currentSessionLine(overlay.options, width),
-         dimHorizontalRule(width),
-         "Enter Resume   Del Remove   Esc Close",
-         "",
-         ...overlay.options.map((item, index) => highlightSelection(
-           `  ${sessionOptionLabel(item, Math.max(1, width - 2))}`,
-           index === overlay.selectedIndex,
-         )),
-       ];
-     }
-   case "session-delete-confirm":
-     {
-       const overlay = state.overlay;
-     return [
-       "Delete session?",
-       `  ${truncateVisible(overlay.sessionName, Math.max(1, width - 2))}`,
-       dimHorizontalRule(width),
-       "Enter/Del Confirm   Esc Cancel",
-       "",
-       highlightSelection("  Delete", overlay.selectedIndex === 0),
-       highlightSelection("  Cancel", overlay.selectedIndex === 1),
-     ];
-     }
-   case "follow-ups":
-     {
-       const overlay = state.overlay;
-     return [
-       "Follow-ups",
-       dimHorizontalRule(width),
-       "Enter Cancel selected   Esc Close",
-       "",
-       ...(overlay.options.length
-         ? overlay.options.map((item, index) => highlightSelection(`  ${item.id}  ${truncateVisible(item.prompt.replace(/\s+/g, " ").trim(), Math.max(1, width - 2))}`, index === overlay.selectedIndex))
-         : ["  (no queued follow-ups)"]),
-     ];
-     }
-   case "files":
-     {
-       const overlay = state.overlay;
-     return [
-       `@${overlay.query}`,
-       dimHorizontalRule(width),
-       "Enter Insert   Esc Close",
-       "",
-       ...(overlay.loading && !overlay.options.length
-         ? ["  loading..."]
-         : overlay.options.length
-           ? overlay.options.map((item, index) => highlightSelection(`  ${truncateVisible(item, Math.max(1, width - 2))}`, index === overlay.selectedIndex))
-           : ["  (no matching files)"]),
-      ];
-      }
-    case "commands":
-      return commandLines;
-    case "connect":
-      return renderConnectLines(state.overlay, width);
-    default:
-      return [];
-  }
-}
-
-function renderConnectLines(overlay: Extract<TuiState["overlay"], { kind: "connect" }>, width: number): string[] {
-  function protocolLabel(protocol: "openai" | "anthropic"): string {
-    return protocol === "anthropic" ? "Anthropic Messages" : "OpenAI Chat Completions";
-  }
-  const lines: string[] = [];
-  switch (overlay.step) {
-    case "providerName":
-      lines.push("Add provider — name", dimHorizontalRule(width), `  ${overlay.providerName || "(e.g. openai)"}`, "Enter/Tab Next   Esc Close");
-      break;
-    case "baseURL":
-      lines.push(`Provider: ${overlay.providerName}`, dimHorizontalRule(width), "Base URL", `  ${overlay.baseURL || "(e.g. https://api.openai.com/v1 or https://api.anthropic.com)"}`, "Enter/Tab Next   Esc Close");
-      break;
-    case "apiKey":
-      lines.push(`Provider: ${overlay.providerName} — ${overlay.baseURL}`, dimHorizontalRule(width), "API key (optional)", `  ${overlay.apiKey ? "*".repeat(Math.min(40, overlay.apiKey.length)) : "(leave blank to skip)"}`, "Enter/Tab Next   Esc Close");
-      break;
-   case "protocol": {
-     const choices: ("openai" | "anthropic")[] = ["openai", "anthropic"];
-      lines.push(`Provider: ${overlay.providerName}`, dimHorizontalRule(width), "Protocol", "Enter/Tab Confirm   Esc Close", "");
-      choices.forEach((choice, index) => {
-        lines.push(highlightSelection(`  ${protocolLabel(choice)}`, index === overlay.selectedIndex));
-      });
-      break;
-   }
-   case "reasoningEffort": {
-      lines.push(`Provider: ${overlay.providerName} (${protocolLabel(overlay.protocol || "openai")})`, dimHorizontalRule(width), "Reasoning effort", "Enter/Tab Confirm   Esc Close", "");
-     REASONING_EFFORTS.forEach((effort, index) => {
-        lines.push(highlightSelection(`  ${effort}`, index === overlay.selectedIndex));
-      });
-      break;
-    }
-   case "models": {
-      lines.push(`Provider: ${overlay.providerName} (${protocolLabel(overlay.protocol || "openai")}) — effort ${overlay.reasoningEffort}`, dimHorizontalRule(width));
-      lines.push("F Fetch all   D Delete   Enter Toggle select   Ctrl+S/Tab Save   Esc Close");
-      lines.push("");
-      if (overlay.loading) {
-        lines.push("  fetching models...");
-      } else if (overlay.error) {
-        lines.push(`  error: ${truncateVisible(overlay.error, Math.max(1, width - 2))}`);
-        lines.push("  press F to retry");
-      } else if (overlay.models.length === 0) {
-        lines.push("  (no models yet — press F to fetch)");
-      } else {
-        overlay.models.forEach((model, index) => {
-          const mark = model.selected ? "✓" : " ";
-          const ctx = model.contextWindow ? `  [ctx ${model.contextWindow}]` : "";
-          lines.push(highlightSelection(`${mark} ${truncateVisible(model.id, Math.max(1, width - 4))}${ctx}`, index === overlay.selectedIndex));
-        });
-      }
-      const selectedCount = overlay.models.filter((model) => model.selected).length;
-      if (selectedCount > 0) lines.push("", `${selectedCount} selected — Ctrl+S/Tab to save`);
-      break;
-    }
-  }
-  return lines;
-}
-
-function fitOverlayLines(lines: readonly string[], capacity: number): string[] {
-  const height = Math.max(1, Math.floor(capacity));
-  if (lines.length <= height) return [...lines];
-  const activeLine = lines.findIndex((line) => line.includes("{inverse}"));
-  if (activeLine >= 0 && height === 1) return [lines[activeLine]!];
-  if (activeLine >= 0 && height === 2) return [lines[0]!, lines[activeLine]!];
-  if (height === 1) return [lines[lines.length - 1]!];
-  if (height === 2) return [lines[0]!, lines[lines.length - 1]!];
-
-  // Preserve the overlay identity/help while keeping the active option visible.
-  const headerHeight = Math.min(2, height - 1);
-  const header = lines.slice(0, headerHeight);
-  const body = lines.slice(headerHeight);
-  const selectedLine = Math.max(0, body.findIndex((line) => line.includes("{inverse}")));
-  const bodyHeight = height - header.length;
-  const start = Math.max(0, Math.min(selectedLine - bodyHeight + 1, body.length - bodyHeight));
-  return [...header, ...body.slice(start, start + bodyHeight)];
-}
-
-function fileQuery(value: string, cursor: number): { query: string; start: number } | undefined {
-  const before = value.slice(0, cursor);
-  const match = before.match(/(?:^|\s)@([^\s@]*)$/);
-  if (!match || match.index === undefined) return undefined;
-  return { query: match[1] ?? "", start: before.lastIndexOf("@") };
-}
-
-function HighlightedLine({ value }: { value: string }): React.JSX.Element {
-  const parts: React.ReactNode[] = [];
-  const pattern = /\{inverse\}([\s\S]*?)\{\/inverse\}/g;
-  let lastIndex = 0;
-  let match: RegExpExecArray | null;
-  let key = 0;
-  while ((match = pattern.exec(value)) !== null) {
-    if (match.index > lastIndex) {
-      parts.push(<Text key={`t-${key++}`}>{value.slice(lastIndex, match.index)}</Text>);
-    }
-    parts.push(<Text key={`s-${key++}`} inverse>{match[1]}</Text>);
-    lastIndex = match.index + match[0].length;
-  }
-  if (lastIndex < value.length) parts.push(<Text key={`t-${key++}`}>{value.slice(lastIndex)}</Text>);
-  if (!parts.length) return <Text> </Text>;
-  return <Text>{parts}</Text>;
-}
-
-function composerPrefix(kind: TuiState["overlay"]["kind"]): string {
-  // Keep the exclusive-overlay bang only for modal overlays that own the input.
-  // Commands/files still edit the free-form composer and should keep the prompt.
-  return kind === "none" || kind === "commands" || kind === "files" ? "> " : kind === "connect" ? "connect> " : "! ";
-}
-
-function renderComposerLines(
-  editorLines: ReturnType<typeof visualLines>,
-  cursorRow: number,
-  cursorColumn: number,
-  busy: boolean,
-): React.JSX.Element {
-  // Real terminal cursor is also parked for IME; draw an inverse cell so the caret
-  // stays visibly glued to the input box even if the host cursor briefly drifts.
-  // While a task is running the caret is hidden so the input line stays still.
-  const lines = editorLines.length ? editorLines : [{ text: "", logicalLine: 0, startColumn: 0 }];
-  const safeRow = Math.max(0, Math.min(lines.length - 1, cursorRow));
-  return (
-    <Text>
-      {lines.map((line, index) => {
-        const prefix = index === 0 ? "" : "\n  ";
-        if (index !== safeRow || busy) {
-          return <Text key={`composer-line-${index}`}>{prefix}{line.text || " "}</Text>;
-        }
-        return <Text key={`composer-line-${index}`}>{prefix}{renderComposerLineWithCaret(line.text, cursorColumn)}</Text>;
-      })}
-    </Text>
-  );
-}
-
-function renderComposerLineWithCaret(text: string, cursorColumn: number): React.JSX.Element {
-  const symbols = graphemes(text);
-  // cursorColumn is display-width based; walk cells to the caret boundary.
-  let display = 0;
-  let splitAt = 0;
-  while (splitAt < symbols.length) {
-    const symbol = symbols[splitAt] ?? "";
-    const width = Math.max(1, visibleWidth(symbol));
-    if (display + width > cursorColumn) break;
-    display += width;
-    splitAt += 1;
-  }
-  const before = symbols.slice(0, splitAt).join("");
-  const active = symbols[splitAt];
-  const after = symbols.slice(splitAt + (active === undefined ? 0 : 1)).join("");
-  // Wide glyphs (CJK/emoji) keep a single inverse cell so the caret does not
-  // jump ahead of the logical insertion point.
-  return (
-    <Text>
-      {before}
-      <Text inverse>{active ?? " "}</Text>
-      {after}
-    </Text>
   );
 }
