@@ -4,8 +4,7 @@ export function toolDisplayName(name: string): string {
     case "read_file": return "Read";
     case "write_file": return "Write";
     case "edit_file": return "Edit";
-    case "apply_patch": return "Write";
-    case "apply_diff": return "Patch";
+    case "apply_patch": return "Patch";
     case "run_command": return "Bash";
     case "glob_files": return "Glob";
     case "search_code": return "Search";

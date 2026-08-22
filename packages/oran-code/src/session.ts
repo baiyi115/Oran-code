@@ -2220,6 +2220,14 @@ export class TerminalSession {
       this.renderer.attachPrompt(undefined);
       this.readline = undefined;
     }
+    // 进程退出前派发 process_exit hook(规则自带超时;失败只记日志)。
+    if (this.hookEngine) {
+      try {
+        await this.hookEngine.dispatch({ event: "process_exit", workspace: this.workspace });
+      } catch {
+        // hook 失败不得阻断退出
+      }
+    }
     await this.closeTrace();
     await this.commandUsage?.flush();
   }

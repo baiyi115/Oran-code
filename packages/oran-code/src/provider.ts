@@ -38,9 +38,15 @@ export class OpenAICompatibleProvider implements ModelProvider {
     }
     const state: OpenAiStreamState = {
       calls: new Map<number, { id?: string; name: string; arguments: string }>(),
+      emittedCalls: false,
     };
     for await (const event of readSseEvents(response.body as AsyncIterable<Uint8Array>)) {
       for (const update of parseOpenAiStreamEvent(event, state)) yield update;
+    }
+    // 部分兼容实现不返回 finish_reason=tool_calls(或根本没有 finish_reason);
+    // 流结束时若有累积未发射的工具调用,统一补发,避免静默丢弃。
+    if (!state.emittedCalls && state.calls.size) {
+      yield* openAiToolCallChunks(state);
     }
     if (state.finishReason === undefined) {
       throw new Error("OpenAI-compatible stream ended without a finish_reason");
@@ -83,7 +89,25 @@ export class OpenAICompatibleProvider implements ModelProvider {
 
 interface OpenAiStreamState {
   readonly calls: Map<number, { id?: string; name: string; arguments: string }>;
+  emittedCalls: boolean;
   finishReason?: string;
+}
+
+function openAiToolCallChunks(state: OpenAiStreamState): ModelStreamChunk[] {
+  const updates: ModelStreamChunk[] = [];
+  for (const [index, call] of [...state.calls.entries()].sort(([left], [right]) => left - right)) {
+    updates.push({
+      type: "tool_call_complete",
+      toolCall: {
+        index,
+        ...(call.id ? { id: call.id } : {}),
+        name: call.name,
+        argumentsJson: call.arguments || "{}",
+      },
+      streamed: true,
+    });
+  }
+  return updates;
 }
 
 function parseOpenAiStreamEvent(event: string, state: OpenAiStreamState): ModelStreamChunk[] {
@@ -120,18 +144,8 @@ function parseOpenAiStreamEvent(event: string, state: OpenAiStreamState): ModelS
     const finishReason = choice.finish_reason;
     state.finishReason = finishReason;
     if (finishReason === "tool_calls") {
-      for (const [index, call] of [...state.calls.entries()].sort(([left], [right]) => left - right)) {
-        updates.push({
-          type: "tool_call_complete",
-          toolCall: {
-            index,
-            ...(call.id ? { id: call.id } : {}),
-            name: call.name,
-            argumentsJson: call.arguments || "{}",
-          },
-          streamed: true,
-        });
-      }
+      state.emittedCalls = true;
+      updates.push(...openAiToolCallChunks(state));
     }
   }
   return updates;
@@ -231,22 +245,27 @@ async function boundedError(response: Response): Promise<string> {
   return (await response.text()).slice(0, 500);
 }
 
-/** 运行时提醒移到对话末尾，避免逐轮变化击穿稳定前缀缓存。 */
+/** 运行时提醒移到对话真正的末尾(与 Anthropic 路径一致),避免逐轮变化的
+ *  揕醒文本就地改写历史消息而击穿稳定前缀缓存。 */
 function toOpenAiMessages(messages: readonly Message[]): Record<string, unknown>[] {
   const result: Record<string, unknown>[] = [];
+  const tailReminders: string[] = [];
   for (const message of messages) {
     if (message.role === "system" && message.metadata?.promptBlock === "runtime-reminder") {
       const reminderText = message.content?.trim() ?? "";
-      if (!reminderText) continue;
-      const last = result[result.length - 1];
-      if (last && last.role === "user" && typeof last.content === "string") {
-        last.content = `${last.content}\n\n${reminderText}`;
-      } else {
-        result.push({ role: "user", content: reminderText });
-      }
+      if (reminderText) tailReminders.push(reminderText);
       continue;
     }
     result.push(toApiMessage(message));
+  }
+  if (tailReminders.length) {
+    const reminderText = tailReminders.join("\n\n");
+    const last = result[result.length - 1];
+    if (last && last.role === "user" && typeof last.content === "string") {
+      last.content = `${last.content}\n\n${reminderText}`;
+    } else {
+      result.push({ role: "user", content: reminderText });
+    }
   }
   return result;
 }

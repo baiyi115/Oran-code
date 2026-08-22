@@ -2,7 +2,7 @@ import { existsSync } from "node:fs";
 import { copyFile, mkdir, readFile, writeFile } from "node:fs/promises";
 import { homedir } from "node:os";
 import { dirname, resolve } from "node:path";
-import { legacyUserDataRoot, PROJECT_STATE_DIRECTORY, userDataRoot } from "./paths.js";
+import { LEGACY_PROJECT_CONFIG_DIRECTORY, LEGACY_PROJECT_STATE_DIRECTORY, legacyUserDataRoot, PROJECT_STATE_DIRECTORY, userDataRoot } from "./paths.js";
 import { isPermissionMode, isReasoningEffort } from "./types.js";
 import type {
   AgentSettings,
@@ -66,8 +66,12 @@ export function projectConfigPath(workspace: string): string {
   return resolve(workspace, PROJECT_STATE_DIRECTORY, "config.json");
 }
 
-export function legacyProjectConfigPath(workspace: string): string {
-  return resolve(workspace, ".liteagent", "config.json");
+/** 历史遗留的项目级配置目录(.liteagent 与 .litecode 都兼容读取,存在的生效)。 */
+export function legacyProjectConfigPaths(workspace: string): string[] {
+  return [
+    resolve(workspace, LEGACY_PROJECT_CONFIG_DIRECTORY, "config.json"),
+    resolve(workspace, LEGACY_PROJECT_STATE_DIRECTORY, "config.json"),
+  ];
 }
 
 async function readConfig(path: string): Promise<UserConfig> {
@@ -369,7 +373,9 @@ export async function loadConfig(workspace?: string): Promise<UserConfig> {
   await ensureUserConfig();
   let config = await readConfig(userConfigPath());
   if (workspace) {
-    config = merge(config, await readConfig(legacyProjectConfigPath(workspace)));
+    for (const legacyPath of legacyProjectConfigPaths(workspace)) {
+      config = merge(config, await readConfig(legacyPath));
+    }
     config = merge(config, await readConfig(projectConfigPath(workspace)));
   }
   return config;

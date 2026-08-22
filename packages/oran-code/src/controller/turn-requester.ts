@@ -32,6 +32,17 @@ const BUDGET_COMPACTION_GROWTH_FACTOR = 1.25;
 const BUDGET_COMPACTION_COOLDOWN_TURNS = 3;
 
 /**
+ * provider 流协议契约违规(响应完成后仍发事件、重复完成标记等)。
+ * 契约违规重试同一响应没有意义,streamWithRetry 对它立即失败。
+ */
+export class ProviderContractError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = "ProviderContractError";
+  }
+}
+
+/**
  * 模型请求管线与 TaskController 之间的端口。controller 保留事件、hook、
  * 会话同步与诊断通道,requester 负责上下文准备、压缩决策与流式消费。
  */
@@ -252,6 +263,7 @@ export class TurnRequester {
         if (isAbortError(error) || this.ports.getAbortSignal()?.aborted) throw error;
         if (this.ports.contextManager.isPromptTooLongError(error)) throw error;
         if (error instanceof ModelRequestError && !isRetryableModelStatus(error.status)) throw error;
+        if (error instanceof ProviderContractError) throw error;
         lastError = error;
         const message = formatErrorMessage(error);
         if (attempt >= this.ports.config.loop.maxRetries) {
@@ -347,7 +359,7 @@ export class TurnRequester {
       for await (const chunk of this.ports.provider.streamResponse(messages, tools, providerOptions)) {
         streamed ||= chunk.streamed;
         if (responseCompleted) {
-          throw new Error(`provider emitted ${chunk.type} after response_complete`);
+          throw new ProviderContractError(`provider emitted ${chunk.type} after response_complete`);
         }
         switch (chunk.type) {
           case "reasoning_delta":
@@ -366,7 +378,7 @@ export class TurnRequester {
             const call = parseCompletedToolCall(chunk.toolCall);
             const existing = completedToolCalls.get(chunk.toolCall.index);
             if (existing && !sameToolCall(existing, call)) {
-              throw new Error(`provider emitted conflicting completed tool calls for index ${chunk.toolCall.index}`);
+              throw new ProviderContractError(`provider emitted conflicting completed tool calls for index ${chunk.toolCall.index}`);
             }
             if (!existing) {
               completedToolCalls.set(chunk.toolCall.index, call);
@@ -378,13 +390,13 @@ export class TurnRequester {
             Object.assign(usage, chunk.usage);
             break;
           case "response_complete":
-            if (responseCompleted) throw new Error("provider emitted response_complete more than once");
+            if (responseCompleted) throw new ProviderContractError("provider emitted response_complete more than once");
             responseCompleted = true;
             finishReason = chunk.finishReason;
             break;
         }
       }
-      if (!responseCompleted) throw new Error("provider stream ended without a response_complete event");
+      if (!responseCompleted) throw new ProviderContractError("provider stream ended without a response_complete event");
       loop.recordModelElapsed(Math.max(1, Date.now() - modelStartedAt));
       loop.recordUsage(usage);
       const normalizedCalls = [...completedToolCalls.entries()]

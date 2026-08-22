@@ -475,7 +475,7 @@ function isSafeCommand(command: string): boolean {
 }
 
 function inferToolKind(name: string): ToolKind {
-  if (["write_file", "edit_file", "apply_patch", "write_plan", "apply_diff"].includes(name)) return "write";
+  if (["write_file", "edit_file", "apply_patch", "write_plan"].includes(name)) return "write";
   if (["list_files", "read_file", "glob_files", "search_code", "git_status", "get_diff"].includes(name)) return "readonly";
   return "command";
 }

@@ -92,7 +92,7 @@ export class TranscriptView {
 }
 
 /** File-mutating and command-executing tools always render individually so actions stay visible. */
-const NON_COLLAPSIBLE_TOOL_NAMES = new Set(["write_file", "edit_file", "apply_patch", "apply_diff", "run_command"]);
+const NON_COLLAPSIBLE_TOOL_NAMES = new Set(["write_file", "edit_file", "apply_patch", "run_command"]);
 /** A thought+tool run collapses only when it contains at least this many tools. */
 const SEGMENT_MIN_TOOLS = 2;
 

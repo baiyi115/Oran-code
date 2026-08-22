@@ -11,15 +11,15 @@ describe("builtin tools", () => {
       const registry = new ToolRegistry();
       registerBuiltinTools(registry, workspace);
       registry.activateAll();
-      await expect(registry.invoke({ name: "apply_patch", arguments: { path: "note.txt", content: "ok" }, createdAt: new Date().toISOString() })).resolves.toMatchObject({ ok: true });
+      await expect(registry.invoke({ name: "write_file", arguments: { path: "note.txt", content: "ok" }, createdAt: new Date().toISOString() })).resolves.toMatchObject({ ok: true });
       await expect(readFile(join(workspace, "note.txt"), "utf8")).resolves.toBe("ok");
-      await expect(registry.invoke({ name: "apply_patch", arguments: { path: "../escape.txt", content: "bad" }, createdAt: new Date().toISOString() })).resolves.toMatchObject({ ok: false, error: expect.stringContaining("escapes workspace") });
+      await expect(registry.invoke({ name: "write_file", arguments: { path: "../escape.txt", content: "bad" }, createdAt: new Date().toISOString() })).resolves.toMatchObject({ ok: false, error: expect.stringContaining("escapes workspace") });
     } finally {
       await rm(workspace, { recursive: true, force: true });
     }
   });
 
-  it("apply_diff applies a unified diff to an existing file", async () => {
+  it("apply_patch applies a unified diff to an existing file", async () => {
     const workspace = await mkdtemp(join(tmpdir(), "liteagent-"));
     try {
       const registry = new ToolRegistry();
@@ -27,7 +27,7 @@ describe("builtin tools", () => {
       registry.activateAll();
       await registry.invoke({ name: "write_file", arguments: { path: "src/a.txt", content: "one\ntwo\nthree\n" }, createdAt: new Date().toISOString() });
       const result = await registry.invoke({
-        name: "apply_diff",
+        name: "apply_patch",
         arguments: {
           path: "src/a.txt",
           diff: "@@ -2,1 +2,1 @@\n-two\n+TWO\n",
@@ -41,7 +41,7 @@ describe("builtin tools", () => {
     }
   });
 
-  it("apply_diff rejects a diff that does not match", async () => {
+  it("apply_patch rejects a diff that does not match", async () => {
     const workspace = await mkdtemp(join(tmpdir(), "liteagent-"));
     try {
       const registry = new ToolRegistry();
@@ -49,7 +49,7 @@ describe("builtin tools", () => {
       registry.activateAll();
       await registry.invoke({ name: "write_file", arguments: { path: "a.txt", content: "one\ntwo\n" }, createdAt: new Date().toISOString() });
       const result = await registry.invoke({
-        name: "apply_diff",
+        name: "apply_patch",
         arguments: {
           path: "a.txt",
           diff: "@@ -1,1 +1,1 @@\n-missing context\n+x\n",
@@ -63,14 +63,14 @@ describe("builtin tools", () => {
     }
   });
 
-  it("apply_diff stays inside the workspace", async () => {
+  it("apply_patch stays inside the workspace", async () => {
     const workspace = await mkdtemp(join(tmpdir(), "liteagent-"));
     try {
       const registry = new ToolRegistry();
       registerBuiltinTools(registry, workspace);
       registry.activateAll();
       const result = await registry.invoke({
-        name: "apply_diff",
+        name: "apply_patch",
         arguments: { path: "../escape.txt", diff: "@@ -1,1 +1,1 @@\n-a\n+b\n" },
         createdAt: new Date().toISOString(),
       });

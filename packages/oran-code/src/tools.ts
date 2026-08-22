@@ -373,28 +373,8 @@ export function registerBuiltinTools(registry: ToolRegistry, workspace: string):
     },
   });
 
-  // Compatibility alias: full-file overwrite. Prefer write_file for new writes and edit_file for surgical edits.
   register({
     name: "apply_patch",
-    description:
-      "Compatibility tool: overwrite a text file with full content (not a unified diff). Read existing files first. Prefer write_file for new files and edit_file for unique-snippet edits.",
-    parameters: {
-      type: "object",
-      properties: {
-        path: { type: "string", description: "Path relative to workspace root." },
-        content: { type: "string", description: "Full file content to write." },
-      },
-     required: ["path", "content"],
-   },
-   permissionLevel: 2,
-   kind: "write",
-   maxOutputChars: 16_000,
-    deferred: true,
-   invoke: async (call, context) => writeTextFile(activeRoot(context), (raw) => pathFor(context, raw), call.arguments.path, call.arguments.content),
- });
-
- register({
-   name: "apply_diff",
     description:
       "Apply a unified diff to an existing UTF-8 text file. The diff must contain one or more @@ hunks; file header lines (index/---/+++) are ignored and the target comes from the path argument. Hunk line numbers may be approximate: each hunk is located by matching its context lines against the file. Returns the number of hunks applied and a summary of added/removed lines.",
     parameters: {
@@ -403,13 +383,13 @@ export function registerBuiltinTools(registry: ToolRegistry, workspace: string):
         path: { type: "string", description: "Path relative to workspace root." },
         diff: { type: "string", description: "Unified diff text with @@ hunks." },
       },
-     required: ["path", "diff"],
-   },
-   permissionLevel: 2,
-   kind: "write",
-   maxOutputChars: 16_000,
+      required: ["path", "diff"],
+    },
+    permissionLevel: 2,
+    kind: "write",
+    maxOutputChars: 16_000,
     deferred: true,
-   invoke: async (call, context) => {
+    invoke: async (call, context) => {
       try {
         const workspace = activeRoot(context);
         const path = pathFor(context, call.arguments.path);
@@ -427,7 +407,7 @@ export function registerBuiltinTools(registry: ToolRegistry, workspace: string):
           return {
             ok: false,
             output: "",
-            error: `apply_diff failed: ${applied.error ?? "unknown error"}`,
+            error: `apply_patch failed: ${applied.error ?? "unknown error"}`,
             summary: "patch failed",
           };
         }
@@ -439,7 +419,7 @@ export function registerBuiltinTools(registry: ToolRegistry, workspace: string):
           metadata: { hunksApplied: applied.hunksApplied, linesAdded: applied.linesAdded, linesRemoved: applied.linesRemoved },
         };
       } catch (error) {
-        return failedResult(error, "apply_diff failed");
+        return failedResult(error, "apply_patch failed");
       }
     },
   });
@@ -694,7 +674,7 @@ function registerSearchTools(registry: ToolRegistry): void {
 }
 
 export function isWriteToolName(name: string): boolean {
-  return name === "apply_patch" || name === "write_file" || name === "edit_file" || name === "write_plan" || name === "apply_diff";
+  return name === "apply_patch" || name === "write_file" || name === "edit_file" || name === "write_plan";
 }
 
 export function isMutatingToolName(name: string): boolean {

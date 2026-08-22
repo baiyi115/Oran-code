@@ -67,11 +67,11 @@ function writeToolDiff(message: ToolMessage): string | undefined {
     const additions = newString.split(/\r?\n/).map((line) => `+${line}`);
     return [...removals, ...additions].join("\n");
   }
-  if (message.name === "apply_diff") {
+  if (message.name === "apply_patch") {
     const diff = typeof message.arguments.diff === "string" ? message.arguments.diff : "";
     return diff.trim() ? diff : undefined;
   }
-  if (message.name === "write_file" || message.name === "apply_patch") {
+  if (message.name === "write_file") {
     const content = typeof message.arguments.content === "string" ? message.arguments.content : "";
     if (!content.trim()) return undefined;
     return content.split(/\r?\n/).map((line) => `+${line}`).join("\n");

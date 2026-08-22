@@ -99,7 +99,7 @@ export function parseUnifiedDiff(diff: string): { ok: true; hunks: UnifiedDiffHu
       }
       // Header lines (---/+++ paths) only appear before the first hunk and were
       // consumed above. A second header inside a hunk means a multi-file diff,
-      // which apply_diff does not support.
+      // which apply_patch does not support.
       if (line.startsWith("--- ") || line.startsWith("+++ ") || line.startsWith("diff --git ")) {
         return { ok: false, error: "multi-file diffs are not supported; apply one diff per file" };
       }
