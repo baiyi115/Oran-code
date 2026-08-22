@@ -9,6 +9,10 @@ import { CommandRegistry, commandHelp, completeInput, formatModelReference, mode
 import { createModelProvider } from "./provider.js";
 import { createRuntimeConfig } from "./runtime.js";
 import { isAbortError } from "./utils/abort-error.js";
+import { ApprovalQueue, isApprovalAnswer } from "./approval-queue.js";
+import { SessionTitleService } from "./session-title.js";
+import { MemoryExtractionScheduler } from "./memory-extraction.js";
+import { McpSessionIntegration } from "./mcp/session-integration.js";
 import { TerminalRenderer, createPromptHooks, type SessionRenderer } from "./renderer.js";
 import { PERMISSION_MODES, createTask } from "./types.js";
 import { displaySessionName, firstConversationPrompt, isAutomaticSessionName, SessionStore, truncateSessionName, type StoredSession } from "./session-store.js";
@@ -30,7 +34,6 @@ import type { SqliteTraceStore } from "./trace.js";
 import type { ToolRegistry } from "./tools.js";
 import type { InkTuiApp } from "./tui/ink-app.js";
 import type { MemoryExtractor } from "./memory-extractor.js";
-import type { McpManager } from "./mcp/manager.js";
 import type { BackgroundAgentTaskManager } from "./subagent/background.js";
 import type { AgentDefinitionLoader } from "./subagent/roles.js";
 import type { SubagentRunner } from "./subagent/runner.js";
@@ -44,7 +47,6 @@ const SESSION_GAP_REMINDER_DAYS = 7;
 
 /** Cached dynamic imports so cold-start stays light but first use pays once. */
 const loadInkApp = () => import("./tui/ink-app.js");
-const loadMcpManager = () => import("./mcp/manager.js");
 const loadController = () => import("./controller.js");
 const loadHookFacade = () => import("./hook/index.js");
 const loadContextManager = () => import("./context-manager.js");
@@ -86,17 +88,6 @@ interface FollowUpItem {
   readonly createdAt: string;
 }
 
-interface PendingApproval {
-  readonly call: ToolCall;
-  readonly level: number;
-  readonly description: string;
-  readonly requestId: string;
-  readonly origin: SubagentOrigin;
-  readonly resolve: (response: ApprovalResponse) => void;
-  presented: boolean;
-  settled: boolean;
-}
-
 interface ActiveSkill {
   readonly definition: SkillDefinition;
   readonly prompt: string;
@@ -131,7 +122,7 @@ export class TerminalSession {
   private previousToolHistory: ToolCall[] = [];
   private previousReadonlyResults?: ReadonlyMap<string, ToolResult>;
   private contextEventSequence = 0;
-  private readonly pendingApprovals: PendingApproval[] = [];
+  private readonly approvalQueue: ApprovalQueue;
   private workMode: WorkMode;
   private permissionMode: PermissionMode;
   private reasoningEffort: ReasoningEffort;
@@ -146,8 +137,7 @@ export class TerminalSession {
   private sessionSave: Promise<void> = Promise.resolve();
   private debugLogTail: Promise<void> = Promise.resolve();
   private sessionPersistTimer: ReturnType<typeof setTimeout> | undefined;
-  private readonly titleJobs = new Set<Promise<void>>();
-  private readonly titleAbortControllers = new Set<AbortController>();
+  private readonly titles: SessionTitleService;
   private sessionSaveError: string | undefined;
   private sessionGeneration = 0;
   private taskGeneration = 0;
@@ -159,12 +149,7 @@ export class TerminalSession {
   private stablePromptModules: OptionalSystemPromptModules;
   private readonly configuredStablePromptModules: OptionalSystemPromptModules;
   private readonly memoryManager: MemoryManager;
-  private memoryExtractor: MemoryExtractor | undefined;
-  private memoryExtractorInit: Promise<MemoryExtractor> | undefined;
-  private readonly memoryExtractionJobs = new Set<Promise<void>>();
-  private memoryExtractorModelKey: string | undefined;
-  private readonly memorySnapshots = new Map<string, string>();
-  private readonly pendingMemorySnapshots = new Map<string, string>();
+  private readonly memoryExtraction: MemoryExtractionScheduler;
   private sessionSelection: Promise<SessionView | undefined> | undefined;
   private commandRegistry = new CommandRegistry();
   private readonly skillLoader: SkillLoader;
@@ -179,9 +164,7 @@ export class TerminalSession {
   private hookWarningsShown = false;
   private readonly hookSubagentAbortControllers = new Set<AbortController>();
   private readonly hookSubagentJobs = new Set<Promise<void>>();
-  private mcpManager: McpManager | undefined;
-  private mcpReady: Promise<void> | undefined;
-  private mcpFailuresShown = false;
+  private readonly mcp: McpSessionIntegration;
   private agentRuntime: AgentRuntimeServices | undefined;
   private agentRuntimePromise: Promise<AgentRuntimeServices> | undefined;
   private agentStateRestore: Promise<void> | undefined;
@@ -201,10 +184,44 @@ export class TerminalSession {
     this.input = input;
     this.output = output;
     this.renderer = new TerminalRenderer(output);
+    this.approvalQueue = new ApprovalQueue({
+      renderer: () => this.renderer,
+      isInteractive: () => this.isReadlineActive() || Boolean(this.tui),
+    });
     this.providerFactory = options.providerFactory ?? ((model: ModelConfig) => createModelProvider(model));
     this.configuredStablePromptModules = { ...options.stablePromptModules };
     this.stablePromptModules = { ...this.configuredStablePromptModules };
     this.memoryManager = new MemoryManager(this.workspace);
+    this.mcp = new McpSessionIntegration({
+      workspace: this.workspace,
+      config: () => this.config,
+      conversation: () => this.conversation,
+      persistSession: () => { void this.persistTuiSession(); },
+      onError: (message) => this.renderer.error(message),
+      onConnected: () => this.refreshTui(),
+    });
+    this.memoryExtraction = new MemoryExtractionScheduler({
+      memoryManager: this.memoryManager,
+      providerFactory: (model) => this.providerFactory(model),
+      currentSessionId: () => this.currentSession?.id,
+      onNotesSaved: (sessionId, noteIds) => {
+        if (this.currentSession?.id !== sessionId) return;
+        this.renderer.status(`Saved memory: ${noteIds.join(", ")}.`, "cyan");
+      },
+    });
+    this.titles = new SessionTitleService({
+      workspace: this.workspace,
+      sessionStore: this.sessionStore,
+      providerFactory: (model) => this.providerFactory(model),
+      config: () => this.config,
+      titleMode: () => this.sessionTitleMode(),
+      runSerialSessionWrite: (task) => this.runSerialSessionWrite(task),
+      onSessionUpdated: (updated, { refreshTui }) => {
+        if (this.currentSession?.id !== updated.id) return;
+        this.currentSession = updated;
+        if (refreshTui) this.refreshTui();
+      },
+    });
     this.skillLoader = new SkillLoader(this.workspace);
     this.configuredActiveSkills = options.stablePromptModules?.activeSkills;
     options.onCommandReloadReady?.(() => this.reloadCommands());
@@ -483,7 +500,7 @@ export class TerminalSession {
     const taskGeneration = this.taskGeneration;
     const derivedConversation = derivedSkill ? this.derivedSkillConversation(derivedSkill) : [];
     const parentToolFilter = (tool: ToolDefinition): boolean => {
-      if (this.mcpManager?.isMcpTool(tool.name) && !this.mcpManager.isActivated(tool.name)) return false;
+      if (this.mcp.isMcpTool(tool.name) && !this.mcp.isActivated(tool.name)) return false;
       return derivedSkill
         ? derivedSkill.allowedTools.length === 0 || derivedSkill.allowedTools.includes(tool.name)
         : this.isToolAllowedByActiveSkills(tool.name);
@@ -506,7 +523,7 @@ export class TerminalSession {
         ),
         approvalCancellationCallback: (origin) => this.cancelApprovalsForOrigin(origin),
         parentToolFilter,
-        isMcpTool: (name) => this.mcpManager?.isMcpTool(name) === true,
+        isMcpTool: (name) => this.mcp.isMcpTool(name),
         hookFactory: async (workspace, messages) => {
           const built = await createHookEngine(workspace, {
             defaultCommandTimeoutMs: 60_000,
@@ -863,7 +880,7 @@ export class TerminalSession {
     const { ToolRegistry, registerBuiltinTools } = await loadTools();
     const registry = new ToolRegistry();
     registerBuiltinTools(registry, this.workspace);
-    if (this.mcpManager) {
+    if (this.mcp.started) {
       await this.ensureMcpReady();
       this.registerMcpTools(registry);
     }
@@ -1213,7 +1230,7 @@ export class TerminalSession {
   }
 
   private hasPendingApprovals(): boolean {
-    return this.pendingApprovals.length > 0;
+    return this.approvalQueue.hasPending();
   }
 
   private requestApproval(
@@ -1223,83 +1240,15 @@ export class TerminalSession {
     origin: SubagentOrigin,
     requestId: string,
   ): Promise<ApprovalResponse> {
-    // Non-interactive sessions (e.g. `oran run --once`) have no readline or
-    // TUI to present an approval prompt. Auto-deny rather than hanging forever.
-    if (!this.isReadlineActive() && !this.tui) {
-      this.renderer.error(
-        `approval required for ${call.name} but no interactive session is available; use --approve-all to run non-interactively`,
-      );
-      return Promise.resolve(false);
-    }
-    return new Promise<ApprovalResponse>((resolveApproval) => {
-      this.pendingApprovals.push({
-        call,
-        level,
-        description,
-        requestId,
-        origin,
-        resolve: resolveApproval,
-        presented: false,
-        settled: false,
-      });
-      this.presentNextApproval();
-    });
-  }
-
-  private presentNextApproval(): void {
-    const pending = this.pendingApprovals[0];
-    if (!pending || pending.presented || pending.settled) return;
-    pending.presented = true;
-    const rendered = this.renderer.approval(
-      pending.call,
-      pending.level,
-      pending.description,
-      pending.origin,
-    );
-    if (rendered && typeof rendered.then === "function") {
-      void rendered.then((response) => this.settleApproval(pending, response));
-    }
-  }
-
-  private settleApproval(pending: PendingApproval, response: ApprovalResponse): void {
-    if (pending.settled) return;
-    const index = this.pendingApprovals.indexOf(pending);
-    if (index < 0) return;
-    pending.settled = true;
-    const wasHead = index === 0;
-    this.pendingApprovals.splice(index, 1);
-    pending.resolve(response);
-    if (wasHead) this.presentNextApproval();
+    return this.approvalQueue.request(call, level, description, origin, requestId);
   }
 
   private cancelApprovalsForOrigin(origin: SubagentOrigin): void {
-    const head = this.pendingApprovals[0];
-    const cancelled = this.pendingApprovals.filter((pending) => sameApprovalOrigin(pending.origin, origin));
-    if (!cancelled.length) return;
-    const cancelledHead = head !== undefined && cancelled.includes(head);
-    for (const pending of cancelled) {
-      pending.settled = true;
-      const index = this.pendingApprovals.indexOf(pending);
-      if (index >= 0) this.pendingApprovals.splice(index, 1);
-      pending.resolve(false);
-    }
-    if (cancelledHead) this.renderer.cancelApproval?.();
-    this.presentNextApproval();
+    this.approvalQueue.cancelForOrigin(origin);
   }
 
   private resolveApproval(value: string): void {
-    const pending = this.pendingApprovals[0];
-    if (!pending) return;
-    const answer = value.toLowerCase();
-    if (answer === "y" || answer === "yes") {
-      this.settleApproval(pending, true);
-    } else if (answer === "a" || answer === "always") {
-      this.settleApproval(pending, "always");
-    } else if (answer === "n" || answer === "no" || answer === "esc" || answer === "") {
-      this.settleApproval(pending, false);
-    } else {
-      this.renderer.status("Please answer y, a, or n.", "yellow");
-    }
+    this.approvalQueue.resolveFromInput(value);
   }
 
   private async handleCommand(value: string): Promise<void> {
@@ -1452,13 +1401,13 @@ export class TerminalSession {
         const registry = new ToolRegistry();
         registerBuiltinTools(registry, this.workspace);
         this.registerMcpTools(registry);
-        const servers = this.mcpManager?.connectedServers() ?? [];
+        const servers = this.mcp.connectedServers();
         return [
           `permission: ${this.permissionMode}`,
           `tokens.input: ${inputTokens}`,
           `tokens.output: ${outputTokens}`,
           `tools: ${(await this.toolSchemasForCurrentMode(registry)).length}`,
-          `mcp: ${servers.length} servers, ${this.mcpManager?.toolCount ?? 0} tools`,
+          `mcp: ${servers.length} servers, ${this.mcp.toolCount} tools`,
           `memory.entries: ${countPromptEntries(this.stablePromptModules.longTermMemory)}`,
           `model: ${this.modelLabel()}`,
           `workspace: ${this.workspace}`,
@@ -1490,8 +1439,8 @@ export class TerminalSession {
       }
       case "/mcp": {
         await this.ensureMcpReady();
-        const servers = this.mcpManager?.connectedServers() ?? [];
-        const failures = this.mcpManager?.failures() ?? [];
+        const servers = this.mcp.connectedServers();
+        const failures = this.mcp.failures();
         if (!servers.length) {
           return failures.length
             ? ["No MCP servers are connected.", ...failures.map((item) => `- ${item.name}: ${item.error}`)].join("\n")
@@ -1499,7 +1448,7 @@ export class TerminalSession {
         }
         return [
           ...servers.map((server) => `- ${server.name}: ${server.toolCount} tools`),
-          `Total: ${servers.length} servers, ${this.mcpManager?.toolCount ?? 0} tools`,
+          `Total: ${servers.length} servers, ${this.mcp.toolCount} tools`,
           ...(failures.length ? ["Failed:", ...failures.map((item) => `- ${item.name}: ${item.error}`)] : []),
         ].join("\n");
       }
@@ -1622,94 +1571,23 @@ export class TerminalSession {
   }
 
   private registerMcpTools(registry: ToolRegistry): void {
-    if (!this.mcpManager) return;
-    for (const definition of this.mcpManager.toolDefinitions()) {
-      if (!registry.has(definition.name)) registry.register(definition);
-    }
-    if (this.mcpManager.toolCount === 0) return;
-    const search = this.mcpManager.searchToolDefinition();
-    if (!registry.has(search.name)) registry.register(search);
+    this.mcp.registerTools(registry);
   }
 
   private async toolSchemasForCurrentMode(registry: ToolRegistry): Promise<Record<string, unknown>[]> {
     const { isPlanModeTool } = await loadTools();
     return registry.schemas((tool) => {
       if (this.workMode === "plan" && !isPlanModeTool(tool)) return false;
-      return !this.mcpManager?.isMcpTool(tool.name) || this.mcpManager.isActivated(tool.name);
+      return !this.mcp.isMcpTool(tool.name) || this.mcp.isActivated(tool.name);
     });
   }
 
   private startMcpConnections(): void {
-    if (this.mcpManager || this.mcpReady) return;
-    this.mcpReady = (async () => {
-      const { McpManager } = await loadMcpManager();
-      if (this.mcpManager) return;
-      this.mcpManager = new McpManager(this.config.mcpServers ?? {}, this.workspace);
-      await this.mcpManager.connect();
-      this.injectMcpSystemMessages();
-      this.refreshTui();
-    })();
+    this.mcp.start();
   }
 
   private async ensureMcpReady(): Promise<void> {
-    this.startMcpConnections();
-    await this.mcpReady;
-    this.injectMcpSystemMessages();
-  }
-
-  private injectMcpSystemMessages(): void {
-    const manager = this.mcpManager;
-    if (!manager) return;
-    let changed = false;
-    for (const instruction of manager.instructions()) {
-      const exists = this.conversation.some((message) => (
-        message.metadata?.promptBlock === "mcp-instructions"
-        && message.metadata.mcpServer === instruction.server
-      ));
-      if (exists) continue;
-      this.conversation.push({
-        role: "system",
-        content: `MCP server ${instruction.server} instructions:\n${instruction.text}`,
-        metadata: { promptBlock: "mcp-instructions", mcpServer: instruction.server, contextManaged: true },
-      });
-      changed = true;
-    }
-    const reminder = manager.discoveryReminder();
-    const discoveryIndex = this.conversation.findIndex((message) => message.metadata?.promptBlock === "mcp-discovery");
-    if (reminder && discoveryIndex < 0) {
-      this.conversation.push({
-        role: "system",
-        content: reminder,
-        metadata: { promptBlock: "mcp-discovery", contextManaged: true },
-      });
-      changed = true;
-    } else if (reminder && this.conversation[discoveryIndex]?.content !== reminder) {
-      this.conversation[discoveryIndex] = {
-        role: "system",
-        content: reminder,
-        metadata: { promptBlock: "mcp-discovery", contextManaged: true },
-      };
-      changed = true;
-    } else if (!reminder && discoveryIndex >= 0) {
-      this.conversation.splice(discoveryIndex, 1);
-      changed = true;
-    }
-    const failures = manager.failures();
-    const hasFailureMessage = this.conversation.some((message) => message.metadata?.promptBlock === "mcp-failure");
-    if (failures.length && !hasFailureMessage) {
-      const content = ["Some MCP servers failed to connect:", ...failures.map((item) => `- ${item.name}: ${item.error}`)].join("\n");
-      this.conversation.push({
-        role: "system",
-        content,
-        metadata: { promptBlock: "mcp-failure", contextManaged: true },
-      });
-      changed = true;
-      if (!this.mcpFailuresShown) {
-        this.mcpFailuresShown = true;
-        this.renderer.error(content);
-      }
-    }
-    if (changed) void this.persistTuiSession();
+    await this.mcp.ensureReady();
   }
 
   private activeSkillReminders(): readonly string[] {
@@ -2147,7 +2025,7 @@ export class TerminalSession {
   }
 
   private cancelTask(): void {
-    if (this.taskRunning() || this.pendingApprovals.some((pending) => pending.origin.kind === "main")) {
+    if (this.taskRunning() || this.approvalQueue.hasPendingForMainOrigin()) {
       this.queuePaused = true;
     }
     this.cancelApprovalsForOrigin({ kind: "main" });
@@ -2192,54 +2070,7 @@ export class TerminalSession {
   }
 
   private scheduleMemoryExtraction(sessionId: string, messages: readonly Message[], model: ModelConfig): void {
-    const snapshot = serializeMemorySnapshot(messages);
-    const previous = this.memorySnapshots.get(sessionId);
-    if (!snapshot || memorySnapshotDelta(previous, snapshot) < 40) return;
-    this.pendingMemorySnapshots.set(snapshot, sessionId);
-    const modelKey = `${model.provider}/${model.model}/${model.baseUrl ?? ""}`;
-    const job = (async () => {
-      const extractor = await this.ensureMemoryExtractor(model, modelKey);
-      await extractor.extract(snapshot).catch(() => undefined);
-    })();
-    this.memoryExtractionJobs.add(job);
-    void job.then(
-      () => this.memoryExtractionJobs.delete(job),
-      () => this.memoryExtractionJobs.delete(job),
-    );
-  }
-
-  private ensureMemoryExtractor(model: ModelConfig, modelKey: string): Promise<MemoryExtractor> {
-    const current = this.memoryExtractor;
-    if (current && (current.isRunning() || this.memoryExtractorModelKey === modelKey)) return Promise.resolve(current);
-    if (this.memoryExtractorInit) return this.memoryExtractorInit;
-
-    const initialization = (async () => {
-      const existing = this.memoryExtractor;
-      if (existing && (existing.isRunning() || this.memoryExtractorModelKey === modelKey)) return existing;
-      const { MemoryExtractor } = await loadMemoryExtractor();
-      const extractor = new MemoryExtractor({
-        manager: this.memoryManager,
-        provider: this.providerFactory(model),
-        onProcessed: (processedSnapshot, notes, succeeded) => {
-          const processedSessionId = this.pendingMemorySnapshots.get(processedSnapshot);
-          this.pendingMemorySnapshots.delete(processedSnapshot);
-          if (!processedSessionId) return;
-          if (succeeded) this.memorySnapshots.set(processedSessionId, processedSnapshot);
-          if (notes.length && this.currentSession?.id === processedSessionId) {
-            this.renderer.status(`Saved memory: ${notes.map((note) => note.id).join(", ")}.`, "cyan");
-          }
-        },
-      });
-      this.memoryExtractor = extractor;
-      this.memoryExtractorModelKey = modelKey;
-      return extractor;
-    })();
-    this.memoryExtractorInit = initialization;
-    void initialization.then(
-      () => { if (this.memoryExtractorInit === initialization) this.memoryExtractorInit = undefined; },
-      () => { if (this.memoryExtractorInit === initialization) this.memoryExtractorInit = undefined; },
-    );
-    return initialization;
+    this.memoryExtraction.schedule(sessionId, messages, model);
   }
 
   private complete(
@@ -2268,74 +2099,17 @@ export class TerminalSession {
     return displaySessionName(session, this.sessionTitleMode());
   }
 
+  /** 串行化会话写操作;任务异常被吞掉,返回 undefined。 */
+  private runSerialSessionWrite<T>(task: () => Promise<T>): Promise<T | undefined> {
+    let value: T | undefined;
+    this.sessionSave = this.sessionSave.then(async () => {
+      value = await task();
+    }).catch(() => undefined);
+    return this.sessionSave.then(() => value);
+  }
+
   private scheduleModelSessionTitle(sessionId: string, model: ModelConfig): void {
-    if (this.sessionTitleMode() !== "model") return;
-    const abortController = new AbortController();
-    this.titleAbortControllers.add(abortController);
-    const job = this.generateModelSessionTitle(sessionId, model, abortController.signal)
-      .catch(() => undefined)
-      .finally(() => {
-        this.titleJobs.delete(job);
-        this.titleAbortControllers.delete(abortController);
-      });
-    this.titleJobs.add(job);
-  }
-
-  private async generateModelSessionTitle(sessionId: string, model: ModelConfig, signal: AbortSignal): Promise<void> {
-    const stored = await this.sessionStore.ensureConversation(sessionId) ?? this.sessionStore.find(sessionId);
-    const prompt = firstConversationPrompt(stored?.conversation ?? []);
-    if (!prompt || !await this.markTitleGenerationAttempted(sessionId)) return;
-
-    const configuredModel = this.config.sessionTitles?.model
-      ? resolveModelConfig(await loadConfig(this.workspace), this.config.sessionTitles.model)
-      : model;
-    const titleModel: ModelConfig = {
-      ...configuredModel,
-      temperature: Math.min(configuredModel.temperature, 0.2),
-      maxTokens: Math.min(configuredModel.maxTokens, 64),
-    };
-    const response = await this.providerFactory(titleModel).complete([
-      {
-        role: "system",
-        content: "Create a concise session title for a coding-agent conversation. Return only the title: 12-24 Chinese characters or at most 8 English words. Do not use quotes, markdown, trailing punctuation, or generic labels.",
-      },
-      { role: "user", content: prompt.slice(0, 2_000) },
-    ], [], { signal: AbortSignal.any([signal, AbortSignal.timeout(15_000)]) });
-    const title = normalizeGeneratedSessionTitle(response.text);
-    if (!title) return;
-    await this.persistGeneratedSessionTitle(sessionId, title);
-  }
-
-  private async markTitleGenerationAttempted(sessionId: string): Promise<boolean> {
-    let marked = false;
-    this.sessionSave = this.sessionSave.then(async () => {
-      const session = this.sessionStore.find(sessionId);
-      if (!session || session.titleGenerationAttempted || !isAutomaticSessionName(session) || session.titleSource === "model") return;
-      const updated = await this.sessionStore.update(sessionId, { titleGenerationAttempted: true });
-      if (!updated) return;
-      marked = true;
-      if (this.currentSession?.id === sessionId) this.currentSession = updated;
-    }).catch(() => undefined);
-    await this.sessionSave;
-    return marked;
-  }
-
-  private async persistGeneratedSessionTitle(sessionId: string, title: string): Promise<void> {
-    this.sessionSave = this.sessionSave.then(async () => {
-      const session = this.sessionStore.find(sessionId);
-      if (!session || !isAutomaticSessionName(session) || session.titleSource === "manual") return;
-      const updated = await this.sessionStore.update(sessionId, {
-        name: title,
-        autoNamed: true,
-        titleSource: "model",
-        titleGenerationAttempted: true,
-      });
-      if (updated && this.currentSession?.id === sessionId) {
-        this.currentSession = updated;
-        this.refreshTui();
-      }
-    }).catch(() => undefined);
-    await this.sessionSave;
+    this.titles.schedule(sessionId, model);
   }
 
   private setPrompt(): void {
@@ -2411,7 +2185,7 @@ export class TerminalSession {
   private async shutdown(): Promise<void> {
     this.quitRequested = true;
     this.cancelTask();
-    for (const controller of this.titleAbortControllers) controller.abort();
+    this.titles.abortAll();
     await this.waitForTask();
     await this.waitForCompaction();
     const runtime = this.agentRuntime;
@@ -2429,13 +2203,13 @@ export class TerminalSession {
     }
     await Promise.allSettled([...this.hookSubagentJobs]);
     await this.persistTuiSession();
-    await Promise.allSettled([...this.titleJobs]);
-    await this.memoryExtractorInit?.catch(() => undefined);
-    while (this.memoryExtractionJobs.size > 0) {
-      await Promise.allSettled([...this.memoryExtractionJobs]);
+    await this.titles.waitForIdle();
+    await this.memoryExtraction.init()?.catch(() => undefined);
+    while (await this.memoryExtraction.hasPendingJobs()) {
+      await this.memoryExtraction.waitForJobs();
     }
-    await this.memoryExtractor?.waitForIdle();
-    await this.mcpManager?.close();
+    await this.memoryExtraction.waitForExtractorIdle();
+    await this.mcp.close();
     const tui = this.tui;
     tui?.destroy();
     if (this.tui === tui) this.tui = undefined;
@@ -2478,16 +2252,6 @@ function renderCommitKind(event: RuntimeEvent): TuiRenderCommitKind {
     default:
       return "normal";
   }
-}
-
-function sameApprovalOrigin(left: SubagentOrigin, right: SubagentOrigin): boolean {
-  if (left.kind !== right.kind) return false;
-  if (left.kind === "main" || right.kind === "main") return true;
-  if (left.taskId && right.taskId) return left.taskId === right.taskId;
-  if (left.kind === "teammate" && right.kind === "teammate") {
-    return left.teamName === right.teamName && left.name === right.name;
-  }
-  return left.name === right.name;
 }
 
 function configuredPermissionMode(config: UserConfig, approveAll: boolean): PermissionMode {
@@ -2535,43 +2299,6 @@ function createSessionGapReminder(updatedAt: string, now = new Date()): Message 
     ].join("\n"),
     metadata: { promptBlock: "session-gap-reminder", contextManaged: true },
   };
-}
-
-function serializeMemorySnapshot(messages: readonly Message[]): string {
-  const candidates = messages
-    .filter((message) => message.role !== "system")
-    .slice(-48)
-    .map((message) => {
-      const content = message.content?.trim().slice(0, 4_000) ?? "";
-      const calls = message.toolCalls?.length
-        ? `\nTool calls: ${message.toolCalls.map((call) => call.name).join(", ")}`
-        : "";
-      if (content.length < 8 && !calls) return "";
-      return `${message.role.toUpperCase()}${message.name ? ` (${message.name})` : ""}:\n${content}${calls}`.trim();
-    })
-    .filter(Boolean);
-  const retained: string[] = [];
-  let bytes = 0;
-  for (let index = candidates.length - 1; index >= 0; index -= 1) {
-    const candidate = candidates[index]!;
-    const candidateBytes = Buffer.byteLength(`${candidate}\n\n`, "utf8");
-    if (bytes + candidateBytes > 32_000) break;
-    retained.unshift(candidate);
-    bytes += candidateBytes;
-  }
-  return retained.join("\n\n");
-}
-
-function memorySnapshotDelta(previous: string | undefined, current: string): number {
-  if (!previous) return current.length;
-  let common = 0;
-  const maximum = Math.min(previous.length, current.length);
-  while (common < maximum && previous.charCodeAt(common) === current.charCodeAt(common)) common += 1;
-  return current.length - common;
-}
-
-function isApprovalAnswer(value: string): boolean {
-  return ["y", "yes", "a", "always", "n", "no", "esc"].includes(value.toLowerCase());
 }
 
 function tokenValue(usage: Readonly<Record<string, number>>, ...keys: string[]): number {
@@ -2628,19 +2355,4 @@ function buildPlanExecutePrompt(plan: string): string {
     "Plan:",
     plan.trim(),
   ].join("\n");
-}
-
-function normalizeGeneratedSessionTitle(value: string): string | undefined {
-  const line = value
-    .split(/\r?\n/)
-    .map((item) => item.trim())
-    .find(Boolean);
-  if (!line) return undefined;
-  const normalized = line
-    .replace(/^(?:title|标题)\s*[:：]\s*/i, "")
-    .replace(/^[#*`'"“”‘’\s]+|[#*`'"“”‘’\s]+$/g, "")
-    .replace(/[。.!！?？:：;,，；]+$/g, "")
-    .replace(/\s+/g, " ")
-    .trim();
-  return normalized ? truncateSessionName(normalized, 48) : undefined;
 }
