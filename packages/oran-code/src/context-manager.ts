@@ -22,6 +22,8 @@ export const CONTEXT_LIMITS = Object.freeze({
   summaryDirectDrops: 3,
   summaryDropFraction: 0.2,
   charactersPerToken: 3.5,
+  /** CJK 字符按 1 token/字 保守估算(常见中文 tokenizer 为 1~1.5 字/token)。 */
+  cjkTokensPerCharacter: 1.0,
   previewBytes: 2_048,
   previewLines: 20,
 });
@@ -72,7 +74,8 @@ export interface ContextCompactResult {
 
 interface UsageAnchor {
   tokens: number;
-  contextBytes: number;
+  /** 锚点建立时的混合估算值;后续估算差值同时修正斜率与偏移。 */
+  contextEstimate: number;
 }
 
 interface RecentFile {
@@ -152,13 +155,12 @@ export class ContextManager {
   recordUsage(usage: Record<string, number>, messages: readonly Message[], tools: readonly Record<string, unknown>[]): void {
     const tokens = usageTotal(usage);
     if (tokens === undefined) return;
-    this.usageAnchor = { tokens, contextBytes: requestBytes(messages, tools) };
+    this.usageAnchor = { tokens, contextEstimate: estimatedRequestTokens(messages, tools) };
   }
 
   estimateTokens(messages: readonly Message[], tools: readonly Record<string, unknown>[] = []): number {
-    const bytes = requestBytes(messages, tools);
-    if (!this.usageAnchor) return estimatedTokensFromBytes(bytes);
-    const delta = (bytes - this.usageAnchor.contextBytes) / CONTEXT_LIMITS.charactersPerToken;
+    if (!this.usageAnchor) return estimatedRequestTokens(messages, tools);
+    const delta = estimatedRequestTokens(messages, tools) - this.usageAnchor.contextEstimate;
     return Math.max(0, Math.ceil(this.usageAnchor.tokens + delta));
   }
 
@@ -624,17 +626,6 @@ function usageTotal(usage: Record<string, number>): number | undefined {
   return value("total_tokens");
 }
 
-function requestBytes(
-  messages: readonly Message[],
-  tools: readonly Record<string, unknown>[],
-): number {
-  return Buffer.byteLength(JSON.stringify({ messages, tools }), "utf8");
-}
-
-function estimatedTokensFromBytes(bytes: number): number {
-  return Math.max(0, Math.ceil(bytes / CONTEXT_LIMITS.charactersPerToken));
-}
-
 
 function buildToolReplacement(content: string, bytes: number, relativePath: string): string {
   const lines = content.split("\n").slice(0, CONTEXT_LIMITS.previewLines).join("\n");
@@ -707,7 +698,7 @@ function selectRecentRawMessages(messages: readonly Message[]): Message[] {
   while (start > 0 && (tokens < CONTEXT_LIMITS.recentRawTokens || count < CONTEXT_LIMITS.recentRawMessages)) {
     start -= 1;
     const unit = units[start]!;
-    tokens += estimatedTokensFromBytes(requestBytes(unit, []));
+    tokens += estimatedRequestTokens(unit, []);
     count += unit.length;
   }
   return cloneMessages(units.slice(start).flat());
@@ -760,8 +751,17 @@ function estimatedRequestTokens(
   messages: readonly Message[],
   tools: readonly Record<string, unknown>[],
 ): number {
-  return estimatedTokensFromBytes(requestBytes(messages, tools));
+  const payload = JSON.stringify({ messages, tools });
+  const bytes = Buffer.byteLength(payload, "utf8");
+  const cjkCharacters = payload.match(CJK_CHARACTER_PATTERN)?.length ?? 0;
+  // CJK 字符按保守 token 系数独立计;其余字节沿用 3.5 字节/token。
+  const cjkBytes = cjkCharacters * 3;
+  const cjkTokens = cjkCharacters * CONTEXT_LIMITS.cjkTokensPerCharacter;
+  const otherTokens = Math.max(0, bytes - cjkBytes) / CONTEXT_LIMITS.charactersPerToken;
+  return Math.max(0, Math.ceil(cjkTokens + otherTokens));
 }
+
+const CJK_CHARACTER_PATTERN = /[\u2E80-\u9FFF\uF900-\uFAFF\uFF00-\uFFEF]/g;
 
 function dropOldestGroups(
   groups: readonly Message[][],
