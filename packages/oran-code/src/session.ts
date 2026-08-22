@@ -8,6 +8,7 @@ import { legacyUserHistoryPath, loadConfig, loadConfigFile, resolveModelConfig, 
 import { CommandRegistry, commandHelp, completeInput, formatModelReference, modelCandidates, parseSlashCommand, type SlashCommand } from "./commands.js";
 import { createModelProvider } from "./provider.js";
 import { createRuntimeConfig } from "./runtime.js";
+import { isAbortError } from "./utils/abort-error.js";
 import { TerminalRenderer, createPromptHooks, type SessionRenderer } from "./renderer.js";
 import { PERMISSION_MODES, createTask } from "./types.js";
 import { displaySessionName, firstConversationPrompt, isAutomaticSessionName, SessionStore, truncateSessionName, type StoredSession } from "./session-store.js";
@@ -52,10 +53,8 @@ const loadTrace = () => import("./trace.js");
 const loadMemoryExtractor = () => import("./memory-extractor.js");
 const loadProjectInstructionsMod = () => import("./project-instructions.js");
 const loadSubagentBackground = () => import("./subagent/background.js");
-const loadSubagentCoordinator = () => import("./subagent/coordinator.js");
+const loadSubagentAssembly = () => import("./subagent/assembly.js");
 const loadSubagentRoles = () => import("./subagent/roles.js");
-const loadSubagentRunner = () => import("./subagent/runner.js");
-const loadSubagentScope = () => import("./subagent/scope.js");
 const loadSubagentTeam = () => import("./subagent/team.js");
 const loadSubagentStateStore = () => import("./subagent/state-store.js");
 const loadSnapshot = () => import("./snapshot.js");
@@ -452,9 +451,7 @@ export class TerminalSession {
     const [
       agentRuntime,
       { ToolRegistry, registerBuiltinTools },
-      { SubagentRunner },
-      { StructuredSubagentScope },
-      { SubagentCoordinator },
+      { assembleSubagentStack, joinStructuredForkSummaries, disposeStructuredScope },
       { backgroundTaskNotification },
       { TaskController },
       { ContextManager },
@@ -462,9 +459,7 @@ export class TerminalSession {
     ] = await Promise.all([
       this.ensureAgentRuntime(),
       loadTools(),
-      loadSubagentRunner(),
-      loadSubagentScope(),
-      loadSubagentCoordinator(),
+      loadSubagentAssembly(),
       loadSubagentBackground(),
       loadController(),
       loadContextManager(),
@@ -493,41 +488,38 @@ export class TerminalSession {
         ? derivedSkill.allowedTools.length === 0 || derivedSkill.allowedTools.includes(tool.name)
         : this.isToolAllowedByActiveSkills(tool.name);
     };
-    const runner = new SubagentRunner({
-      workspace: this.workspace,
-      registry,
-      trace,
-      baseConfig: runtimeConfig,
-      baseModel: requestModel,
-      providerFactory: this.providerFactory,
-      resolveModel: (reference) => resolveModelConfig(this.config, reference),
-      approvalCallback: (call, level, description, requestId, origin) => (
-        this.requestApproval(call, level, description, origin, requestId)
-      ),
-      approvalCancellationCallback: (origin) => this.cancelApprovalsForOrigin(origin),
-      parentToolFilter,
-      isMcpTool: (name) => this.mcpManager?.isMcpTool(name) === true,
-      hookFactory: async (workspace, messages) => {
-        const built = await createHookEngine(workspace, {
-          defaultCommandTimeoutMs: 60_000,
-          sessionMessages: messages,
-        });
-        return built.engine;
-      },
-    });
-    const structuredScope = joinStructuredForks
-      ? new StructuredSubagentScope(runner, runtimeConfig.subagent.forkWaitTimeoutMs)
-      : undefined;
-    new SubagentCoordinator({
+    const { runner, scope: structuredScope } = assembleSubagentStack({
       roles: agentRuntime.agentDefinitionLoader,
-      runner,
       background: agentRuntime.backgroundAgents,
       teams: agentRuntime.teams,
+      registry,
+      runnerDeps: {
+        workspace: this.workspace,
+        registry,
+        trace,
+        baseConfig: runtimeConfig,
+        baseModel: requestModel,
+        providerFactory: this.providerFactory,
+        resolveModel: (reference) => resolveModelConfig(this.config, reference),
+        approvalCallback: (call, level, description, requestId, origin) => (
+          this.requestApproval(call, level, description, origin, requestId)
+        ),
+        approvalCancellationCallback: (origin) => this.cancelApprovalsForOrigin(origin),
+        parentToolFilter,
+        isMcpTool: (name) => this.mcpManager?.isMcpTool(name) === true,
+        hookFactory: async (workspace, messages) => {
+          const built = await createHookEngine(workspace, {
+            defaultCommandTimeoutMs: 60_000,
+            sessionMessages: messages,
+          });
+          return built.engine;
+        },
+      },
+      joinStructuredForks,
+      forkWaitTimeoutMs: runtimeConfig.subagent.forkWaitTimeoutMs,
       parentConversation: () => isolated ? derivedConversation : this.conversation,
-      ...(structuredScope ? { scope: structuredScope } : {}),
       resolveModel: (reference) => resolveModelConfig(this.config, reference),
-      callerOrigin: { kind: "main" },
-    }).registerTools(registry);
+    });
     const hookEngine = await this.ensureHookEngine(runner);
     const consumedBackgroundNotifications: string[] = [];
     const controller = new TaskController({
@@ -579,13 +571,7 @@ export class TerminalSession {
         this.currentSession.planState = structuredClone(task.planState);
       }
       if (structuredScope) {
-        await structuredScope.waitForChildren(runtimeConfig.subagent.forkWaitTimeoutMs);
-        const summary = structuredScope.summary();
-        if (summary) {
-          task.result = task.result?.trim()
-            ? `${task.result.trim()}\n\n${summary}`
-            : summary;
-        }
+        await joinStructuredForkSummaries(structuredScope, task, runtimeConfig.subagent.forkWaitTimeoutMs);
       }
       completed = task.state === "completed";
       if (task.state === "completed") this.renderer.status("Task completed.", "green");
@@ -597,10 +583,7 @@ export class TerminalSession {
       if (printErrors && !this.tui) this.renderer.error(formatErrorMessage(error));
       throw error;
     } finally {
-      if (structuredScope) {
-        structuredScope.cancelAll();
-        await Promise.allSettled(structuredScope.list().map((task) => task.promise));
-      }
+      if (structuredScope) await disposeStructuredScope(structuredScope);
       if (this.controller === controller) this.controller = undefined;
       const conversationSnapshot = controller.conversationSnapshot();
       consumedBackgroundNotifications.push(
@@ -2589,11 +2572,6 @@ function memorySnapshotDelta(previous: string | undefined, current: string): num
 
 function isApprovalAnswer(value: string): boolean {
   return ["y", "yes", "a", "always", "n", "no", "esc"].includes(value.toLowerCase());
-}
-
-function isAbortError(error: unknown): boolean {
-  return (error instanceof DOMException && error.name === "AbortError")
-    || (error instanceof Error && error.name === "AbortError");
 }
 
 function tokenValue(usage: Readonly<Record<string, number>>, ...keys: string[]): number {

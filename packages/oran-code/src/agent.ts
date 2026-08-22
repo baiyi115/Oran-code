@@ -6,11 +6,9 @@ import { createTask } from "./types.js";
 import { InMemoryTraceStore } from "./trace.js";
 import { TaskController } from "./controller.js";
 import { BackgroundAgentTaskManager } from "./subagent/background.js";
-import { SubagentCoordinator } from "./subagent/coordinator.js";
 import { AgentDefinitionLoader } from "./subagent/roles.js";
-import { SubagentRunner } from "./subagent/runner.js";
-import { StructuredSubagentScope } from "./subagent/scope.js";
 import { TeamManager } from "./subagent/team.js";
+import { assembleSubagentStack, disposeStructuredScope, joinStructuredForkSummaries } from "./subagent/assembly.js";
 
 export async function runTask(options: AgentOptions, registry: ToolRegistry): Promise<void> {
   await executeWithController(options, registry, { skipVerify: true });
@@ -57,36 +55,35 @@ async function executeWithController(
   const teams = new TeamManager();
   let conversation: Message[] = [];
   const resolveModel = (reference: string): ModelConfig => resolveNonInteractiveModel(reference, options.model);
-  const runner = new SubagentRunner({
-    workspace: options.workspace,
-    registry,
-    trace,
-    baseConfig: config,
-    baseModel: options.model,
-    providerFactory: createModelProvider,
-    resolveModel,
-    ...(options.approve ? {
-      approvalCallback: async (call, level) => options.approve?.(call, level) ?? false,
-    } : {}),
-    ...(options.onEvent ? {
-      eventCallback: (event) => {
-        if (event.runtimeEvent) forwardRuntimeEvent(event.runtimeEvent, options.onEvent as (event: AgentEvent) => void);
-      },
-    } : {}),
-    parentToolFilter: () => true,
-    isMcpTool: () => false,
-  });
-  const scope = new StructuredSubagentScope(runner, config.subagent.forkWaitTimeoutMs);
-  new SubagentCoordinator({
+  const { scope } = assembleSubagentStack({
     roles,
-    runner,
     background,
     teams,
+    registry,
+    runnerDeps: {
+      workspace: options.workspace,
+      registry,
+      trace,
+      baseConfig: config,
+      baseModel: options.model,
+      providerFactory: createModelProvider,
+      resolveModel,
+      ...(options.approve ? {
+        approvalCallback: async (call, level) => options.approve?.(call, level) ?? false,
+      } : {}),
+      ...(options.onEvent ? {
+        eventCallback: (event) => {
+          if (event.runtimeEvent) forwardRuntimeEvent(event.runtimeEvent, options.onEvent as (event: AgentEvent) => void);
+        },
+      } : {}),
+      parentToolFilter: () => true,
+      isMcpTool: () => false,
+    },
+    joinStructuredForks: true,
+    forkWaitTimeoutMs: config.subagent.forkWaitTimeoutMs,
     parentConversation: () => conversation,
-    scope,
     resolveModel,
-    callerOrigin: { kind: "main" },
-  }).registerTools(registry);
+  });
   const controller = new TaskController({
     config,
     provider: createModelProvider(options.model),
@@ -102,18 +99,11 @@ async function executeWithController(
   });
   try {
     const task = await controller.execute(createTask(options.workspace, options.prompt));
-    await scope.waitForChildren(config.subagent.forkWaitTimeoutMs);
-    const summary = scope.summary();
-    if (summary) {
-      task.result = task.result?.trim()
-        ? `${task.result.trim()}\n\n${summary}`
-        : summary;
-    }
+    if (scope) await joinStructuredForkSummaries(scope, task, config.subagent.forkWaitTimeoutMs);
     return task;
   } finally {
-    scope.cancelAll();
+    if (scope) await disposeStructuredScope(scope);
     background.cancelAll();
-    await Promise.allSettled(scope.list().map((task) => task.promise));
     await teams.shutdown();
     await background.waitForIdle();
   }

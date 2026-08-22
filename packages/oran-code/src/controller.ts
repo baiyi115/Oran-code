@@ -8,6 +8,8 @@ import { CONTEXT_LIMITS, ContextManager } from "./context-manager.js";
 import { PermissionPolicy, structuredPermissionDenial, type ApprovalDecision } from "./security.js";
 import { discoverWorkspace } from "./workspace.js";
 import { Verifier } from "./verifier.js";
+import { isAbortError } from "./utils/abort-error.js";
+import { cloneMessages } from "./message-utils.js";
 import type { TraceStore } from "./trace.js";
 import type {
   ApprovalCallback,
@@ -35,7 +37,7 @@ import { formatErrorMessage } from "./error-format.js";
 import { repairToolMessagePairs } from "./message-utils.js";
 import { ModelRequestError } from "./provider.js";
 import { isCasualConversationPrompt } from "./prompt-intent.js";
-import { PRODUCT_VERSION } from "./paths.js";
+import { PRODUCT_VERSION, PROJECT_STATE_DIR_NAMES } from "./paths.js";
 import { isMutatingToolName, isPlanModeTool, isWriteToolName, type ToolRegistry } from "./tools.js";
 import type { SnapshotStorePort } from "./snapshot.js";
 import {
@@ -1558,10 +1560,6 @@ function isRetryableModelStatus(status: number): boolean {
   return status === 408 || status === 429 || status >= 500;
 }
 
-function isAbortError(error: unknown): boolean {
-  return error instanceof DOMException && error.name === "AbortError";
-}
-
 function ensureCallId(call: ToolCall, contextManager: ContextManager): string {
   if (call.id) return call.id;
   const id = contextManager.claimToolCallId();
@@ -1610,16 +1608,6 @@ function sameToolCall(left: ToolCall, right: ToolCall): boolean {
     && JSON.stringify(left.arguments) === JSON.stringify(right.arguments);
 }
 
-function cloneMessages(messages: readonly Message[]): Message[] {
-  return messages.map((message) => ({
-    ...message,
-    ...(message.toolCalls ? { toolCalls: message.toolCalls.map((call) => ({
-      ...call,
-      arguments: structuredClone(call.arguments),
-    })) } : {}),
-    ...(message.metadata ? { metadata: structuredClone(message.metadata) } : {}),
-  }));
-}
 
 function tokenBudgetMessage(loop: AgentLoop, budget: number): string {
   return [
@@ -1734,7 +1722,7 @@ async function fileHash(workspace: string, call: ToolCall): Promise<{ path: stri
   }
 }
 
-const FINGERPRINT_IGNORED = new Set([".git", ".oran", ".litecode", ".venv", "venv", "node_modules", "dist", "build", "__pycache__"]);
+const FINGERPRINT_IGNORED = new Set([...PROJECT_STATE_DIR_NAMES, ".git", ".venv", "venv", "node_modules", "dist", "build", "__pycache__"]);
 const WORKSPACE_FINGERPRINT_TIMEOUT_MS = 750;
 const WORKSPACE_FINGERPRINT_MAX_ENTRIES = 10_000;
 

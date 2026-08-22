@@ -2,6 +2,7 @@ import { clearLine, cursorTo } from "node:readline";
 import type { Writable } from "node:stream";
 import type { ApprovalResponse, RuntimeEvent, ToolCall, ToolResult, VerificationResult } from "./types.js";
 import { subagentOriginLabel, type SubagentOrigin } from "./subagent/types.js";
+import { stripPlanCompleteMarkers } from "./message-utils.js";
 
 export interface PromptOutputHooks {
   before: () => void;
@@ -361,12 +362,4 @@ function paint(value: string, style: Style, enabled: boolean): string {
 
 function truncate(value: string, limit: number): string {
   return value.length <= limit ? value : `${value.slice(0, limit)}\n...[truncated]`;
-}
-
-function stripPlanCompleteMarkers(value: string): string {
-  return value.split(/(?<=\n)/).filter((line) => !isPlanCompleteMarker(line)).join("");
-}
-
-function isPlanCompleteMarker(value: string): boolean {
-  return ["PLAN_COMPLETE", "<<PLAN_COMPLETE>>", "<plan_complete>", "</plan_complete>"].includes(value.trim());
 }

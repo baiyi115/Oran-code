@@ -1,16 +1,19 @@
 import { exec, execFile } from "node:child_process";
-import { lstat, mkdir, readdir, readFile, realpath, stat, writeFile } from "node:fs/promises";
+import { mkdir, readdir, readFile, stat, writeFile } from "node:fs/promises";
 import { promisify } from "node:util";
 import { dirname, isAbsolute, relative, resolve, sep } from "node:path";
 import type { TaskPlanStep, ToolCall, ToolDefinition, ToolExecutionContext, ToolResult } from "./types.js";
-import { projectStateRoot } from "./paths.js";
+import { projectStateRoot, PROJECT_STATE_DIR_NAMES } from "./paths.js";
 import { applyUnifiedDiff } from "./patch.js";
 import { registerWorktreeTools } from "./worktree/tools.js";
+import { isAbortError } from "./utils/abort-error.js";
+import { isWithinPath, resolvePhysicalPath, resolveWithinRoot } from "./utils/path-containment.js";
 
 const execAsync = promisify(exec);
 const execFileAsync = promisify(execFile);
 
 const IGNORED_DIRS = new Set([
+  ...PROJECT_STATE_DIR_NAMES,
   ".git",
   ".hg",
   ".svn",
@@ -20,9 +23,6 @@ const IGNORED_DIRS = new Set([
   "node_modules",
   "dist",
   "build",
-  ".oran",
-  ".litecode",
-  ".liteagent",
   "coverage",
   ".next",
   ".turbo",
@@ -739,9 +739,9 @@ async function writePlanFile(root: string, rawPath: unknown, rawContent: unknown
     }
 
     const [physicalRoot, physicalPlanRoot, physicalCandidate] = await Promise.all([
-      resolvePhysicalCandidate(root),
-      resolvePhysicalCandidate(planRoot),
-      resolvePhysicalCandidate(candidate),
+      resolvePhysicalPath(root),
+      resolvePhysicalPath(planRoot),
+      resolvePhysicalPath(candidate),
     ]);
     if (!physicalRoot || !physicalPlanRoot || !physicalCandidate) throw new Error("write_plan path could not be resolved safely");
     if (!isWithinPath(physicalRoot, physicalPlanRoot) || !isWithinPath(physicalPlanRoot, physicalCandidate)) {
@@ -760,44 +760,8 @@ async function writePlanFile(root: string, rawPath: unknown, rawContent: unknown
   }
 }
 
-async function resolvePhysicalCandidate(path: string): Promise<string | undefined> {
-  const tail: string[] = [];
-  let cursor = resolve(path);
-  while (true) {
-    try {
-      await lstat(cursor);
-      return resolve(await realpath(cursor), ...tail.reverse());
-    } catch (error) {
-      if ((error as { code?: string }).code !== "ENOENT") return undefined;
-      const parent = dirname(cursor);
-      if (parent === cursor) return undefined;
-      tail.push(relative(parent, cursor));
-      cursor = parent;
-    }
-  }
-}
-
-function isWithinPath(root: string, candidate: string): boolean {
-  const normalizedRoot = comparablePath(root);
-  const normalizedCandidate = comparablePath(candidate);
-  return normalizedCandidate === normalizedRoot || normalizedCandidate.startsWith(`${normalizedRoot}${sep}`);
-}
-
-function comparablePath(path: string): string {
-  const normalized = resolve(path).replace(/[\\/]+$/, "");
-  return process.platform === "win32" ? normalized.toLowerCase() : normalized;
-}
-
 function resolveWorkspacePath(root: string, raw: unknown): string {
-  const candidate = resolve(root, typeof raw === "string" && raw.length ? raw : ".");
-  const rel = relative(root, candidate);
-  if (rel === ".." || rel.startsWith(`..${sep}`) || rel.startsWith("../")) {
-    throw new Error(`path escapes workspace: ${String(raw)}`);
-  }
-  if (candidate !== root && !candidate.startsWith(root + sep) && !candidate.startsWith(root + "/")) {
-    throw new Error(`path escapes workspace: ${String(raw)}`);
-  }
-  return candidate;
+  return resolveWithinRoot(root, typeof raw === "string" && raw.length ? raw : ".");
 }
 
 /** 解析 run_command 的可选 cwd：词法包含 + symlink 物理包含双重防护。 */
@@ -806,8 +770,8 @@ async function resolveCommandCwd(root: string, raw: unknown): Promise<string> {
   if (typeof raw !== "string") throw new Error("cwd must be a string path relative to the workspace root");
   const candidate = resolveWorkspacePath(root, raw);
   const [physicalRoot, physicalCandidate] = await Promise.all([
-    resolvePhysicalCandidate(root),
-    resolvePhysicalCandidate(candidate),
+    resolvePhysicalPath(root),
+    resolvePhysicalPath(candidate),
   ]);
   if (!physicalRoot || !physicalCandidate) throw new Error(`cwd could not be resolved safely: ${String(raw)}`);
   if (!isWithinPath(physicalRoot, physicalCandidate)) {
@@ -932,9 +896,4 @@ function failedResult(error: unknown, fallback: string): ToolResult {
 function errorMessage(error: unknown): string {
   if (error instanceof Error) return error.message;
   return String(error);
-}
-
-function isAbortError(error: unknown): boolean {
-  return (error instanceof DOMException && error.name === "AbortError")
-    || (error instanceof Error && error.name === "AbortError");
 }

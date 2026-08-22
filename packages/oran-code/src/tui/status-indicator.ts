@@ -1,4 +1,5 @@
 import type { TuiState } from "./types.js";
+import { toolDisplayName } from "./tool-names.js";
 
 /** Braille spinner frames, matching common CLI working indicators (pi/Ink loaders). */
 export const WORKING_SPINNER_FRAMES = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"] as const;
@@ -93,21 +94,4 @@ export function formatCompactDuration(value: number): string {
   const minutes = Math.floor(seconds / 60);
   const rem = Math.round(seconds % 60);
   return `${minutes}m ${rem}s`;
-}
-
-function toolDisplayName(name: string): string {
-  switch (name) {
-    case "read_file": return "Read";
-    case "write_file": return "Write";
-    case "edit_file": return "Edit";
-    case "apply_patch": return "Write";
-    case "apply_diff": return "Patch";
-    case "run_command": return "Bash";
-    case "glob_files": return "Glob";
-    case "search_code": return "Search";
-    case "list_files": return "List";
-    case "git_status": return "GitStatus";
-    case "get_diff": return "Diff";
-    default: return name;
-  }
 }

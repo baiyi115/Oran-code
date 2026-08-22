@@ -4,6 +4,7 @@ import { truncateVisible } from "./text-width.js";
 import type { TuiState } from "./types.js";
 import type { RuntimeEvent, ToolCall, ToolResult, VerificationResult } from "../types.js";
 import { normalizeTokenUsage } from "../token-usage.js";
+import { stripPlanCompleteMarkers } from "../message-utils.js";
 
 export function reduceRuntimeEvent(state: TuiState, event: RuntimeEvent): void {
   if (event.type === "context_compaction") {
@@ -565,30 +566,6 @@ function redactVerification(result: VerificationResult): VerificationResult {
   return { ...result, command: redactSecretText(result.command), output: redactSecretText(result.output) };
 }
 
-
-const PLAN_COMPLETE_MARKERS = [
-  "PLAN_COMPLETE",
-  "<<PLAN_COMPLETE>>",
-  "<plan_complete>",
-  "</plan_complete>",
-] as const;
-
-function stripPlanCompleteMarkers(text: string): string {
-  let plan = text.replace(/\r/g, "");
-  for (const marker of PLAN_COMPLETE_MARKERS) {
-    plan = plan.split(marker).join("");
-  }
-  const lines = plan.split(/\n/);
-  const kept: string[] = [];
-  for (const line of lines) {
-    const trimmed = line.trim();
-    if (/^plan\s+complete$/i.test(trimmed)) continue;
-    kept.push(line);
-  }
-  // Drop trailing blank lines left by removed markers, but preserve internal blanks.
-  while (kept.length && kept[kept.length - 1]?.trim() === "") kept.pop();
-  return kept.join("\n");
-}
 
 function toolCallKey(call: ToolCall): string {
   return call.id ?? `${call.name}:${call.createdAt}`;

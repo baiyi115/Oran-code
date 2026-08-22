@@ -2,7 +2,7 @@
  * Worktree 安全校验：slug 与 ref 名称校验集中实现（N5）。
  * 任何不安全输入立即判为无效，绝不参与后续路径拼接或子进程命令构造。
  */
-import { isAbsolute, relative, resolve, sep } from "node:path";
+import { resolveWithinRoot as resolveWithin } from "../utils/path-containment.js";
 
 /** 工具级 slug 长度上限（技术需求：限字符集和长度）。 */
 export const SLUG_MAX_LENGTH = 64;
@@ -52,10 +52,5 @@ export function shortBranchName(branch: string): string {
  */
 export function resolveWithinRoot(root: string, raw: unknown, label: string): string {
   if (typeof raw !== "string" || !raw.trim()) throw new Error(`${label} must be a non-empty path`);
-  const candidate = resolve(root, raw);
-  const rel = relative(root, candidate);
-  if (rel === ".." || rel.startsWith(`..${sep}`) || rel.startsWith("../") || isAbsolute(rel)) {
-    throw new Error(`${label} escapes workspace: ${raw}`);
-  }
-  return candidate;
+  return resolveWithin(root, raw, label);
 }

@@ -10,6 +10,7 @@ import { composerValue, createTuiState, setComposerValue, setOverlay } from "./s
 import type { ComposerState, PasteBlock, SessionOption, SessionView, TuiAppOptions, TuiRenderCommitKind, TuiState, TranscriptMessage } from "./types.js";
 import type { ConnectInput, ConnectModelOption } from "./types.js";
 import { appendSystemMessage } from "./message-reducer.js";
+import { nextMessageNumber } from "./state.js";
 import { composerCursorOffset, cursorVisualPosition, deleteBackward, deleteForward, insertText, moveCursor, moveToLineEdge, visualLines } from "./composer.js";
 import { TranscriptView, collapsibleSegments } from "./transcript/transcript-view.js";
 import { footerLines, workSummaryLine } from "./footer.js";
@@ -1514,15 +1515,6 @@ function isDeleteForward(input: string, key: Key): boolean {
   if (input === "\x1b[3~" || input === "\x1b[3;1~") return true;
   // Some hosts set delete without backspace for Fn+Backspace / Del.
   return Boolean(key.delete && input.length > 1);
-}
-
-function nextMessageNumber(transcript: readonly TranscriptMessage[]): number {
-  let maximum = 0;
-  for (const message of transcript) {
-    const match = /^message-(\d+)$/.exec(message.id);
-    if (match) maximum = Math.max(maximum, Number(match[1]));
-  }
-  return maximum + 1;
 }
 
 function errorMessage(error: unknown): string {

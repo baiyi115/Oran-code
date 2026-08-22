@@ -4,10 +4,11 @@
  */
 import { execFile } from "node:child_process";
 import { copyFile, cp, lstat, mkdir, readFile, readdir, symlink } from "node:fs/promises";
-import { dirname, isAbsolute, relative, resolve, sep } from "node:path";
+import { dirname, isAbsolute, resolve } from "node:path";
 import { promisify } from "node:util";
 import { readWorktreeHead } from "./git-fs.js";
 import { isValidSlug, resolveWithinRoot, slugRuleDescription } from "./safety.js";
+import { isRelativeWithin } from "../utils/path-containment.js";
 
 const execFileAsync = promisify(execFile);
 
@@ -230,7 +231,7 @@ async function copyWorktreeIncludeEntries(repoRoot: string, worktreePath: string
     const info = await lstat(source);
     if (info.isDirectory()) {
       // Avoid recursively copying a directory into its own descendant (for example an entry of ".").
-      if (isSameOrWithin(source, target)) continue;
+      if (isRelativeWithin(source, target)) continue;
       if (!(await exists(target))) await cp(source, target, { recursive: true, force: false });
     } else if (info.isFile()) {
       if (!(await exists(target))) await copyFile(source, target);
@@ -244,10 +245,6 @@ function assertValidSlug(slug: string): void {
   if (!isValidSlug(slug)) throw new Error(`invalid worktree slug: ${slug || "(empty)"}. ${slugRuleDescription()}`);
 }
 
-function isSameOrWithin(root: string, candidate: string): boolean {
-  const rel = relative(root, candidate);
-  return rel === "" || (!isAbsolute(rel) && rel !== ".." && !rel.startsWith(`..${sep}`) && !rel.startsWith("../"));
-}
 async function bestEffort(warnings: string[], label: string, task: () => Promise<void>): Promise<void> {
   try {
     await task();

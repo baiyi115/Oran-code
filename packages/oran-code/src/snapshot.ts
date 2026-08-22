@@ -4,7 +4,7 @@ import { tmpdir } from "node:os";
 import { dirname, isAbsolute, relative, resolve, sep } from "node:path";
 import { promisify } from "node:util";
 import type { Task } from "./types.js";
-import { projectStateRoot } from "./paths.js";
+import { projectStateRoot, PROJECT_STATE_DIR_NAMES } from "./paths.js";
 
 const execFileAsync = promisify(execFile);
 
@@ -172,7 +172,7 @@ async function captureTree(workspace: string): Promise<string> {
   const indexPath = resolve(temporaryRoot, "index");
   try {
     await git(workspace, ["read-tree", "--empty"], indexPath);
-    await git(workspace, ["add", "-A", "--", ".", ":(exclude).oran", ":(exclude).litecode"], indexPath);
+    await git(workspace, ["add", "-A", "--", ".", ...PROJECT_STATE_DIR_NAMES.map((name) => `:(exclude)${name}`)], indexPath);
     const result = await git(workspace, ["write-tree"], indexPath);
     return result.stdout.trim();
   } finally {

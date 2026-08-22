@@ -3,6 +3,7 @@ import { promisify } from "node:util";
 import { existsSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import type { VerificationResult } from "./types.js";
+import { isAbortError } from "./utils/abort-error.js";
 
 const execAsync = promisify(exec);
 
@@ -76,10 +77,6 @@ function readPackageJson(path: string): Record<string, unknown> | undefined {
   } catch {
     return undefined;
   }
-}
-
-function isAbortError(error: unknown): boolean {
-  return error instanceof DOMException && error.name === "AbortError";
 }
 
 function findPython(workspace: string): string {

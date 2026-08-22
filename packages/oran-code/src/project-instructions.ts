@@ -2,6 +2,7 @@ import { readFile, stat } from "node:fs/promises";
 import { homedir } from "node:os";
 import { dirname, isAbsolute, relative, resolve } from "node:path";
 import { LEGACY_PROJECT_STATE_DIRECTORY, LEGACY_USER_DATA_DIRECTORY, PROJECT_STATE_DIRECTORY, USER_DATA_DIRECTORY } from "./paths.js";
+import { isRelativeWithin } from "./utils/path-containment.js";
 
 export const DEFAULT_MAX_INSTRUCTION_INCLUDE_DEPTH = 5;
 
@@ -100,7 +101,7 @@ function instructionSources(
 }
 
 function hierarchyDirectories(repositoryRoot: string, workspace: string): string[] {
-  if (!isWithin(repositoryRoot, workspace)) return [workspace];
+  if (!isRelativeWithin(repositoryRoot, workspace)) return [workspace];
   const directories = [repositoryRoot];
   const suffix = relative(repositoryRoot, workspace);
   if (!suffix) return directories;
@@ -162,7 +163,7 @@ function resolveInclude(reference: string, source: string, context: ExpandContex
   if (reference.startsWith("~/") || reference.startsWith("~\\")) return resolve(context.userHome, reference.slice(2));
   if (isAbsolute(reference)) return resolve(reference);
   const target = resolve(dirname(source), reference);
-  return isWithin(context.workspace, target) ? target : undefined;
+  return isRelativeWithin(context.workspace, target) ? target : undefined;
 }
 
 function markdownFenceMarker(line: string): "```" | "~~~" | undefined {
@@ -173,11 +174,6 @@ function markdownFenceMarker(line: string): "```" | "~~~" | undefined {
 function normalizeDepth(value: number | undefined): number {
   if (value === undefined || !Number.isFinite(value)) return DEFAULT_MAX_INSTRUCTION_INCLUDE_DEPTH;
   return Math.max(0, Math.floor(value));
-}
-
-function isWithin(root: string, target: string): boolean {
-  const path = relative(resolve(root), resolve(target));
-  return path === "" || (!path.startsWith("..") && !isAbsolute(path));
 }
 
 function pathKey(path: string): string {

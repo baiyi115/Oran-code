@@ -11,8 +11,17 @@ export const CLIENT_ID = "oran-code/cli";
 export const CLIENT_USER_AGENT = `oran-code/${PRODUCT_VERSION} (cli)`;
 export const PROJECT_STATE_DIRECTORY = ".oran";
 export const LEGACY_PROJECT_STATE_DIRECTORY = ".litecode";
+/** 历史遗留的项目级配置目录名(仅 config.ts 兼容读取,不参与目录迁移)。 */
+export const LEGACY_PROJECT_CONFIG_DIRECTORY = ".liteagent";
 export const USER_DATA_DIRECTORY = ".oran";
 export const LEGACY_USER_DATA_DIRECTORY = ".liteagent";
+
+/** 项目状态目录与历史遗留目录名;搜索、快照、指纹的排除逻辑共用同一来源。 */
+export const PROJECT_STATE_DIR_NAMES: readonly string[] = [
+  PROJECT_STATE_DIRECTORY,
+  LEGACY_PROJECT_STATE_DIRECTORY,
+  LEGACY_PROJECT_CONFIG_DIRECTORY,
+];
 
 /** Oran always writes project state to .oran. */
 export function projectStateRoot(workspace: string): string {

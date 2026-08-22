@@ -3,6 +3,7 @@ import { renderDiff } from "./diff-renderer.js";
 import { stripTerminalMarkup, truncateVisible, wrapDisplayText } from "../text-width.js";
 import { ANSI } from "../theme.js";
 import { spinnerFrame } from "../status-indicator.js";
+import { toolDisplayName } from "../tool-names.js";
 
 export function renderToolMessage(message: ToolMessage, width: number, liveTick = 0): string[] {
   const indicator = message.status === "running"
@@ -51,23 +52,6 @@ export function renderToolMessage(message: ToolMessage, width: number, liveTick 
   // to a short preview; ctrl+t on the row expands it to more lines.
   if (changeDiff) lines.push(...renderDiff(changeDiff, width, message.expanded));
   return lines;
-}
-
-function toolDisplayName(name: string): string {
-  switch (name) {
-    case "read_file": return "Read";
-    case "write_file": return "Write";
-    case "edit_file": return "Edit";
-    case "apply_patch": return "Write";
-    case "apply_diff": return "Patch";
-    case "run_command": return "Bash";
-    case "glob_files": return "Glob";
-    case "search_code": return "Search";
-    case "list_files": return "List";
-    case "git_status": return "GitStatus";
-    case "get_diff": return "Diff";
-    default: return name;
-  }
 }
 
 /** Synthetic unified-diff text for file-modifying tools, or undefined for read-only tools. */

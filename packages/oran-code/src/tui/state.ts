@@ -120,7 +120,7 @@ export function getToolMessage(state: TuiState, callId: string, taskId?: string)
   return legacy.length === 1 && legacy[0]?.kind === "tool" ? legacy[0] : undefined;
 }
 
-function nextMessageNumber(transcript: readonly TranscriptMessage[]): number {
+export function nextMessageNumber(transcript: readonly TranscriptMessage[]): number {
   let maximum = 0;
   for (const message of transcript) {
     const match = /^message-(\d+)$/.exec(message.id);

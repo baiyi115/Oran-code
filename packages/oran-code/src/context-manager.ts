@@ -3,6 +3,8 @@ import { appendFile, mkdir, readFile, writeFile } from "node:fs/promises";
 import { dirname, relative, resolve } from "node:path";
 import type { Message, ModelConfig, ModelProvider } from "./types.js";
 import { projectStateRoot } from "./paths.js";
+import { isAbortError } from "./utils/abort-error.js";
+import { cloneMessages } from "./message-utils.js";
 
 export type ContextCompactionReason = "auto" | "manual" | "emergency";
 
@@ -633,18 +635,6 @@ function estimatedTokensFromBytes(bytes: number): number {
   return Math.max(0, Math.ceil(bytes / CONTEXT_LIMITS.charactersPerToken));
 }
 
-function cloneMessages(messages: readonly Message[]): Message[] {
-  return messages.map((message) => ({
-    ...message,
-    ...(message.toolCalls ? {
-      toolCalls: message.toolCalls.map((call) => ({
-        ...call,
-        arguments: structuredClone(call.arguments),
-      })),
-    } : {}),
-    ...(message.metadata ? { metadata: structuredClone(message.metadata) } : {}),
-  }));
-}
 
 function buildToolReplacement(content: string, bytes: number, relativePath: string): string {
   const lines = content.split("\n").slice(0, CONTEXT_LIMITS.previewLines).join("\n");
@@ -721,11 +711,6 @@ function selectRecentRawMessages(messages: readonly Message[]): Message[] {
     count += unit.length;
   }
   return cloneMessages(units.slice(start).flat());
-}
-
-function isAbortError(error: unknown): boolean {
-  return (error instanceof DOMException && error.name === "AbortError")
-    || (error instanceof Error && error.name === "AbortError");
 }
 
 function groupConversation(messages: readonly Message[]): Message[][] {

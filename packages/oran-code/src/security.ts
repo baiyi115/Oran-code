@@ -1,7 +1,8 @@
-import { lstat, mkdir, readFile, realpath, rename, writeFile } from "node:fs/promises";
-import { dirname, isAbsolute, relative, resolve, sep } from "node:path";
+import { mkdir, readFile, rename, writeFile } from "node:fs/promises";
+import { dirname, isAbsolute, resolve } from "node:path";
 import { parse, stringify } from "yaml";
 import type { PermissionConfig, PermissionMode, ToolCall, ToolKind } from "./types.js";
+import { isWithinPath, resolvePhysicalPath } from "./utils/path-containment.js";
 
 export type PermissionVerdict = "allow" | "deny" | "ask";
 export type PermissionDecisionSource =
@@ -345,7 +346,7 @@ export class PermissionPolicy {
 
   async decide(call: ToolCall, level: number, kind: ToolKind = inferToolKind(call.name)): Promise<ApprovalDecision> {
     const path = kind === "command" ? undefined : extractPath(call);
-    const resolvedPath = path === undefined ? undefined : await resolvePhysicalPath(this.config.workspace, path);
+    const resolvedPath = path === undefined ? undefined : await resolvePhysicalPath(path, this.config.workspace);
 
     if (path !== undefined && resolvedPath === undefined) {
       return decision("deny", `path could not be resolved safely: ${path}`, "path-sandbox", level);
@@ -355,8 +356,8 @@ export class PermissionPolicy {
       && kind === "write"
       && this.registeredKinds.get(canonicalTool(call.name)) === "write"
       && resolvedPath !== undefined) {
-      const planRoot = await resolvePhysicalPath(this.config.workspace, this.config.planDirectory);
-      if (planRoot !== undefined && isWithin(planRoot, resolvedPath)) {
+      const planRoot = await resolvePhysicalPath(this.config.planDirectory, this.config.workspace);
+      if (planRoot !== undefined && isWithinPath(planRoot, resolvedPath)) {
         return decision("allow", "plan files may be written inside .oran/plans", "plan-directory", level);
       }
     }
@@ -378,8 +379,8 @@ export class PermissionPolicy {
     }
 
     if (kind !== "command" && resolvedPath !== undefined) {
-      const roots = await Promise.all(this.config.allowedRoots.map((root) => resolvePhysicalPath(this.config.workspace, root)));
-      if (!roots.some((root) => root !== undefined && isWithin(root, resolvedPath))) {
+      const roots = await Promise.all(this.config.allowedRoots.map((root) => resolvePhysicalPath(root, this.config.workspace)));
+      if (!roots.some((root) => root !== undefined && isWithinPath(root, resolvedPath))) {
         return decision("deny", `path escapes the allowed workspace and temporary roots: ${path ?? "(missing path)"}`, "path-sandbox", level);
       }
     }
@@ -642,36 +643,6 @@ export function matchesPattern(pattern: string, value: string): boolean {
   } catch {
     return false;
   }
-}
-
-async function resolvePhysicalPath(workspace: string, input: string): Promise<string | undefined> {
-  const absolute = resolve(isAbsolute(input) ? input : resolve(workspace, input));
-  let cursor = absolute;
-  const tail: string[] = [];
-  while (true) {
-    try {
-      await lstat(cursor);
-      const physical = await realpath(cursor);
-      return resolve(physical, ...tail.reverse());
-    } catch (error) {
-      if ((error as { code?: string }).code !== "ENOENT") return undefined;
-      const parent = dirname(cursor);
-      if (parent === cursor) return undefined;
-      tail.push(relative(parent, cursor));
-      cursor = parent;
-    }
-  }
-}
-
-function isWithin(root: string, candidate: string): boolean {
-  const normalizedRoot = comparablePath(root);
-  const normalizedCandidate = comparablePath(candidate);
-  return normalizedCandidate === normalizedRoot || normalizedCandidate.startsWith(`${normalizedRoot}${sep}`);
-}
-
-function comparablePath(value: string): string {
-  const normalized = resolve(value).replace(/[\\/]+$/, "");
-  return process.platform === "win32" ? normalized.toLowerCase() : normalized;
 }
 
 function isWritableRule(value: unknown): value is Record<string, unknown> & { effect: "allow" | "deny" } {
