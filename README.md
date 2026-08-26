@@ -2,61 +2,29 @@
 
 [English](README.md) | [简体中文](README.zh-CN.md)
 
-A lightweight, terminal-native coding agent built with TypeScript and React Ink.
+A lightweight, terminal-native AI coding agent in TypeScript, built for fast iteration, safe autonomous editing, and background multi-tasking.
 
-Oran code inspects your codebase, plans multi-step modifications, executes edits with rollback safety, runs background subagents, and connects to any OpenAI-compatible, Anthropic, DeepSeek, Google, or local Ollama model.
-
-## Features
-
-### Terminal User Interface (TUI)
-- **Streamlined React/Ink Interface**: Smooth transcript scrolling, live thinking process visualization, and collapsible tool groups.
-- **Interactive Overlays**: Fast command palette (`/`), model picker (`/model`), session switcher (`/session`), and provider connection wizard (`/connect`).
-- **Subagent Live Status Indicators**: Real-time spinner, elapsed duration, and status tracking for background tasks above the composer and in the footer chrome.
-
-### Autonomous Execution & Safety
-- **Operating Modes**:
-  - **Auto**: Interactive agent loop with tool confirmation prompts.
-  - **Plan**: Safe, read-only workspace inspection with structured plan generation (`/plan`).
-  - **Bypass**: Direct autonomous execution without interactive confirmation prompts.
-- **Git Worktree Isolation**: Run experimental subagent tasks in isolated temporary git worktrees (`enter_worktree`, `exit_worktree`).
-- **One-Step Rollback**: Automatically snapshots agent file modifications; revert recent batch changes instantly with `/undo`.
-
-### Subagents & Parallel Workflows
-- **Background Subagent Execution**: Delegate long-running investigations, testing, or code exploration to background subagents while continuing interactive conversation.
-- **Team Coordination**: Role definitions with custom system prompts, tool permissions, and concurrency controls.
-
-### Model Agnostic & Extensible
-- **Universal Provider Support**: Connect with OpenAI, Anthropic, DeepSeek, Google Gemini, Ollama, or custom OpenAI-compatible endpoints.
-- **Skills Architecture**: Modular custom skills loaded from `~/.oran/skills/` or `.oran/skills/` via `SKILL.md`.
-- **Model Context Protocol (MCP)**: Seamlessly connects to stdio/SSE MCP servers for external tool integration.
-- **Context Management**: Token estimation, intelligent conversation compaction, and SQLite-backed long-term memory.
-- **Project Instructions**: Automatically reads and enforces project-specific constraints defined in `AGENTS.md`.
+Oran code pairs an interactive React/Ink terminal UI with a flexible agent engine: inspect codebases, generate multi-step execution plans, edit files with instant rollback snapshots, delegate subtasks in the background, and connect to DeepSeek, Claude, GPT, Gemini, or local Ollama instances.
 
 ---
 
-## Architecture Overview
+## Key Highlights
 
-```
-oran-code
-├── Controller & Agent Loop       # Orchestrates turns, model streaming, and tool execution
-├── TUI (React / Ink)             # Responsive layout, overlays, transcript virtualizer, status indicators
-├── Subagent Runtime              # Background task manager, role loader, team coordinator
-├── Worktree & Snapshot System    # Safe git worktree isolation and file rollback engine
-├── Provider Gateway              # Model communication (OpenAI, Anthropic, DeepSeek, Google, Ollama)
-├── Tool & Permission Registry    # Core & deferred file tools, bash execution, approval queue
-├── Context & Memory Engine       # Token tracking, conversation compaction, SQLite memory store
-└── Extension Layer               # MCP client manager, dynamic Markdown commands, Skills loader
-```
+- **Terminal-Native TUI**: Real-time streaming thoughts, collapsible tool outputs, and fast keyboard overlays for commands (`/`), models (`/model`), and sessions (`/session`).
+- **Safety & Instant Rollback**: Automatically snapshots file changes before execution. Revert recent edits at any time with `/undo`, or run exploratory tasks in temporary Git worktrees.
+- **Background Subagents**: Offload slow searches, benchmarks, and multi-file explorations to concurrent background subagents without locking your interactive prompt.
+- **Universal Model Support**: Connect directly to OpenAI, Anthropic Claude, DeepSeek (V3/R1), Google Gemini, Ollama, or any custom OpenAI-compatible endpoint.
+- **Extensible & Context-Aware**: Native Model Context Protocol (MCP) support, custom skills (`SKILL.md`), project guidelines (`AGENTS.md`), automated context compaction, and SQLite-backed project memory.
 
-## Development
+---
+
+## Quickstart
 
 ### Prerequisites
 - Node.js >= 22.5
 - pnpm >= 10.0
 
-### Setup & Build
-
-Clone the repository and install dependencies:
+### Setup
 
 ```bash
 git clone https://github.com/your-username/oran-code.git
@@ -64,80 +32,75 @@ cd "oran-code"
 pnpm install
 ```
 
-Run in development mode:
+### Running Oran
 
 ```bash
+# Start in development mode
 pnpm dev
-```
 
-Typecheck and compile:
-
-```bash
-pnpm typecheck
+# Or build and run
 pnpm build
+pnpm start
 ```
 
-Run tests:
-
-```bash
-pnpm test
-```
+On first launch, type `/connect` to set up your model provider and API key interactively.
 
 ---
 
-## Usage
-
-### Quick Start
-
-Launch Oran code inside any workspace or project folder:
+## Usage & CLI Commands
 
 ```bash
+# Interactive TUI session (default)
 oran
+
+# Run a single task non-interactively
+oran run "Fix the type error in src/index.ts"
+
+# Choose a specific model or workspace
+oran --model deepseek/deepseek-chat --workspace ./my-project
+
+# Inspect active workspace tools and permissions
+oran inspect
+
+# Review past task execution traces
+oran tasks
 ```
 
-### Interactive Keyboard Shortcuts
+### Keyboard Shortcuts
 
-| Shortcut | Description |
+| Key | Action |
 | :--- | :--- |
-| `Enter` | Submit prompt or execute command |
-| `Shift + Enter` / `Ctrl + J` | Insert newline in composer |
-| `Up / Down` | Navigate command/session history or overlay options |
-| `Tab` | Autocomplete slash commands and file paths (`@file`) |
-| `Esc` | Close active overlay or unfocus |
-| `Ctrl + C` | Cancel active generation or exit session |
+| `Enter` | Submit prompt or confirm selection |
+| `Shift + Enter` / `Ctrl + J` | Multi-line input (newline) |
+| `Up` / `Down` | Browse input history or navigate overlay options |
+| `Tab` | Autocomplete slash commands and `@file` paths |
+| `Esc` | Close active overlay / cancel focus |
+| `Ctrl + C` | Cancel current generation or exit |
 
----
-
-## Slash Commands Reference
+### Essential Slash Commands
 
 | Command | Description |
 | :--- | :--- |
-| `/help [cmd]` | Show available commands or detailed help for a specific command |
-| `/model` | Open interactive model selection overlay |
-| `/connect` | Launch interactive wizard to configure custom model providers |
-| `/plan` | Switch to read-only Plan mode for safe task planning |
-| `/undo` | Roll back the most recent batch of file changes made by the agent |
-| `/session [id]` | List previous conversation sessions or resume by ID |
-| `/new [name]` | Start a fresh conversation session |
-| `/rename <name>` | Rename the current session |
-| `/clear` | Clear the current transcript screen |
-| `/compact` | Manually trigger conversation context compaction |
-| `/status` | Display token usage, active permissions, tools, and MCP status |
-| `/skills` | List loaded workspace and global skills |
-| `/memory [clear]` | View or reset loaded long-term memory entries |
-| `/exit` | Exit the CLI session |
+| `/connect` | Interactive wizard to configure model providers & API keys |
+| `/model` | Open model picker overlay to switch active model |
+| `/plan` | Switch to read-only Plan mode for safe workspace exploration |
+| `/undo` | Immediately revert the most recent batch of file changes |
+| `/session [id]` | Switch between active sessions or resume past sessions |
+| `/new` | Start a clean conversation session |
+| `/status` | View token usage, active permissions, and MCP connections |
+| `/compact` | Trigger manual context compaction to save tokens |
+| `/clear` | Clear terminal transcript output |
+| `/exit` | Exit session |
 
 ---
 
-## Configuration & Directory Structure
+## Configuration
 
-Oran code maintains user-level global configuration and project-level workspace state:
+Oran code stores global settings in `~/.oran/` and workspace-specific state in `.oran/`:
 
-### Global Configuration (`~/.oran/`)
-- `~/.oran/config.json`: Model providers, API keys, default models, and global preferences.
-- `~/.oran/skills/`: Global custom skills available across all projects.
+### Global Config (`~/.oran/config.json`)
 
-Example `~/.oran/config.json`:
+Configure your providers and default model:
 
 ```json
 {
@@ -149,40 +112,36 @@ Example `~/.oran/config.json`:
       "baseURL": "https://api.deepseek.com/v1",
       "apiKey": "sk-...",
       "models": [
-        {
-          "id": "deepseek-chat",
-          "name": "DeepSeek V3",
-          "contextWindow": 64000
-        },
-        {
-          "id": "deepseek-reasoner",
-          "name": "DeepSeek R1",
-          "contextWindow": 64000
-        }
+        { "id": "deepseek-chat", "name": "DeepSeek V3", "contextWindow": 64000 },
+        { "id": "deepseek-reasoner", "name": "DeepSeek R1", "contextWindow": 64000 }
       ]
     }
   ],
-  "defaultModel": "deepseek/deepseek-chat",
-  "approvalPolicy": "ask"
+  "defaultModel": "deepseek/deepseek-chat"
 }
 ```
 
-### Project Workspace (`.oran/` & `AGENTS.md`)
-- `AGENTS.md`: Project-specific engineering guidelines, constraints, and instructions automatically injected into the agent system prompt.
-- `.oran/sessions/`: Persisted conversation history for session resumption.
-- `.oran/memory.db`: SQLite database storing project memory and entity knowledge.
-- `.oran/skills/`: Workspace-specific custom skills.
-- `.oran/snapshots/`: Local workspace file modification snapshots for rollback support.
+### Workspace Structure (`.oran/` & `AGENTS.md`)
+- `AGENTS.md`: Project-specific engineering standards, rules, and constraints automatically injected into the agent's system prompt.
+- `.oran/snapshots/`: Local workspace snapshots for `/undo` rollback support.
+- `.oran/sessions/`: Persisted session history and logs.
+- `.oran/memory.db`: SQLite database for long-term project knowledge.
+- `.oran/skills/`: Project-local custom skills (`SKILL.md`).
 
 ---
 
-## Status
+## Development & Verification
 
-Oran code is under active development. Interfaces and configuration may change before the first stable release.
+```bash
+# Typecheck
+pnpm typecheck
 
-## Contributing
+# Run unit tests
+pnpm test
 
-Issues and pull requests are welcome. Please ensure that all changes pass typechecking (`pnpm typecheck`) and unit tests (`pnpm test`) before submitting.
+# Build production bundle
+pnpm build
+```
 
 ## License
 
