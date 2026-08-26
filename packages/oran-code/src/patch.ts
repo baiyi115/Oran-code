@@ -131,7 +131,9 @@ export function applyUnifiedDiff(content: string, diff: string): PatchApplyResul
   const parsed = parseUnifiedDiff(diff);
   if (!parsed.ok) return { ok: false, error: parsed.error, hunksApplied: 0, linesAdded: 0, linesRemoved: 0 };
 
-  const lines = content.split("\n");
+  const isCrlf = content.includes("\r\n");
+  const normalizedContent = content.replace(/\r\n/g, "\n");
+  const lines = normalizedContent.split("\n");
   let delta = 0;
   let linesAdded = 0;
   let linesRemoved = 0;
@@ -172,25 +174,65 @@ export function applyUnifiedDiff(content: string, diff: string): PatchApplyResul
     delta += output.length - (cursor - match);
   }
 
-  return { ok: true, content: lines.join("\n"), hunksApplied: parsed.hunks.length, linesAdded, linesRemoved };
+  const resultText = lines.join("\n");
+  const finalContent = isCrlf ? resultText.replace(/\n/g, "\r\n") : resultText;
+  return { ok: true, content: finalContent, hunksApplied: parsed.hunks.length, linesAdded, linesRemoved };
 }
 
 /** Locate a hunk by matching its context/removal lines around the declared position. */
 function findMatch(lines: readonly string[], probe: readonly string[], declared: number): number | undefined {
   if (!probe.length) return clamp(declared, 0, lines.length);
+
+  // Pass 1: Exact match in local window around declared position.
   const lo = Math.max(0, declared - MAX_SEARCH_WINDOW);
   const hi = Math.min(lines.length - probe.length, declared + MAX_SEARCH_WINDOW);
   for (let position = lo; position <= hi; position += 1) {
-    let matches = true;
-    for (let offset = 0; offset < probe.length; offset += 1) {
-      if ((lines[position + offset] ?? "") !== probe[offset]) {
-        matches = false;
-        break;
-      }
+    if (matchesAt(lines, probe, position, (a, b) => a === b)) return position;
+  }
+
+  // Pass 2: Exact match across entire file.
+  const totalHi = lines.length - probe.length;
+  for (let position = 0; position <= totalHi; position += 1) {
+    if (matchesAt(lines, probe, position, (a, b) => a === b)) return position;
+  }
+
+  // Pass 3: Trailing-whitespace-tolerant match in local window.
+  for (let position = lo; position <= hi; position += 1) {
+    if (matchesAt(lines, probe, position, (a, b) => a.trimEnd() === b.trimEnd())) return position;
+  }
+
+  // Pass 4: Trailing-whitespace-tolerant match across entire file.
+  for (let position = 0; position <= totalHi; position += 1) {
+    if (matchesAt(lines, probe, position, (a, b) => a.trimEnd() === b.trimEnd())) return position;
+  }
+
+  // Pass 5: Full trim (indentation-tolerant) match across file if unique or closest to declared.
+  const trimMatches: number[] = [];
+  for (let position = 0; position <= totalHi; position += 1) {
+    if (matchesAt(lines, probe, position, (a, b) => a.trim() === b.trim())) {
+      trimMatches.push(position);
     }
-    if (matches) return position;
+  }
+  if (trimMatches.length === 1) return trimMatches[0];
+  if (trimMatches.length > 1) {
+    trimMatches.sort((a, b) => Math.abs(a - declared) - Math.abs(b - declared));
+    return trimMatches[0];
   }
   return undefined;
+}
+
+function matchesAt(
+  lines: readonly string[],
+  probe: readonly string[],
+  position: number,
+  comparator: (a: string, b: string) => boolean,
+): boolean {
+  for (let offset = 0; offset < probe.length; offset += 1) {
+    if (!comparator(lines[position + offset] ?? "", probe[offset] ?? "")) {
+      return false;
+    }
+  }
+  return true;
 }
 
 function clamp(value: number, lo: number, hi: number): number {

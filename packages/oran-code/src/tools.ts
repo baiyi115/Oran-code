@@ -344,6 +344,36 @@ export function registerBuiltinTools(registry: ToolRegistry, workspace: string):
         const content = await readFile(path, "utf8");
         const matches = countOccurrences(content, oldString);
         const replaceAll = call.arguments.replace_all === true;
+        const isCrlf = content.includes("\r\n");
+        const normalizedContent = content.replace(/\r\n/g, "\n");
+        const normalizedOld = oldString.replace(/\r\n/g, "\n");
+        const normalizedNew = newString.replace(/\r\n/g, "\n");
+        const normalizedMatches = countOccurrences(normalizedContent, normalizedOld);
+
+        if (matches === 0 && normalizedMatches > 0) {
+          if (!replaceAll && normalizedMatches > 1) {
+            return {
+              ok: false,
+              output: "",
+              error: `old_string matched ${normalizedMatches} times in ${displayPath(workspace, path)}; refine the snippet or set replace_all=true`,
+              summary: `${normalizedMatches} matches`,
+              metadata: { matches: normalizedMatches },
+            };
+          }
+          const nextNormalized = replaceAll
+            ? normalizedContent.split(normalizedOld).join(normalizedNew)
+            : normalizedContent.replace(normalizedOld, normalizedNew);
+          const next = isCrlf ? nextNormalized.replace(/\n/g, "\r\n") : nextNormalized;
+          await writeFile(path, next, "utf8");
+          const replaced = replaceAll ? normalizedMatches : 1;
+          return {
+            ok: true,
+            output: `edited ${displayPath(workspace, path)} (${replaced} replacement${replaced === 1 ? "" : "s"})`,
+            summary: replaceAll ? `replace_all ${replaced}` : "unique replace",
+            metadata: { matches: replaced, replaceAll },
+          };
+        }
+
         if (matches === 0) {
           return {
             ok: false,
@@ -620,9 +650,12 @@ export function registerBuiltinTools(registry: ToolRegistry, workspace: string):
         if (!item.cmd) {
           return { ok: false, output: "", error: errorMessage(error), summary: "invalid arguments" };
         }
+        let output = `${item.stdout ?? ""}${item.stderr ?? ""}`;
+        const diagnostic = getWindowsCommandDiagnostic(item.cmd, output);
+        if (diagnostic) output += diagnostic;
         const result: ToolResult = {
           ok: false,
-          output: `${item.stdout ?? ""}${item.stderr ?? ""}`,
+          output,
           summary: item.killed ? "timed out" : `exit ${String(item.code ?? "unknown")}`,
         };
         if (item.killed) result.error = `command timed out after ${timeout / 1000}s`;
@@ -891,4 +924,49 @@ function failedResult(error: unknown, fallback: string): ToolResult {
 function errorMessage(error: unknown): string {
   if (error instanceof Error) return error.message;
   return String(error);
+}
+
+function getWindowsCommandDiagnostic(cmd: string, output: string): string | undefined {
+  if (process.platform !== "win32") return undefined;
+  const hints: string[] = [];
+  const trimmedCmd = cmd.trim();
+
+  if (trimmedCmd.includes("'")) {
+    hints.push("Windows cmd.exe does not treat single quotes ('') as quote delimiters. Use double quotes (\"\") for arguments and strings.");
+  }
+
+  const unixToolMapping: Record<string, string> = {
+    grep: "search_code",
+    rg: "search_code",
+    findstr: "search_code",
+    cat: "read_file",
+    head: "read_file",
+    tail: "read_file",
+    ls: "list_files",
+    dir: "list_files",
+    find: "list_files",
+    sed: "edit_file or apply_patch",
+    awk: "edit_file",
+    rm: "dedicated file operations",
+    cp: "dedicated file operations",
+    mv: "dedicated file operations",
+    touch: "write_file",
+  };
+
+  const firstWord = trimmedCmd.split(/\s+/)[0]?.toLowerCase() ?? "";
+  if (unixToolMapping[firstWord]) {
+    hints.push(`Command '${firstWord}' failed or may be unavailable on Windows. Prefer the native agent tool: ${unixToolMapping[firstWord]}.`);
+  }
+
+  if (
+    /is not recognized as an internal or external command/i.test(output) ||
+    /The term .* is not recognized/i.test(output)
+  ) {
+    if (!hints.some((h) => h.includes("native agent tool"))) {
+      hints.push("If you are trying to read, search, or edit files, use dedicated agent tools (read_file, search_code, list_files, edit_file) instead of shell utilities.");
+    }
+  }
+
+  if (hints.length === 0) return undefined;
+  return `\n[Windows Diagnostic Hint]\n${hints.map((h) => `• ${h}`).join("\n")}`;
 }

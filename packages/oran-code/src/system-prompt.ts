@@ -139,6 +139,7 @@ function commandEnvironmentLines(currentPlatform: NodeJS.Platform): readonly str
     return [
       "Default command execution: Node.js uses the Windows command shell (cmd.exe syntax) unless your command explicitly launches another shell.",
       "Do not use Bash, PowerShell, WSL, or Unix utility syntax as the default assumption. If one is needed, first verify it is available or invoke it explicitly.",
+      "Windows cmd.exe quoting: cmd.exe does NOT treat single quotes ('...') as quotation marks. Always use double quotes (\"...\") for arguments, paths, and literal strings.",
       "Tool selection: use workspace and git tools for file, search, patch, and repository operations; reserve run_command for commands that have no dedicated tool.",
       "Prefer dedicated file, search, patch, and git tools over shell commands.",
     ];

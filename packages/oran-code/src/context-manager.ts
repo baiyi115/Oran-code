@@ -11,6 +11,8 @@ export type ContextCompactionReason = "auto" | "manual" | "emergency";
 export const CONTEXT_LIMITS = Object.freeze({
   singleToolResultBytes: 50_000,
   toolRoundBytes: 200_000,
+  historicalToolResultBytes: 8_000,
+  historicalToolRoundBytes: 24_000,
   summaryOutputTokens: 20_000,
   automaticSafetyTokens: 13_000,
   manualSafetyTokens: 3_000,
@@ -259,6 +261,10 @@ export class ContextManager {
         }
       }
 
+      const isHistoricalRound = end < copy.length;
+      const maxSingleBytes = isHistoricalRound ? CONTEXT_LIMITS.historicalToolResultBytes : CONTEXT_LIMITS.singleToolResultBytes;
+      const maxRoundBytes = isHistoricalRound ? CONTEXT_LIMITS.historicalToolRoundBytes : CONTEXT_LIMITS.toolRoundBytes;
+
       const candidates = [...candidatesById.values()]
         .sort((left, right) => right.bytes - left.bytes || left.indices[0]! - right.indices[0]!);
       const attempted = new Set<string>();
@@ -278,10 +284,10 @@ export class ContextManager {
       };
 
       for (const candidate of candidates) {
-        if (candidate.bytes > CONTEXT_LIMITS.singleToolResultBytes) await replace(candidate);
+        if (candidate.bytes > maxSingleBytes) await replace(candidate);
       }
       for (const candidate of candidates) {
-        if (retainedBytes <= CONTEXT_LIMITS.toolRoundBytes) break;
+        if (retainedBytes <= maxRoundBytes) break;
         if (!attempted.has(candidate.id)) await replace(candidate);
       }
       for (const candidate of candidates) {
@@ -730,7 +736,7 @@ function buildSummaryRequest(messages: readonly Message[]): Message[] {
     "4. Errors and Fixes",
     "5. Problem-Solving Progress",
     "6. User Messages (preserve every user message verbatim, one by one, whenever present)",
-    "7. Pending Tasks",
+    "7. Pending Tasks & Active Plan State (preserve all checklist items and their completed/pending/in_progress status)",
     "8. Current Work (the most detailed section; state exactly what is in progress and where work stopped)",
     "9. Possible Next Step",
     "If the tail of the history shows the same tool call repeated, section 8 must call that out explicitly and restate the user's original request so the agent does not blindly re-run it.",
