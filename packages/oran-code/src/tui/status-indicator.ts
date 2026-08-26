@@ -1,4 +1,4 @@
-import type { TuiState } from "./types.js";
+import type { TuiBackgroundTask, TuiState } from "./types.js";
 import { toolDisplayName } from "./tool-names.js";
 
 /** Braille spinner frames, matching common CLI working indicators (pi/Ink loaders). */
@@ -8,6 +8,10 @@ export function spinnerFrame(tick: number): string {
   const frames = WORKING_SPINNER_FRAMES;
   const index = ((Math.trunc(tick) % frames.length) + frames.length) % frames.length;
   return frames[index] ?? frames[0]!;
+}
+
+export function hasActiveBackgroundTasks(state: TuiState): boolean {
+  return (state.session.backgroundTasks ?? []).some((task) => task.status === "running");
 }
 
 export function isSessionBusy(state: TuiState): boolean {
@@ -24,26 +28,72 @@ export function isSessionBusy(state: TuiState): boolean {
 }
 
 /**
+ * Formats running background subagent tasks into a concise label.
+ * Single: "[Subagent: explore] Searching codebase... 8.4s"
+ * Multiple: "[2 subagents running] explore (18.1s), tester (5.2s)"
+ */
+export function formatBackgroundTasksIndicator(tasks: readonly TuiBackgroundTask[], now = Date.now()): string | undefined {
+  const running = tasks.filter((task) => task.status === "running");
+  if (running.length === 0) return undefined;
+
+  if (running.length === 1) {
+    const task = running[0]!;
+    const name = task.definitionName || (task.origin?.kind === "definition" ? task.origin.name : undefined) || task.name || "agent";
+    const description = task.name && task.name !== name ? task.name : undefined;
+    const startTime = Date.parse(task.startedAt);
+    const elapsed = Number.isFinite(startTime) ? formatCompactDuration(Math.max(0, now - startTime)) : undefined;
+    const parts = [`[Subagent: ${name}]`];
+    if (description) parts.push(description);
+    if (elapsed) parts.push(elapsed);
+    return parts.join(" ");
+  }
+
+  const taskSummaries = running.map((task) => {
+    const name = task.definitionName || (task.origin?.kind === "definition" ? task.origin.name : undefined) || task.name || "agent";
+    const startTime = Date.parse(task.startedAt);
+    const elapsed = Number.isFinite(startTime) ? formatCompactDuration(Math.max(0, now - startTime)) : undefined;
+    return elapsed ? `${name} (${elapsed})` : name;
+  });
+
+  return `[${running.length} subagents running] ${taskSummaries.join(", ")}`;
+}
+
+/**
  * Live "working" line rendered above the composer while a task is active.
- * Example: "⠋ Working... 2.4s" or "⠋ Running Bash 1.1s".
+ * Example: "⠋ Working... 2.4s" or "⠋ Running Bash 1.1s" or "⠋ [Subagent: explore] 8.4s".
  */
 export function workingIndicatorLine(state: TuiState, tick: number, now = Date.now()): string | undefined {
-  if (!isSessionBusy(state)) return undefined;
+  const frame = spinnerFrame(tick);
+  const bgTasks = state.session.backgroundTasks ?? [];
+  const bgIndicator = formatBackgroundTasksIndicator(bgTasks, now);
+
+  if (!isSessionBusy(state)) {
+    if (bgIndicator) {
+      return `${frame} ${bgIndicator}`;
+    }
+    return undefined;
+  }
+
   // Between assistant_start and the first chunk/thought/tool, fill the gap
   // with a waiting spinner so the working line never goes blank.
   if (state.waitingForFirstChunk) {
-    const frame = spinnerFrame(tick);
     const elapsed = formatWorkingElapsed(state, now);
-    return elapsed ? `${frame} Waiting... ${elapsed}` : `${frame} Waiting...`;
+    const mainText = elapsed ? `Waiting... ${elapsed}` : "Waiting...";
+    return bgIndicator ? `${frame} ${mainText} · ${bgIndicator}` : `${frame} ${mainText}`;
   }
   // Thought, assistant, and tool rows already carry their own live state.
   // A second spinner duplicates the same information and forces frequent
   // full-frame Ink updates while content is streaming.
-  if (hasVisibleLiveActivity(state)) return undefined;
-  const frame = spinnerFrame(tick);
+  if (hasVisibleLiveActivity(state)) {
+    if (bgIndicator) {
+      return `${frame} ${bgIndicator}`;
+    }
+    return undefined;
+  }
   const label = workingLabel(state);
   const elapsed = formatWorkingElapsed(state, now);
-  return elapsed ? `${frame} ${label} ${elapsed}` : `${frame} ${label}`;
+  const mainText = elapsed ? `${label} ${elapsed}` : label;
+  return bgIndicator ? `${frame} ${mainText} · ${bgIndicator}` : `${frame} ${mainText}`;
 }
 
 function hasVisibleLiveActivity(state: TuiState): boolean {

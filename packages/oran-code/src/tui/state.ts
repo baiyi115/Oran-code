@@ -49,6 +49,7 @@ export function createTuiSessionState(
     outputTokensPerSecond: undefined,
     usage: { inputTokens: 0, outputTokens: 0, totalTokens: 0, cacheReadTokens: 0, cacheWriteTokens: 0 },
     followUpCount: 0,
+    backgroundTasks: [],
   };
 }
 

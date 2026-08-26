@@ -10,6 +10,7 @@ export interface TuiAppOptions {
   getSessionName?: () => string;
   getApprovalPolicy?: () => "ask" | "all";
   getFollowUpCount?: () => number;
+  getBackgroundTasks?: () => readonly TuiBackgroundTask[];
   onInput: (value: string) => Promise<void>;
   onCancel: () => boolean;
   loadModels: () => Promise<string[]>;
@@ -90,6 +91,17 @@ export interface UsageState {
   cacheWriteTokens: number;
 }
 
+export interface TuiBackgroundTask {
+  readonly id: string;
+  readonly name: string;
+  readonly origin?: SubagentOrigin | undefined;
+  readonly definitionName?: string | undefined;
+  readonly status: string;
+  readonly startedAt: string;
+  readonly endedAt?: string | undefined;
+  readonly error?: string | undefined;
+}
+
 export interface TuiSessionState {
   workspace: string;
   sessionId: string;
@@ -112,6 +124,7 @@ export interface TuiSessionState {
   outputTokensPerSecond: number | undefined;
   usage: UsageState;
   followUpCount: number;
+  backgroundTasks: readonly TuiBackgroundTask[];
 }
 
 export interface UserMessage {

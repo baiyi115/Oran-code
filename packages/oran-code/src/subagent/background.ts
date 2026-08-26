@@ -11,7 +11,16 @@ export class BackgroundAgentTaskManager {
   constructor(
     private readonly stateStore?: AgentStateStore,
     private readonly onTerminal?: () => void | Promise<void>,
+    private readonly onChange?: () => void,
   ) {}
+
+  private notifyChange(): void {
+    try {
+      this.onChange?.();
+    } catch {
+      // ignore
+    }
+  }
 
   async restore(): Promise<void> {
     if (!this.stateStore) return;
@@ -21,6 +30,7 @@ export class BackgroundAgentTaskManager {
       this.tasks.set(item.id, { ...structuredClone(item), status });
     }
     await this.persist();
+    this.notifyChange();
   }
 
   start(runner: SubagentRunner, options: SubagentRunOptions & { readonly retryOf?: string }): BackgroundAgentTask {
@@ -57,9 +67,11 @@ export class BackgroundAgentTaskManager {
     };
     this.tasks.set(id, task);
     this.schedulePersist();
+    this.notifyChange();
     void promise.then(async (result) => {
       this.finish(task, result);
       await this.persist();
+      this.notifyChange();
       await this.onTerminal?.();
     }).catch(() => undefined);
     return task;
@@ -95,6 +107,7 @@ export class BackgroundAgentTaskManager {
     const task = this.tasks.get(id);
     if (!task || task.status !== "running" || !task.abortController) return false;
     task.abortController.abort();
+    this.notifyChange();
     return true;
   }
 
@@ -102,6 +115,7 @@ export class BackgroundAgentTaskManager {
     for (const task of this.tasks.values()) {
       if (task.status === "running") task.abortController?.abort();
     }
+    this.notifyChange();
   }
 
   interruptAll(): void {
@@ -112,6 +126,7 @@ export class BackgroundAgentTaskManager {
       task.abortController?.abort();
     }
     this.schedulePersist();
+    this.notifyChange();
   }
 
   async waitForIdle(): Promise<void> {

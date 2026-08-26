@@ -1,13 +1,13 @@
 import { describe, expect, it } from "vitest";
 import { TuiTranscriptRenderer, type TuiRendererLayout } from "../src/tui/renderer.js";
 import { createTuiState } from "../src/tui/state.js";
-import { workingIndicatorLine } from "../src/tui/status-indicator.js";
-import { workSummaryLine } from "../src/tui/footer.js";
+import { formatBackgroundTasksIndicator, workingIndicatorLine } from "../src/tui/status-indicator.js";
+import { footerLines, workSummaryLine } from "../src/tui/footer.js";
 import { staticTranscriptCount } from "../src/tui/ink-app.js";
 import { collapsibleSegments, TranscriptView } from "../src/tui/transcript/transcript-view.js";
 import { renderMessage } from "../src/tui/transcript/message-renderer.js";
 import { ANSI } from "../src/tui/theme.js";
-import type { TuiState } from "../src/tui/types.js";
+import type { TuiBackgroundTask, TuiState } from "../src/tui/types.js";
 import type { RuntimeEvent } from "../src/types.js";
 
 function createState(): TuiState {
@@ -192,5 +192,112 @@ describe("TuiTranscriptRenderer", () => {
     const mutedDetails = lines.filter((line) => line.includes("busy") || line.includes("Retrying"));
     expect(mutedDetails).not.toHaveLength(0);
     expect(mutedDetails.every((line) => line.includes(ANSI.gray))).toBe(true);
+  });
+
+  describe("Subagent Background Task Indicator", () => {
+    it("formats single and multiple background subagent tasks", () => {
+      const fixedNow = 1700000010000;
+      const task1: TuiBackgroundTask = {
+        id: "agent-1",
+        name: "Searching codebase",
+        definitionName: "explore",
+        status: "running",
+        startedAt: new Date(1700000000000).toISOString(),
+      };
+      expect(formatBackgroundTasksIndicator([task1], fixedNow)).toBe("[Subagent: explore] Searching codebase 10s");
+
+      const task2: TuiBackgroundTask = {
+        id: "agent-2",
+        name: "tester",
+        definitionName: "tester",
+        status: "running",
+        startedAt: new Date(1700000005000).toISOString(),
+      };
+      expect(formatBackgroundTasksIndicator([task1, task2], fixedNow)).toBe("[2 subagents running] explore (10s), tester (5.0s)");
+
+      const completedTask: TuiBackgroundTask = {
+        id: "agent-3",
+        name: "done-agent",
+        status: "completed",
+        startedAt: new Date(1700000000000).toISOString(),
+      };
+      expect(formatBackgroundTasksIndicator([completedTask], fixedNow)).toBeUndefined();
+    });
+
+    it("renders workingIndicatorLine when session is idle but background tasks are running", () => {
+      const state = createState();
+      state.session.taskState = "completed";
+      state.session.backgroundTasks = [
+        {
+          id: "agent-1",
+          name: "explore",
+          definitionName: "explore",
+          status: "running",
+          startedAt: new Date(1700000000000).toISOString(),
+        },
+      ];
+
+      const line = workingIndicatorLine(state, 0, 1700000005000);
+      expect(line).toBeDefined();
+      expect(line).toContain("[Subagent: explore] 5.0s");
+    });
+
+    it("renders workingIndicatorLine showing both main activity and background tasks when busy", () => {
+      const state = createState();
+      state.session.taskState = "executing";
+      state.session.backgroundTasks = [
+        {
+          id: "agent-1",
+          name: "explore",
+          definitionName: "explore",
+          status: "running",
+          startedAt: new Date(1700000000000).toISOString(),
+        },
+      ];
+
+      const line = workingIndicatorLine(state, 0, 1700000005000);
+      expect(line).toBeDefined();
+      expect(line).toContain("Working...");
+      expect(line).toContain("[Subagent: explore] 5.0s");
+    });
+
+    it("renders background task indicator in workingIndicatorLine even while streaming assistant content", () => {
+      const state = createState();
+      state.streaming = true;
+      state.transcript.push({ id: "assistant-1", kind: "assistant", text: "partial", streaming: true });
+      state.session.backgroundTasks = [
+        {
+          id: "agent-1",
+          name: "explore",
+          definitionName: "explore",
+          status: "running",
+          startedAt: new Date(1700000000000).toISOString(),
+        },
+      ];
+
+      const line = workingIndicatorLine(state, 0, 1700000005000);
+      expect(line).toBeDefined();
+      expect(line).toContain("[Subagent: explore] 5.0s");
+    });
+
+    it("renders subagent count badge in footer and hides workSummaryLine when background tasks are active", () => {
+      const state = createState();
+      state.session.elapsedMs = 1500;
+      state.session.taskState = "completed";
+      state.session.backgroundTasks = [
+        {
+          id: "agent-1",
+          name: "explore",
+          definitionName: "explore",
+          status: "running",
+          startedAt: new Date().toISOString(),
+        },
+      ];
+
+      expect(workSummaryLine(state)).toBeUndefined();
+
+      const footer = footerLines(state, 100);
+      expect(footer.join("\n")).toContain("1 subagent running");
+    });
   });
 });

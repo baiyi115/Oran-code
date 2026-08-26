@@ -23,7 +23,7 @@ import { highlightSelection } from "./overlay/select-list.js";
 import { abbreviatePath, graphemes, truncateVisible, visibleWidth } from "./text-width.js";
 import { scrollPercent, scrollTranscript, syncTranscriptScroll } from "./scroll-controller.js";
 import { currentSessionLine, sessionOptionLabel } from "./session-list.js";
-import { isSessionBusy, workingIndicatorLine } from "./status-indicator.js";
+import { hasActiveBackgroundTasks, isSessionBusy, workingIndicatorLine } from "./status-indicator.js";
 import { isDeleteBackward, isDeleteForward, isEndKey, isHomeKey, isSessionDeleteKey, isSubmitKey } from "./keys.js";
 import { ConnectWizard } from "./connect-wizard.js";
 import { OverlayHandlers } from "./overlay-handlers.js";
@@ -117,6 +117,7 @@ export class InkTuiApp {
       options.initialSession?.modelWarning ?? options.getModelWarning?.(),
     );
     this.state.session.approvalPolicy = options.getApprovalPolicy?.() ?? "ask";
+    this.state.session.backgroundTasks = options.getBackgroundTasks?.() ?? [];
     this.overlayHandlers = new OverlayHandlers({
       state: this.state,
       loadModels: () => options.loadModels(),
@@ -237,6 +238,7 @@ export class InkTuiApp {
     this.state.session.permissionMode = this.options.getPermissionMode?.() ?? this.state.session.permissionMode;
     this.state.session.reasoningEffort = this.options.getReasoningEffort?.() ?? this.state.session.reasoningEffort;
     this.state.session.followUpCount = this.options.getFollowUpCount?.() ?? this.state.session.followUpCount;
+    this.state.session.backgroundTasks = this.options.getBackgroundTasks?.() ?? [];
     this.state.commands = [...(this.options.getCommands?.() ?? this.state.commands)];
     const reference = this.options.getModelReference?.();
     if (reference) this.state.session.modelReference = { ...reference };
@@ -1007,6 +1009,7 @@ function InkRoot({ app, revision }: { app: InkTuiApp; revision: number }): React
   }));
   const state = app.snapshot();
   const busy = isSessionBusy(state);
+  const activeSpinner = busy || hasActiveBackgroundTasks(state);
   useEffect(() => {
     const stream = stdout as NodeJS.WriteStream & {
       on?: (event: string, listener: () => void) => void;
@@ -1037,11 +1040,11 @@ function InkRoot({ app, revision }: { app: InkTuiApp; revision: number }): React
   const summary = workSummaryLine(state);
   const workingLine = workingIndicatorLine(state, spinnerTick);
   useEffect(() => {
-    if (!busy) return;
-    // The same tick animates the fallback Working line and live Thought/Tool rows.
+    if (!activeSpinner) return;
+    // The same tick animates the fallback Working line, Subagent indicator, and live Thought/Tool rows.
     const timer = setInterval(() => setSpinnerTick((value) => value + 1), 120);
     return () => clearInterval(timer);
-  }, [busy]);
+  }, [activeSpinner]);
   const transcript = app.transcriptRenderSections(width, spinnerTick);
   const transcriptLines = transcript.liveLines;
   const welcomeLines = state.transcript.length === 0 && state.overlay.kind === "none"

@@ -322,11 +322,15 @@ export class TerminalSession {
         loadSubagentTeam(),
         loadSnapshot(),
       ]);
-      const agentStateStore = new AgentStateStore(this.workspace);
-      const runtime: AgentRuntimeServices = {
-        agentDefinitionLoader: new AgentDefinitionLoader(this.workspace),
-        agentStateStore,
-        backgroundAgents: new BackgroundAgentTaskManager(agentStateStore, () => this.flushBackgroundNotifications()),
+     const agentStateStore = new AgentStateStore(this.workspace);
+     const runtime: AgentRuntimeServices = {
+       agentDefinitionLoader: new AgentDefinitionLoader(this.workspace),
+       agentStateStore,
+        backgroundAgents: new BackgroundAgentTaskManager(
+          agentStateStore,
+          () => this.flushBackgroundNotifications(),
+          () => this.refreshTui(),
+        ),
         teams: new TeamManager(agentStateStore),
         snapshotStore: new SnapshotStore(this.workspace),
       };
@@ -1754,11 +1758,21 @@ export class TerminalSession {
       onSessionDeleted: (id) => this.deleteSession(id),
       loadFollowUps: () => this.loadFollowUpOptions(),
       onFollowUpCancelled: (id) => this.cancelFollowUp(id),
-      loadFiles: (query) => this.loadWorkspaceFiles(query),
-      onSessionChanged: () => this.persistTuiSession(),
-      getFollowUpCount: () => this.followUps.length,
-      getSessionName: () => this.currentSession ? this.sessionName(this.currentSession) : "Current session",
-      getApprovalPolicy: () => this.permissionMode === "bypass" ? "all" : "ask",
+     loadFiles: (query) => this.loadWorkspaceFiles(query),
+     onSessionChanged: () => this.persistTuiSession(),
+     getFollowUpCount: () => this.followUps.length,
+      getBackgroundTasks: () => this.agentRuntime?.backgroundAgents.list().map((task) => ({
+        id: task.id,
+        name: task.name,
+        origin: task.origin,
+        definitionName: task.definitionName,
+        status: task.status,
+        startedAt: task.startedAt,
+        endedAt: task.endedAt,
+        error: task.error,
+      })) ?? [],
+     getSessionName: () => this.currentSession ? this.sessionName(this.currentSession) : "Current session",
+     getApprovalPolicy: () => this.permissionMode === "bypass" ? "all" : "ask",
       getWorkMode: () => this.workMode,
       getPermissionMode: () => this.permissionMode,
       onWorkModeChanged: async (mode) => {

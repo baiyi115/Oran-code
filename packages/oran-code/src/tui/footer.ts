@@ -1,6 +1,6 @@
 import type { TranscriptMessage, TuiState } from "./types.js";
 import { abbreviatePath, truncateVisible, visibleWidth } from "./text-width.js";
-import { isSessionBusy } from "./status-indicator.js";
+import { hasActiveBackgroundTasks, isSessionBusy } from "./status-indicator.js";
 import { formatCompactDuration } from "./status-indicator.js";
 
 /**
@@ -22,9 +22,13 @@ export function footerLines(state: TuiState, width: number): string[] {
   const workspace = state.session.workspace || ".";
   const usage = usageLabel(state);
   const queue = state.session.followUpCount > 0 ? `follow-ups: ${state.session.followUpCount}` : undefined;
+  const runningBgCount = (state.session.backgroundTasks ?? []).filter((t) => t.status === "running").length;
+  const subagentBadge = runningBgCount > 0
+    ? `${runningBgCount} subagent${runningBgCount === 1 ? "" : "s"} running`
+    : undefined;
   const status = explicitStatus(state);
 
-  const detail = [usage, queue, status].filter(Boolean).join(" · ");
+  const detail = [usage, queue, subagentBadge, status].filter(Boolean).join(" · ");
   const lines = [truncateVisible(primary, available)];
   if (!detail) return [...lines, abbreviatePath(workspace, available)];
 
@@ -42,7 +46,7 @@ export function footerLines(state: TuiState, width: number): string[] {
 
 /** Compact completed-turn summary shown above the composer. */
 export function workSummaryLine(state: TuiState): string | undefined {
-  if (isSessionBusy(state)) return undefined;
+  if (isSessionBusy(state) || hasActiveBackgroundTasks(state)) return undefined;
   const elapsed = state.session.elapsedMs;
   if (elapsed === undefined || elapsed < 0) return undefined;
   const label = state.session.taskState === "failed"
