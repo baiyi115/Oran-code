@@ -14,6 +14,17 @@ export interface McpStatusSnapshot {
   readonly toolCount: number;
 }
 
+export interface BackgroundTaskSnapshot {
+  readonly id: string;
+  readonly name: string;
+  readonly status: string;
+  readonly startedAt: string;
+  readonly endedAt?: string | undefined;
+  readonly definitionName?: string | undefined;
+  readonly error?: string | undefined;
+  readonly output?: string | undefined;
+}
+
 /**
  * 命令路由与 TerminalSession 之间的端口。session 保留全部执行能力
  * (任务、会话、模型、MCP、快照),router 只做解析、分发与纯本地输出。
@@ -50,6 +61,7 @@ export interface SessionCommandContext {
   clearLongTermMemory(): void;
   skillList(): readonly { name: string; description: string }[];
   modelLabel(): string;
+  backgroundTasks(): Promise<readonly BackgroundTaskSnapshot[]> | readonly BackgroundTaskSnapshot[];
 }
 
 /**
@@ -231,6 +243,27 @@ export class SessionCommandRouter {
         } catch {
           return "Git worktree information is unavailable for this workspace.";
         }
+      }
+      case "/tasks":
+      case "/subagents": {
+        const tasks = await this.ctx.backgroundTasks();
+        if (!tasks.length) return "No background subagent tasks found.";
+        const lines: string[] = ["Background Subagent Tasks:"];
+        for (const task of tasks) {
+          const role = task.definitionName ? ` [${task.definitionName}]` : "";
+          const start = Date.parse(task.startedAt);
+          const end = task.endedAt ? Date.parse(task.endedAt) : Date.now();
+          const duration = Number.isFinite(start) ? ` (${((end - start) / 1000).toFixed(1)}s)` : "";
+          const icon = task.status === "completed" ? "✓" : task.status === "running" ? "⠋" : task.status === "queued" ? "⏳" : "✗";
+          lines.push(`  ${icon} ${task.id}${role}: ${task.name} — ${task.status}${duration}`);
+          if (task.error) {
+            lines.push(`    Error: ${task.error.slice(0, 160)}`);
+          } else if (task.output && (task.status === "completed" || task.status === "failed")) {
+            const firstLine = task.output.trim().split("\n")[0] ?? "";
+            if (firstLine) lines.push(`    Result: ${firstLine.slice(0, 140)}`);
+          }
+        }
+        return lines.join("\n");
       }
       case "/mcp": {
         const mcp = await this.ctx.mcpStatus();

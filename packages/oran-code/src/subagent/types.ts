@@ -9,7 +9,7 @@ import type {
 
 export type AgentDefinitionScope = "builtin" | "user" | "project";
 export type AgentIsolationMode = "shared-workspace" | "worktree";
-export type StructuredSubagentStatus = "running" | "completed" | "failed" | "cancelled" | "timed_out";
+export type StructuredSubagentStatus = "queued" | "running" | "completed" | "failed" | "cancelled" | "timed_out";
 export type PersistedSubagentStatus = StructuredSubagentStatus | "interrupted";
 
 export interface AgentDefinition {
@@ -100,7 +100,7 @@ export interface SubagentRunResult {
   readonly taskId: string;
   readonly name: string;
   readonly origin: SubagentOrigin;
-  readonly status: Exclude<StructuredSubagentStatus, "running" | "timed_out">;
+  readonly status: Exclude<StructuredSubagentStatus, "queued" | "running" | "timed_out">;
   readonly output: string;
   readonly error?: string;
   readonly usage: Readonly<Record<string, number>>;
@@ -129,7 +129,7 @@ export interface BackgroundAgentTask {
   readonly id: string;
   readonly name: string;
   readonly origin: SubagentOrigin;
-  readonly startedAt: string;
+  startedAt: string;
   endedAt?: string;
   status: PersistedSubagentStatus;
   output?: string;

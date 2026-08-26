@@ -222,6 +222,16 @@ describe("TuiTranscriptRenderer", () => {
         startedAt: new Date(1700000000000).toISOString(),
       };
       expect(formatBackgroundTasksIndicator([completedTask], fixedNow)).toBeUndefined();
+
+      const queuedTask: TuiBackgroundTask = {
+        id: "agent-4",
+        name: "reviewer",
+        definitionName: "reviewer",
+        status: "queued",
+        startedAt: new Date(1700000005000).toISOString(),
+      };
+      expect(formatBackgroundTasksIndicator([task1, queuedTask], fixedNow)).toBe("[1 subagents running (+1 queued)] explore (10s)");
+      expect(formatBackgroundTasksIndicator([queuedTask], fixedNow)).toBe("[1 subagent queued: reviewer]");
     });
 
     it("renders workingIndicatorLine when session is idle but background tasks are running", () => {

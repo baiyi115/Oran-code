@@ -299,6 +299,19 @@ export class TerminalSession {
       },
       skillList: () => this.skillLoader.list(),
       modelLabel: () => this.modelLabel(),
+      backgroundTasks: async () => {
+        const runtime = await this.ensureAgentRuntime();
+        return runtime.backgroundAgents.list().map((task) => ({
+          id: task.id,
+          name: task.name,
+          status: task.status,
+          startedAt: task.startedAt,
+          endedAt: task.endedAt,
+          definitionName: task.definitionName,
+          error: task.error,
+          output: task.output,
+        }));
+      },
     });
     this.skillLoader = new SkillLoader(this.workspace);
     this.configuredActiveSkills = options.stablePromptModules?.activeSkills;

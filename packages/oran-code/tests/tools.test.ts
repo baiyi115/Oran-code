@@ -2,7 +2,7 @@ import { mkdtemp, readFile, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, expect, it } from "vitest";
-import { registerBuiltinTools, ToolRegistry } from "../src/tools.js";
+import { atomicWriteFile, formatPreservingTail, registerBuiltinTools, ToolRegistry } from "../src/tools.js";
 
 describe("builtin tools", () => {
   it("keeps file writes inside the workspace", async () => {
@@ -126,5 +126,30 @@ describe("builtin tools", () => {
     } finally {
       await rm(workspace, { recursive: true, force: true });
     }
+  });
+
+  it("atomicWriteFile writes and overwrites files reliably", async () => {
+    const workspace = await mkdtemp(join(tmpdir(), "liteagent-atomic-"));
+    try {
+      const targetFile = join(workspace, "nested", "file.txt");
+      await atomicWriteFile(targetFile, "first version");
+      await expect(readFile(targetFile, "utf8")).resolves.toBe("first version");
+      await atomicWriteFile(targetFile, "second version");
+      await expect(readFile(targetFile, "utf8")).resolves.toBe("second version");
+    } finally {
+      await rm(workspace, { recursive: true, force: true });
+    }
+  });
+
+  it("formatPreservingTail preserves head and tail on oversized output", () => {
+    const shortText = "short output";
+    expect(formatPreservingTail(shortText, 100)).toBe(shortText);
+
+    const longText = `HEADER_START_${"a".repeat(500)}_HEADER_END_MIDDLE_${"b".repeat(1000)}_MIDDLE_END_TAIL_START_${"c".repeat(500)}_TAIL_END`;
+    const truncated = formatPreservingTail(longText, 200, 50);
+    expect(truncated.length).toBeLessThanOrEqual(300);
+    expect(truncated).toContain("HEADER_START");
+    expect(truncated).toContain("TAIL_END");
+    expect(truncated).toContain("truncated");
   });
 });

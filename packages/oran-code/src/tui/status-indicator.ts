@@ -11,7 +11,7 @@ export function spinnerFrame(tick: number): string {
 }
 
 export function hasActiveBackgroundTasks(state: TuiState): boolean {
-  return (state.session.backgroundTasks ?? []).some((task) => task.status === "running");
+  return (state.session.backgroundTasks ?? []).some((task) => task.status === "running" || task.status === "queued");
 }
 
 export function isSessionBusy(state: TuiState): boolean {
@@ -34,9 +34,10 @@ export function isSessionBusy(state: TuiState): boolean {
  */
 export function formatBackgroundTasksIndicator(tasks: readonly TuiBackgroundTask[], now = Date.now()): string | undefined {
   const running = tasks.filter((task) => task.status === "running");
-  if (running.length === 0) return undefined;
+  const queued = tasks.filter((task) => task.status === "queued");
+  if (running.length === 0 && queued.length === 0) return undefined;
 
-  if (running.length === 1) {
+  if (running.length === 1 && queued.length === 0) {
     const task = running[0]!;
     const name = task.definitionName || (task.origin?.kind === "definition" ? task.origin.name : undefined) || task.name || "agent";
     const description = task.name && task.name !== name ? task.name : undefined;
@@ -48,6 +49,12 @@ export function formatBackgroundTasksIndicator(tasks: readonly TuiBackgroundTask
     return parts.join(" ");
   }
 
+  if (running.length === 0 && queued.length > 0) {
+    return queued.length === 1
+      ? `[1 subagent queued: ${queued[0]!.definitionName || queued[0]!.name || "agent"}]`
+      : `[${queued.length} subagents queued]`;
+  }
+
   const taskSummaries = running.map((task) => {
     const name = task.definitionName || (task.origin?.kind === "definition" ? task.origin.name : undefined) || task.name || "agent";
     const startTime = Date.parse(task.startedAt);
@@ -55,7 +62,8 @@ export function formatBackgroundTasksIndicator(tasks: readonly TuiBackgroundTask
     return elapsed ? `${name} (${elapsed})` : name;
   });
 
-  return `[${running.length} subagents running] ${taskSummaries.join(", ")}`;
+  const queuedSuffix = queued.length > 0 ? ` (+${queued.length} queued)` : "";
+  return `[${running.length} subagents running${queuedSuffix}] ${taskSummaries.join(", ")}`;
 }
 
 /**

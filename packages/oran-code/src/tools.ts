@@ -1,5 +1,6 @@
 import { exec, execFile } from "node:child_process";
-import { mkdir, readdir, readFile, stat, writeFile } from "node:fs/promises";
+import { copyFile, mkdir, readdir, readFile, rename, stat, unlink, writeFile } from "node:fs/promises";
+import { randomUUID } from "node:crypto";
 import { promisify } from "node:util";
 import { dirname, isAbsolute, relative, resolve, sep } from "node:path";
 import type { TaskPlanStep, ToolCall, ToolDefinition, ToolExecutionContext, ToolResult } from "./types.js";
@@ -364,7 +365,7 @@ export function registerBuiltinTools(registry: ToolRegistry, workspace: string):
             ? normalizedContent.split(normalizedOld).join(normalizedNew)
             : normalizedContent.replace(normalizedOld, normalizedNew);
           const next = isCrlf ? nextNormalized.replace(/\n/g, "\r\n") : nextNormalized;
-          await writeFile(path, next, "utf8");
+          await atomicWriteFile(path, next);
           const replaced = replaceAll ? normalizedMatches : 1;
           return {
             ok: true,
@@ -393,7 +394,7 @@ export function registerBuiltinTools(registry: ToolRegistry, workspace: string):
           };
         }
         const next = replaceAll ? content.split(oldString).join(newString) : content.replace(oldString, newString);
-        await writeFile(path, next, "utf8");
+        await atomicWriteFile(path, next);
         const replaced = replaceAll ? matches : 1;
         return {
           ok: true,
@@ -445,7 +446,7 @@ export function registerBuiltinTools(registry: ToolRegistry, workspace: string):
             summary: "patch failed",
           };
         }
-        await writeFile(path, applied.content, "utf8");
+        await atomicWriteFile(path, applied.content);
         return {
           ok: true,
           output: `applied ${applied.hunksApplied} hunk(s) to ${displayPath(workspace, path)} (+${applied.linesAdded}/-${applied.linesRemoved})`,
@@ -633,15 +634,14 @@ export function registerBuiltinTools(registry: ToolRegistry, workspace: string):
       const timeout = Math.max(1, numberArg(call.arguments.timeout, 60)) * 1000;
       try {
         const cwd = await resolveCommandCwd(activeRoot(context), call.arguments.cwd);
-        const result = await execAsync(String(call.arguments.command), {
+        const result = await executeCommandWithProcessTree(String(call.arguments.command), {
           cwd,
           timeout,
-          maxBuffer: 2 * 1024 * 1024,
-          windowsHide: true,
           ...(context?.signal ? { signal: context.signal } : {}),
         });
         if (context?.signal?.aborted) throw new DOMException("operation aborted", "AbortError");
-        return { ok: true, output: `${result.stdout}${result.stderr}`, summary: "exit 0" };
+        const output = formatPreservingTail(`${result.stdout}${result.stderr}`);
+        return { ok: true, output, summary: "exit 0" };
       } catch (error) {
         if (context?.signal?.aborted || isAbortError(error)) {
           return { ok: false, output: "", error: "command cancelled", summary: "cancelled", metadata: { cancelled: true } };
@@ -653,6 +653,7 @@ export function registerBuiltinTools(registry: ToolRegistry, workspace: string):
         let output = `${item.stdout ?? ""}${item.stderr ?? ""}`;
         const diagnostic = getWindowsCommandDiagnostic(item.cmd, output);
         if (diagnostic) output += diagnostic;
+        output = formatPreservingTail(output);
         const result: ToolResult = {
           ok: false,
           output,
@@ -741,8 +742,7 @@ async function writeTextFile(
 ): Promise<ToolResult> {
   try {
     const path = target(rawPath);
-    await mkdir(resolve(path, ".."), { recursive: true });
-    await writeFile(path, String(rawContent ?? ""), "utf8");
+    await atomicWriteFile(path, String(rawContent ?? ""));
     return {
       ok: true,
       output: `wrote ${displayPath(root, path)}`,
@@ -776,8 +776,7 @@ async function writePlanFile(root: string, rawPath: unknown, rawContent: unknown
       throw new Error("write_plan path escapes .oran/plans through a symbolic link");
     }
 
-    await mkdir(dirname(candidate), { recursive: true });
-    await writeFile(candidate, String(rawContent ?? ""), "utf8");
+    await atomicWriteFile(candidate, String(rawContent ?? ""));
     return {
       ok: true,
       output: `wrote ${displayPath(root, candidate)}`,
@@ -786,6 +785,126 @@ async function writePlanFile(root: string, rawPath: unknown, rawContent: unknown
   } catch (error) {
     return failedResult(error, "write_plan failed");
   }
+}
+
+export async function atomicWriteFile(path: string, content: string): Promise<void> {
+  const dir = dirname(path);
+  await mkdir(dir, { recursive: true });
+  const tempPath = `${path}.tmp.${randomUUID().slice(0, 8)}`;
+  try {
+    await writeFile(tempPath, content, "utf8");
+    try {
+      await rename(tempPath, path);
+    } catch (err: unknown) {
+      const code = (err as { code?: string })?.code;
+      if (code === "EXDEV" || code === "EPERM" || code === "EACCES" || code === "EEXIST") {
+        await copyFile(tempPath, path);
+        await unlink(tempPath).catch(() => {});
+      } else {
+        throw err;
+      }
+    }
+  } catch (error) {
+    await unlink(tempPath).catch(() => {});
+    throw error;
+  }
+}
+
+export function killProcessTree(pid: number | undefined): void {
+  if (!pid || pid <= 0) return;
+  if (process.platform === "win32") {
+    try {
+      execFile("taskkill", ["/pid", String(pid), "/T", "/F"], { windowsHide: true }, () => {});
+    } catch {
+      // ignore
+    }
+  } else {
+    try {
+      process.kill(-pid, "SIGKILL");
+    } catch {
+      try {
+        process.kill(pid, "SIGKILL");
+      } catch {
+        // ignore
+      }
+    }
+  }
+}
+
+export function formatPreservingTail(output: string, maxChars = 32_000, headChars = 8_000): string {
+  if (!output || output.length <= maxChars) return output;
+  const separator = `\n\n... [truncated ${output.length - maxChars} characters, showing head and tail] ...\n\n`;
+  const available = Math.max(0, maxChars - separator.length);
+  const headLen = Math.min(headChars, Math.floor(available / 3));
+  const tailLen = available - headLen;
+  return `${output.slice(0, headLen)}${separator}${output.slice(output.length - tailLen)}`;
+}
+
+function executeCommandWithProcessTree(
+  command: string,
+  options: { cwd: string; timeout: number; signal?: AbortSignal | undefined },
+): Promise<{ stdout: string; stderr: string }> {
+  return new Promise((resolve, reject) => {
+    let timer: NodeJS.Timeout | undefined;
+    let timedOut = false;
+    let childPid: number | undefined;
+
+    const child = exec(
+      command,
+      {
+        cwd: options.cwd,
+        maxBuffer: 2 * 1024 * 1024,
+        windowsHide: true,
+      },
+      (error, stdout, stderr) => {
+        if (timer) clearTimeout(timer);
+        if (options.signal) {
+          options.signal.removeEventListener("abort", onAbort);
+        }
+        if (timedOut) {
+          const timeoutErr = Object.assign(new Error("command timed out"), {
+            stdout: stdout ?? "",
+            stderr: stderr ?? "",
+            killed: true,
+            cmd: command,
+          });
+          return reject(timeoutErr);
+        }
+        if (error) {
+          const runErr = Object.assign(error, {
+            stdout: stdout ?? "",
+            stderr: stderr ?? "",
+            cmd: command,
+          });
+          return reject(runErr);
+        }
+        resolve({ stdout: stdout ?? "", stderr: stderr ?? "" });
+      },
+    );
+
+    childPid = child.pid;
+
+    const onAbort = () => {
+      killProcessTree(childPid);
+      reject(new DOMException("operation aborted", "AbortError"));
+    };
+
+    if (options.signal) {
+      if (options.signal.aborted) {
+        killProcessTree(childPid);
+        return reject(new DOMException("operation aborted", "AbortError"));
+      }
+      options.signal.addEventListener("abort", onAbort, { once: true });
+    }
+
+    if (options.timeout > 0) {
+      timer = setTimeout(() => {
+        timedOut = true;
+        killProcessTree(childPid);
+      }, options.timeout);
+      timer.unref?.();
+    }
+  });
 }
 
 function resolveWorkspacePath(root: string, raw: unknown): string {

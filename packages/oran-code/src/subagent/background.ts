@@ -4,15 +4,28 @@ import type { SubagentRunner } from "./runner.js";
 import type { AgentStateStore, PersistedBackgroundTask } from "./state-store.js";
 import type { AgentDefinition, BackgroundAgentTask, SubagentRunOptions, SubagentRunResult } from "./types.js";
 
+interface QueuedTask {
+  readonly task: BackgroundAgentTask;
+  readonly runner: SubagentRunner;
+  readonly options: SubagentRunOptions & { readonly retryOf?: string };
+  readonly resolve: (result: SubagentRunResult) => void;
+  readonly reject: (error: unknown) => void;
+}
+
 export class BackgroundAgentTaskManager {
   private readonly tasks = new Map<string, BackgroundAgentTask>();
+  private readonly queue: QueuedTask[] = [];
+  private readonly maxConcurrent: number;
   private nextId = 1;
 
   constructor(
     private readonly stateStore?: AgentStateStore,
     private readonly onTerminal?: () => void | Promise<void>,
     private readonly onChange?: () => void,
-  ) {}
+    options?: { readonly maxConcurrent?: number },
+  ) {
+    this.maxConcurrent = Math.max(1, options?.maxConcurrent ?? 4);
+  }
 
   private notifyChange(): void {
     try {
@@ -22,11 +35,19 @@ export class BackgroundAgentTaskManager {
     }
   }
 
+  private runningCount(): number {
+    let count = 0;
+    for (const task of this.tasks.values()) {
+      if (task.status === "running") count += 1;
+    }
+    return count;
+  }
+
   async restore(): Promise<void> {
     if (!this.stateStore) return;
     const state = await this.stateStore.load();
     for (const item of state.background) {
-      const status = item.status === "running" ? "interrupted" : item.status;
+      const status = item.status === "running" || item.status === "queued" ? "interrupted" : item.status;
       this.tasks.set(item.id, { ...structuredClone(item), status });
     }
     await this.persist();
@@ -36,26 +57,22 @@ export class BackgroundAgentTaskManager {
   start(runner: SubagentRunner, options: SubagentRunOptions & { readonly retryOf?: string }): BackgroundAgentTask {
     const id = options.taskId ?? `agent-${this.nextId++}-${randomUUID().slice(0, 8)}`;
     const abortController = options.abortController ?? new AbortController();
-    const promise = Promise.resolve().then(() => runner.run({
-      ...options,
-      taskId: id,
-      abortController,
-      background: true,
-      worktreeLeaseCallback: async (lease) => {
-        const current = this.tasks.get(id);
-        if (!current) return;
-        if (lease) current.worktreeLease = lease;
-        else delete current.worktreeLease;
-        await this.persist();
-      },
-    }));
+
+    let resolvePromise!: (result: SubagentRunResult) => void;
+    let rejectPromise!: (error: unknown) => void;
+    const promise = new Promise<SubagentRunResult>((resolve, reject) => {
+      resolvePromise = resolve;
+      rejectPromise = reject;
+    });
+
+    const isRunning = this.runningCount() < this.maxConcurrent;
     const task: BackgroundAgentTask = {
       id,
       name: options.description,
       origin: options.origin,
       prompt: options.prompt,
       startedAt: new Date().toISOString(),
-      status: "running",
+      status: isRunning ? "running" : "queued",
       usage: {},
       notified: false,
       ...(options.definition ? { definitionName: options.definition.name } : {}),
@@ -66,15 +83,81 @@ export class BackgroundAgentTaskManager {
       promise,
     };
     this.tasks.set(id, task);
+
+    if (isRunning) {
+      this.dispatch(task, runner, options, resolvePromise, rejectPromise);
+    } else {
+      this.queue.push({ task, runner, options, resolve: resolvePromise, reject: rejectPromise });
+    }
+
     this.schedulePersist();
     this.notifyChange();
-    void promise.then(async (result) => {
-      this.finish(task, result);
-      await this.persist();
-      this.notifyChange();
-      await this.onTerminal?.();
-    }).catch(() => undefined);
     return task;
+  }
+
+  private dispatch(
+    task: BackgroundAgentTask,
+    runner: SubagentRunner,
+    options: SubagentRunOptions & { readonly retryOf?: string },
+    resolvePromise: (result: SubagentRunResult) => void,
+    _rejectPromise: (error: unknown) => void,
+  ): void {
+    const runPromise = runner.run({
+      ...options,
+      taskId: task.id,
+      ...(task.abortController ? { abortController: task.abortController } : {}),
+      background: true,
+      worktreeLeaseCallback: async (lease) => {
+        const current = this.tasks.get(task.id);
+        if (!current) return;
+        if (lease) current.worktreeLease = lease;
+        else delete current.worktreeLease;
+        await this.persist();
+      },
+    });
+
+    void runPromise
+      .then(async (result) => {
+        this.finish(task, result);
+        await this.persist();
+        this.notifyChange();
+        this.drainQueue();
+        await this.onTerminal?.();
+        resolvePromise(result);
+      })
+      .catch((error) => {
+        const errorResult: SubagentRunResult = {
+          taskId: task.id,
+          name: task.name,
+          origin: task.origin,
+          status: "failed",
+          output: "",
+          error: error instanceof Error ? error.message : String(error),
+          usage: {},
+          startedAt: task.startedAt,
+          endedAt: new Date().toISOString(),
+          conversation: [],
+          workspace: "",
+        };
+        this.finish(task, errorResult);
+        void this.persist();
+        this.notifyChange();
+        this.drainQueue();
+        resolvePromise(errorResult);
+      });
+  }
+
+  private drainQueue(): void {
+    while (this.runningCount() < this.maxConcurrent && this.queue.length > 0) {
+      const next = this.queue.shift();
+      if (!next) break;
+      if (next.task.status !== "queued") continue;
+      next.task.status = "running";
+      next.task.startedAt = new Date().toISOString();
+      this.schedulePersist();
+      this.notifyChange();
+      this.dispatch(next.task, next.runner, next.options, next.resolve, next.reject);
+    }
   }
 
   retry(
@@ -83,7 +166,7 @@ export class BackgroundAgentTaskManager {
     options: { readonly definition?: AgentDefinition; readonly model?: ModelConfig } = {},
   ): BackgroundAgentTask | undefined {
     const previous = this.tasks.get(id);
-    if (!previous || previous.status === "running") return undefined;
+    if (!previous || previous.status === "running" || previous.status === "queued") return undefined;
     return this.start(runner, {
       description: previous.name,
       prompt: previous.prompt,
@@ -105,22 +188,85 @@ export class BackgroundAgentTaskManager {
 
   cancel(id: string): boolean {
     const task = this.tasks.get(id);
-    if (!task || task.status !== "running" || !task.abortController) return false;
+    if (!task || (task.status !== "running" && task.status !== "queued") || !task.abortController) return false;
+    if (task.status === "queued") {
+      const index = this.queue.findIndex((item) => item.task.id === id);
+      if (index >= 0) {
+        const [removed] = this.queue.splice(index, 1);
+        removed?.resolve({
+          taskId: task.id,
+          name: task.name,
+          origin: task.origin,
+          status: "cancelled",
+          output: "Task cancelled while queued.",
+          usage: {},
+          startedAt: task.startedAt,
+          endedAt: new Date().toISOString(),
+          conversation: [],
+          workspace: "",
+        });
+      }
+      task.status = "cancelled";
+      task.endedAt = new Date().toISOString();
+      task.output = "Task cancelled while queued.";
+      task.abortController.abort();
+      this.schedulePersist();
+      this.notifyChange();
+      return true;
+    }
     task.abortController.abort();
     this.notifyChange();
     return true;
   }
 
   cancelAll(): void {
+    for (const item of [...this.queue]) {
+      item.task.status = "cancelled";
+      item.task.endedAt = new Date().toISOString();
+      item.task.output = "Task cancelled while queued.";
+      item.task.abortController?.abort();
+      item.resolve({
+        taskId: item.task.id,
+        name: item.task.name,
+        origin: item.task.origin,
+        status: "cancelled",
+        output: "Task cancelled while queued.",
+        usage: {},
+        startedAt: item.task.startedAt,
+        endedAt: item.task.endedAt,
+        conversation: [],
+        workspace: "",
+      });
+    }
+    this.queue.length = 0;
     for (const task of this.tasks.values()) {
       if (task.status === "running") task.abortController?.abort();
     }
+    this.schedulePersist();
     this.notifyChange();
   }
 
   interruptAll(): void {
+    for (const item of [...this.queue]) {
+      item.task.status = "interrupted";
+      item.task.endedAt = new Date().toISOString();
+      item.task.abortController?.abort();
+      item.resolve({
+        taskId: item.task.id,
+        name: item.task.name,
+        origin: item.task.origin,
+        status: "cancelled",
+        output: "Task interrupted.",
+        usage: {},
+        startedAt: item.task.startedAt,
+        endedAt: item.task.endedAt,
+        conversation: [],
+        workspace: "",
+      });
+    }
+    this.queue.length = 0;
     for (const task of this.tasks.values()) {
-      if (task.status !== "running") continue;
+      if (task.status !== "running" && task.status !== "queued") continue;
       task.status = "interrupted";
       task.endedAt = new Date().toISOString();
       task.abortController?.abort();
@@ -136,7 +282,7 @@ export class BackgroundAgentTaskManager {
   drainNotifications(): readonly BackgroundAgentTask[] {
     const notifications: BackgroundAgentTask[] = [];
     for (const task of this.tasks.values()) {
-      if (task.status === "running" || task.notified) continue;
+      if (task.status === "running" || task.status === "queued" || task.notified) continue;
       task.notified = true;
       notifications.push(task);
     }

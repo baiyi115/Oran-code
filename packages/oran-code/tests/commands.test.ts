@@ -34,7 +34,7 @@ describe("terminal commands", () => {
   it("keeps provider/model formatting and the command list deterministic", () => {
     expect(formatModelReference({ provider: "openai", model: "gpt-4.1-mini" })).toBe("openai/gpt-4.1-mini");
     const help = commandHelp();
-    for (const command of ["/new", "/model", "/session", "/clear", "/rename", "/help", "/exit", "/skills"]) {
+    for (const command of ["/new", "/model", "/session", "/clear", "/rename", "/help", "/exit", "/skills", "/tasks"]) {
       expect(help).toContain(command);
     }
     for (const command of ["/reload", "/workspace", "/settings", "/cancel", "/thinking"]) {
@@ -42,6 +42,7 @@ describe("terminal commands", () => {
       expect(completeInput(command, [])[0]).toEqual([]);
     }
     expect(completeInput("/quit", [])[0]).toEqual(["/exit"]);
+    expect(completeInput("/subagents", [])[0]).toEqual(["/tasks"]);
     expect(help).not.toContain("/review");
     expect(help.split("\n").some((line) => line.trimStart().startsWith("/mode "))).toBe(false);
     expect(completeInput("/model", [])[0]).toEqual(["/model"]);

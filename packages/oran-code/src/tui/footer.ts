@@ -23,9 +23,12 @@ export function footerLines(state: TuiState, width: number): string[] {
   const usage = usageLabel(state);
   const queue = state.session.followUpCount > 0 ? `follow-ups: ${state.session.followUpCount}` : undefined;
   const runningBgCount = (state.session.backgroundTasks ?? []).filter((t) => t.status === "running").length;
+  const queuedBgCount = (state.session.backgroundTasks ?? []).filter((t) => t.status === "queued").length;
   const subagentBadge = runningBgCount > 0
-    ? `${runningBgCount} subagent${runningBgCount === 1 ? "" : "s"} running`
-    : undefined;
+    ? `${runningBgCount} subagent${runningBgCount === 1 ? "" : "s"} running${queuedBgCount > 0 ? ` (+${queuedBgCount} queued)` : ""}`
+    : queuedBgCount > 0
+      ? `${queuedBgCount} subagent${queuedBgCount === 1 ? "" : "s"} queued`
+      : undefined;
   const status = explicitStatus(state);
 
   const detail = [usage, queue, subagentBadge, status].filter(Boolean).join(" · ");

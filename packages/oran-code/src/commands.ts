@@ -32,6 +32,7 @@ export const DEFAULT_COMMANDS: readonly SlashCommand[] = [
   { name: "/session", description: "list or resume a session", usage: "/session [ID]", argumentHint: "ID", kind: "ui", action: "session" },
   { name: "/skills", description: "show available skills", kind: "local", action: "skills" },
   { name: "/status", description: "show current agent status", kind: "local" },
+  { name: "/tasks", aliases: ["/subagents"], description: "list background subagent tasks", kind: "local" },
   { name: "/worktree", description: "show workspace status", kind: "local" },
 ];
 
