@@ -138,6 +138,8 @@ export type ModelStreamChunk =
 
 export interface ProviderRequestOptions {
   signal?: AbortSignal;
+  /** Maximum time to wait for the next SSE chunk before treating the stream as stalled. */
+  idleTimeoutMs?: number;
 }
 
 export interface ModelProvider {

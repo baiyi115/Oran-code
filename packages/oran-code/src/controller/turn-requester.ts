@@ -17,11 +17,13 @@ import {
   fingerprintRequest,
   fingerprintResponse,
   isRetryableModelStatus,
+  modelRetryDelayMs,
   normalizeCallId,
   parseCompletedToolCall,
   sameToolCall,
   summarizeMessageTail,
   summarizeToolCalls,
+  sleepWithSignal,
   usageAnchorMessages,
   withRuntimeReminders,
 } from "../controller-utils.js";
@@ -286,6 +288,7 @@ export class TurnRequester {
           nextAttempt: attempt + 1,
           message,
         });
+        const delayMs = modelRetryDelayMs(attempt);
         this.ports.debugLogger(JSON.stringify({
           event: "model_retry",
           taskId: this.ports.getActiveTaskId(),
@@ -294,8 +297,10 @@ export class TurnRequester {
           attempt,
           nextAttempt: attempt + 1,
           message,
+          delayMs,
         }));
-        this.ports.logger(`Retrying ${source} response (${attempt + 1}/${this.ports.config.loop.maxRetries}): ${message}`);
+        this.ports.logger(`Retrying ${source} response (${attempt + 1}/${this.ports.config.loop.maxRetries}) in ${delayMs}ms: ${message}`);
+        await sleepWithSignal(delayMs, this.ports.getAbortSignal());
       }
     }
     throw lastError instanceof Error ? lastError : new Error(String(lastError));

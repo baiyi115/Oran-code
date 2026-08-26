@@ -1,6 +1,8 @@
 import type { Message, ModelConfig, ModelProvider, ModelResponse, ModelStreamChunk, ProviderRequestOptions, ToolCall } from "./types.js";
 import { CLIENT_ID, CLIENT_USER_AGENT, PRODUCT_VERSION } from "./paths.js";
 
+const DEFAULT_SSE_IDLE_TIMEOUT_MS = 60_000;
+
 export class OpenAICompatibleProvider implements ModelProvider {
   private readonly endpoint: string;
 
@@ -24,34 +26,43 @@ export class OpenAICompatibleProvider implements ModelProvider {
   }
 
   async *streamResponse(messages: Message[], tools?: Record<string, unknown>[], options?: ProviderRequestOptions): AsyncGenerator<ModelStreamChunk> {
-    const response = await fetch(this.endpoint, {
-      method: "POST",
-      headers: this.headers(),
-      body: JSON.stringify(this.payload(messages, tools, true)),
-      ...(options?.signal ? { signal: options.signal } : {}),
-    });
-    if (!response.ok) throw new ModelRequestError(response.status, await boundedError(response));
-    const contentType = response.headers.get("content-type") ?? "";
-    if (!contentType.includes("text/event-stream") || !response.body) {
-      yield* modelResponseChunks(parseCompletion(await response.json() as Record<string, unknown>, false));
-      return;
+    const request = createStreamingRequest(options?.signal);
+    try {
+      const response = await fetch(this.endpoint, {
+        method: "POST",
+        headers: this.headers(),
+        body: JSON.stringify(this.payload(messages, tools, true)),
+        signal: request.signal,
+      });
+      if (!response.ok) throw new ModelRequestError(response.status, await boundedError(response));
+      const contentType = response.headers.get("content-type") ?? "";
+      if (!contentType.includes("text/event-stream") || !response.body) {
+        yield* modelResponseChunks(parseCompletion(await response.json() as Record<string, unknown>, false));
+        return;
+      }
+      const state: OpenAiStreamState = {
+        calls: new Map<number, { id?: string; name: string; arguments: string }>(),
+        emittedCalls: false,
+      };
+      for await (const event of readSseEvents(
+        response.body as AsyncIterable<Uint8Array>,
+        options?.idleTimeoutMs,
+        () => request.abort(),
+      )) {
+        for (const update of parseOpenAiStreamEvent(event, state)) yield update;
+      }
+      // 部分兼容实现不返回 finish_reason=tool_calls(或根本没有 finish_reason);
+      // 流结束时若有累积未发射的工具调用,统一补发,避免静默丢弃。
+      if (!state.emittedCalls && state.calls.size) {
+        yield* openAiToolCallChunks(state);
+      }
+      if (state.finishReason === undefined) {
+        throw new Error("OpenAI-compatible stream ended without a finish_reason");
+      }
+      yield { type: "response_complete", streamed: true, finishReason: state.finishReason };
+    } finally {
+      request.dispose();
     }
-    const state: OpenAiStreamState = {
-      calls: new Map<number, { id?: string; name: string; arguments: string }>(),
-      emittedCalls: false,
-    };
-    for await (const event of readSseEvents(response.body as AsyncIterable<Uint8Array>)) {
-      for (const update of parseOpenAiStreamEvent(event, state)) yield update;
-    }
-    // 部分兼容实现不返回 finish_reason=tool_calls(或根本没有 finish_reason);
-    // 流结束时若有累积未发射的工具调用,统一补发,避免静默丢弃。
-    if (!state.emittedCalls && state.calls.size) {
-      yield* openAiToolCallChunks(state);
-    }
-    if (state.finishReason === undefined) {
-      throw new Error("OpenAI-compatible stream ended without a finish_reason");
-    }
-    yield { type: "response_complete", streamed: true, finishReason: state.finishReason };
   }
 
   private headers(): Record<string, string> {
@@ -151,19 +162,86 @@ function parseOpenAiStreamEvent(event: string, state: OpenAiStreamState): ModelS
   return updates;
 }
 
-async function* readSseEvents(stream: AsyncIterable<Uint8Array>): AsyncGenerator<string> {
+export class SseIdleTimeoutError extends Error {
+  constructor(timeoutMs: number) {
+    super(`model stream received no data for ${timeoutMs}ms`);
+    this.name = "SseIdleTimeoutError";
+  }
+}
+
+interface StreamingRequest {
+  readonly signal: AbortSignal;
+  abort(): void;
+  dispose(): void;
+}
+
+function createStreamingRequest(sourceSignal?: AbortSignal): StreamingRequest {
+  const controller = new AbortController();
+  const abort = () => controller.abort();
+  if (sourceSignal?.aborted) abort();
+  else sourceSignal?.addEventListener("abort", abort, { once: true });
+  return {
+    signal: controller.signal,
+    abort,
+    dispose: () => sourceSignal?.removeEventListener("abort", abort),
+  };
+}
+
+async function* readSseEvents(
+  stream: AsyncIterable<Uint8Array>,
+  idleTimeoutMs: number | undefined,
+  onIdle: () => void,
+): AsyncGenerator<string> {
+  const timeoutMs = Number.isFinite(idleTimeoutMs) && idleTimeoutMs! > 0
+    ? idleTimeoutMs!
+    : DEFAULT_SSE_IDLE_TIMEOUT_MS;
   const decoder = new TextDecoder();
   let buffer = "";
-  for await (const chunk of stream) {
-    buffer += decoder.decode(chunk, { stream: true });
-    const events = buffer.split(/\r\n\r\n|\n\n|\r\r/);
-    buffer = events.pop() ?? "";
-    for (const event of events) {
-      if (event.trim()) yield event;
+  const iterator = stream[Symbol.asyncIterator]();
+  try {
+    while (true) {
+      const next = await nextChunkWithIdleTimeout(iterator.next(), timeoutMs, onIdle);
+      if (next.done) break;
+      const chunk = next.value;
+      if (!chunk) continue;
+      buffer += decoder.decode(chunk, { stream: true });
+      const events = buffer.split(/\r\n\r\n|\n\n|\r\r/);
+      buffer = events.pop() ?? "";
+      for (const event of events) {
+        if (event.trim()) yield event;
+      }
+    }
+  } finally {
+    try {
+      await iterator.return?.();
+    } catch {
+      // Preserve the read or timeout error that caused the stream to close.
     }
   }
   buffer += decoder.decode();
   if (buffer.trim()) yield buffer;
+}
+
+async function nextChunkWithIdleTimeout<T>(
+  next: Promise<IteratorResult<T>>,
+  idleTimeoutMs: number,
+  onIdle: () => void,
+): Promise<IteratorResult<T>> {
+  if (!Number.isFinite(idleTimeoutMs) || idleTimeoutMs <= 0) return next;
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  try {
+    return await Promise.race([
+      next,
+      new Promise<never>((_resolve, reject) => {
+        timer = setTimeout(() => {
+          onIdle();
+          reject(new SseIdleTimeoutError(idleTimeoutMs));
+        }, idleTimeoutMs);
+      }),
+    ]);
+  } finally {
+    if (timer) clearTimeout(timer);
+  }
 }
 
 function parseSseJson(event: string): Record<string, unknown> | undefined {
@@ -506,26 +584,32 @@ export class AnthropicProvider implements ModelProvider {
   }
 
   async *streamResponse(messages: Message[], tools?: Record<string, unknown>[], options?: ProviderRequestOptions): AsyncGenerator<ModelStreamChunk> {
-    const response = await fetch(this.endpoint, {
-      method: "POST",
-      headers: this.headers(),
-      body: JSON.stringify(this.payload(messages, tools, true)),
-      ...(options?.signal ? { signal: options.signal } : {}),
-    });
-    if (!response.ok) throw new ModelRequestError(response.status, await boundedError(response));
-    const contentType = response.headers.get("content-type") ?? "";
-    if (!contentType.includes("text/event-stream") || !response.body) {
-      yield* modelResponseChunks(parseAnthropicMessage(await response.json() as Record<string, unknown>, false));
-      return;
-    }
+    const request = createStreamingRequest(options?.signal);
+    try {
+      const response = await fetch(this.endpoint, {
+        method: "POST",
+        headers: this.headers(),
+        body: JSON.stringify(this.payload(messages, tools, true)),
+        signal: request.signal,
+      });
+      if (!response.ok) throw new ModelRequestError(response.status, await boundedError(response));
+      const contentType = response.headers.get("content-type") ?? "";
+      if (!contentType.includes("text/event-stream") || !response.body) {
+        yield* modelResponseChunks(parseAnthropicMessage(await response.json() as Record<string, unknown>, false));
+        return;
+      }
 
-    const toolUses = new Map<number, { id?: string; name: string; arguments: string }>();
-    let finishReason: string | undefined;
-    let streamCompleted = false;
-    let currentBlockIndex: number | undefined;
-    let currentBlockType: string | undefined;
+      const toolUses = new Map<number, { id?: string; name: string; arguments: string }>();
+      let finishReason: string | undefined;
+      let streamCompleted = false;
+      let currentBlockIndex: number | undefined;
+      let currentBlockType: string | undefined;
 
-    for await (const event of readSseEvents(response.body as AsyncIterable<Uint8Array>)) {
+      for await (const event of readSseEvents(
+        response.body as AsyncIterable<Uint8Array>,
+        options?.idleTimeoutMs,
+        () => request.abort(),
+      )) {
         const parsed = parseSseJson(event);
         if (!parsed) continue;
         const type = typeof parsed.type === "string" ? parsed.type : "";
@@ -599,12 +683,14 @@ export class AnthropicProvider implements ModelProvider {
         if (type === "error") {
           throw new Error(streamErrorMessage(parsed.error ?? parsed, "anthropic stream error"));
         }
+      }
+      if (!streamCompleted) {
+        throw new Error("anthropic stream ended without a message_stop event");
+      }
+      yield { type: "response_complete", streamed: true, ...(finishReason !== undefined ? { finishReason } : {}) };
+    } finally {
+      request.dispose();
     }
-    if (!streamCompleted) {
-      throw new Error("anthropic stream ended without a message_stop event");
-    }
-    yield { type: "response_complete", streamed: true, ...(finishReason !== undefined ? { finishReason } : {}) };
-
   }
 
   private headers(): Record<string, string> {

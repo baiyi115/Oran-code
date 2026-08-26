@@ -55,6 +55,35 @@ export function isRetryableModelStatus(status: number): boolean {
   return status === 408 || status === 429 || status >= 500;
 }
 
+const RETRY_BACKOFF_BASE_MS = 500;
+const RETRY_BACKOFF_MAX_MS = 8_000;
+
+/** Exponential retry delay with a small jitter so concurrent clients do not retry in lockstep. */
+export function modelRetryDelayMs(attempt: number, random = Math.random): number {
+  const exponent = Math.max(0, Math.trunc(attempt));
+  const base = Math.min(RETRY_BACKOFF_BASE_MS * 2 ** exponent, RETRY_BACKOFF_MAX_MS);
+  return base + Math.floor(Math.max(0, Math.min(1, random())) * 250);
+}
+
+/** Wait without making cancellation wait for the backoff timer to expire. */
+export function sleepWithSignal(ms: number, signal?: AbortSignal): Promise<void> {
+  if (signal?.aborted) return Promise.reject(new DOMException("operation aborted", "AbortError"));
+  if (ms <= 0) return Promise.resolve();
+  return new Promise((resolve, reject) => {
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    const onAbort = () => {
+      if (timer) clearTimeout(timer);
+      signal?.removeEventListener("abort", onAbort);
+      reject(new DOMException("operation aborted", "AbortError"));
+    };
+    timer = setTimeout(() => {
+      signal?.removeEventListener("abort", onAbort);
+      resolve();
+    }, ms);
+    signal?.addEventListener("abort", onAbort, { once: true });
+  });
+}
+
 export function ensureCallId(call: ToolCall, contextManager: ContextManager): string {
   if (call.id) return call.id;
   const id = contextManager.claimToolCallId();

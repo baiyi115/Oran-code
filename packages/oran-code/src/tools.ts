@@ -37,6 +37,18 @@ const SEARCH_MAX_LINE_LENGTH = 4_096;
 /** 搜索总时间预算,超时返回部分结果。 */
 const SEARCH_TIME_BUDGET_MS = 2_000;
 
+const TOOL_SEARCH_ALIASES: Readonly<Record<string, readonly string[]>> = {
+  list_files: ["ls", "dir", "directory", "folder", "browse", "列出", "目录"],
+  read_file: ["cat", "view", "open", "read", "读取", "查看"],
+  write_file: ["create", "save", "touch", "write", "创建", "写入"],
+  write_plan: ["plan", "todo", "roadmap", "计划"],
+  edit_file: ["replace", "modify", "change", "edit", "修改", "替换"],
+  apply_patch: ["patch", "diff", "unified diff", "补丁"],
+  glob_files: ["find", "locate", "file search", "glob", "查找文件", "文件搜索"],
+  search_code: ["grep", "rg", "ripgrep", "search", "code search", "搜索代码", "文本搜索"],
+  run_command: ["shell", "bash", "sh", "cmd", "powershell", "exec", "terminal", "command", "终端", "命令"],
+};
+
 export class ToolRegistry {
   private readonly tools = new Map<string, ToolDefinition>();
   private readonly activated = new Set<string>();
@@ -694,10 +706,14 @@ function registerSearchTools(registry: ToolRegistry): void {
         return { ok: false, output: "", error: "query is required", summary: "invalid arguments" };
       }
       if (query.toLowerCase().startsWith("select:")) {
-        const name = query.slice("select:".length).trim();
+        const requestedName = query.slice("select:".length).trim();
+        const name = resolveDeferredToolName(registry, requestedName);
+        if (!name) {
+          return { ok: false, output: "", error: `tool not found or not discoverable: ${requestedName}`, summary: "tool not found" };
+        }
         const tool = registry.activate(name);
         if (!tool) {
-          return { ok: false, output: "", error: `tool not found or not discoverable: ${name}`, summary: "tool not found" };
+          return { ok: false, output: "", error: `tool not found or not discoverable: ${requestedName}`, summary: "tool not found" };
         }
         return {
           ok: true,
@@ -706,13 +722,15 @@ function registerSearchTools(registry: ToolRegistry): void {
         };
       }
       const limit = Math.min(100, Math.max(1, intArg(call.arguments.limit, 20)));
-      const terms = query.toLowerCase().split(/\s+/).filter(Boolean);
+      const terms = tokenizeToolSearch(query);
       const matches = registry
         .list()
         .filter((tool) => registry.isDeferred(tool) && !registry.isExposed(tool.name))
-        .filter((tool) => terms.every((term) => `${tool.name} ${tool.description}`.toLowerCase().includes(term)))
+        .map((tool) => ({ tool, score: toolSearchScore(tool, terms) }))
+        .filter((entry): entry is { tool: ToolDefinition; score: number } => entry.score !== undefined)
+        .sort((left, right) => right.score - left.score || left.tool.name.localeCompare(right.tool.name))
         .slice(0, limit)
-        .map((tool) => ({ name: tool.name, description: tool.description }));
+        .map(({ tool }) => ({ name: tool.name, description: tool.description }));
       return {
         ok: true,
         output: matches.length ? JSON.stringify(matches, null, 2) : "No inactive tools matched the query.",
@@ -720,6 +738,40 @@ function registerSearchTools(registry: ToolRegistry): void {
       };
     },
   });
+}
+
+function tokenizeToolSearch(value: string): string[] {
+  return normalizeToolSearchText(value).split(" ").filter(Boolean);
+}
+
+function normalizeToolSearchText(value: string): string {
+  return value.toLowerCase().replace(/[_-]+/g, " ").replace(/\s+/g, " ").trim();
+}
+
+function toolSearchScore(tool: ToolDefinition, terms: readonly string[]): number | undefined {
+  const name = normalizeToolSearchText(tool.name);
+  const description = normalizeToolSearchText(tool.description);
+  const aliases = (TOOL_SEARCH_ALIASES[tool.name] ?? []).map(normalizeToolSearchText);
+  let score = 0;
+  for (const term of terms) {
+    if (name === term) score += 500;
+    else if (name.includes(term)) score += 300;
+    else if (aliases.some((alias) => alias === term)) score += 200;
+    else if (aliases.some((alias) => alias.includes(term))) score += 120;
+    else if (description.includes(term)) score += 40;
+    else return undefined;
+  }
+  return score;
+}
+
+function resolveDeferredToolName(registry: ToolRegistry, requestedName: string): string | undefined {
+  const target = normalizeToolSearchText(requestedName);
+  const matches = registry.list().filter((tool) => {
+    if (!registry.isDeferred(tool)) return false;
+    if (normalizeToolSearchText(tool.name) === target) return true;
+    return (TOOL_SEARCH_ALIASES[tool.name] ?? []).some((alias) => normalizeToolSearchText(alias) === target);
+  });
+  return matches.length === 1 ? matches[0]?.name : undefined;
 }
 
 export function isWriteToolName(name: string): boolean {
