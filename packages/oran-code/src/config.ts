@@ -118,12 +118,14 @@ function normalizeConfig(value: unknown): UserConfig {
   const approveAll = booleanOrUndefined(item.approve_all ?? item.approveAll);
   const skipVerify = booleanOrUndefined(item.skip_verify ?? item.skipVerify);
   const maxSteps = numberOrUndefined(item.max_steps ?? item.maxSteps);
+  const noProgressLimit = numberOrUndefined(item.no_progress_limit ?? item.noProgressLimit);
   const tokenBudget = numberOrUndefined(item.token_budget ?? item.tokenBudget);
   const permissionModeValue = item.permission_mode ?? item.permissionMode;
   const permissionMode = isPermissionMode(permissionModeValue) ? permissionModeValue : undefined;
   if (approveAll !== undefined) legacyAgent.approveAll = approveAll;
   if (skipVerify !== undefined) legacyAgent.skipVerify = skipVerify;
   if (maxSteps !== undefined) legacyAgent.maxSteps = maxSteps;
+  if (noProgressLimit !== undefined) legacyAgent.noProgressLimit = noProgressLimit;
   if (tokenBudget !== undefined) legacyAgent.tokenBudget = tokenBudget;
   if (permissionMode !== undefined) legacyAgent.permissionMode = permissionMode;
   if (Object.keys(legacyAgent).length) result.agent = { ...legacyAgent, ...result.agent };
@@ -235,6 +237,7 @@ function normalizeAgentSettings(value: unknown): AgentSettings | undefined {
   const approveAll = booleanOrUndefined(item.approveAll ?? item.approve_all);
   const skipVerify = booleanOrUndefined(item.skipVerify ?? item.skip_verify);
   const maxSteps = numberOrUndefined(item.maxSteps ?? item.max_steps);
+  const noProgressLimit = numberOrUndefined(item.noProgressLimit ?? item.no_progress_limit);
   const tokenBudget = numberOrUndefined(item.tokenBudget ?? item.token_budget);
   const workMode = item.workMode === "plan" || item.workMode === "auto" ? item.workMode : undefined;
   const permissionModeValue = item.permissionMode ?? item.permission_mode;
@@ -244,6 +247,7 @@ function normalizeAgentSettings(value: unknown): AgentSettings | undefined {
   if (approveAll !== undefined) result.approveAll = approveAll;
   if (skipVerify !== undefined) result.skipVerify = skipVerify;
   if (maxSteps !== undefined) result.maxSteps = maxSteps;
+  if (noProgressLimit !== undefined) result.noProgressLimit = noProgressLimit;
   if (tokenBudget !== undefined) result.tokenBudget = tokenBudget;
   if (workMode !== undefined) result.workMode = workMode;
   if (permissionMode !== undefined) result.permissionMode = permissionMode;

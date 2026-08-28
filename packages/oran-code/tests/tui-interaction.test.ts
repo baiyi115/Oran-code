@@ -24,6 +24,7 @@ describe("TUI interaction helpers", () => {
       "/session",
       "/skills",
       "/status",
+      "/tasks",
       "/undo",
       "/worktree",
     ]);

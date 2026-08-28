@@ -28,6 +28,7 @@ describe("TUI overlays", () => {
       "/session",
       "/skills",
       "/status",
+      "/tasks",
       "/undo",
       "/worktree",
     ]);

@@ -44,6 +44,11 @@ interface DeferredToolRecord {
   executed: boolean;
 }
 
+export interface ToolBatchExecutionSummary {
+  workspaceMutated: boolean;
+  readonlyOnly: boolean;
+}
+
 /**
  * 工具执行器与 TaskController 之间的端口。controller 保留事件、持久化、
  * hook、可见性过滤等横切能力,executor 只负责批量编排与结果记录。
@@ -84,8 +89,18 @@ export class ToolBatchExecutor {
 
   constructor(private readonly ports: ToolExecutorPorts) {}
 
-  async runTools(task: Task, messages: Message[], calls: ToolCall[], loop: AgentLoop): Promise<boolean> {
+  async runTools(
+    task: Task,
+    messages: Message[],
+    calls: ToolCall[],
+    loop: AgentLoop,
+  ): Promise<ToolBatchExecutionSummary> {
     let workspaceMutated = false;
+    const readonlyOnly = calls.length > 0 && calls.every((call) => {
+      if (!this.ports.registry.has(call.name)) return false;
+      const tool = this.ports.registry.get(call.name);
+      return (tool.kind ?? inferToolKind(call.name)) === "readonly";
+    });
     const concurrency = Math.max(1, this.ports.config.loop.readonlyConcurrency || 1);
     const deferredRecords: DeferredToolRecord[] = [];
     this.deferredRecords = deferredRecords;
@@ -143,7 +158,7 @@ export class ToolBatchExecutor {
           loop.recordUnknownTool(call);
           await this.recordTool(task, messages, call, index, result, 0, { executed: false });
           this.ports.logger(`Tool ${call.name}: unknown tool`);
-          if (loop.shouldStopForUnknownTools()) return workspaceMutated;
+          if (loop.shouldStopForUnknownTools()) return { workspaceMutated, readonlyOnly };
           continue;
         }
 
@@ -180,7 +195,7 @@ export class ToolBatchExecutor {
             prepared.push({ index, call, skip: denied });
             continue;
           }
-          const cacheKey = kind === "readonly" ? toolCallSignature(call) : undefined;
+          const cacheKey = kind === "readonly" && tool.cacheable !== false ? toolCallSignature(call) : undefined;
           if (cacheKey && this.ports.readonlyCache.has(cacheKey)) {
             const cached = this.ports.readonlyCache.get(cacheKey)!;
             this.ports.debugLogger(JSON.stringify({
@@ -253,7 +268,8 @@ export class ToolBatchExecutor {
             }
             result = await this.offloadLargeToolResult(task, item.call, result);
             const executedResult = { ...result, durationMs: duration };
-            if (result.ok && (this.ports.registry.get(item.call.name)?.kind ?? inferToolKind(item.call.name)) === "readonly") {
+            const tool = this.ports.registry.get(item.call.name);
+            if (result.ok && (tool.kind ?? inferToolKind(item.call.name)) === "readonly" && tool.cacheable !== false) {
               const cacheKey = toolCallSignature(item.call);
               this.ports.readonlyCache.set(cacheKey, { ...executedResult, metadata: { ...executedResult.metadata, cached: false } });
             }
@@ -279,7 +295,7 @@ export class ToolBatchExecutor {
         }
         this.ports.throwIfCancelled();
       }
-      return workspaceMutated;
+      return { workspaceMutated, readonlyOnly };
     } finally {
       try {
         await this.flushDeferredToolRecords(task, messages, deferredRecords);

@@ -169,7 +169,7 @@ export class SubagentCoordinator {
   }
 
   private teamListTool(): ToolDefinition {
-    return simpleTool("team_list", "List in-memory teams and teammate status.", {}, [], async () => success(JSON.stringify(this.options.teams.list(), null, 2)));
+    return simpleTool("team_list", "List in-memory teams and teammate status.", {}, [], async () => success(JSON.stringify(this.options.teams.list(), null, 2)), { cacheable: false });
   }
 
   private teamDeleteTool(): ToolDefinition {
@@ -191,7 +191,7 @@ export class SubagentCoordinator {
   private taskListTool(): ToolDefinition {
     return simpleTool("task_list", "List one-shot background subagent tasks.", {}, [], async () => success(JSON.stringify(
       this.options.background.list().map(({ promise: _promise, abortController: _abortController, ...task }) => task), null, 2,
-    )));
+    )), { cacheable: false });
   }
 
   private taskDetailTool(): ToolDefinition {
@@ -200,7 +200,7 @@ export class SubagentCoordinator {
       if (!task) return failed(`Unknown background task ${stringArg(args.task_id)}.`);
       const { promise: _promise, abortController: _abortController, ...snapshot } = task;
       return success(JSON.stringify(snapshot, null, 2));
-    });
+    }, { cacheable: false });
   }
 
   private taskStopTool(): ToolDefinition {
@@ -242,11 +242,21 @@ export class SubagentCoordinator {
   }
 }
 
-function simpleTool(name: string, description: string, properties: Record<string, unknown>, required: readonly string[], invoke: (args: Record<string, unknown>) => Promise<ToolResult>): ToolDefinition {
+function simpleTool(
+  name: string,
+  description: string,
+  properties: Record<string, unknown>,
+  required: readonly string[],
+  invoke: (args: Record<string, unknown>) => Promise<ToolResult>,
+  options: { cacheable?: boolean } = {},
+): ToolDefinition {
   return {
     name, description,
     parameters: { type: "object", additionalProperties: false, properties, required },
-    permissionLevel: 0, kind: "readonly", maxOutputChars: 16_000,
+    permissionLevel: 0,
+    kind: "readonly",
+    ...(options.cacheable === undefined ? {} : { cacheable: options.cacheable }),
+    maxOutputChars: 16_000,
     invoke: (call) => invoke(call.arguments),
   };
 }

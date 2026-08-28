@@ -152,6 +152,78 @@ describe("TaskController", () => {
     }
   });
 
+  describe("readonly tool caching", () => {
+    it("invokes a cacheable:false readonly tool for repeated identical calls", async () => {
+      const workspace = await mkdtemp(join(tmpdir(), "liteagent-controller-"));
+      try {
+        const registry = new ToolRegistry();
+        let invokeCount = 0;
+        registry.register({
+          name: "live_status",
+          description: "Read live status.",
+          parameters: { type: "object", properties: { scope: { type: "string" } }, required: ["scope"] },
+          permissionLevel: 0,
+          kind: "readonly",
+          cacheable: false,
+          maxOutputChars: 1000,
+          invoke: async () => ({ ok: true, output: `status-${++invokeCount}` }),
+        });
+        const provider = new FakeProvider([
+          toolResponse({ id: "call_live_1", name: "live_status", arguments: { scope: "tasks" }, createdAt: new Date().toISOString() }),
+          toolResponse({ id: "call_live_2", name: "live_status", arguments: { scope: "tasks" }, createdAt: new Date().toISOString() }),
+          textResponse("Status refreshed."),
+        ]);
+        const events: RuntimeEvent[] = [];
+        const { controller } = createController(workspace, provider, registry, events);
+
+        const task = await controller.execute(createTask(workspace, "refresh status twice"));
+
+        expect(task.state).toBe("completed");
+        expect(invokeCount).toBe(2);
+        expect(events.filter((event) => event.type === "tool_result").map((event) => event.result.output))
+          .toEqual(["status-1", "status-2"]);
+        expect(events.some((event) => event.type === "tool_result" && event.result.metadata?.cached === true)).toBe(false);
+      } finally {
+        await rm(workspace, { recursive: true, force: true });
+      }
+    });
+
+    it("caches repeated identical readonly calls by default", async () => {
+      const workspace = await mkdtemp(join(tmpdir(), "liteagent-controller-"));
+      try {
+        const registry = new ToolRegistry();
+        let invokeCount = 0;
+        registry.register({
+          name: "stable_status",
+          description: "Read stable status.",
+          parameters: { type: "object", properties: { scope: { type: "string" } }, required: ["scope"] },
+          permissionLevel: 0,
+          kind: "readonly",
+          maxOutputChars: 1000,
+          invoke: async () => ({ ok: true, output: `status-${++invokeCount}` }),
+        });
+        const provider = new FakeProvider([
+          toolResponse({ id: "call_stable_1", name: "stable_status", arguments: { scope: "tasks" }, createdAt: new Date().toISOString() }),
+          toolResponse({ id: "call_stable_2", name: "stable_status", arguments: { scope: "tasks" }, createdAt: new Date().toISOString() }),
+          textResponse("Status reused."),
+        ]);
+        const events: RuntimeEvent[] = [];
+        const { controller } = createController(workspace, provider, registry, events);
+
+        const task = await controller.execute(createTask(workspace, "read status twice"));
+
+        expect(task.state).toBe("completed");
+        expect(invokeCount).toBe(1);
+        expect(events.filter((event) => event.type === "tool_result").map((event) => event.result.output))
+          .toEqual(["status-1", "status-1"]);
+        expect(events.filter((event) => event.type === "tool_result").map((event) => event.result.metadata?.cached === true))
+          .toEqual([false, true]);
+      } finally {
+        await rm(workspace, { recursive: true, force: true });
+      }
+    });
+  });
+
   it("streams, invokes a tool, verifies, and persists the trace without a plan step", async () => {
     const workspace = await mkdtemp(join(tmpdir(), "liteagent-controller-"));
     try {

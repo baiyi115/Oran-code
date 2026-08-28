@@ -202,6 +202,8 @@ export interface AgentSettings {
   approveAll?: boolean;
   skipVerify?: boolean;
   maxSteps?: number;
+  /** Pause after this many consecutive turns without semantic progress. 0 disables this guard. */
+  noProgressLimit?: number;
   tokenBudget?: number;
   workMode?: WorkMode;
   permissionMode?: PermissionMode;
@@ -247,6 +249,7 @@ export interface LoopConfig {
   maxSteps: number;
   maxRetries: number;
   commandTimeout: number;
+  /** Pause after this many consecutive turns without semantic progress. 0 disables this guard. */
   noProgressLimit: number;
   tokenBudget: number;
   /** Stop after this many consecutive unknown tool calls. 0 disables. */
@@ -307,6 +310,8 @@ export interface ToolDefinition {
   system?: boolean;
   /** Safety class used by loop batching and plan-mode tool injection. */
   kind?: ToolKind;
+  /** Set false for readonly tools whose result reflects live external state. */
+  cacheable?: boolean;
   /** On-demand tools are hidden from the initial tool list until activated via search_tools. */
   deferred?: boolean;
 

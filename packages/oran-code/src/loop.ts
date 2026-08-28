@@ -1,14 +1,24 @@
+import { createHash } from "node:crypto";
 import type { LoopConfig, ToolCall, ToolResult } from "./types.js";
 import { normalizeTokenUsage } from "./token-usage.js";
 
-export type NoProgressReason = "identical_call" | "repeated_error" | "readonly_stall";
+export type NoProgressReason = "repeated_execution" | "repeated_error" | "semantic_stall";
+export type NoProgressStage = "warning" | "reflection" | "pause";
 
 export interface NoProgressDiagnostic {
   call: ToolCall;
   repeatCount: number;
   limit: number;
   reason: NoProgressReason;
+  stage: NoProgressStage;
   detail?: string;
+}
+
+export interface TurnProgressSummary {
+  stalledTurns: number;
+  hasMutation: boolean;
+  hasNewToolResult: boolean;
+  evidence: string[];
 }
 
 const UUID_RE = /\b[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}\b/gi;
@@ -50,6 +60,13 @@ export function toolCallSignature(call: ToolCall): string {
   return `${call.name}:${stableStringify(normalizeToolArguments(call.arguments))}`;
 }
 
+/** Stable, compact representation of the meaningful part of a tool result. */
+export function toolResultSignature(result: ToolResult): string {
+  const content = result.error || result.output || "";
+  const normalized = stableStringify({ ok: result.ok, content: normalizeString(content) });
+  return createHash("sha256").update(normalized).digest("hex").slice(0, 16);
+}
+
 export function errorSignature(result: ToolResult | undefined): string | undefined {
   if (!result || (result.ok && !result.error)) return undefined;
   const raw = result.error || result.output || "";
@@ -74,10 +91,20 @@ export class AgentLoop {
   modelElapsedMs = 0;
   consecutiveUnknownTools = 0;
   readonly toolCalls: ToolCall[];
-  readonly executionHistory: Array<{ call: ToolCall; result: ToolResult; errorSig?: string | undefined }> = [];
-  consecutiveReadonlyTurns = 0;
+  readonly executionHistory: Array<{
+    call: ToolCall;
+    callSig: string;
+    result: ToolResult;
+    resultSig: string;
+    errorSig?: string | undefined;
+  }> = [];
+  consecutiveStalledTurns = 0;
 
   private static readonly MAX_EXECUTION_HISTORY = 50;
+  private static readonly MAX_RESULT_FINGERPRINTS = 200;
+  private readonly seenResultFingerprints = new Set<string>();
+  private readonly resultFingerprintOrder: string[] = [];
+  private turnResultFingerprints: string[] = [];
 
   constructor(config: LoopConfig, seedCalls: readonly ToolCall[] = []) {
     this.config = config;
@@ -109,6 +136,7 @@ export class AgentLoop {
 
   recordTurn(): void {
     this.turns += 1;
+    this.turnResultFingerprints = [];
   }
 
   recordUsage(usage: Record<string, number>): void {
@@ -134,20 +162,46 @@ export class AgentLoop {
 
   recordResult(call: ToolCall, result: ToolResult): void {
     const errorSig = errorSignature(result);
-    this.executionHistory.push({ call, result, errorSig });
+    const callSig = toolCallSignature(call);
+    const resultSig = toolResultSignature(result);
+    this.executionHistory.push({ call, callSig, result, resultSig, errorSig });
+    this.turnResultFingerprints.push(resultSig);
     if (this.executionHistory.length > AgentLoop.MAX_EXECUTION_HISTORY) {
       this.executionHistory.splice(0, this.executionHistory.length - AgentLoop.MAX_EXECUTION_HISTORY);
     }
   }
 
-  recordTurnActivity(activity: { hasMutation: boolean; isReadonly: boolean }): void {
-    if (activity.hasMutation) {
-      this.consecutiveReadonlyTurns = 0;
-    } else if (activity.isReadonly) {
-      this.consecutiveReadonlyTurns += 1;
-    } else {
-      this.consecutiveReadonlyTurns = 0;
+  recordTurnProgress(activity: {
+    hasMutation: boolean;
+    externalEvidence?: { kind: string; value: unknown };
+  }): TurnProgressSummary {
+    const externalFingerprint = activity.externalEvidence
+      ? progressValueSignature(activity.externalEvidence)
+      : undefined;
+    const fingerprints = externalFingerprint
+      ? [...this.turnResultFingerprints, externalFingerprint]
+      : this.turnResultFingerprints;
+    const newFingerprints = fingerprints.filter((fingerprint) => !this.seenResultFingerprints.has(fingerprint));
+    for (const fingerprint of fingerprints) this.rememberResultFingerprint(fingerprint);
+
+    const evidence: string[] = [];
+    if (activity.hasMutation) evidence.push("workspace_mutated");
+    if (this.turnResultFingerprints.some((fingerprint) => newFingerprints.includes(fingerprint))) {
+      evidence.push("new_tool_result");
     }
+    if (externalFingerprint && newFingerprints.includes(externalFingerprint)) {
+      evidence.push(activity.externalEvidence!.kind);
+    }
+
+    if (evidence.length > 0) this.consecutiveStalledTurns = 0;
+    else this.consecutiveStalledTurns += 1;
+
+    return {
+      stalledTurns: this.consecutiveStalledTurns,
+      hasMutation: activity.hasMutation,
+      hasNewToolResult: newFingerprints.length > 0,
+      evidence,
+    };
   }
 
   recordUnknownTool(call: ToolCall): void {
@@ -161,52 +215,40 @@ export class AgentLoop {
   }
 
   noProgressWarning(): NoProgressDiagnostic | undefined {
-    const errorWarn = this.currentRepeatedErrorRun(2);
+    const errorWarn = this.currentRepeatedErrorRun(2, "warning");
     if (errorWarn) return errorWarn;
 
-    const stallWarn = this.currentReadonlyStallWarning();
-    if (stallWarn) return stallWarn;
-
-    const diagnostic = this.currentNoProgressRun();
-    if (!diagnostic || diagnostic.limit <= 1) return undefined;
-    const warningAt = Math.max(2, diagnostic.limit - 1);
-    return diagnostic.repeatCount >= warningAt && diagnostic.repeatCount < diagnostic.limit
-      ? diagnostic
-      : undefined;
+    return this.currentSemanticStallAdvisory();
   }
 
   noProgressDiagnostic(): NoProgressDiagnostic | undefined {
-    const errorDiag = this.currentRepeatedErrorRun(3);
+    const errorDiag = this.currentRepeatedErrorRun(3, "pause");
     if (errorDiag) return errorDiag;
 
-    const stallDiag = this.currentReadonlyStallDiagnostic();
-    if (stallDiag) return stallDiag;
-
-    const diagnostic = this.currentNoProgressRun();
-    return diagnostic && diagnostic.repeatCount >= diagnostic.limit ? diagnostic : undefined;
+    return this.currentSemanticStallDiagnostic();
   }
 
-  /** 检查下一批工具调用是否已达重复上限（尚未执行时判断）。 */
+  /**
+   * Only block a non-readonly call before execution when its two most recent
+   * executions had the same call and result. Readonly calls intentionally run
+   * through: polling may return a new state even with identical arguments.
+   */
   noProgressDiagnosticForNextCalls(calls: readonly ToolCall[]): NoProgressDiagnostic | undefined {
-    const limit = this.config.noProgressLimit;
-    if (limit <= 0 || !calls.length) return undefined;
-    const priorCalls: ToolCall[] = [];
+    if (!calls.length) return undefined;
     for (const call of calls) {
       const target = toolCallSignature(call);
-      let repeatCount = 0;
-      for (let index = this.toolCalls.length - 1; index >= 0; index -= 1) {
-        const previous = this.toolCalls[index];
-        if (!previous || toolCallSignature(previous) !== target) break;
-        repeatCount += 1;
-      }
-      for (let index = priorCalls.length - 1; index >= 0; index -= 1) {
-        const previous = priorCalls[index];
-        if (!previous || toolCallSignature(previous) !== target) break;
-        repeatCount += 1;
-      }
-      repeatCount += 1;
-      if (repeatCount >= limit) return { call, repeatCount, limit, reason: "identical_call" };
-      priorCalls.push(call);
+      const last = this.executionHistory[this.executionHistory.length - 1];
+      const previous = this.executionHistory[this.executionHistory.length - 2];
+      if (!last || !previous) continue;
+      if (last.callSig !== target || previous.callSig !== target || last.resultSig !== previous.resultSig) continue;
+      return {
+        call,
+        repeatCount: 3,
+        limit: 3,
+        reason: "repeated_execution",
+        stage: "pause",
+        detail: last.resultSig,
+      };
     }
     return undefined;
   }
@@ -215,28 +257,15 @@ export class AgentLoop {
     return this.noProgressDiagnostic() !== undefined;
   }
 
-  private currentNoProgressRun(): NoProgressDiagnostic | undefined {
-    const limit = this.config.noProgressLimit;
-    const last = this.toolCalls[this.toolCalls.length - 1];
-    if (limit <= 0 || !last) return undefined;
-    const target = toolCallSignature(last);
-    let repeatCount = 0;
-    for (let index = this.toolCalls.length - 1; index >= 0; index -= 1) {
-      const call = this.toolCalls[index];
-      if (!call || toolCallSignature(call) !== target) break;
-      repeatCount += 1;
-    }
-    return { call: last, repeatCount, limit, reason: "identical_call" };
-  }
-
-  private currentRepeatedErrorRun(threshold: number): NoProgressDiagnostic | undefined {
+  private currentRepeatedErrorRun(threshold: number, stage: NoProgressStage): NoProgressDiagnostic | undefined {
     const last = this.executionHistory[this.executionHistory.length - 1];
     if (!last || !last.errorSig) return undefined;
     const targetSig = last.errorSig;
+    const targetCall = last.callSig;
     let count = 0;
     for (let i = this.executionHistory.length - 1; i >= 0; i -= 1) {
       const item = this.executionHistory[i];
-      if (!item || item.errorSig !== targetSig) break;
+      if (!item || item.callSig !== targetCall || item.errorSig !== targetSig) break;
       count += 1;
     }
     if (count >= threshold) {
@@ -245,39 +274,58 @@ export class AgentLoop {
         repeatCount: count,
         limit: 3,
         reason: "repeated_error",
+        stage,
         detail: targetSig,
       };
     }
     return undefined;
   }
 
-  private currentReadonlyStallWarning(): NoProgressDiagnostic | undefined {
-    if (this.consecutiveReadonlyTurns >= 5 && this.consecutiveReadonlyTurns < 8) {
-      const last = this.toolCalls[this.toolCalls.length - 1] ?? { name: "readonly_stall", arguments: {}, createdAt: new Date().toISOString() };
-      return {
-        call: last,
-        repeatCount: this.consecutiveReadonlyTurns,
-        limit: 8,
-        reason: "readonly_stall",
-        detail: `${this.consecutiveReadonlyTurns} consecutive read-only exploration turns without workspace changes`,
-      };
-    }
-    return undefined;
+  private currentSemanticStallAdvisory(): NoProgressDiagnostic | undefined {
+    const limit = this.config.noProgressLimit;
+    if (limit <= 0 || this.consecutiveStalledTurns >= limit) return undefined;
+    const warningAt = Math.min(3, Math.max(1, limit - 2));
+    const reflectionAt = Math.min(5, Math.max(warningAt + 1, limit - 3));
+    const stage: NoProgressStage | undefined = this.consecutiveStalledTurns >= reflectionAt
+      ? "reflection"
+      : this.consecutiveStalledTurns >= warningAt
+        ? "warning"
+        : undefined;
+    if (!stage) return undefined;
+    return this.semanticStallDiagnostic(stage);
   }
 
-  private currentReadonlyStallDiagnostic(): NoProgressDiagnostic | undefined {
-    if (this.consecutiveReadonlyTurns >= 8) {
-      const last = this.toolCalls[this.toolCalls.length - 1] ?? { name: "readonly_stall", arguments: {}, createdAt: new Date().toISOString() };
-      return {
-        call: last,
-        repeatCount: this.consecutiveReadonlyTurns,
-        limit: 8,
-        reason: "readonly_stall",
-        detail: `${this.consecutiveReadonlyTurns} consecutive read-only exploration turns without workspace changes`,
-      };
-    }
-    return undefined;
+  private currentSemanticStallDiagnostic(): NoProgressDiagnostic | undefined {
+    const limit = this.config.noProgressLimit;
+    if (limit <= 0 || this.consecutiveStalledTurns < limit) return undefined;
+    return this.semanticStallDiagnostic("pause");
   }
+
+  private semanticStallDiagnostic(stage: NoProgressStage): NoProgressDiagnostic {
+    const call = this.toolCalls[this.toolCalls.length - 1]
+      ?? { name: "semantic_stall", arguments: {}, createdAt: new Date().toISOString() };
+    return {
+      call,
+      repeatCount: this.consecutiveStalledTurns,
+      limit: this.config.noProgressLimit,
+      reason: "semantic_stall",
+      stage,
+      detail: `${this.consecutiveStalledTurns} consecutive turn(s) without new tool results or workspace changes`,
+    };
+  }
+
+  private rememberResultFingerprint(fingerprint: string): void {
+    if (this.seenResultFingerprints.has(fingerprint)) return;
+    this.seenResultFingerprints.add(fingerprint);
+    this.resultFingerprintOrder.push(fingerprint);
+    if (this.resultFingerprintOrder.length <= AgentLoop.MAX_RESULT_FINGERPRINTS) return;
+    const oldest = this.resultFingerprintOrder.shift();
+    if (oldest) this.seenResultFingerprints.delete(oldest);
+  }
+}
+
+function progressValueSignature(value: unknown): string {
+  return createHash("sha256").update(stableStringify(normalizeToolArguments(value))).digest("hex").slice(0, 16);
 }
 
 function stableStringify(value: unknown): string {

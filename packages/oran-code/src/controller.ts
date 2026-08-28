@@ -300,16 +300,19 @@ export class TaskController {
         reminders.push(taskPlanReminder(task.planState));
       }
       if (noProgressWarning) {
-        const { call, repeatCount, limit, reason, detail } = noProgressWarning;
+        const { call, repeatCount, limit, reason, stage, detail } = noProgressWarning;
         if (reason === "repeated_error") {
           reminders.push(
             `Heads up: the last ${repeatCount} tool call(s) failed with the same error signature: "${detail ?? ""}". ` +
               `Please analyze the root cause before attempting the same approach again.`,
           );
-        } else if (reason === "readonly_stall") {
+        } else if (reason === "semantic_stall") {
           reminders.push(
-            `Heads up: ${detail ?? "prolonged read-only exploration without changes"}. ` +
-              `If you have gathered enough context, start implementing changes or provide a final answer to the user.`,
+            stage === "reflection"
+              ? `Progress check required: ${detail ?? "recent turns have not produced new evidence"}. ` +
+                `State the current blocker internally, choose a materially different next action, and avoid repeating prior calls unless new external information is expected.`
+              : `Heads up: ${detail ?? "recent turns have not produced new evidence"}. ` +
+                `Continue only when the next action can produce new information or advance the task.`,
           );
         } else {
           const argSummary = formatCallArguments(call.arguments);
@@ -410,23 +413,33 @@ export class TaskController {
           return task;
         }
         if (response.toolCalls.length) {
-          const preExecutionNoProgress = loop.noProgressDiagnosticForNextCalls(response.toolCalls);
+          const nonReadonlyCalls = response.toolCalls.filter((call) => {
+            if (!this.registry.has(call.name)) return true;
+            const tool = this.registry.get(call.name);
+            return (tool.kind ?? inferToolKind(call.name)) !== "readonly";
+          });
+          const preExecutionNoProgress = loop.noProgressDiagnosticForNextCalls(nonReadonlyCalls);
           if (preExecutionNoProgress) {
             this.recordNoProgressBlock(task, response.toolCalls, preExecutionNoProgress);
             await this.toolExecutor.reconcileToolCalls(
               task,
               messages,
               response.toolCalls,
-              "repeated identical tool call blocked before execution",
+              "repeated tool execution blocked before execution",
               false,
             );
             await this.pauseForNoProgress(task, preExecutionNoProgress);
             return task;
           }
           try {
-            workspaceMutated ||= await this.toolExecutor.runTools(task, messages, response.toolCalls, loop);
-            const allReadonly = response.toolCalls.every((c) => inferToolKind(c.name) === "readonly");
-            loop.recordTurnActivity({ hasMutation: workspaceMutated, isReadonly: allReadonly });
+            const turnExecution = await this.toolExecutor.runTools(task, messages, response.toolCalls, loop);
+            workspaceMutated ||= turnExecution.workspaceMutated;
+            const progress = loop.recordTurnProgress({ hasMutation: turnExecution.workspaceMutated });
+            this.appendDiagnosticStep("turn_progress", {
+              turn: this.turnRequester.currentTurnSequence,
+              readonlyOnly: turnExecution.readonlyOnly,
+              ...progress,
+            });
           } catch (error) {
             const cancelled = isAbortError(error) || this.abortController?.signal.aborted === true;
             await this.toolExecutor.reconcileToolCalls(
@@ -479,6 +492,22 @@ export class TaskController {
             await this.emitCompleted(loop);
             return task;
           }
+          const progress = loop.recordTurnProgress({
+            hasMutation: false,
+            externalEvidence: {
+              kind: "verification_result_changed",
+              value: {
+                command: verification.command,
+                exitCode: verification.exitCode,
+                output: verification.output,
+                passed: verification.passed,
+              },
+            },
+          });
+          this.appendDiagnosticStep("turn_progress", {
+            turn: this.turnRequester.currentTurnSequence,
+            ...progress,
+          });
           messages.push({ role: "user", content: `Verification failed:\n${verification.output}` });
           this.syncConversation(messages);
           transitionTask(task, "executing");
@@ -518,7 +547,7 @@ export class TaskController {
         limit,
       },
       batch: summarizeToolCalls(calls),
-      reason: "repeated identical tool call blocked before execution",
+      reason: "repeated tool execution blocked before execution",
     };
     this.appendDiagnosticStep("tool_call_blocked", payload);
     this.debugLogger(JSON.stringify({
@@ -535,8 +564,11 @@ export class TaskController {
     let pauseMessage = "";
     if (reason === "repeated_error") {
       pauseMessage = `No progress detected; task paused after ${repeatCount} consecutive tool calls failed with identical error: "${detail ?? ""}".`;
-    } else if (reason === "readonly_stall") {
-      pauseMessage = `No progress detected; task paused after ${repeatCount} consecutive read-only exploration turns without workspace changes.`;
+    } else if (reason === "semantic_stall") {
+      pauseMessage = `No progress detected; task paused after ${repeatCount} consecutive turns without new tool results or workspace changes.`;
+    } else if (reason === "repeated_execution") {
+      const argSummary = formatCallArguments(call.arguments);
+      pauseMessage = `No progress detected; task paused before a third identical ${call.name}(${argSummary}) execution with the same prior result.`;
     } else {
       const argSummary = formatCallArguments(call.arguments);
       pauseMessage = `No progress detected; task paused before executing a repeated tool call. Repeated ${call.name}(${argSummary}) ${repeatCount} time(s).`;
