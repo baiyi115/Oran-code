@@ -1,0 +1,23 @@
+{
+  "id": "04-cross-file-rename",
+  "title": "跨文件统一用户标识字段",
+  "category": "cross-file-rename",
+  "promptFile": "prompt.md",
+  "fixtureDir": "fixture",
+  "setupCommands": [
+    "pnpm install --offline --ignore-scripts"
+  ],
+  "verifyCommands": [
+    "pnpm typecheck",
+    "pnpm test"
+  ],
+  "hiddenVerifier": "verify.mjs",
+  "protectedPaths": [
+    "package.json",
+    "tsconfig.json",
+    "AGENTS.md",
+    "pnpm-workspace.yaml",
+    "tests/**"
+  ],
+  "timeoutMs": 300000
+}

@@ -12,6 +12,7 @@
     "start": "node packages/oran-code/dist/cli.js",
     "test": "pnpm --filter @oran-code/cli test",
     "typecheck": "pnpm --filter @oran-code/cli typecheck",
-    "dev:node": "node dev.mjs"
+    "dev:node": "node dev.mjs",
+    "eval:resume": "node scripts/resume-eval.mjs"
   }
 }

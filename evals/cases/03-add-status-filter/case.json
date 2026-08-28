@@ -1,0 +1,23 @@
+{
+  "id": "03-add-status-filter",
+  "title": "为客户查询增加可选状态筛选",
+  "category": "small-feature",
+  "promptFile": "prompt.md",
+  "fixtureDir": "fixture",
+  "setupCommands": [
+    "pnpm install --offline --ignore-scripts"
+  ],
+  "verifyCommands": [
+    "pnpm typecheck",
+    "pnpm test"
+  ],
+  "hiddenVerifier": "verify.mjs",
+  "protectedPaths": [
+    "package.json",
+    "tsconfig.json",
+    "AGENTS.md",
+    "pnpm-workspace.yaml",
+    "tests/**"
+  ],
+  "timeoutMs": 300000
+}

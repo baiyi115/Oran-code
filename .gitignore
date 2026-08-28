@@ -41,3 +41,6 @@ temp/
 *.temp
 *.log
 .zcode/
+
+evals/workspaces/
+evals/results/

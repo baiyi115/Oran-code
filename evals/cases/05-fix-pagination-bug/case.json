@@ -1,0 +1,23 @@
+{
+  "id": "05-fix-pagination-bug",
+  "title": "修复分页边界计算错误",
+  "category": "bug-fix",
+  "promptFile": "prompt.md",
+  "fixtureDir": "fixture",
+  "setupCommands": [
+    "pnpm install --offline --ignore-scripts"
+  ],
+  "verifyCommands": [
+    "pnpm typecheck",
+    "pnpm test"
+  ],
+  "hiddenVerifier": "verify.mjs",
+  "protectedPaths": [
+    "package.json",
+    "tsconfig.json",
+    "AGENTS.md",
+    "pnpm-workspace.yaml",
+    "tests/**"
+  ],
+  "timeoutMs": 300000
+}
