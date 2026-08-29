@@ -74,19 +74,25 @@ export class AgentStateStore {
   }
 
   async saveBackground(tasks: readonly PersistedBackgroundTask[]): Promise<void> {
-    await this.mutate((state) => ({
-      ...state,
-      updatedAt: new Date().toISOString(),
-      background: structuredClone(tasks),
-    }), { persistNow: true });
+    await this.mutate(
+      (state) => ({
+        ...state,
+        updatedAt: new Date().toISOString(),
+        background: structuredClone(tasks),
+      }),
+      { persistNow: true },
+    );
   }
 
   async saveTeams(teams: readonly PersistedTeam[]): Promise<void> {
-    await this.mutate((state) => ({
-      ...state,
-      updatedAt: new Date().toISOString(),
-      teams: structuredClone(teams),
-    }), { persistNow: true });
+    await this.mutate(
+      (state) => ({
+        ...state,
+        updatedAt: new Date().toISOString(),
+        teams: structuredClone(teams),
+      }),
+      { persistNow: true },
+    );
   }
 
   /**
@@ -94,19 +100,25 @@ export class AgentStateStore {
    * 崩溃最多丢失窗口内的中间状态,restore 会将其标记为 interrupted。
    */
   scheduleSaveBackground(tasks: readonly PersistedBackgroundTask[]): void {
-    void this.mutate((state) => ({
-      ...state,
-      updatedAt: new Date().toISOString(),
-      background: structuredClone(tasks),
-    }), { persistNow: false });
+    void this.mutate(
+      (state) => ({
+        ...state,
+        updatedAt: new Date().toISOString(),
+        background: structuredClone(tasks),
+      }),
+      { persistNow: false },
+    );
   }
 
   scheduleSaveTeams(teams: readonly PersistedTeam[]): void {
-    void this.mutate((state) => ({
-      ...state,
-      updatedAt: new Date().toISOString(),
-      teams: structuredClone(teams),
-    }), { persistNow: false });
+    void this.mutate(
+      (state) => ({
+        ...state,
+        updatedAt: new Date().toISOString(),
+        teams: structuredClone(teams),
+      }),
+      { persistNow: false },
+    );
   }
 
   async flush(): Promise<void> {

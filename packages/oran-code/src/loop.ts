@@ -24,7 +24,8 @@ export interface TurnProgressSummary {
 const UUID_RE = /\b[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}\b/gi;
 const HEX_RE = /\b[0-9a-fA-F]{32,64}\b/g;
 const ISO_DATE_RE = /\b\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d+)?(?:Z|[+-]\d{2}:\d{2})\b/g;
-const TEMP_PATH_RE = /(?:\/tmp\/|[A-Za-z]:\\(?:Users\\[^\\]+\\AppData\\Local\\Temp|Windows\\Temp)\\|\btemp\/|\.tmp-)[^\s"']+/gi;
+const TEMP_PATH_RE =
+  /(?:\/tmp\/|[A-Za-z]:\\(?:Users\\[^\\]+\\AppData\\Local\\Temp|Windows\\Temp)\\|\btemp\/|\.tmp-)[^\s"']+/gi;
 
 export function normalizeToolArguments(value: unknown): unknown {
   if (typeof value === "string") {
@@ -39,7 +40,10 @@ export function normalizeToolArguments(value: unknown): unknown {
     );
   }
   if (typeof value === "number") {
-    if ((value >= 1_500_000_000 && value <= 2_500_000_000) || (value >= 1_500_000_000_000 && value <= 2_500_000_000_000)) {
+    if (
+      (value >= 1_500_000_000 && value <= 2_500_000_000) ||
+      (value >= 1_500_000_000_000 && value <= 2_500_000_000_000)
+    ) {
       return "<TIMESTAMP>";
     }
   }
@@ -71,7 +75,11 @@ export function errorSignature(result: ToolResult | undefined): string | undefin
   if (!result || (result.ok && !result.error)) return undefined;
   const raw = result.error || result.output || "";
   if (!raw.trim()) return undefined;
-  const lines = raw.split(/\r?\n/).slice(0, 3).map((l) => l.trim()).filter(Boolean);
+  const lines = raw
+    .split(/\r?\n/)
+    .slice(0, 3)
+    .map((l) => l.trim())
+    .filter(Boolean);
   if (!lines.length) return undefined;
   const normalized = normalizeString(lines.join(" "))
     .replace(/(?::\d+:\d+|\bline\s+\d+\b)/gi, ":LINE")
@@ -286,11 +294,12 @@ export class AgentLoop {
     if (limit <= 0 || this.consecutiveStalledTurns >= limit) return undefined;
     const warningAt = Math.min(3, Math.max(1, limit - 2));
     const reflectionAt = Math.min(5, Math.max(warningAt + 1, limit - 3));
-    const stage: NoProgressStage | undefined = this.consecutiveStalledTurns >= reflectionAt
-      ? "reflection"
-      : this.consecutiveStalledTurns >= warningAt
-        ? "warning"
-        : undefined;
+    const stage: NoProgressStage | undefined =
+      this.consecutiveStalledTurns >= reflectionAt
+        ? "reflection"
+        : this.consecutiveStalledTurns >= warningAt
+          ? "warning"
+          : undefined;
     if (!stage) return undefined;
     return this.semanticStallDiagnostic(stage);
   }
@@ -302,8 +311,11 @@ export class AgentLoop {
   }
 
   private semanticStallDiagnostic(stage: NoProgressStage): NoProgressDiagnostic {
-    const call = this.toolCalls[this.toolCalls.length - 1]
-      ?? { name: "semantic_stall", arguments: {}, createdAt: new Date().toISOString() };
+    const call = this.toolCalls[this.toolCalls.length - 1] ?? {
+      name: "semantic_stall",
+      arguments: {},
+      createdAt: new Date().toISOString(),
+    };
     return {
       call,
       repeatCount: this.consecutiveStalledTurns,
@@ -325,7 +337,10 @@ export class AgentLoop {
 }
 
 function progressValueSignature(value: unknown): string {
-  return createHash("sha256").update(stableStringify(normalizeToolArguments(value))).digest("hex").slice(0, 16);
+  return createHash("sha256")
+    .update(stableStringify(normalizeToolArguments(value)))
+    .digest("hex")
+    .slice(0, 16);
 }
 
 function stableStringify(value: unknown): string {

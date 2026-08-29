@@ -10,7 +10,11 @@ import { isSubmitKey } from "./keys.js";
 
 export interface ConnectWizardDeps {
   readonly state: TuiState;
-  loadRemoteModels?: (baseURL: string, apiKey: string, protocol: "openai" | "anthropic") => Promise<ConnectModelOption[]>;
+  loadRemoteModels?: (
+    baseURL: string,
+    apiKey: string,
+    protocol: "openai" | "anthropic",
+  ) => Promise<ConnectModelOption[]>;
   onConnect?: (input: ConnectInput) => Promise<boolean | void>;
   invalidate(): void;
   rejectIfBlocked(message: string): boolean;
@@ -170,7 +174,8 @@ export class ConnectWizard {
     overlay.error = undefined;
     this.deps.invalidate();
     try {
-      const remote = await this.deps.loadRemoteModels?.(overlay.baseURL.trim(), overlay.apiKey.trim(), protocol) ?? [];
+      const remote =
+        (await this.deps.loadRemoteModels?.(overlay.baseURL.trim(), overlay.apiKey.trim(), protocol)) ?? [];
       if (this.deps.state.overlay.kind !== "connect") return;
       const existing = new Map(this.deps.state.overlay.models.map((model) => [model.id, model]));
       this.deps.state.overlay.models = remote.map((model): ConnectModelOption => {
@@ -223,9 +228,7 @@ export class ConnectWizard {
   private handleListStepKey(input: string, key: Key): void {
     if (this.deps.state.overlay.kind !== "connect") return;
     const overlay = this.deps.state.overlay;
-    const choices: readonly string[] = overlay.step === "protocol"
-      ? ["openai", "anthropic"]
-      : REASONING_EFFORTS;
+    const choices: readonly string[] = overlay.step === "protocol" ? ["openai", "anthropic"] : REASONING_EFFORTS;
     if (key.upArrow) {
       overlay.selectedIndex = Math.max(0, overlay.selectedIndex - 1);
       return;
@@ -261,9 +264,10 @@ export class ConnectWizard {
       const ok = await this.deps.onConnect?.(payload);
       this.deps.state.overlay = { kind: "none" };
       const activeModel = selected[0]?.id ? `${payload.providerName}/${selected[0].id}` : undefined;
-      this.deps.state.session.status = ok === false
-        ? "provider connection failed"
-        : `Connected ${payload.providerName} (${selected.length} model${selected.length === 1 ? "" : "s"})${activeModel ? `. Active model: ${activeModel}` : ""}`;
+      this.deps.state.session.status =
+        ok === false
+          ? "provider connection failed"
+          : `Connected ${payload.providerName} (${selected.length} model${selected.length === 1 ? "" : "s"})${activeModel ? `. Active model: ${activeModel}` : ""}`;
     } catch (error) {
       if (this.deps.state.overlay.kind === "connect") {
         this.deps.state.overlay.error = formatErrorMessage(error);
@@ -283,38 +287,73 @@ export function safeHostName(input: string, fallback = "provider"): string {
   }
 }
 
-export function renderConnectLines(overlay: Extract<TuiState["overlay"], { kind: "connect" }>, width: number): string[] {
+export function renderConnectLines(
+  overlay: Extract<TuiState["overlay"], { kind: "connect" }>,
+  width: number,
+): string[] {
   function protocolLabel(protocol: "openai" | "anthropic"): string {
     return protocol === "anthropic" ? "Anthropic Messages" : "OpenAI Chat Completions";
   }
   const lines: string[] = [];
   switch (overlay.step) {
     case "providerName":
-      lines.push("Add provider — name", dimHorizontalRule(width), `  ${overlay.providerName || "(e.g. openai)"}`, "Enter/Tab Next   Esc Close");
+      lines.push(
+        "Add provider — name",
+        dimHorizontalRule(width),
+        `  ${overlay.providerName || "(e.g. openai)"}`,
+        "Enter/Tab Next   Esc Close",
+      );
       break;
     case "baseURL":
-      lines.push(`Provider: ${overlay.providerName}`, dimHorizontalRule(width), "Base URL", `  ${overlay.baseURL || "(e.g. https://api.openai.com/v1 or https://api.anthropic.com)}"}`, "Enter/Tab Next   Esc Close");
+      lines.push(
+        `Provider: ${overlay.providerName}`,
+        dimHorizontalRule(width),
+        "Base URL",
+        `  ${overlay.baseURL || "(e.g. https://api.openai.com/v1 or https://api.anthropic.com)}"}`,
+        "Enter/Tab Next   Esc Close",
+      );
       break;
     case "apiKey":
-      lines.push(`Provider: ${overlay.providerName} — ${overlay.baseURL}`, dimHorizontalRule(width), "API key (optional)", `  ${overlay.apiKey ? "*".repeat(Math.min(40, overlay.apiKey.length)) : "(leave blank to skip)"}`, "Enter/Tab Next   Esc Close");
+      lines.push(
+        `Provider: ${overlay.providerName} — ${overlay.baseURL}`,
+        dimHorizontalRule(width),
+        "API key (optional)",
+        `  ${overlay.apiKey ? "*".repeat(Math.min(40, overlay.apiKey.length)) : "(leave blank to skip)"}`,
+        "Enter/Tab Next   Esc Close",
+      );
       break;
     case "protocol": {
       const choices: ("openai" | "anthropic")[] = ["openai", "anthropic"];
-      lines.push(`Provider: ${overlay.providerName}`, dimHorizontalRule(width), "Protocol", "Enter/Tab Confirm   Esc Close", "");
+      lines.push(
+        `Provider: ${overlay.providerName}`,
+        dimHorizontalRule(width),
+        "Protocol",
+        "Enter/Tab Confirm   Esc Close",
+        "",
+      );
       choices.forEach((choice, index) => {
         lines.push(highlightSelection(`  ${protocolLabel(choice)}`, index === overlay.selectedIndex));
       });
       break;
     }
     case "reasoningEffort": {
-      lines.push(`Provider: ${overlay.providerName} (${protocolLabel(overlay.protocol || "openai")})`, dimHorizontalRule(width), "Reasoning effort", "Enter/Tab Confirm   Esc Close", "");
+      lines.push(
+        `Provider: ${overlay.providerName} (${protocolLabel(overlay.protocol || "openai")})`,
+        dimHorizontalRule(width),
+        "Reasoning effort",
+        "Enter/Tab Confirm   Esc Close",
+        "",
+      );
       REASONING_EFFORTS.forEach((effort, index) => {
         lines.push(highlightSelection(`  ${effort}`, index === overlay.selectedIndex));
       });
       break;
     }
     case "models": {
-      lines.push(`Provider: ${overlay.providerName} (${protocolLabel(overlay.protocol || "openai")}) — effort ${overlay.reasoningEffort}`, dimHorizontalRule(width));
+      lines.push(
+        `Provider: ${overlay.providerName} (${protocolLabel(overlay.protocol || "openai")}) — effort ${overlay.reasoningEffort}`,
+        dimHorizontalRule(width),
+      );
       lines.push("F Fetch all   D Delete   Enter Toggle select   Ctrl+S/Tab Save   Esc Close");
       lines.push("");
       if (overlay.loading) {
@@ -328,7 +367,12 @@ export function renderConnectLines(overlay: Extract<TuiState["overlay"], { kind:
         overlay.models.forEach((model, index) => {
           const mark = model.selected ? "✓" : " ";
           const ctx = model.contextWindow ? `  [ctx ${model.contextWindow}]` : "";
-          lines.push(highlightSelection(`${mark} ${truncateVisible(model.id, Math.max(1, width - 4))}${ctx}`, index === overlay.selectedIndex));
+          lines.push(
+            highlightSelection(
+              `${mark} ${truncateVisible(model.id, Math.max(1, width - 4))}${ctx}`,
+              index === overlay.selectedIndex,
+            ),
+          );
         });
       }
       const selectedCount = overlay.models.filter((model) => model.selected).length;

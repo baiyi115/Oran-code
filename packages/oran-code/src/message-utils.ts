@@ -7,12 +7,14 @@ export const INTERRUPTED_TOOL_RESULT_CONTENT = "Tool execution was interrupted b
 export function cloneMessages(messages: readonly Message[]): Message[] {
   return messages.map((message) => ({
     ...message,
-    ...(message.toolCalls ? {
-      toolCalls: message.toolCalls.map((call) => ({
-        ...call,
-        arguments: structuredClone(call.arguments),
-      })),
-    } : {}),
+    ...(message.toolCalls
+      ? {
+          toolCalls: message.toolCalls.map((call) => ({
+            ...call,
+            arguments: structuredClone(call.arguments),
+          })),
+        }
+      : {}),
     ...(message.metadata ? { metadata: structuredClone(message.metadata) } : {}),
   }));
 }

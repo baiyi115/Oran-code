@@ -30,7 +30,11 @@ describe("TUI transcript scrolling", () => {
   });
 
   it("does not apply append compensation when a message anchor is active", () => {
-    const scroll = state({ offsetFromBottom: 4, followBottom: false, anchor: { messageId: "message-2", lineOffset: 1 } });
+    const scroll = state({
+      offsetFromBottom: 4,
+      followBottom: false,
+      anchor: { messageId: "message-2", lineOffset: 1 },
+    });
     syncTranscriptScroll(scroll, 30, 8, 20);
     expect(scroll.offsetFromBottom).toBe(4);
   });

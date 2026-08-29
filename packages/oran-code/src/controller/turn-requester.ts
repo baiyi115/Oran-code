@@ -102,11 +102,21 @@ export class TurnRequester {
     let managedMessages = repairToolMessagePairs(await this.prepareContext(messages, reminders, tools, loop));
     this.ports.syncConversation(managedMessages);
     let requestMessages = withRuntimeReminders(managedMessages, reminders);
-    await this.ports.fireHook({ event: "before_model_request", workspace: this.ports.config.workspace, model: this.ports.config.model.model, userPrompt: this.ports.getHookUserPrompt() });
+    await this.ports.fireHook({
+      event: "before_model_request",
+      workspace: this.ports.config.workspace,
+      model: this.ports.config.model.model,
+      userPrompt: this.ports.getHookUserPrompt(),
+    });
     try {
       const response = await this.streamWithRetry(requestMessages, loop, step, source, tools);
       this.ports.contextManager.recordUsage(response.usage, usageAnchorMessages(requestMessages, response), tools);
-      await this.ports.fireHook({ event: "after_model_response", workspace: this.ports.config.workspace, model: this.ports.config.model.model, assistantText: response.text });
+      await this.ports.fireHook({
+        event: "after_model_response",
+        workspace: this.ports.config.workspace,
+        model: this.ports.config.model.model,
+        assistantText: response.text,
+      });
       return { messages: managedMessages, response };
     } catch (error) {
       if (isAbortError(error) || this.ports.getAbortSignal()?.aborted) throw error;
@@ -165,11 +175,17 @@ export class TurnRequester {
     loop: AgentLoop,
   ): Promise<Message[]> {
     let managedMessages = messages;
-    const beforeOffload = this.ports.contextManager.estimateTokens(withRuntimeReminders(managedMessages, reminders), tools);
+    const beforeOffload = this.ports.contextManager.estimateTokens(
+      withRuntimeReminders(managedMessages, reminders),
+      tools,
+    );
     const offload = await this.ports.contextManager.offloadAndSnip(managedMessages);
     managedMessages = this.ports.contextManager.refreshRecoveryMessage(offload.messages, tools);
     if (offload.replacementCount > 0 || offload.failedCount > 0) {
-      const afterOffload = this.ports.contextManager.estimateTokens(withRuntimeReminders(managedMessages, reminders), tools);
+      const afterOffload = this.ports.contextManager.estimateTokens(
+        withRuntimeReminders(managedMessages, reminders),
+        tools,
+      );
       await this.ports.emit("context_compaction", {
         phase: "offloaded",
         reason: "auto",
@@ -197,15 +213,17 @@ export class TurnRequester {
       sustainableRequestTokens * BUDGET_COMPACTION_HEADROOM,
       this.contextCompactionFloorTokens * BUDGET_COMPACTION_GROWTH_FACTOR,
     );
-    const compactForTokenBudget = tokenBudget > 0
-      && remainingBudget > 0
-      && loop.turns - this.lastContextCompactionTurn >= BUDGET_COMPACTION_COOLDOWN_TURNS
-      && beforeTokens >= budgetCompactionThreshold;
+    const compactForTokenBudget =
+      tokenBudget > 0 &&
+      remainingBudget > 0 &&
+      loop.turns - this.lastContextCompactionTurn >= BUDGET_COMPACTION_COOLDOWN_TURNS &&
+      beforeTokens >= budgetCompactionThreshold;
     if (!compactForContextWindow && !compactForTokenBudget) return managedMessages;
 
-    const budgetMessage = compactForTokenBudget && !compactForContextWindow
-      ? "Compacting early to keep the remaining model iterations within the task token budget."
-      : undefined;
+    const budgetMessage =
+      compactForTokenBudget && !compactForContextWindow
+        ? "Compacting early to keep the remaining model iterations within the task token budget."
+        : undefined;
     this.lastContextCompactionTurn = loop.turns;
     await this.ports.emit("context_compaction", {
       phase: "started",
@@ -289,17 +307,21 @@ export class TurnRequester {
           message,
         });
         const delayMs = modelRetryDelayMs(attempt);
-        this.ports.debugLogger(JSON.stringify({
-          event: "model_retry",
-          taskId: this.ports.getActiveTaskId(),
-          step,
-          source,
-          attempt,
-          nextAttempt: attempt + 1,
-          message,
-          delayMs,
-        }));
-        this.ports.logger(`Retrying ${source} response (${attempt + 1}/${this.ports.config.loop.maxRetries}) in ${delayMs}ms: ${message}`);
+        this.ports.debugLogger(
+          JSON.stringify({
+            event: "model_retry",
+            taskId: this.ports.getActiveTaskId(),
+            step,
+            source,
+            attempt,
+            nextAttempt: attempt + 1,
+            message,
+            delayMs,
+          }),
+        );
+        this.ports.logger(
+          `Retrying ${source} response (${attempt + 1}/${this.ports.config.loop.maxRetries}) in ${delayMs}ms: ${message}`,
+        );
         await sleepWithSignal(delayMs, this.ports.getAbortSignal());
       }
     }
@@ -343,23 +365,23 @@ export class TurnRequester {
         messageCount: messages.length,
         toolResultCount: messages.filter((message) => message.role === "tool").length,
       });
-      this.ports.debugLogger(JSON.stringify({
-        event: "model_request",
-        taskId: this.ports.getActiveTaskId(),
-        turnId,
-        step,
-        source,
-        attempt,
-        requestFingerprint,
-        estimatedRequestTokens,
-        taskTokensUsed: loop.tokensUsed,
-        messageCount: messages.length,
-        toolResultCount: messages.filter((message) => message.role === "tool").length,
-        tail: summarizeMessageTail(messages),
-      }));
-      const providerOptions = this.ports.getAbortSignal()
-        ? { signal: this.ports.getAbortSignal()! }
-        : undefined;
+      this.ports.debugLogger(
+        JSON.stringify({
+          event: "model_request",
+          taskId: this.ports.getActiveTaskId(),
+          turnId,
+          step,
+          source,
+          attempt,
+          requestFingerprint,
+          estimatedRequestTokens,
+          taskTokensUsed: loop.tokensUsed,
+          messageCount: messages.length,
+          toolResultCount: messages.filter((message) => message.role === "tool").length,
+          tail: summarizeMessageTail(messages),
+        }),
+      );
+      const providerOptions = this.ports.getAbortSignal() ? { signal: this.ports.getAbortSignal()! } : undefined;
       const modelStartedAt = Date.now();
       for await (const chunk of this.ports.provider.streamResponse(messages, tools, providerOptions)) {
         streamed ||= chunk.streamed;
@@ -383,7 +405,9 @@ export class TurnRequester {
             const call = parseCompletedToolCall(chunk.toolCall);
             const existing = completedToolCalls.get(chunk.toolCall.index);
             if (existing && !sameToolCall(existing, call)) {
-              throw new ProviderContractError(`provider emitted conflicting completed tool calls for index ${chunk.toolCall.index}`);
+              throw new ProviderContractError(
+                `provider emitted conflicting completed tool calls for index ${chunk.toolCall.index}`,
+              );
             }
             if (!existing) {
               completedToolCalls.set(chunk.toolCall.index, call);
@@ -401,7 +425,8 @@ export class TurnRequester {
             break;
         }
       }
-      if (!responseCompleted) throw new ProviderContractError("provider stream ended without a response_complete event");
+      if (!responseCompleted)
+        throw new ProviderContractError("provider stream ended without a response_complete event");
       loop.recordModelElapsed(Math.max(1, Date.now() - modelStartedAt));
       loop.recordUsage(usage);
       const normalizedCalls = [...completedToolCalls.entries()]
@@ -428,48 +453,82 @@ export class TurnRequester {
         usage,
         taskTokensUsed: loop.tokensUsed,
       });
-      this.ports.debugLogger(JSON.stringify({
-        event: "model_response",
-        taskId: this.ports.getActiveTaskId(),
-        turnId,
-        step,
-        source,
-        attempt,
-        toolCallChunkCount,
-        toolCalls: summarizeToolCalls(normalizedCalls),
-        responseFingerprint: fingerprintResponse(response),
-        finishReason,
-        usage,
-        taskTokensUsed: loop.tokensUsed,
-      }));
-      if (thoughtStarted) {
-        await this.ports.emit("thought_end", {
+      this.ports.debugLogger(
+        JSON.stringify({
+          event: "model_response",
+          taskId: this.ports.getActiveTaskId(),
+          turnId,
           step,
           source,
           attempt,
-          text: response.reasoning ?? "",
-          durationMs: Math.max(0, Date.now() - startedAt),
-        }, turnId);
+          toolCallChunkCount,
+          toolCalls: summarizeToolCalls(normalizedCalls),
+          responseFingerprint: fingerprintResponse(response),
+          finishReason,
+          usage,
+          taskTokensUsed: loop.tokensUsed,
+        }),
+      );
+      if (thoughtStarted) {
+        await this.ports.emit(
+          "thought_end",
+          {
+            step,
+            source,
+            attempt,
+            text: response.reasoning ?? "",
+            durationMs: Math.max(0, Date.now() - startedAt),
+          },
+          turnId,
+        );
       }
-      const displayText = this.ports.config.workMode === "plan" ? extractPlanText(response.text) || response.text : response.text;
-      await this.ports.emit("assistant_end", { step, source, attempt, text: displayText, toolCalls: response.toolCalls, usage, streamed: response.streamed, ...(finishReason !== undefined ? { finishReason } : {}) }, turnId);
+      const displayText =
+        this.ports.config.workMode === "plan" ? extractPlanText(response.text) || response.text : response.text;
+      await this.ports.emit(
+        "assistant_end",
+        {
+          step,
+          source,
+          attempt,
+          text: displayText,
+          toolCalls: response.toolCalls,
+          usage,
+          streamed: response.streamed,
+          ...(finishReason !== undefined ? { finishReason } : {}),
+        },
+        turnId,
+      );
       return response;
     } catch (error) {
       if (thoughtStarted) {
-        await this.ports.emit("thought_end", {
-          step,
-          source,
-          attempt,
-          text: reasoningParts.join(""),
-          durationMs: Math.max(0, Date.now() - startedAt),
-        }, turnId);
+        await this.ports.emit(
+          "thought_end",
+          {
+            step,
+            source,
+            attempt,
+            text: reasoningParts.join(""),
+            durationMs: Math.max(0, Date.now() - startedAt),
+          },
+          turnId,
+        );
       }
       const aborted = isAbortError(error) || this.ports.getAbortSignal()?.aborted;
       // A non-cancellation model error is reported by the outer `error` event.
       // Emitting assistant_abort as well makes the TUI show the same failure
       // twice: once as a bracketed assistant suffix and once as an Error block.
       if (aborted) {
-        await this.ports.emit("assistant_abort", { step, source, attempt, message: formatErrorMessage(error), ...(finishReason !== undefined ? { finishReason } : {}) }, turnId);
+        await this.ports.emit(
+          "assistant_abort",
+          {
+            step,
+            source,
+            attempt,
+            message: formatErrorMessage(error),
+            ...(finishReason !== undefined ? { finishReason } : {}),
+          },
+          turnId,
+        );
       }
       if (aborted && (textParts.length || completedToolCalls.size || reasoningParts.length)) {
         // Preserve partial assistant output so conversation history stays usable after cancel.

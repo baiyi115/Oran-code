@@ -46,26 +46,32 @@ export class StreamDebugTracker {
         this.turns.set(turnKey, turn);
       }
       const turn = this.turns.get(turnKey) ?? { deltaEvents: 0, deltaChars: 0 };
-      this.writeLog(JSON.stringify({
-        event: "runtime_stream",
-        type: event.type,
-        taskId: event.taskId,
-        ...(event.turnId ? { turnId: event.turnId } : {}),
-        sequence: event.sequence,
-        lastSequence,
-        sequenceGap,
-        deltaEvents: turn.deltaEvents,
-        deltaChars: turn.deltaChars,
-        ...(event.type === "assistant_end" ? {
-          finalChars: event.text.length,
-          finalCodePoints: [...event.text].length,
-        } : {}),
-      }));
+      this.writeLog(
+        JSON.stringify({
+          event: "runtime_stream",
+          type: event.type,
+          taskId: event.taskId,
+          ...(event.turnId ? { turnId: event.turnId } : {}),
+          sequence: event.sequence,
+          lastSequence,
+          sequenceGap,
+          deltaEvents: turn.deltaEvents,
+          deltaChars: turn.deltaChars,
+          ...(event.type === "assistant_end"
+            ? {
+                finalChars: event.text.length,
+                finalCodePoints: [...event.text].length,
+              }
+            : {}),
+        }),
+      );
       if (event.type === "assistant_end") this.turns.delete(turnKey);
     }
-    if (event.type === "completed"
-      || event.type === "cancelled"
-      || (event.type === "state" && (event.state === "failed" || event.state === "cancelled"))) {
+    if (
+      event.type === "completed" ||
+      event.type === "cancelled" ||
+      (event.type === "state" && (event.state === "failed" || event.state === "cancelled"))
+    ) {
       this.sequences.delete(event.taskId);
       for (const key of [...this.turns.keys()]) {
         if (key.startsWith(`${event.taskId}:`)) this.turns.delete(key);

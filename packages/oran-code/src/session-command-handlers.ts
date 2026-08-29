@@ -85,7 +85,9 @@ export class SessionCommandHandlers {
   async handlePermissionCommand(argument: string): Promise<void> {
     const value = argument.trim().toLowerCase();
     if (!value) {
-      this.port.renderer().status(`Permission mode: ${this.port.permissionMode()}. Valid modes: ${PERMISSION_MODES.join(", ")}.`, "cyan");
+      this.port
+        .renderer()
+        .status(`Permission mode: ${this.port.permissionMode()}. Valid modes: ${PERMISSION_MODES.join(", ")}.`, "cyan");
       return;
     }
     if (!(PERMISSION_MODES as readonly string[]).includes(value)) {
@@ -175,7 +177,9 @@ export class SessionCommandHandlers {
       const fresh = await loadConfig(this.port.workspace);
       const models = modelCandidates(fresh.providers);
       if (!argument) {
-        this.port.renderer().status(`Available models: ${models.length ? models.join(", ") : "(none configured)"}`, "cyan");
+        this.port
+          .renderer()
+          .status(`Available models: ${models.length ? models.join(", ") : "(none configured)"}`, "cyan");
         this.port.renderer().status(`Current model: ${this.port.modelLabel()}.`, "cyan");
         return true;
       }
@@ -203,8 +207,7 @@ export class SessionCommandHandlers {
       if (restored) {
         this.port.tui()?.restoreSessionView(restored, `Restored session ${restored.id}: ${restored.name}.`);
         if (!this.port.tui()) this.port.renderer().status(`Restored session ${restored.id}: ${restored.name}.`, "cyan");
-      }
-      else this.port.renderer().error(`Session not found: ${id}`);
+      } else this.port.renderer().error(`Session not found: ${id}`);
       return;
     }
     if (this.port.interactionRunning() || this.port.hasPendingApprovals()) {

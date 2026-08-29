@@ -5,7 +5,19 @@ import { promisify } from "node:util";
 import type { WorkspaceSnapshot } from "./types.js";
 
 const IGNORED_DIRS = new Set([".git", ".venv", "venv", "__pycache__", "node_modules", "dist", "build"]);
-const PROJECT_FILES = new Set(["README.md", "README", "AGENTS.md", "CLAUDE.md", "pyproject.toml", "package.json", "Cargo.toml", "go.mod", "pom.xml", "build.gradle", "tsconfig.json"]);
+const PROJECT_FILES = new Set([
+  "README.md",
+  "README",
+  "AGENTS.md",
+  "CLAUDE.md",
+  "pyproject.toml",
+  "package.json",
+  "Cargo.toml",
+  "go.mod",
+  "pom.xml",
+  "build.gradle",
+  "tsconfig.json",
+]);
 const WORKSPACE_SCAN_BUDGET_MS = 750;
 const GIT_STATUS_TIMEOUT_MS = 750;
 const MAX_SCAN_ENTRIES = 5_000;
@@ -41,11 +53,10 @@ export async function discoverWorkspace(rootPath: string, maxDepth = 4): Promise
     visited: 0,
     truncated: false,
   };
-  const [, git] = await Promise.all([
-    visit(root, 0, scan),
-    readGitMetadata(root),
-  ]);
-  scan.topLevel.sort((left, right) => Number(!left.isDirectory) - Number(!right.isDirectory) || left.name.localeCompare(right.name));
+  const [, git] = await Promise.all([visit(root, 0, scan), readGitMetadata(root)]);
+  scan.topLevel.sort(
+    (left, right) => Number(!left.isDirectory) - Number(!right.isDirectory) || left.name.localeCompare(right.name),
+  );
   scan.recent.sort((left, right) => right.mtime - left.mtime);
   const recentFiles = scan.recent.slice(0, 20).map((item) => item.path);
   const snapshot = {
@@ -103,7 +114,10 @@ async function visit(directoryPath: string, depth: number, state: ScanState): Pr
         await visit(absolutePath, depth + 1, state);
       } else if (entry.isFile()) {
         try {
-          state.recent.push({ mtime: (await stat(absolutePath)).mtimeMs, path: absolutePath.slice(state.root.length + 1) });
+          state.recent.push({
+            mtime: (await stat(absolutePath)).mtimeMs,
+            path: absolutePath.slice(state.root.length + 1),
+          });
         } catch {
           // Ignore unreadable entries while retaining the rest of the snapshot.
         }
@@ -123,11 +137,12 @@ function hasScanBudget(state: ScanState): boolean {
 async function readGitMetadata(root: string): Promise<GitMetadata> {
   const markerExists = await exists(resolve(root, ".git"));
   try {
-    const result = await execFileAsync(
-      "git",
-      ["-C", root, "status", "--porcelain=v2", "--branch"],
-      { encoding: "utf8", maxBuffer: 64 * 1024, timeout: GIT_STATUS_TIMEOUT_MS, windowsHide: true },
-    );
+    const result = await execFileAsync("git", ["-C", root, "status", "--porcelain=v2", "--branch"], {
+      encoding: "utf8",
+      maxBuffer: 64 * 1024,
+      timeout: GIT_STATUS_TIMEOUT_MS,
+      windowsHide: true,
+    });
     let branch: string | undefined;
     let dirty = false;
     for (const line of result.stdout.split(/\r?\n/)) {
@@ -141,5 +156,10 @@ async function readGitMetadata(root: string): Promise<GitMetadata> {
 }
 
 async function exists(path: string): Promise<boolean> {
-  try { await stat(path); return true; } catch { return false; }
+  try {
+    await stat(path);
+    return true;
+  } catch {
+    return false;
+  }
 }

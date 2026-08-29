@@ -125,9 +125,7 @@ describe("evaluateCondition", () => {
 
 describe("HookEngine compilation", () => {
   it("accepts valid rules without errors", () => {
-    const { engine } = makeEngine([
-      { event: "after_tool_call", action: { type: "command", command: "echo done" } },
-    ]);
+    const { engine } = makeEngine([{ event: "after_tool_call", action: { type: "command", command: "echo done" } }]);
     expect(engine.hasRules).toBe(true);
     expect(engine.getErrors()).toEqual([]);
   });
@@ -157,23 +155,31 @@ describe("HookEngine compilation", () => {
 describe("HookEngine dispatch", () => {
   it("only runs rules matching the event and condition", async () => {
     const deps = makeDeps();
-    const { engine } = makeEngine([
-      { event: "turn_start", action: { type: "command", command: "echo matched" } },
-      { event: "turn_start", if: "tool == write_file", action: { type: "command", command: "echo filtered" } },
-      { event: "turn_end", action: { type: "command", command: "other event" } },
-    ], deps);
+    const { engine } = makeEngine(
+      [
+        { event: "turn_start", action: { type: "command", command: "echo matched" } },
+        { event: "turn_start", if: "tool == write_file", action: { type: "command", command: "echo filtered" } },
+        { event: "turn_end", action: { type: "command", command: "other event" } },
+      ],
+      deps,
+    );
     const results = await engine.dispatch(context({ event: "turn_start", tool: toolCall("read_file") }));
     expect(results).toHaveLength(1);
     expect(results[0]?.output).toBe("hook stdout");
     expect(deps.runCommand).toHaveBeenCalledTimes(1);
-    expect(deps.runCommand).toHaveBeenCalledWith("echo matched", expect.objectContaining({ HOOK_EVENT: "turn_start" }), 1_000);
+    expect(deps.runCommand).toHaveBeenCalledWith(
+      "echo matched",
+      expect.objectContaining({ HOOK_EVENT: "turn_start" }),
+      1_000,
+    );
   });
 
   it("fires once rules a single time until reset", async () => {
     const deps = makeDeps();
-    const { engine } = makeEngine([
-      { id: "notify-once", event: "turn_start", once: true, action: { type: "command", command: "echo once" } },
-    ], deps);
+    const { engine } = makeEngine(
+      [{ id: "notify-once", event: "turn_start", once: true, action: { type: "command", command: "echo once" } }],
+      deps,
+    );
     await engine.dispatch(context({ event: "turn_start" }));
     await engine.dispatch(context({ event: "turn_start" }));
     expect(deps.runCommand).toHaveBeenCalledTimes(1);
@@ -184,9 +190,10 @@ describe("HookEngine dispatch", () => {
 
   it("routes async rule output into the notice queue instead of results", async () => {
     const deps = makeDeps();
-    const { engine } = makeEngine([
-      { event: "turn_end", async: true, action: { type: "command", command: "echo async" } },
-    ], deps);
+    const { engine } = makeEngine(
+      [{ event: "turn_end", async: true, action: { type: "command", command: "echo async" } }],
+      deps,
+    );
     const results = await engine.dispatch(context({ event: "turn_end" }));
     expect(results).toEqual([]);
     await vi.waitFor(() => {
@@ -198,15 +205,16 @@ describe("HookEngine dispatch", () => {
     const deps = makeDeps({
       runCommand: vi.fn(async () => ({ ok: false, stdout: "" })),
     });
-    const { engine } = makeEngine([
-      { event: "turn_end", async: true, onError: "fail", action: { type: "command", command: "exit 1" } },
-      { event: "turn_end", async: true, action: { type: "command", command: "exit 2" } },
-    ], deps);
+    const { engine } = makeEngine(
+      [
+        { event: "turn_end", async: true, onError: "fail", action: { type: "command", command: "exit 1" } },
+        { event: "turn_end", async: true, action: { type: "command", command: "exit 2" } },
+      ],
+      deps,
+    );
     await engine.dispatch(context({ event: "turn_end" }));
     await vi.waitFor(() => {
-      expect(deps.notices.drain()).toEqual([
-        { event: "turn_end", text: errorPrefix("hook turn_end:command failed") },
-      ]);
+      expect(deps.notices.drain()).toEqual([{ event: "turn_end", text: errorPrefix("hook turn_end:command failed") }]);
     });
   });
 });
@@ -214,10 +222,18 @@ describe("HookEngine dispatch", () => {
 describe("HookEngine dispatchBeforeTool", () => {
   it("stops dispatch and reports the intercept reason", async () => {
     const deps = makeDeps();
-    const { engine } = makeEngine([
-      { id: "guard", event: "before_tool_call", intercept: true, action: { type: "prompt", prompt: "blocked by policy" } },
-      { event: "before_tool_call", action: { type: "command", command: "echo never" } },
-    ], deps);
+    const { engine } = makeEngine(
+      [
+        {
+          id: "guard",
+          event: "before_tool_call",
+          intercept: true,
+          action: { type: "prompt", prompt: "blocked by policy" },
+        },
+        { event: "before_tool_call", action: { type: "command", command: "echo never" } },
+      ],
+      deps,
+    );
     const result = await engine.dispatchBeforeTool(context({ tool: toolCall("write_file") }));
     expect(result.intercepted).toBe(true);
     expect(result.interceptReason).toBe("blocked by policy");
@@ -227,9 +243,17 @@ describe("HookEngine dispatchBeforeTool", () => {
 
   it("never intercepts with async rules", async () => {
     const deps = makeDeps();
-    const { engine } = makeEngine([
-      { event: "before_tool_call", async: true, intercept: false, action: { type: "command", command: "echo side-effect" } },
-    ], deps);
+    const { engine } = makeEngine(
+      [
+        {
+          event: "before_tool_call",
+          async: true,
+          intercept: false,
+          action: { type: "command", command: "echo side-effect" },
+        },
+      ],
+      deps,
+    );
     const result = await engine.dispatchBeforeTool(context({ tool: toolCall("write_file") }));
     expect(result.intercepted).toBe(false);
     expect(result.results).toEqual([]);
@@ -244,9 +268,10 @@ describe("HookEngine dispatchBeforeTool", () => {
     const deps = makeDeps({
       runCommand: vi.fn(async () => ({ ok: false, stdout: "exit 1" })),
     });
-    const { engine } = makeEngine([
-      { event: "before_tool_call", onError, action: { type: "command", command: "exit 1" } },
-    ], deps);
+    const { engine } = makeEngine(
+      [{ event: "before_tool_call", onError, action: { type: "command", command: "exit 1" } }],
+      deps,
+    );
     const result = await engine.dispatchBeforeTool(context({ tool: toolCall("write_file") }));
     expect(result.intercepted).toBe(expected.intercepted);
     expect(result.results).toHaveLength(expected.resultCount);
@@ -264,9 +289,10 @@ describe("HookEngine dispatchBeforeTool", () => {
     const deps = makeDeps({
       runCommand: vi.fn(async () => ({ ok: false, stdout: "" })),
     });
-    const { engine } = makeEngine([
-      { event: "before_tool_call", onError: "fail", action: { type: "command", command: "exit 1" } },
-    ], deps);
+    const { engine } = makeEngine(
+      [{ event: "before_tool_call", onError: "fail", action: { type: "command", command: "exit 1" } }],
+      deps,
+    );
     const result = await engine.dispatchBeforeTool(context({ tool: toolCall("write_file") }));
     expect(result.results[0]?.output).toBe(errorPrefix("hook before_tool_call:command failed"));
   });
@@ -283,21 +309,19 @@ describe("executeAction", () => {
       false,
     );
     expect(result).toMatchObject({ ok: true, output: "hook stdout" });
-    expect(deps.runCommand).toHaveBeenCalledWith("echo hi", {
-      HOOK_EVENT: "after_tool_call",
-      HOOK_TOOL: "write_file",
-      HOOK_FILE_PATH: "src/a.ts",
-    }, 5_000);
+    expect(deps.runCommand).toHaveBeenCalledWith(
+      "echo hi",
+      {
+        HOOK_EVENT: "after_tool_call",
+        HOOK_TOOL: "write_file",
+        HOOK_FILE_PATH: "src/a.ts",
+      },
+      5_000,
+    );
   });
 
   it("returns the prompt output unchanged", async () => {
-    const result = await executeAction(
-      { type: "prompt", prompt: "please review" },
-      context(),
-      makeDeps(),
-      1_000,
-      true,
-    );
+    const result = await executeAction({ type: "prompt", prompt: "please review" }, context(), makeDeps(), 1_000, true);
     expect(result).toMatchObject({ ok: true, output: "please review", intercept: true });
   });
 
@@ -305,26 +329,29 @@ describe("executeAction", () => {
     const deps = makeDeps();
     const ok = await executeAction({ type: "http", url: "https://example.com/hook" }, context(), deps, 1_000, false);
     expect(ok).toMatchObject({ ok: true, output: "http body" });
-    expect(deps.fetch).toHaveBeenCalledWith("https://example.com/hook", expect.objectContaining({
-      method: "POST",
-      headers: { "content-type": "application/json" },
-    }));
+    expect(deps.fetch).toHaveBeenCalledWith(
+      "https://example.com/hook",
+      expect.objectContaining({
+        method: "POST",
+        headers: { "content-type": "application/json" },
+      }),
+    );
 
     const failing = makeDeps({
       fetch: vi.fn(async () => ({ ok: false, status: 500, body: "server error" })),
     });
-    const failed = await executeAction({ type: "http", url: "https://example.com/hook" }, context(), failing, 1_000, false);
+    const failed = await executeAction(
+      { type: "http", url: "https://example.com/hook" },
+      context(),
+      failing,
+      1_000,
+      false,
+    );
     expect(failed).toMatchObject({ ok: false, output: "HTTP 500: server error" });
   });
 
   it("requires a registered subagent executor", async () => {
-    const missing = await executeAction(
-      { type: "subagent", prompt: "explore" },
-      context(),
-      makeDeps(),
-      1_000,
-      false,
-    );
+    const missing = await executeAction({ type: "subagent", prompt: "explore" }, context(), makeDeps(), 1_000, false);
     expect(missing).toMatchObject({ ok: false, output: errorPrefix("subagent executor not registered") });
 
     const executor = vi.fn(async (): Promise<HookResult> => ({ output: "subagent done", ok: true, intercept: false }));
@@ -383,8 +410,9 @@ describe("extractHooks", () => {
     expect(extractHooks(null)).toEqual([]);
     expect(extractHooks("hooks")).toEqual([]);
     expect(extractHooks({ hooks: "nope" })).toEqual([]);
-    expect(extractHooks({ hooks: [null, "x", { event: "turn_start" }, { event: "turn_start", action: "nope" }] }))
-      .toHaveLength(4);
+    expect(
+      extractHooks({ hooks: [null, "x", { event: "turn_start" }, { event: "turn_start", action: "nope" }] }),
+    ).toHaveLength(4);
     // Malformed entries become invalid configs that the engine rejects at compile time.
     const engine = new HookEngine(extractHooks({ hooks: [{ event: "turn_start" }] }), {
       ...makeDeps(),

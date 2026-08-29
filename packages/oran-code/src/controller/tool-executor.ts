@@ -96,11 +96,13 @@ export class ToolBatchExecutor {
     loop: AgentLoop,
   ): Promise<ToolBatchExecutionSummary> {
     let workspaceMutated = false;
-    const readonlyOnly = calls.length > 0 && calls.every((call) => {
-      if (!this.ports.registry.has(call.name)) return false;
-      const tool = this.ports.registry.get(call.name);
-      return (tool.kind ?? inferToolKind(call.name)) === "readonly";
-    });
+    const readonlyOnly =
+      calls.length > 0 &&
+      calls.every((call) => {
+        if (!this.ports.registry.has(call.name)) return false;
+        const tool = this.ports.registry.get(call.name);
+        return (tool.kind ?? inferToolKind(call.name)) === "readonly";
+      });
     const concurrency = Math.max(1, this.ports.config.loop.readonlyConcurrency || 1);
     const deferredRecords: DeferredToolRecord[] = [];
     this.deferredRecords = deferredRecords;
@@ -198,14 +200,16 @@ export class ToolBatchExecutor {
           const cacheKey = kind === "readonly" && tool.cacheable !== false ? toolCallSignature(call) : undefined;
           if (cacheKey && this.ports.readonlyCache.has(cacheKey)) {
             const cached = this.ports.readonlyCache.get(cacheKey)!;
-            this.ports.debugLogger(JSON.stringify({
-              event: "tool_cached_duplicate",
-              taskId: task.id,
-              turn: this.ports.getTurnSequence(),
-              index,
-              tool: call.name,
-              arguments: summarizeArguments(call.arguments),
-            }));
+            this.ports.debugLogger(
+              JSON.stringify({
+                event: "tool_cached_duplicate",
+                taskId: task.id,
+                turn: this.ports.getTurnSequence(),
+                index,
+                tool: call.name,
+                arguments: summarizeArguments(call.arguments),
+              }),
+            );
             loop.record(call);
             prepared.push({
               index,
@@ -222,59 +226,86 @@ export class ToolBatchExecutor {
         }
 
         const executable = prepared.filter((item) => !item.skip);
-        if (this.ports.snapshotStore && this.ports.snapshotSessionId && executable.some((item) => this.isPotentiallyMutating(item.call))) {
+        if (
+          this.ports.snapshotStore &&
+          this.ports.snapshotSessionId &&
+          executable.some((item) => this.isPotentiallyMutating(item.call))
+        ) {
           try {
             await this.ports.snapshotStore.begin(this.ports.snapshotSessionId, task);
           } catch (error) {
-            this.ports.debugLogger(JSON.stringify({ event: "snapshot_begin_failed", taskId: task.id, error: formatErrorMessage(error) }));
+            this.ports.debugLogger(
+              JSON.stringify({ event: "snapshot_begin_failed", taskId: task.id, error: formatErrorMessage(error) }),
+            );
           }
         }
         const results = new Map<number, { call: ToolCall; result: ToolResult; duration: number; mutated: boolean }>();
         for (let offset = 0; offset < executable.length; offset += concurrency) {
           this.ports.throwIfCancelled();
           const slice = executable.slice(offset, offset + concurrency);
-          await Promise.all(slice.map(async (item) => {
-            const started = Date.now();
-            this.ports.debugLogger(JSON.stringify({
-              event: "tool_execute_start",
-              taskId: task.id,
-              turn: this.ports.getTurnSequence(),
-              index: item.index,
-              callId: item.call.id,
-              tool: item.call.name,
-              arguments: summarizeArguments(item.call.arguments),
-            }));
-            const beforeWorkspace = this.isPotentiallyMutating(item.call) ? await workspaceFingerprint(task.workspace) : undefined;
-            const before = await fileHash(task.workspace, item.call);
-            let result: ToolResult;
-            try {
-              const executionContext = this.ports.getAbortSignal()
-                ? { workspace: task.workspace, signal: this.ports.getAbortSignal()! }
-                : { workspace: task.workspace };
-              result = await this.ports.registry.invoke(item.call, executionContext);
-            } catch (error) {
-              if (isAbortError(error) || this.ports.getAbortSignal()?.aborted) {
-                result = { ok: false, output: "", error: "tool cancelled", summary: "cancelled", metadata: { cancelled: true } };
-              } else {
-                result = { ok: false, output: "", error: error instanceof Error ? error.message : String(error) };
+          await Promise.all(
+            slice.map(async (item) => {
+              const started = Date.now();
+              this.ports.debugLogger(
+                JSON.stringify({
+                  event: "tool_execute_start",
+                  taskId: task.id,
+                  turn: this.ports.getTurnSequence(),
+                  index: item.index,
+                  callId: item.call.id,
+                  tool: item.call.name,
+                  arguments: summarizeArguments(item.call.arguments),
+                }),
+              );
+              const beforeWorkspace = this.isPotentiallyMutating(item.call)
+                ? await workspaceFingerprint(task.workspace)
+                : undefined;
+              const before = await fileHash(task.workspace, item.call);
+              let result: ToolResult;
+              try {
+                const executionContext = this.ports.getAbortSignal()
+                  ? { workspace: task.workspace, signal: this.ports.getAbortSignal()! }
+                  : { workspace: task.workspace };
+                result = await this.ports.registry.invoke(item.call, executionContext);
+              } catch (error) {
+                if (isAbortError(error) || this.ports.getAbortSignal()?.aborted) {
+                  result = {
+                    ok: false,
+                    output: "",
+                    error: "tool cancelled",
+                    summary: "cancelled",
+                    metadata: { cancelled: true },
+                  };
+                } else {
+                  result = { ok: false, output: "", error: error instanceof Error ? error.message : String(error) };
+                }
               }
-            }
-            const duration = Date.now() - started;
-            const after = await fileHash(task.workspace, item.call);
-            const afterWorkspace = beforeWorkspace === undefined ? undefined : await workspaceFingerprint(task.workspace);
-            const mutated = beforeWorkspace !== undefined && afterWorkspace !== undefined && beforeWorkspace !== afterWorkspace;
-            if (before && after && before.hash !== after.hash) {
-              this.ports.trace.appendFileChange(task.id, before.path, before.hash, after.hash);
-            }
-            result = await this.offloadLargeToolResult(task, item.call, result);
-            const executedResult = { ...result, durationMs: duration };
-            const tool = this.ports.registry.get(item.call.name);
-            if (result.ok && (tool.kind ?? inferToolKind(item.call.name)) === "readonly" && tool.cacheable !== false) {
-              const cacheKey = toolCallSignature(item.call);
-              this.ports.readonlyCache.set(cacheKey, { ...executedResult, metadata: { ...executedResult.metadata, cached: false } });
-            }
-            results.set(item.index, { call: item.call, result: executedResult, duration, mutated });
-          }));
+              const duration = Date.now() - started;
+              const after = await fileHash(task.workspace, item.call);
+              const afterWorkspace =
+                beforeWorkspace === undefined ? undefined : await workspaceFingerprint(task.workspace);
+              const mutated =
+                beforeWorkspace !== undefined && afterWorkspace !== undefined && beforeWorkspace !== afterWorkspace;
+              if (before && after && before.hash !== after.hash) {
+                this.ports.trace.appendFileChange(task.id, before.path, before.hash, after.hash);
+              }
+              result = await this.offloadLargeToolResult(task, item.call, result);
+              const executedResult = { ...result, durationMs: duration };
+              const tool = this.ports.registry.get(item.call.name);
+              if (
+                result.ok &&
+                (tool.kind ?? inferToolKind(item.call.name)) === "readonly" &&
+                tool.cacheable !== false
+              ) {
+                const cacheKey = toolCallSignature(item.call);
+                this.ports.readonlyCache.set(cacheKey, {
+                  ...executedResult,
+                  metadata: { ...executedResult.metadata, cached: false },
+                });
+              }
+              results.set(item.index, { call: item.call, result: executedResult, duration, mutated });
+            }),
+          );
         }
 
         // Write back in original model order (skipped + executed).
@@ -313,38 +344,38 @@ export class ToolBatchExecutor {
     cancelled: boolean,
   ): Promise<void> {
     const pairedIds = new Set(
-      messages
-        .filter((message) => message.role === "tool" && message.toolCallId)
-        .map((message) => message.toolCallId!),
+      messages.filter((message) => message.role === "tool" && message.toolCallId).map((message) => message.toolCallId!),
     );
     const blockedBeforeExecution = !cancelled && reason.includes("blocked before execution");
     for (const [index, call] of calls.entries()) {
       const id = ensureCallId(call, this.ports.contextManager);
       if (pairedIds.has(id)) continue;
-      await this.recordTool(task, messages, call, index, {
-        ok: false,
-        output: "",
-        error: reason,
-        summary: cancelled
-          ? "cancelled"
-          : blockedBeforeExecution
-            ? "blocked before execution"
-            : "not completed",
-        metadata: {
-          ...(cancelled ? { cancelled: true } : {}),
-          ...(blockedBeforeExecution ? { blockedBeforeExecution: true } : {}),
-          reconciled: true,
+      await this.recordTool(
+        task,
+        messages,
+        call,
+        index,
+        {
+          ok: false,
+          output: "",
+          error: reason,
+          summary: cancelled ? "cancelled" : blockedBeforeExecution ? "blocked before execution" : "not completed",
+          metadata: {
+            ...(cancelled ? { cancelled: true } : {}),
+            ...(blockedBeforeExecution ? { blockedBeforeExecution: true } : {}),
+            reconciled: true,
+          },
         },
-      }, 0, { executed: false });
+        0,
+        { executed: false },
+      );
       pairedIds.add(id);
     }
   }
 
   isPotentiallyMutating(call: ToolCall): boolean {
     const tool = this.ports.registry.has(call.name) ? this.ports.registry.get(call.name) : undefined;
-    return tool
-      ? (tool.kind ?? inferToolKind(call.name)) !== "readonly"
-      : isMutatingToolName(call.name);
+    return tool ? (tool.kind ?? inferToolKind(call.name)) !== "readonly" : isMutatingToolName(call.name);
   }
 
   private async authorizeTool(
@@ -427,10 +458,12 @@ export class ToolBatchExecutor {
     records: readonly DeferredToolRecord[],
   ): Promise<void> {
     if (!records.length) return;
-    const offload = await this.ports.contextManager.offloadToolResults(records.map((record) => ({
-      id: record.call.id ?? `call_${record.call.name}`,
-      content: record.result.output || record.result.error || "",
-    })));
+    const offload = await this.ports.contextManager.offloadToolResults(
+      records.map((record) => ({
+        id: record.call.id ?? `call_${record.call.name}`,
+        content: record.result.output || record.result.error || "",
+      })),
+    );
     if (offload.offloadedCount > 0 || offload.failedCount > 0) {
       const payload: RuntimeEventPayloads["context_compaction"] = {
         phase: "offloaded",
@@ -442,19 +475,21 @@ export class ToolBatchExecutor {
     }
     for (const record of records) {
       const replacement = offload.replacements.get(record.call.id ?? `call_${record.call.name}`);
-      const result = replacement === undefined
-        ? record.result
-        : {
-            ...record.result,
-            output: replacement,
-            ...(record.result.error ? { error: "tool failed; details offloaded" } : {}),
-            metadata: {
-              ...record.result.metadata,
-              offloaded: true,
-              originalBytes: record.result.metadata?.originalBytes
-                ?? Buffer.byteLength(record.result.output || record.result.error || "", "utf8"),
-            },
-          };
+      const result =
+        replacement === undefined
+          ? record.result
+          : {
+              ...record.result,
+              output: replacement,
+              ...(record.result.error ? { error: "tool failed; details offloaded" } : {}),
+              metadata: {
+                ...record.result.metadata,
+                offloaded: true,
+                originalBytes:
+                  record.result.metadata?.originalBytes ??
+                  Buffer.byteLength(record.result.output || record.result.error || "", "utf8"),
+              },
+            };
       await this.recordToolNow(task, messages, record.call, record.index, result, record.duration, record.executed);
     }
   }
@@ -473,14 +508,16 @@ export class ToolBatchExecutor {
       replacementCount: 1,
       ...(offload.failedCount > 0 ? { message: "A large tool result could not be offloaded." } : {}),
     });
-    this.ports.debugLogger(JSON.stringify({
-      event: "tool_result_offloaded_immediately",
-      taskId: task.id,
-      turn: this.ports.getTurnSequence(),
-      callId: call.id,
-      tool: call.name,
-      originalBytes: bytes,
-    }));
+    this.ports.debugLogger(
+      JSON.stringify({
+        event: "tool_result_offloaded_immediately",
+        taskId: task.id,
+        turn: this.ports.getTurnSequence(),
+        callId: call.id,
+        tool: call.name,
+        originalBytes: bytes,
+      }),
+    );
     return {
       ...result,
       output: replacement,
@@ -502,7 +539,11 @@ export class ToolBatchExecutor {
     this.ports.getLoop()?.recordResult(call, result);
     if (call.name === "update_plan" && result.ok && result.output) {
       try {
-        const parsed = JSON.parse(result.output) as { goal?: string; steps?: TaskPlanStep[]; currentStepIndex?: number };
+        const parsed = JSON.parse(result.output) as {
+          goal?: string;
+          steps?: TaskPlanStep[];
+          currentStepIndex?: number;
+        };
         if (parsed && typeof parsed.goal === "string" && Array.isArray(parsed.steps)) {
           const planState: TaskPlanState = {
             goal: parsed.goal,
@@ -515,15 +556,40 @@ export class ToolBatchExecutor {
           await this.ports.emit("task_plan_updated", { planState });
         }
       } catch (error) {
-        this.ports.debugLogger(JSON.stringify({ event: "update_plan_parse_failed", taskId: task.id, error: error instanceof Error ? error.message : String(error) }));
+        this.ports.debugLogger(
+          JSON.stringify({
+            event: "update_plan_parse_failed",
+            taskId: task.id,
+            error: error instanceof Error ? error.message : String(error),
+          }),
+        );
       }
     }
-    this.ports.trace.appendToolCall(task.id, call.name, call.arguments, output, result.ok, duration, this.ports.getModelResponseStepId());
+    this.ports.trace.appendToolCall(
+      task.id,
+      call.name,
+      call.arguments,
+      output,
+      result.ok,
+      duration,
+      this.ports.getModelResponseStepId(),
+    );
     await this.ports.emit("tool_result", { call, index, result: { ...result, durationMs: duration } });
     if (executed) {
-      await this.ports.fireHook({ event: "after_tool_call", workspace: task.workspace, model: this.ports.config.model.model, tool: call, filePath: extractToolFilePath(call) });
+      await this.ports.fireHook({
+        event: "after_tool_call",
+        workspace: task.workspace,
+        model: this.ports.config.model.model,
+        tool: call,
+        filePath: extractToolFilePath(call),
+      });
     }
-    messages.push({ role: "tool", content: output || "(empty result)", toolCallId: call.id ?? `call_${call.name}`, name: call.name });
+    messages.push({
+      role: "tool",
+      content: output || "(empty result)",
+      toolCallId: call.id ?? `call_${call.name}`,
+      name: call.name,
+    });
     this.ports.syncConversation(messages);
     this.ports.appendDiagnosticStep("tool_result", {
       step: this.ports.getTurnSequence(),
@@ -537,19 +603,21 @@ export class ToolBatchExecutor {
       executed,
       metadata: result.metadata,
     });
-    this.ports.debugLogger(JSON.stringify({
-      event: "tool_result",
-      taskId: task.id,
-      turn: this.ports.getTurnSequence(),
-      index,
-      callId: call.id,
-      tool: call.name,
-      arguments: summarizeArguments(call.arguments),
-      ok: result.ok,
-      outputBytes: Buffer.byteLength(output, "utf8"),
-      resultAppended: true,
-      executed,
-      metadata: result.metadata,
-    }));
+    this.ports.debugLogger(
+      JSON.stringify({
+        event: "tool_result",
+        taskId: task.id,
+        turn: this.ports.getTurnSequence(),
+        index,
+        callId: call.id,
+        tool: call.name,
+        arguments: summarizeArguments(call.arguments),
+        ok: result.ok,
+        outputBytes: Buffer.byteLength(output, "utf8"),
+        resultAppended: true,
+        executed,
+        metadata: result.metadata,
+      }),
+    );
   }
 }

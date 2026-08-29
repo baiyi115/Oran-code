@@ -276,7 +276,7 @@ export class BackgroundAgentTaskManager {
   }
 
   async waitForIdle(): Promise<void> {
-    await Promise.allSettled(this.list().flatMap((task) => task.promise ? [task.promise] : []));
+    await Promise.allSettled(this.list().flatMap((task) => (task.promise ? [task.promise] : [])));
   }
 
   drainNotifications(): readonly BackgroundAgentTask[] {

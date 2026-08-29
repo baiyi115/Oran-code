@@ -60,19 +60,25 @@ function makeTool(
   };
 }
 
-function makeHarness(workspace: string, options: {
-  tools?: ToolDefinition[];
-  workMode?: RuntimeConfig["workMode"];
-  checkBeforeToolHook?: (task: Parameters<ToolExecutorPorts["checkBeforeToolHook"]>[0], call: ToolCall) => Promise<ToolResult | undefined>;
-  snapshotStore?: SnapshotStorePort;
-  getAbortSignal?: () => AbortSignal | undefined;
-  offload?: (candidates: readonly { id: string; content: string }[]) => Promise<{
-    replacements: Map<string, string>;
-    offloadedCount: number;
-    failedCount: number;
-  }>;
-  shouldStopForUnknownTools?: boolean;
-} = {}) {
+function makeHarness(
+  workspace: string,
+  options: {
+    tools?: ToolDefinition[];
+    workMode?: RuntimeConfig["workMode"];
+    checkBeforeToolHook?: (
+      task: Parameters<ToolExecutorPorts["checkBeforeToolHook"]>[0],
+      call: ToolCall,
+    ) => Promise<ToolResult | undefined>;
+    snapshotStore?: SnapshotStorePort;
+    getAbortSignal?: () => AbortSignal | undefined;
+    offload?: (candidates: readonly { id: string; content: string }[]) => Promise<{
+      replacements: Map<string, string>;
+      offloadedCount: number;
+      failedCount: number;
+    }>;
+    shouldStopForUnknownTools?: boolean;
+  } = {},
+) {
   const events: Array<{ type: string; payload: Record<string, unknown> }> = [];
   const hookCalls: HookEventPortContext[] = [];
 
@@ -82,7 +88,8 @@ function makeHarness(workspace: string, options: {
   let callIdCounter = 0;
   const contextManager = {
     claimToolCallId: () => `call_${++callIdCounter}`,
-    offloadToolResults: options.offload ?? (async () => ({ replacements: new Map(), offloadedCount: 0, failedCount: 0 })),
+    offloadToolResults:
+      options.offload ?? (async () => ({ replacements: new Map(), offloadedCount: 0, failedCount: 0 })),
   } as unknown as ContextManager;
 
   const trace = { appendToolCall: vi.fn(), appendFileChange: vi.fn() } as unknown as TraceStore;
@@ -179,7 +186,6 @@ describe("ToolBatchExecutor batching", () => {
     const summary = await executor.runTools(task, messages, [call("slow_a"), call("fast_b")], loopStub);
 
     expect(summary).toEqual({ workspaceMutated: false, readonlyOnly: true });
-    const startA = execLog.find((entry) => entry.name === "slow_a" && entry.event === "start")!;
     const endA = execLog.find((entry) => entry.name === "slow_a" && entry.event === "end")!;
     const startB = execLog.find((entry) => entry.name === "fast_b" && entry.event === "start")!;
     expect(startB.at).toBeLessThan(endA.at);
@@ -210,9 +216,12 @@ describe("ToolBatchExecutor batching", () => {
     expect(summary.readonlyOnly).toBe(false);
     const sequence = execLog.map((entry) => `${entry.name}:${entry.event}`);
     expect(sequence).toEqual([
-      "read_a:start", "read_a:end",
-      "run_command:start", "run_command:end",
-      "read_b:start", "read_b:end",
+      "read_a:start",
+      "read_a:end",
+      "run_command:start",
+      "run_command:end",
+      "read_b:start",
+      "read_b:end",
     ]);
   });
 
@@ -235,24 +244,28 @@ describe("ToolBatchExecutor batching", () => {
   it("denies non-plan tools in plan mode while readonly tools keep running", async () => {
     const workspace = await makeWorkspace();
     const { executor, events, loopStub } = makeHarness(workspace, {
-      tools: [
-        makeTool("write_file", "write"),
-        makeTool("read_file", "readonly"),
-      ],
+      tools: [makeTool("write_file", "write"), makeTool("read_file", "readonly")],
       workMode: "plan",
     });
     const task = createTask(workspace, "plan mode");
     const messages = runMessages();
 
-    await executor.runTools(task, messages, [call("write_file", { path: "a.ts" }), call("read_file", { path: "a.ts" })], loopStub);
+    await executor.runTools(
+      task,
+      messages,
+      [call("write_file", { path: "a.ts" }), call("read_file", { path: "a.ts" })],
+      loopStub,
+    );
 
-    const writeEvent = events.find((event) => event.type === "tool_result"
-      && (event.payload as { call: ToolCall }).call.name === "write_file");
+    const writeEvent = events.find(
+      (event) => event.type === "tool_result" && (event.payload as { call: ToolCall }).call.name === "write_file",
+    );
     const writeResult = (writeEvent?.payload as { result: ToolResult }).result;
     expect(writeResult.ok).toBe(false);
     expect(writeResult.metadata?.permissionDenied).toBe(true);
-    const readEvent = events.find((event) => event.type === "tool_result"
-      && (event.payload as { call: ToolCall }).call.name === "read_file");
+    const readEvent = events.find(
+      (event) => event.type === "tool_result" && (event.payload as { call: ToolCall }).call.name === "read_file",
+    );
     expect((readEvent?.payload as { result: ToolResult }).result.ok).toBe(true);
   });
 
@@ -275,7 +288,12 @@ describe("ToolBatchExecutor batching", () => {
 
   it("starts a snapshot when an executable mutating tool is present", async () => {
     const workspace = await makeWorkspace();
-    const snapshotStore = { begin: vi.fn(async () => {}), finalize: vi.fn(async () => {}), undoLatest: vi.fn(), list: vi.fn() };
+    const snapshotStore = {
+      begin: vi.fn(async () => {}),
+      finalize: vi.fn(async () => {}),
+      undoLatest: vi.fn(),
+      list: vi.fn(),
+    };
     const { executor, loopStub } = makeHarness(workspace, {
       tools: [makeTool("write_file", "write")],
       snapshotStore: snapshotStore as unknown as SnapshotStorePort,
@@ -320,9 +338,11 @@ describe("ToolBatchExecutor failure handling", () => {
   it("wraps thrown errors as failed tool results", async () => {
     const workspace = await makeWorkspace();
     const { executor, loopStub } = makeHarness(workspace, {
-      tools: [makeTool("read_file", "readonly", async () => {
-        throw new Error("disk full");
-      })],
+      tools: [
+        makeTool("read_file", "readonly", async () => {
+          throw new Error("disk full");
+        }),
+      ],
     });
     const task = createTask(workspace, "error");
     const messages = runMessages();
@@ -337,9 +357,11 @@ describe("ToolBatchExecutor failure handling", () => {
     const abortController = new AbortController();
     abortController.abort();
     const { executor, events, loopStub } = makeHarness(workspace, {
-      tools: [makeTool("read_file", "readonly", async () => {
-        throw new DOMException("operation aborted", "AbortError");
-      })],
+      tools: [
+        makeTool("read_file", "readonly", async () => {
+          throw new DOMException("operation aborted", "AbortError");
+        }),
+      ],
       getAbortSignal: () => abortController.signal,
     });
     const task = createTask(workspace, "cancelled");
@@ -360,7 +382,10 @@ describe("ToolBatchExecutor failure handling", () => {
     const task = createTask(workspace, "hooks");
     await executor.runTools(task, [], [call("read_file", { path: "a.ts" })], loopStub);
     expect(hookCalls).toHaveLength(1);
-    expect(hookCalls[0]).toMatchObject({ event: "after_tool_call", tool: expect.objectContaining({ name: "read_file" }) });
+    expect(hookCalls[0]).toMatchObject({
+      event: "after_tool_call",
+      tool: expect.objectContaining({ name: "read_file" }),
+    });
   });
 });
 
@@ -388,7 +413,13 @@ describe("ToolBatchExecutor reconcileToolCalls", () => {
     const task = createTask(workspace, "reconcile cancelled");
     const messages: Parameters<ToolBatchExecutor["reconcileToolCalls"]>[1] = [];
 
-    await executor.reconcileToolCalls(task, messages, [call("run_command", { command: "ls" })], "blocked before execution", true);
+    await executor.reconcileToolCalls(
+      task,
+      messages,
+      [call("run_command", { command: "ls" })],
+      "blocked before execution",
+      true,
+    );
 
     expect(messages[0]?.content).toBe("blocked before execution");
     expect(messages[0]).toMatchObject({ role: "tool" });
@@ -399,14 +430,16 @@ describe("ToolBatchExecutor plan tracking and offload", () => {
   it("updates task plan state from update_plan results", async () => {
     const workspace = await makeWorkspace();
     const { executor, events, loopStub } = makeHarness(workspace, {
-      tools: [makeTool("update_plan", "command", async () => ({
-        ok: true,
-        output: JSON.stringify({
-          goal: "ship it",
-          steps: [{ id: "1", title: "first", status: "in_progress" }],
-          currentStepIndex: 0,
-        }),
-      }))],
+      tools: [
+        makeTool("update_plan", "command", async () => ({
+          ok: true,
+          output: JSON.stringify({
+            goal: "ship it",
+            steps: [{ id: "1", title: "first", status: "in_progress" }],
+            currentStepIndex: 0,
+          }),
+        })),
+      ],
     });
     const task = createTask(workspace, "plan");
     const messages = runMessages();
@@ -442,10 +475,12 @@ describe("ToolBatchExecutor file change tracking", () => {
     const workspace = await makeWorkspace();
     await writeFile(join(workspace, "a.ts"), "before", "utf8");
     const { executor, ports, loopStub } = makeHarness(workspace, {
-      tools: [makeTool("write_file", "write", async () => {
-        await writeFile(join(workspace, "a.ts"), "after-longer-content", "utf8");
-        return { ok: true, output: "written" };
-      })],
+      tools: [
+        makeTool("write_file", "write", async () => {
+          await writeFile(join(workspace, "a.ts"), "after-longer-content", "utf8");
+          return { ok: true, output: "written" };
+        }),
+      ],
     });
     const task = createTask(workspace, "hash tracking");
 

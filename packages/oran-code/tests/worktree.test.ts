@@ -71,7 +71,11 @@ describe("filesystem git state", () => {
     await writeFile(join(worktree, ".git"), `gitdir: ${gitDir}\n`, "utf8");
     await writeFile(join(gitDir, "commondir"), "../..\n", "utf8");
     await writeFile(join(gitDir, "HEAD"), "ref: refs/heads/demo\n", "utf8");
-    await writeFile(join(commonDir, "packed-refs"), `# pack-refs\n${sha} refs/heads/demo\n^${"2".repeat(40)}\n`, "utf8");
+    await writeFile(
+      join(commonDir, "packed-refs"),
+      `# pack-refs\n${sha} refs/heads/demo\n^${"2".repeat(40)}\n`,
+      "utf8",
+    );
 
     expect(await resolveGitDir(worktree)).toBe(resolve(gitDir));
     expect(await readWorktreeHead(worktree)).toEqual({ commit: sha, branch: "demo" });
@@ -179,19 +183,26 @@ describe("deferred worktree tools", () => {
     expect(schemaNames(registry)).toContain("search_tools");
     expect(schemaNames(registry)).not.toContain("enter_worktree");
     expect(schemaNames(registry)).not.toContain("exit_worktree");
-    await expect(invoke(registry, "enter_worktree", { slug: "demo" })).resolves.toMatchObject({ ok: false, summary: "not activated" });
+    await expect(invoke(registry, "enter_worktree", { slug: "demo" })).resolves.toMatchObject({
+      ok: false,
+      summary: "not activated",
+    });
 
     const found = await invoke(registry, "search_tools", { query: "worktree" });
     expect(found.ok).toBe(true);
     expect(found.output).toContain("enter_worktree");
     expect(found.output).toContain("exit_worktree");
 
-    await expect(invoke(registry, "search_tools", { query: "select:enter_worktree" })).resolves.toMatchObject({ ok: true, summary: "activated enter_worktree" });
+    await expect(invoke(registry, "search_tools", { query: "select:enter_worktree" })).resolves.toMatchObject({
+      ok: true,
+      summary: "activated enter_worktree",
+    });
     expect(schemaNames(registry)).toContain("enter_worktree");
     expect(schemaNames(registry)).not.toContain("exit_worktree");
     await invoke(registry, "search_tools", { query: "select:exit_worktree" });
-    await expect(invoke(registry, "exit_worktree", { path: workspace, branch: "main", repoRoot: workspace }))
-      .resolves.toMatchObject({ ok: false, summary: "invalid branch" });
+    await expect(
+      invoke(registry, "exit_worktree", { path: workspace, branch: "main", repoRoot: workspace }),
+    ).resolves.toMatchObject({ ok: false, summary: "invalid branch" });
   });
 
   it("runs commands in a safe relative cwd", async () => {
@@ -202,10 +213,15 @@ describe("deferred worktree tools", () => {
     registerBuiltinTools(registry, workspace);
     registry.activateAll();
 
-    const result = await invoke(registry, "run_command", { command: "node -e \"console.log(process.cwd())\"", cwd: "subdir" });
+    const result = await invoke(registry, "run_command", {
+      command: 'node -e "console.log(process.cwd())"',
+      cwd: "subdir",
+    });
     expect(result.ok).toBe(true);
     expect(result.output.trim().toLowerCase()).toBe(subdirectory.toLowerCase());
-    await expect(invoke(registry, "run_command", { command: "node --version", cwd: "../escape" })).resolves.toMatchObject({ ok: false, summary: "invalid arguments" });
+    await expect(
+      invoke(registry, "run_command", { command: "node --version", cwd: "../escape" }),
+    ).resolves.toMatchObject({ ok: false, summary: "invalid arguments" });
   });
 });
 
@@ -220,14 +236,18 @@ describe("subagent isolation metadata", () => {
     const user = join(root, "user");
     const project = join(root, "project");
     await mkdir(project, { recursive: true });
-    await writeFile(join(project, "isolated.md"), [
-      "---",
-      "name: isolated",
-      "description: Work inside an isolated checkout.",
-      "isolation: worktree",
-      "---",
-      "Use worktree tools when isolation is needed.",
-    ].join("\n"), "utf8");
+    await writeFile(
+      join(project, "isolated.md"),
+      [
+        "---",
+        "name: isolated",
+        "description: Work inside an isolated checkout.",
+        "isolation: worktree",
+        "---",
+        "Use worktree tools when isolation is needed.",
+      ].join("\n"),
+      "utf8",
+    );
 
     const loader = new AgentDefinitionLoader(root, { user, project });
     await loader.scan();
@@ -252,7 +272,15 @@ async function createGitFixture(prefix: string): Promise<GitFixture> {
 }
 
 async function commit(root: string, message: string): Promise<void> {
-  await runGit(root, ["-c", "user.name=Oran Test", "-c", "user.email=oran-test@example.invalid", "commit", "-m", message]);
+  await runGit(root, [
+    "-c",
+    "user.name=Oran Test",
+    "-c",
+    "user.email=oran-test@example.invalid",
+    "commit",
+    "-m",
+    message,
+  ]);
 }
 
 async function runGit(root: string, args: readonly string[]): Promise<string> {

@@ -1,5 +1,11 @@
 import { loadConfig, resolveModelConfig } from "./config.js";
-import { firstConversationPrompt, isAutomaticSessionName, truncateSessionName, type SessionStore, type StoredSession } from "./session-store.js";
+import {
+  firstConversationPrompt,
+  isAutomaticSessionName,
+  truncateSessionName,
+  type SessionStore,
+  type StoredSession,
+} from "./session-store.js";
 import type { ModelConfig, ModelProvider, SessionTitleMode, UserConfig } from "./types.js";
 
 export interface SessionTitleServiceDependencies {
@@ -46,9 +52,10 @@ export class SessionTitleService {
   }
 
   private async generate(sessionId: string, model: ModelConfig, signal: AbortSignal): Promise<void> {
-    const stored = await this.deps.sessionStore.ensureConversation(sessionId) ?? this.deps.sessionStore.find(sessionId);
+    const stored =
+      (await this.deps.sessionStore.ensureConversation(sessionId)) ?? this.deps.sessionStore.find(sessionId);
     const prompt = firstConversationPrompt(stored?.conversation ?? []);
-    if (!prompt || !await this.markAttempted(sessionId)) return;
+    if (!prompt || !(await this.markAttempted(sessionId))) return;
 
     const configuredTitleModel = this.deps.config().sessionTitles?.model;
     const configuredModel = configuredTitleModel
@@ -59,13 +66,18 @@ export class SessionTitleService {
       temperature: Math.min(configuredModel.temperature, 0.2),
       maxTokens: Math.min(configuredModel.maxTokens, 64),
     };
-    const response = await this.deps.providerFactory(titleModel).complete([
-      {
-        role: "system",
-        content: "Create a concise session title for a coding-agent conversation. Return only the title: 12-24 Chinese characters or at most 8 English words. Do not use quotes, markdown, trailing punctuation, or generic labels.",
-      },
-      { role: "user", content: prompt.slice(0, 2_000) },
-    ], [], { signal: AbortSignal.any([signal, AbortSignal.timeout(15_000)]) });
+    const response = await this.deps.providerFactory(titleModel).complete(
+      [
+        {
+          role: "system",
+          content:
+            "Create a concise session title for a coding-agent conversation. Return only the title: 12-24 Chinese characters or at most 8 English words. Do not use quotes, markdown, trailing punctuation, or generic labels.",
+        },
+        { role: "user", content: prompt.slice(0, 2_000) },
+      ],
+      [],
+      { signal: AbortSignal.any([signal, AbortSignal.timeout(15_000)]) },
+    );
     const title = normalizeGeneratedSessionTitle(response.text);
     if (!title) return;
     await this.persist(sessionId, title);
@@ -74,7 +86,13 @@ export class SessionTitleService {
   private async markAttempted(sessionId: string): Promise<boolean> {
     const marked = await this.deps.runSerialSessionWrite(async () => {
       const session = this.deps.sessionStore.find(sessionId);
-      if (!session || session.titleGenerationAttempted || !isAutomaticSessionName(session) || session.titleSource === "model") return undefined;
+      if (
+        !session ||
+        session.titleGenerationAttempted ||
+        !isAutomaticSessionName(session) ||
+        session.titleSource === "model"
+      )
+        return undefined;
       const updated = await this.deps.sessionStore.update(sessionId, { titleGenerationAttempted: true });
       if (!updated) return undefined;
       this.deps.onSessionUpdated(updated, { refreshTui: false });

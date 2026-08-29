@@ -53,7 +53,10 @@ function expandBracePatterns(pattern: string): string[] {
   if (open < 0) return [pattern];
   const close = pattern.indexOf("}", open + 1);
   if (close < 0) return [pattern];
-  const alternatives = pattern.slice(open + 1, close).split(",").filter(Boolean);
+  const alternatives = pattern
+    .slice(open + 1, close)
+    .split(",")
+    .filter(Boolean);
   if (alternatives.length < 2) return [pattern];
   const prefix = pattern.slice(0, open);
   const suffix = pattern.slice(close + 1);

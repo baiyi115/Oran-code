@@ -25,7 +25,12 @@ export function approvalDialogLines(
     if (["command", "path"].includes(key)) continue;
     lines.push(`${key}: ${redactSecretText(formatValue(value))}`);
   }
-  lines.push("", ...APPROVAL_OPTIONS.map((option, index) => highlightSelection(`  ${option}`, index === selectedIndex)), "", "↑↓ Select   Enter Confirm   Esc Reject");
+  lines.push(
+    "",
+    ...APPROVAL_OPTIONS.map((option, index) => highlightSelection(`  ${option}`, index === selectedIndex)),
+    "",
+    "↑↓ Select   Enter Confirm   Esc Reject",
+  );
   return lines.flatMap((line) => {
     if (!line) return [""];
     // Keep the `{inverse}` selection tags on lines that already fit so the Ink

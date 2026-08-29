@@ -24,7 +24,6 @@ import type {
   ApprovalResponse,
   Message,
   ModelProvider,
-  ModelResponse,
   RuntimeConfig,
   RuntimeEvent,
   RuntimeEventPayloads,
@@ -50,7 +49,6 @@ import {
   environmentSystemMessage,
   loopBudgetReminder,
   stableSystemMessage,
-  systemReminderMessage,
   taskPlanReminder,
   taskModeReminder,
 } from "./system-prompt.js";
@@ -135,10 +133,12 @@ export class TaskController {
     this.logger = options.logger ?? (() => undefined);
     this.debugLogger = options.debugLogger ?? (() => undefined);
     this.conversation = cloneMessages(options.conversation ?? []);
-    this.contextManager = options.contextManager ?? new ContextManager({
-      workspace: options.config.workspace,
-      conversation: this.conversation,
-    });
+    this.contextManager =
+      options.contextManager ??
+      new ContextManager({
+        workspace: options.config.workspace,
+        conversation: this.conversation,
+      });
     this.stablePromptModules = { ...options.stablePromptModules };
     this.runtimeReminders = options.runtimeReminders ?? (() => []);
     this.toolFilter = options.toolFilter ?? (() => true);
@@ -219,7 +219,12 @@ export class TaskController {
     const loop = new AgentLoop(this.config.loop, this.previousToolCalls);
     this.loop = loop;
     this.hookUserPrompt = task.prompt;
-    await this.fireHook({ event: "session_start", workspace: task.workspace, model: this.config.model.model, userPrompt: task.prompt });
+    await this.fireHook({
+      event: "session_start",
+      workspace: task.workspace,
+      model: this.config.model.model,
+      userPrompt: task.prompt,
+    });
     try {
       return await this.executeTask(task, loop);
     } catch (error) {
@@ -241,7 +246,9 @@ export class TaskController {
       try {
         await this.snapshotStore?.finalize(task);
       } catch (error) {
-        this.debugLogger(JSON.stringify({ event: "snapshot_finalize_failed", taskId: task.id, error: formatErrorMessage(error) }));
+        this.debugLogger(
+          JSON.stringify({ event: "snapshot_finalize_failed", taskId: task.id, error: formatErrorMessage(error) }),
+        );
       }
       this.activeTask = undefined;
       this.abortController = undefined;
@@ -273,12 +280,14 @@ export class TaskController {
     this.trace.appendStep(task.id, "context", { summary: snapshot.summary });
     let messages: Message[] = [
       stableSystemMessage(assembleStableSystemPrompt(this.stablePromptModules)),
-      environmentSystemMessage(buildEnvironmentPrompt({
-        workspace: task.workspace,
-        model: this.config.model,
-        snapshot,
-        appVersion: PRODUCT_VERSION,
-      })),
+      environmentSystemMessage(
+        buildEnvironmentPrompt({
+          workspace: task.workspace,
+          model: this.config.model,
+          snapshot,
+          appVersion: PRODUCT_VERSION,
+        }),
+      ),
       ...turnConversation,
     ];
     this.syncConversation(messages);
@@ -310,9 +319,9 @@ export class TaskController {
           reminders.push(
             stage === "reflection"
               ? `Progress check required: ${detail ?? "recent turns have not produced new evidence"}. ` +
-                `State the current blocker internally, choose a materially different next action, and avoid repeating prior calls unless new external information is expected.`
+                  `State the current blocker internally, choose a materially different next action, and avoid repeating prior calls unless new external information is expected.`
               : `Heads up: ${detail ?? "recent turns have not produced new evidence"}. ` +
-                `Continue only when the next action can produce new information or advance the task.`,
+                  `Continue only when the next action can produce new information or advance the task.`,
           );
         } else {
           const argSummary = formatCallArguments(call.arguments);
@@ -323,7 +332,12 @@ export class TaskController {
         }
       }
       // 轮次开始：通知队列已并入本轮系统提醒后派发
-      await this.fireHook({ event: "turn_start", workspace: task.workspace, model: this.config.model.model, userPrompt: task.prompt });
+      await this.fireHook({
+        event: "turn_start",
+        workspace: task.workspace,
+        model: this.config.model.model,
+        userPrompt: task.prompt,
+      });
       try {
         const tools = finalTurn || casualConversation ? [] : this.toolSchemasForMode();
         const request = await this.turnRequester.requestWithContext(
@@ -482,7 +496,7 @@ export class TaskController {
           await this.emitCompleted(loop);
           return task;
         } else {
-          const verification = await this.verify(task, messages);
+          const verification = await this.verify(task);
           this.throwIfCancelled();
           if (verification.passed) {
             task.result = response.text;
@@ -520,7 +534,12 @@ export class TaskController {
         }
       } finally {
         // Every started turn has one matching end event, including return, cancellation, and error paths.
-        await this.fireHook({ event: "turn_end", workspace: task.workspace, model: this.config.model.model, userPrompt: task.prompt });
+        await this.fireHook({
+          event: "turn_end",
+          workspace: task.workspace,
+          model: this.config.model.model,
+          userPrompt: task.prompt,
+        });
       }
     }
     if (loop.tokenBudgetReached()) {
@@ -550,18 +569,20 @@ export class TaskController {
       reason: "repeated tool execution blocked before execution",
     };
     this.appendDiagnosticStep("tool_call_blocked", payload);
-    this.debugLogger(JSON.stringify({
-      event: "tool_call_blocked",
-      taskId: task.id,
-      ...payload,
-    }));
+    this.debugLogger(
+      JSON.stringify({
+        event: "tool_call_blocked",
+        taskId: task.id,
+        ...payload,
+      }),
+    );
   }
 
   private async pauseForNoProgress(task: Task, diagnostic: NoProgressDiagnostic): Promise<void> {
     const { call, repeatCount, reason, detail } = diagnostic;
     transitionTask(task, "paused");
     await this.persist(task);
-    let pauseMessage = "";
+    let pauseMessage: string;
     if (reason === "repeated_error") {
       pauseMessage = `No progress detected; task paused after ${repeatCount} consecutive tool calls failed with identical error: "${detail ?? ""}".`;
     } else if (reason === "semantic_stall") {
@@ -594,9 +615,9 @@ export class TaskController {
   }
 
   private syncConversation(messages: readonly Message[]): void {
-    this.conversation = cloneMessages(messages.filter((message) => (
-      message.role !== "system" || message.metadata?.contextManaged === true
-    )));
+    this.conversation = cloneMessages(
+      messages.filter((message) => message.role !== "system" || message.metadata?.contextManaged === true),
+    );
     this.conversationCallback(cloneMessages(this.conversation));
   }
 
@@ -606,7 +627,8 @@ export class TaskController {
     const root = resolve(workspace);
     const absolutePath = resolve(root, rawPath);
     const workspacePath = relative(root, absolutePath);
-    if (workspacePath === ".." || workspacePath.startsWith(`..${sep}`) || resolve(root, workspacePath) !== absolutePath) return;
+    if (workspacePath === ".." || workspacePath.startsWith(`..${sep}`) || resolve(root, workspacePath) !== absolutePath)
+      return;
     try {
       const content = await readFile(absolutePath, "utf8");
       this.contextManager.trackSuccessfulFileRead(workspacePath.split(sep).join("/"), content);
@@ -615,7 +637,7 @@ export class TaskController {
     }
   }
 
-  private async verify(task: Task, messages: Message[]): Promise<import("./types.js").VerificationResult> {
+  private async verify(task: Task): Promise<import("./types.js").VerificationResult> {
     transitionTask(task, "verifying");
     await this.persist(task);
     const commands = this.config.verifyCommands ?? Verifier.inferCommands(task.workspace);
@@ -623,9 +645,14 @@ export class TaskController {
       ? [{ command: "(skipped)", exitCode: 0, output: "Verification skipped by user.", durationMs: 0, passed: true }]
       : await this.verifier.runMany(commands, this.abortController?.signal);
     this.throwIfCancelled();
-    const result = results.find((candidate) => !candidate.passed)
-      ?? results.at(-1)
-      ?? { command: "(none)", exitCode: 0, output: "No test/lint command configured; verification skipped.", durationMs: 0, passed: true };
+    const result = results.find((candidate) => !candidate.passed) ??
+      results.at(-1) ?? {
+        command: "(none)",
+        exitCode: 0,
+        output: "No test/lint command configured; verification skipped.",
+        durationMs: 0,
+        passed: true,
+      };
     this.trace.appendStep(task.id, "verify", { results });
     await this.emit("verify", { results });
     return result;
@@ -644,9 +671,8 @@ export class TaskController {
 
   private async emitCompleted(loop: AgentLoop): Promise<void> {
     const elapsedMs = Math.max(0, Date.now() - this.taskStartedAt);
-    const outputTokensPerSecond = loop.modelElapsedMs > 0 && loop.outputTokens > 0
-      ? loop.outputTokens / (loop.modelElapsedMs / 1000)
-      : undefined;
+    const outputTokensPerSecond =
+      loop.modelElapsedMs > 0 && loop.outputTokens > 0 ? loop.outputTokens / (loop.modelElapsedMs / 1000) : undefined;
     await this.emit("completed", {
       steps: Math.max(1, loop.turns),
       tokensUsed: loop.tokensUsed,
@@ -660,10 +686,25 @@ export class TaskController {
     });
   }
 
-  private async emit<K extends keyof RuntimeEventPayloads>(type: K, payload: RuntimeEventPayloads[K], turnId?: string): Promise<void> {
-    const base = { version: 1 as const, type, taskId: this.activeTask?.id ?? "unknown", sequence: ++this.sequence, timestamp: new Date().toISOString(), ...payload };
+  private async emit<K extends keyof RuntimeEventPayloads>(
+    type: K,
+    payload: RuntimeEventPayloads[K],
+    turnId?: string,
+  ): Promise<void> {
+    const base = {
+      version: 1 as const,
+      type,
+      taskId: this.activeTask?.id ?? "unknown",
+      sequence: ++this.sequence,
+      timestamp: new Date().toISOString(),
+      ...payload,
+    };
     const event = turnId === undefined ? base : { ...base, turnId };
-    try { await this.eventCallback(event as RuntimeEvent); } catch (error) { this.logger(`event callback failed: ${error instanceof Error ? error.message : String(error)}`); }
+    try {
+      await this.eventCallback(event as RuntimeEvent);
+    } catch (error) {
+      this.logger(`event callback failed: ${error instanceof Error ? error.message : String(error)}`);
+    }
   }
 
   private toolSchemasForMode(): Record<string, unknown>[] {
@@ -675,10 +716,9 @@ export class TaskController {
         this.registry.activate("write_plan");
       }
     }
-    return this.registry.schemas((tool) => (
-      this.isToolVisible(tool)
-      && (this.config.workMode !== "plan" || isPlanModeTool(tool))
-    ));
+    return this.registry.schemas(
+      (tool) => this.isToolVisible(tool) && (this.config.workMode !== "plan" || isPlanModeTool(tool)),
+    );
   }
 
   private isToolVisible(tool: ToolDefinition): boolean {

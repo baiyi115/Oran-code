@@ -97,7 +97,9 @@ export class SessionCommandRouter {
     }
     if (command.kind === "isolated-skill") {
       if (this.ctx.interactionRunning() || this.ctx.hasPendingApprovals()) {
-        this.ctx.renderer().status("finish or cancel the current interaction before running an isolated skill", "yellow");
+        this.ctx
+          .renderer()
+          .status("finish or cancel the current interaction before running an isolated skill", "yellow");
         return;
       }
       const prompt = command.handler ? await command.handler(argument) : argument;
@@ -238,7 +240,10 @@ export class SessionCommandRouter {
       }
       case "/worktree": {
         try {
-          const result = await execAsync("git worktree list --porcelain", { cwd: this.ctx.workspace, windowsHide: true });
+          const result = await execAsync("git worktree list --porcelain", {
+            cwd: this.ctx.workspace,
+            windowsHide: true,
+          });
           return result.stdout.trim() || "No Git worktrees were reported.";
         } catch {
           return "Git worktree information is unavailable for this workspace.";
@@ -254,7 +259,8 @@ export class SessionCommandRouter {
           const start = Date.parse(task.startedAt);
           const end = task.endedAt ? Date.parse(task.endedAt) : Date.now();
           const duration = Number.isFinite(start) ? ` (${((end - start) / 1000).toFixed(1)}s)` : "";
-          const icon = task.status === "completed" ? "✓" : task.status === "running" ? "⠋" : task.status === "queued" ? "⏳" : "✗";
+          const icon =
+            task.status === "completed" ? "✓" : task.status === "running" ? "⠋" : task.status === "queued" ? "⏳" : "✗";
           lines.push(`  ${icon} ${task.id}${role}: ${task.name} — ${task.status}${duration}`);
           if (task.error) {
             lines.push(`    Error: ${task.error.slice(0, 160)}`);
@@ -269,7 +275,9 @@ export class SessionCommandRouter {
         const mcp = await this.ctx.mcpStatus();
         if (!mcp.servers.length) {
           return mcp.failures.length
-            ? ["No MCP servers are connected.", ...mcp.failures.map((item) => `- ${item.name}: ${item.error}`)].join("\n")
+            ? ["No MCP servers are connected.", ...mcp.failures.map((item) => `- ${item.name}: ${item.error}`)].join(
+                "\n",
+              )
             : "No MCP servers are connected.";
         }
         return [
@@ -279,7 +287,9 @@ export class SessionCommandRouter {
         ].join("\n");
       }
       default:
-        return command.handler ? await command.handler(argument) : `Command ${command.name} has no local handler configured.`;
+        return command.handler
+          ? await command.handler(argument)
+          : `Command ${command.name} has no local handler configured.`;
     }
   }
 }

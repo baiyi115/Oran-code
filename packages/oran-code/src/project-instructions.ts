@@ -1,7 +1,12 @@
 import { readFile, stat } from "node:fs/promises";
 import { homedir } from "node:os";
 import { dirname, isAbsolute, relative, resolve } from "node:path";
-import { LEGACY_PROJECT_STATE_DIRECTORY, LEGACY_USER_DATA_DIRECTORY, PROJECT_STATE_DIRECTORY, USER_DATA_DIRECTORY } from "./paths.js";
+import {
+  LEGACY_PROJECT_STATE_DIRECTORY,
+  LEGACY_USER_DATA_DIRECTORY,
+  PROJECT_STATE_DIRECTORY,
+  USER_DATA_DIRECTORY,
+} from "./paths.js";
 import { isRelativeWithin } from "./utils/path-containment.js";
 
 export const DEFAULT_MAX_INSTRUCTION_INCLUDE_DEPTH = 5;
@@ -25,12 +30,19 @@ const DEFAULT_LAYOUT: ProjectInstructionLayout = {
   user: ["ORAN.md", "AGENTS.md"],
   hierarchy: ["ORAN.md", "AGENTS.md", "LITEAGENT.md"],
   legacy: [
-    `${PROJECT_STATE_DIRECTORY}/INSTRUCTIONS.md`, `${PROJECT_STATE_DIRECTORY}/AGENTS.md`,
-    `${LEGACY_PROJECT_STATE_DIRECTORY}/INSTRUCTIONS.md`, `${LEGACY_PROJECT_STATE_DIRECTORY}/AGENTS.md`, `${LEGACY_PROJECT_STATE_DIRECTORY}/CLAUDE.md`,
+    `${PROJECT_STATE_DIRECTORY}/INSTRUCTIONS.md`,
+    `${PROJECT_STATE_DIRECTORY}/AGENTS.md`,
+    `${LEGACY_PROJECT_STATE_DIRECTORY}/INSTRUCTIONS.md`,
+    `${LEGACY_PROJECT_STATE_DIRECTORY}/AGENTS.md`,
+    `${LEGACY_PROJECT_STATE_DIRECTORY}/CLAUDE.md`,
   ],
   local: [
-    `${PROJECT_STATE_DIRECTORY}/INSTRUCTIONS.local.md`, `${PROJECT_STATE_DIRECTORY}/ORAN.local.md`, `${PROJECT_STATE_DIRECTORY}/AGENTS.local.md`,
-    `${LEGACY_PROJECT_STATE_DIRECTORY}/INSTRUCTIONS.local.md`, `${LEGACY_PROJECT_STATE_DIRECTORY}/LITEAGENT.local.md`, `${LEGACY_PROJECT_STATE_DIRECTORY}/AGENTS.local.md`,
+    `${PROJECT_STATE_DIRECTORY}/INSTRUCTIONS.local.md`,
+    `${PROJECT_STATE_DIRECTORY}/ORAN.local.md`,
+    `${PROJECT_STATE_DIRECTORY}/AGENTS.local.md`,
+    `${LEGACY_PROJECT_STATE_DIRECTORY}/INSTRUCTIONS.local.md`,
+    `${LEGACY_PROJECT_STATE_DIRECTORY}/LITEAGENT.local.md`,
+    `${LEGACY_PROJECT_STATE_DIRECTORY}/AGENTS.local.md`,
   ],
 };
 
@@ -182,7 +194,11 @@ function pathKey(path: string): string {
 }
 
 async function readText(path: string): Promise<string | undefined> {
-  try { return await readFile(path, "utf8"); } catch { return undefined; }
+  try {
+    return await readFile(path, "utf8");
+  } catch {
+    return undefined;
+  }
 }
 
 async function findRepositoryRoot(workspace: string): Promise<string> {
@@ -196,5 +212,10 @@ async function findRepositoryRoot(workspace: string): Promise<string> {
 }
 
 async function exists(path: string): Promise<boolean> {
-  try { await stat(path); return true; } catch { return false; }
+  try {
+    await stat(path);
+    return true;
+  } catch {
+    return false;
+  }
 }

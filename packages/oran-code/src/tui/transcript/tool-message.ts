@@ -1,40 +1,43 @@
 import type { ToolMessage } from "../types.js";
 import { renderDiff } from "./diff-renderer.js";
-import { stripTerminalMarkup, truncateVisible, wrapDisplayText } from "../text-width.js";
+import { truncateVisible, wrapDisplayText } from "../text-width.js";
 import { ANSI } from "../theme.js";
 import { spinnerFrame } from "../status-indicator.js";
 import { toolDisplayName } from "../tool-names.js";
 
 export function renderToolMessage(message: ToolMessage, width: number, liveTick = 0): string[] {
-  const indicator = message.status === "running"
-    ? spinnerFrame(liveTick)
-    : message.status === "success"
-      ? "◇"
-      : message.status === "failure"
-        ? "\u00D7"
-        : message.status === "rejected"
-          ? "!"
-          : "-";
+  const indicator =
+    message.status === "running"
+      ? spinnerFrame(liveTick)
+      : message.status === "success"
+        ? "◇"
+        : message.status === "failure"
+          ? "\u00D7"
+          : message.status === "rejected"
+            ? "!"
+            : "-";
   const label = toolDisplayName(message.name);
   const argument = toolArgumentSummary(message);
   const call = argument
     ? `${ANSI.toolBold}${label}${ANSI.reset} ${ANSI.gray}${argument}${ANSI.reset}`
     : `${ANSI.toolBold}${label}${ANSI.reset}`;
-  const duration = message.durationMs === undefined
-    ? ""
-    : `  ${ANSI.gray}${formatDuration(message.durationMs)}${ANSI.reset}`;
-  const status = message.status === "running" || message.status === "success"
-    ? ""
-    : `  ${message.status === "failure" || message.status === "rejected" ? ANSI.redBold : ANSI.amberBold}${message.status}${ANSI.reset}`;
-  const indicatorColor = message.status === "failure" || message.status === "rejected"
-    ? ANSI.redBold
-    : message.status === "success"
-      ? ANSI.greenBold
-      : ANSI.orangeBold;
+  const duration =
+    message.durationMs === undefined ? "" : `  ${ANSI.gray}${formatDuration(message.durationMs)}${ANSI.reset}`;
+  const status =
+    message.status === "running" || message.status === "success"
+      ? ""
+      : `  ${message.status === "failure" || message.status === "rejected" ? ANSI.redBold : ANSI.amberBold}${message.status}${ANSI.reset}`;
+  const indicatorColor =
+    message.status === "failure" || message.status === "rejected"
+      ? ANSI.redBold
+      : message.status === "success"
+        ? ANSI.greenBold
+        : ANSI.orangeBold;
   const detail = message.summary || message.error || "";
-  const summary = detail && (message.status !== "success" || shouldShowSuccessSummary(detail))
-    ? ` ${ANSI.gray}\u00b7 ${truncateVisible(detail.replace(/\s+/g, " ").trim(), 80)}${ANSI.reset}`
-    : "";
+  const summary =
+    detail && (message.status !== "success" || shouldShowSuccessSummary(detail))
+      ? ` ${ANSI.gray}\u00b7 ${truncateVisible(detail.replace(/\s+/g, " ").trim(), 80)}${ANSI.reset}`
+      : "";
   const heading = `${indicatorColor}${indicator}${ANSI.reset} ${call}${status}${duration}${summary}`;
   const lines = wrapDisplayText(heading, width);
   const output = message.error || message.output || "";
@@ -43,7 +46,8 @@ export function renderToolMessage(message: ToolMessage, width: number, liveTick 
     const preview = output.split(/\r?\n/).filter(Boolean);
     const limit = 12;
     lines.push(...preview.slice(0, limit).flatMap((line) => wrapDisplayText(`  \u2502 ${line}`, width)));
-    if (preview.length > limit) lines.push(`${ANSI.gray}  \u2502 ... ${preview.length - limit} more lines (ctrl+t to expand)${ANSI.reset}`);
+    if (preview.length > limit)
+      lines.push(`${ANSI.gray}  \u2502 ... ${preview.length - limit} more lines (ctrl+t to expand)${ANSI.reset}`);
   } else if (output && message.status !== "success" && output.trim() !== detail.trim()) {
     const error = truncateVisible(output.replace(/\s+/g, " ").trim(), Math.max(40, width * 2));
     lines.push(...wrapDisplayText(`  \u2502 ${error}`, width).slice(0, 2));
@@ -74,7 +78,10 @@ function writeToolDiff(message: ToolMessage): string | undefined {
   if (message.name === "write_file") {
     const content = typeof message.arguments.content === "string" ? message.arguments.content : "";
     if (!content.trim()) return undefined;
-    return content.split(/\r?\n/).map((line) => `+${line}`).join("\n");
+    return content
+      .split(/\r?\n/)
+      .map((line) => `+${line}`)
+      .join("\n");
   }
   return undefined;
 }

@@ -113,7 +113,11 @@ export class HookEngine {
     }
   }
 
-  private async runRule(rule: CompiledRule, ctx: HookEventContext, intercept: boolean): Promise<HookResult | undefined> {
+  private async runRule(
+    rule: CompiledRule,
+    ctx: HookEventContext,
+    intercept: boolean,
+  ): Promise<HookResult | undefined> {
     if (rule.async) {
       void this.runAsync(rule, ctx, intercept);
       return { output: "", ok: true, intercept: false };
@@ -160,7 +164,9 @@ export class HookEngine {
   private log(message: string): void {
     try {
       this.deps.log?.(message);
-    } catch { /* Logging failures are intentionally ignored. */ }
+    } catch {
+      /* Logging failures are intentionally ignored. */
+    }
   }
 
   // ---- Validation ----

@@ -30,16 +30,29 @@ function eventsOfType(events: AgentEvent[], type: AgentEvent["type"]): AgentEven
 describe("runTask", () => {
   it("streams a normal assistant response and completes in one step", async () => {
     const requests: Record<string, unknown>[] = [];
-    vi.stubGlobal("fetch", vi.fn(async (_input: unknown, init?: RequestInit) => {
-      requests.push(JSON.parse(String(init?.body)) as Record<string, unknown>);
-      return response({
-        choices: [{ message: { role: "assistant", content: "done" }, finish_reason: "stop" }],
-        usage: { prompt_tokens: 10, completion_tokens: 2, total_tokens: 12 },
-      });
-    }));
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async (_input: unknown, init?: RequestInit) => {
+        requests.push(JSON.parse(String(init?.body)) as Record<string, unknown>);
+        return response({
+          choices: [{ message: { role: "assistant", content: "done" }, finish_reason: "stop" }],
+          usage: { prompt_tokens: 10, completion_tokens: 2, total_tokens: 12 },
+        });
+      }),
+    );
     const events: AgentEvent[] = [];
 
-    await runTask({ workspace: "C:/workspace", prompt: "say hello", model, maxSteps: 3, approveAll: true, onEvent: (event) => events.push(event) }, new ToolRegistry());
+    await runTask(
+      {
+        workspace: "C:/workspace",
+        prompt: "say hello",
+        model,
+        maxSteps: 3,
+        approveAll: true,
+        onEvent: (event) => events.push(event),
+      },
+      new ToolRegistry(),
+    );
 
     expect(requests).toHaveLength(1);
     expect(eventsOfType(events, "assistant_delta")).toEqual([{ type: "assistant_delta", text: "done" }]);
@@ -58,27 +71,38 @@ describe("runTask", () => {
   it("preserves tool calls and continues with the tool result", async () => {
     const requests: Record<string, unknown>[] = [];
     let callCount = 0;
-    vi.stubGlobal("fetch", vi.fn(async (_input: unknown, init?: RequestInit) => {
-      requests.push(JSON.parse(String(init?.body)) as Record<string, unknown>);
-      callCount += 1;
-      if (callCount === 1) {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async (_input: unknown, init?: RequestInit) => {
+        requests.push(JSON.parse(String(init?.body)) as Record<string, unknown>);
+        callCount += 1;
+        if (callCount === 1) {
+          return response({
+            choices: [
+              {
+                message: {
+                  role: "assistant",
+                  content: "",
+                  tool_calls: [
+                    {
+                      id: "call_1",
+                      type: "function",
+                      function: { name: "workspace_echo", arguments: '{"value":"ok"}' },
+                    },
+                  ],
+                },
+                finish_reason: "tool_calls",
+              },
+            ],
+            usage: { prompt_tokens: 10, completion_tokens: 2, total_tokens: 12 },
+          });
+        }
         return response({
-          choices: [{
-            message: {
-              role: "assistant",
-              content: "",
-              tool_calls: [{ id: "call_1", type: "function", function: { name: "workspace_echo", arguments: "{\"value\":\"ok\"}" } }],
-            },
-            finish_reason: "tool_calls",
-          }],
-          usage: { prompt_tokens: 10, completion_tokens: 2, total_tokens: 12 },
+          choices: [{ message: { role: "assistant", content: "verified" }, finish_reason: "stop" }],
+          usage: { input_tokens: 20, output_tokens: 4, total_tokens: 24 },
         });
-      }
-      return response({
-        choices: [{ message: { role: "assistant", content: "verified" }, finish_reason: "stop" }],
-        usage: { input_tokens: 20, output_tokens: 4, total_tokens: 24 },
-      });
-    }));
+      }),
+    );
     const tool: ToolDefinition = {
       name: "workspace_echo",
       description: "Return the requested value.",
@@ -91,18 +115,33 @@ describe("runTask", () => {
     registry.register(tool);
     const events: AgentEvent[] = [];
 
-    await runTask({ workspace: "C:/workspace", prompt: "check it", model, maxSteps: 3, approveAll: true, onEvent: (event) => events.push(event) }, registry);
+    await runTask(
+      {
+        workspace: "C:/workspace",
+        prompt: "check it",
+        model,
+        maxSteps: 3,
+        approveAll: true,
+        onEvent: (event) => events.push(event),
+      },
+      registry,
+    );
 
     expect(requests).toHaveLength(2);
     const secondMessages = requests[1]?.messages as Record<string, unknown>[];
-    expect(secondMessages.some((message) =>
-      message.role === "assistant"
-      && Array.isArray(message.tool_calls)
-      && (message.tool_calls as Array<{ id?: unknown }>).some((call) => call.id === "call_1"),
-    )).toBe(true);
-    expect(secondMessages.some((message) =>
-      message.role === "tool" && message.tool_call_id === "call_1" && message.content === "ok",
-    )).toBe(true);
+    expect(
+      secondMessages.some(
+        (message) =>
+          message.role === "assistant" &&
+          Array.isArray(message.tool_calls) &&
+          (message.tool_calls as Array<{ id?: unknown }>).some((call) => call.id === "call_1"),
+      ),
+    ).toBe(true);
+    expect(
+      secondMessages.some(
+        (message) => message.role === "tool" && message.tool_call_id === "call_1" && message.content === "ok",
+      ),
+    ).toBe(true);
     expect(eventsOfType(events, "tool_result")).toHaveLength(1);
     expect(eventsOfType(events, "completed")).toHaveLength(1);
     expect(eventsOfType(events, "completed")[0]).toMatchObject({

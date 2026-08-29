@@ -15,7 +15,8 @@ export interface MessageRenderContext {
 export function renderMessage(message: TranscriptMessage, width: number, context: MessageRenderContext = {}): string[] {
   if (message.kind === "tool") return withMessageSpacing(renderToolMessage(message, width, context.liveTick));
   if (message.kind === "verification") return withMessageSpacing(renderVerification(message, width));
-  if (message.kind === "thought") return withMessageSpacing(renderThought(message, width, context.liveTick, context.forceExpandThoughts === true));
+  if (message.kind === "thought")
+    return withMessageSpacing(renderThought(message, width, context.liveTick, context.forceExpandThoughts === true));
   if (message.kind === "error") return withMessageSpacing(renderError(message.text, width));
   if (message.kind === "assistant" && !message.text.trim() && !message.streaming) return [];
 
@@ -34,11 +35,12 @@ export function renderMessage(message: TranscriptMessage, width: number, context
     }
   }
   const markdownOptions = { streaming: message.kind === "assistant" && Boolean(message.streaming) };
-  const content = message.kind === "assistant" || message.kind === "plan"
-    ? context.markdownRenderer
-      ? context.markdownRenderer.render(text, Math.max(1, width - prefixWidth), markdownOptions)
-      : renderMarkdown(text, Math.max(1, width - prefixWidth), markdownOptions)
-    : wrapDisplayText(stripTerminalMarkup(text).trimEnd(), Math.max(1, width - prefixWidth));
+  const content =
+    message.kind === "assistant" || message.kind === "plan"
+      ? context.markdownRenderer
+        ? context.markdownRenderer.render(text, Math.max(1, width - prefixWidth), markdownOptions)
+        : renderMarkdown(text, Math.max(1, width - prefixWidth), markdownOptions)
+      : wrapDisplayText(stripTerminalMarkup(text).trimEnd(), Math.max(1, width - prefixWidth));
 
   const contentEmpty = !content.length;
   let lines: string[];
@@ -93,6 +95,7 @@ function prefixVisibleWidth(kind: TranscriptMessage["kind"]): number {
     case "plan":
       return 6;
     default:
+      // eslint-disable-next-line no-control-regex -- 控制字符是刻意匹配的目标（ANSI 转义/文本清洗）
       return prefixFor(kind).replace(/\u001b\[[0-9;]*m/g, "").length;
   }
 }
@@ -105,12 +108,18 @@ function renderError(text: string, width: number): string[] {
   const primary = wrapDisplayText(sections.shift() ?? "", contentWidth);
   if (!primary.length) return [prefix.trimEnd()];
   const indent = " ".repeat(prefixWidth);
-  const details = wrapDisplayText(sections.join("\n"), contentWidth)
-    .map((line) => `${indent}${ANSI.gray}${line}${ANSI.reset}`);
+  const details = wrapDisplayText(sections.join("\n"), contentWidth).map(
+    (line) => `${indent}${ANSI.gray}${line}${ANSI.reset}`,
+  );
   return primary.map((line, index) => `${index === 0 ? prefix : indent}${line}`).concat(details);
 }
 
-function renderThought(message: Extract<TranscriptMessage, { kind: "thought" }>, width: number, liveTick = 0, forceExpand = false): string[] {
+function renderThought(
+  message: Extract<TranscriptMessage, { kind: "thought" }>,
+  width: number,
+  liveTick = 0,
+  forceExpand = false,
+): string[] {
   const body = stripTerminalMarkup(message.text).trim();
   // No body and not actively streaming => hide. Models without reasoning never show a row.
   if (!body && !message.streaming) return [];
@@ -164,15 +173,16 @@ function renderVerification(message: VerificationMessage, width: number): string
   for (const result of message.results) {
     const status = result.passed ? "passed" : "failed";
     const statusColor = result.passed ? ANSI.greenBold : ANSI.redBold;
-    lines.push(...wrapDisplayText(
-      `  ${ANSI.tool}${result.command}${ANSI.reset} ${statusColor}${status}${ANSI.reset}${ANSI.gray} · ${formatDuration(result.durationMs)}${ANSI.reset}`,
-      width,
-    ));
-    if (result.output.trim()) {
-      lines.push(...wrapDisplayText(
-        `  ${ANSI.gray}│ ${result.output.trim().split(/\r?\n/)[0] ?? ""}${ANSI.reset}`,
+    lines.push(
+      ...wrapDisplayText(
+        `  ${ANSI.tool}${result.command}${ANSI.reset} ${statusColor}${status}${ANSI.reset}${ANSI.gray} · ${formatDuration(result.durationMs)}${ANSI.reset}`,
         width,
-      ));
+      ),
+    );
+    if (result.output.trim()) {
+      lines.push(
+        ...wrapDisplayText(`  ${ANSI.gray}│ ${result.output.trim().split(/\r?\n/)[0] ?? ""}${ANSI.reset}`, width),
+      );
     }
   }
   return lines;

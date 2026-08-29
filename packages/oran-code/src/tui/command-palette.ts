@@ -10,17 +10,20 @@ export function commandCandidates(
   if (!input.startsWith("/") || /\s/.test(input)) return [];
   const query = input.slice(1).toLowerCase();
   if (!query) return [...commands];
-  return commands
-    .map((command, index) => ({ command, index, score: commandMatchScore(command, query) }))
-    .filter((entry) => entry.score > 0)
-    // Built-in commands (local/ui) always outrank skill commands (prompt/isolated-skill),
-    // then by match score, then by registration order.
-    .sort((left, right) =>
-      commandKindRank(right.command) - commandKindRank(left.command)
-      || right.score - left.score
-      || left.index - right.index,
-    )
-    .map((entry) => entry.command);
+  return (
+    commands
+      .map((command, index) => ({ command, index, score: commandMatchScore(command, query) }))
+      .filter((entry) => entry.score > 0)
+      // Built-in commands (local/ui) always outrank skill commands (prompt/isolated-skill),
+      // then by match score, then by registration order.
+      .sort(
+        (left, right) =>
+          commandKindRank(right.command) - commandKindRank(left.command) ||
+          right.score - left.score ||
+          left.index - right.index,
+      )
+      .map((entry) => entry.command)
+  );
 }
 
 function commandKindRank(command: SlashCommand): number {
@@ -44,10 +47,7 @@ export function commandPaletteLines(
   const position = candidates.length > maxVisible ? ` · ${selected + 1}/${candidates.length}` : "";
   const title = truncateVisible(`Slash commands${position}`, width);
   const help = truncateVisible("Up/Down Select · Tab Complete · Enter Run · Esc Close", width);
-  const lines = [
-    `${ANSI.orangeBold}${title}${ANSI.reset}`,
-    `${ANSI.gray}${help}${ANSI.reset}`,
-  ];
+  const lines = [`${ANSI.orangeBold}${title}${ANSI.reset}`, `${ANSI.gray}${help}${ANSI.reset}`];
   if (!visibleCandidates.length) return [...lines, "  No matching commands"];
 
   return [

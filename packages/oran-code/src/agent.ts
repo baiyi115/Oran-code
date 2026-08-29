@@ -68,14 +68,19 @@ async function executeWithController(
       baseModel: options.model,
       providerFactory: createModelProvider,
       resolveModel,
-      ...(options.approve ? {
-        approvalCallback: async (call, level) => options.approve?.(call, level) ?? false,
-      } : {}),
-      ...(options.onEvent ? {
-        eventCallback: (event) => {
-          if (event.runtimeEvent) forwardRuntimeEvent(event.runtimeEvent, options.onEvent as (event: AgentEvent) => void);
-        },
-      } : {}),
+      ...(options.approve
+        ? {
+            approvalCallback: async (call, level) => options.approve?.(call, level) ?? false,
+          }
+        : {}),
+      ...(options.onEvent
+        ? {
+            eventCallback: (event) => {
+              if (event.runtimeEvent)
+                forwardRuntimeEvent(event.runtimeEvent, options.onEvent as (event: AgentEvent) => void);
+            },
+          }
+        : {}),
       parentToolFilter: () => true,
       isMcpTool: () => false,
     },
@@ -94,7 +99,9 @@ async function executeWithController(
       conversation = structuredClone([...messages]);
     },
     ...(options.approve ? { approvalCallback: async (call, level) => options.approve?.(call, level) ?? false } : {}),
-    ...(options.onEvent ? { eventCallback: (event) => forwardRuntimeEvent(event, options.onEvent as (event: AgentEvent) => void) } : {}),
+    ...(options.onEvent
+      ? { eventCallback: (event) => forwardRuntimeEvent(event, options.onEvent as (event: AgentEvent) => void) }
+      : {}),
     ...(options.stablePromptModules ? { stablePromptModules: options.stablePromptModules } : {}),
   });
   try {
@@ -114,7 +121,7 @@ function resolveNonInteractiveModel(reference: string, current: ModelConfig): Mo
   if (normalized === current.model || normalized === `${current.provider}/${current.model}`) return current;
   throw new Error(
     `Model override ${reference} is not configured in the non-interactive AgentOptions. ` +
-    `Only ${current.provider}/${current.model} is available.`,
+      `Only ${current.provider}/${current.model} is available.`,
   );
 }
 
@@ -122,25 +129,28 @@ function forwardRuntimeEvent(event: import("./types.js").RuntimeEvent, emit: (ev
   if (event.type === "state") emit({ type: "state", state: event.state });
   else if (event.type === "assistant_start") emit({ type: "assistant_start" });
   else if (event.type === "assistant_delta") emit({ type: "assistant_delta", text: event.text });
-  else if (event.type === "assistant_end") emit({
-    type: "assistant_end",
-    text: event.text,
-    toolCalls: event.toolCalls,
-    streamed: event.streamed,
-  });
-  else if (event.type === "tool_start") emit({ type: "tool_start", call: event.call, permissionLevel: event.permissionLevel });
+  else if (event.type === "assistant_end")
+    emit({
+      type: "assistant_end",
+      text: event.text,
+      toolCalls: event.toolCalls,
+      streamed: event.streamed,
+    });
+  else if (event.type === "tool_start")
+    emit({ type: "tool_start", call: event.call, permissionLevel: event.permissionLevel });
   else if (event.type === "tool_result") emit({ type: "tool_result", call: event.call, result: event.result });
   else if (event.type === "error") emit({ type: "error", message: event.message });
-  else if (event.type === "completed") emit({
-    type: "completed",
-    steps: event.steps,
-    tokensUsed: event.tokensUsed,
-    inputTokens: event.inputTokens,
-    outputTokens: event.outputTokens,
-    cacheReadTokens: event.cacheReadTokens,
-    cacheWriteTokens: event.cacheWriteTokens,
-    elapsedMs: event.elapsedMs,
-    modelElapsedMs: event.modelElapsedMs,
-    ...(event.outputTokensPerSecond === undefined ? {} : { outputTokensPerSecond: event.outputTokensPerSecond }),
-  });
+  else if (event.type === "completed")
+    emit({
+      type: "completed",
+      steps: event.steps,
+      tokensUsed: event.tokensUsed,
+      inputTokens: event.inputTokens,
+      outputTokens: event.outputTokens,
+      cacheReadTokens: event.cacheReadTokens,
+      cacheWriteTokens: event.cacheWriteTokens,
+      elapsedMs: event.elapsedMs,
+      modelElapsedMs: event.modelElapsedMs,
+      ...(event.outputTokensPerSecond === undefined ? {} : { outputTokensPerSecond: event.outputTokensPerSecond }),
+    });
 }

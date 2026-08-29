@@ -11,9 +11,21 @@ describe("builtin tools", () => {
       const registry = new ToolRegistry();
       registerBuiltinTools(registry, workspace);
       registry.activateAll();
-      await expect(registry.invoke({ name: "write_file", arguments: { path: "note.txt", content: "ok" }, createdAt: new Date().toISOString() })).resolves.toMatchObject({ ok: true });
+      await expect(
+        registry.invoke({
+          name: "write_file",
+          arguments: { path: "note.txt", content: "ok" },
+          createdAt: new Date().toISOString(),
+        }),
+      ).resolves.toMatchObject({ ok: true });
       await expect(readFile(join(workspace, "note.txt"), "utf8")).resolves.toBe("ok");
-      await expect(registry.invoke({ name: "write_file", arguments: { path: "../escape.txt", content: "bad" }, createdAt: new Date().toISOString() })).resolves.toMatchObject({ ok: false, error: expect.stringContaining("escapes workspace") });
+      await expect(
+        registry.invoke({
+          name: "write_file",
+          arguments: { path: "../escape.txt", content: "bad" },
+          createdAt: new Date().toISOString(),
+        }),
+      ).resolves.toMatchObject({ ok: false, error: expect.stringContaining("escapes workspace") });
     } finally {
       await rm(workspace, { recursive: true, force: true });
     }
@@ -25,7 +37,11 @@ describe("builtin tools", () => {
       const registry = new ToolRegistry();
       registerBuiltinTools(registry, workspace);
       registry.activateAll();
-      await registry.invoke({ name: "write_file", arguments: { path: "src/a.txt", content: "one\ntwo\nthree\n" }, createdAt: new Date().toISOString() });
+      await registry.invoke({
+        name: "write_file",
+        arguments: { path: "src/a.txt", content: "one\ntwo\nthree\n" },
+        createdAt: new Date().toISOString(),
+      });
       const result = await registry.invoke({
         name: "apply_patch",
         arguments: {
@@ -47,7 +63,11 @@ describe("builtin tools", () => {
       const registry = new ToolRegistry();
       registerBuiltinTools(registry, workspace);
       registry.activateAll();
-      await registry.invoke({ name: "write_file", arguments: { path: "a.txt", content: "one\ntwo\n" }, createdAt: new Date().toISOString() });
+      await registry.invoke({
+        name: "write_file",
+        arguments: { path: "a.txt", content: "one\ntwo\n" },
+        createdAt: new Date().toISOString(),
+      });
       const result = await registry.invoke({
         name: "apply_patch",
         arguments: {

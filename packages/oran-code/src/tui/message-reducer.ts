@@ -25,7 +25,13 @@ export function reduceRuntimeEvent(state: TuiState, event: RuntimeEvent): void {
     finishThought(state);
     state.activeTaskId = event.taskId;
     state.lastSequence = 0;
-    state.activeTaskUsage = { inputTokens: 0, outputTokens: 0, totalTokens: 0, cacheReadTokens: 0, cacheWriteTokens: 0 };
+    state.activeTaskUsage = {
+      inputTokens: 0,
+      outputTokens: 0,
+      totalTokens: 0,
+      cacheReadTokens: 0,
+      cacheWriteTokens: 0,
+    };
     state.processedSequences.clear();
   }
   const sequenceKey = `${event.taskId}:${event.sequence}`;
@@ -35,8 +41,10 @@ export function reduceRuntimeEvent(state: TuiState, event: RuntimeEvent): void {
   state.lastSequence = event.sequence;
   switch (event.type) {
     case "state":
-      if ((event.state === "planning" || event.state === "executing")
-        && ["ready", "completed", "failed", "cancelled", "paused"].includes(state.session.taskState)) {
+      if (
+        (event.state === "planning" || event.state === "executing") &&
+        ["ready", "completed", "failed", "cancelled", "paused"].includes(state.session.taskState)
+      ) {
         state.session.startedAt = Date.now();
         state.session.elapsedMs = undefined;
         state.session.modelElapsedMs = undefined;
@@ -48,79 +56,85 @@ export function reduceRuntimeEvent(state: TuiState, event: RuntimeEvent): void {
       if (event.state === "planning" || event.state === "executing" || event.state === "verifying") {
         state.session.startedAt ??= Date.now();
       }
-      if (event.state === "completed" || event.state === "failed" || event.state === "cancelled" || event.state === "paused") {
-       state.session.elapsedMs = state.session.startedAt === undefined ? undefined : Math.max(0, Date.now() - state.session.startedAt);
-       state.session.currentTool = undefined;
-     }
+      if (
+        event.state === "completed" ||
+        event.state === "failed" ||
+        event.state === "cancelled" ||
+        event.state === "paused"
+      ) {
+        state.session.elapsedMs =
+          state.session.startedAt === undefined ? undefined : Math.max(0, Date.now() - state.session.startedAt);
+        state.session.currentTool = undefined;
+      }
       break;
-   case "assistant_start":
-     if (state.streaming && state.assistantMessageId) break;
-     if (event.turnId && findAssistantByTurnId(state, event.turnId, event.taskId)) break;
-     finishAssistant(state);
-     clearRetryErrorNotice(state);
-     clearAbortOnlyAssistants(state);
-     state.streaming = true;
-     state.waitingForFirstChunk = true;
-     state.session.currentStep = event.step;
-     state.assistantMessageId = appendTranscriptMessage(state, {
-       kind: "assistant",
-       text: "",
-       streaming: true,
-       ...(event.turnId ? { turnId: event.turnId } : {}),
-       taskId: event.taskId,
-     });
-     break;
-   case "assistant_delta": {
-     clearRetryErrorNotice(state);
-     state.waitingForFirstChunk = false;
-     const assistant = ensureAssistant(state, event.turnId, event.taskId);
-     assistant.text = stripPlanCompleteMarkers(assistant.text + redactSecretText(event.text));
-     assistant.streaming = true;
-     state.streaming = true;
-     state.session.currentStep = event.step;
-     break;
-   }
-   case "assistant_end": {
-     const assistant = activeAssistant(state, event.turnId, event.taskId);
-     if (!assistant && hasCompletedAssistant(state, event.turnId, event.taskId)) break;
-     const target = assistant ?? ensureAssistant(state, event.turnId, event.taskId);
-     target.text = stripPlanCompleteMarkers(redactSecretText(event.text));
-     target.streaming = false;
-     state.streaming = false;
-     state.waitingForFirstChunk = false;
-     const usage = usageDelta(event.usage);
-     state.session.usage = addUsage(state.session.usage, usage);
-     state.activeTaskUsage = addUsage(state.activeTaskUsage, usage);
-     state.assistantMessageId = undefined;
-     if (!target.text.trim() && event.toolCalls.length) removeTranscriptMessage(state, target.id);
-     break;
-   }
-   case "assistant_abort": {
-     const assistant = activeAssistant(state, event.turnId, event.taskId);
-     if (!assistant && hasCompletedAssistant(state, event.turnId, event.taskId)) break;
-     const target = assistant ?? ensureAssistant(state, event.turnId, event.taskId);
-     const abortMessage = redactSecretText(event.message);
-     target.text = `${target.text}${target.text ? "\n" : ""}[${abortMessage}]`;
-     target.abortMessage = abortMessage;
-     target.streaming = false;
-     state.streaming = false;
-     state.waitingForFirstChunk = false;
-     state.assistantMessageId = undefined;
-     break;
-   }
-   case "thought_start":
-     finishThought(state);
-     state.waitingForFirstChunk = false;
-     state.thoughtMessageId = appendTranscriptMessage(state, {
-       kind: "thought",
-       text: "",
-       streaming: true,
-       expanded: true,
-       ...(event.turnId ? { turnId: event.turnId } : {}),
-       taskId: event.taskId,
-     });
-     placeThoughtBeforeAssistant(state, state.thoughtMessageId, event.turnId, event.taskId);
-     break;
+    case "assistant_start":
+      if (state.streaming && state.assistantMessageId) break;
+      if (event.turnId && findAssistantByTurnId(state, event.turnId, event.taskId)) break;
+      finishAssistant(state);
+      clearRetryErrorNotice(state);
+      clearAbortOnlyAssistants(state);
+      state.streaming = true;
+      state.waitingForFirstChunk = true;
+      state.session.currentStep = event.step;
+      state.assistantMessageId = appendTranscriptMessage(state, {
+        kind: "assistant",
+        text: "",
+        streaming: true,
+        ...(event.turnId ? { turnId: event.turnId } : {}),
+        taskId: event.taskId,
+      });
+      break;
+    case "assistant_delta": {
+      clearRetryErrorNotice(state);
+      state.waitingForFirstChunk = false;
+      const assistant = ensureAssistant(state, event.turnId, event.taskId);
+      assistant.text = stripPlanCompleteMarkers(assistant.text + redactSecretText(event.text));
+      assistant.streaming = true;
+      state.streaming = true;
+      state.session.currentStep = event.step;
+      break;
+    }
+    case "assistant_end": {
+      const assistant = activeAssistant(state, event.turnId, event.taskId);
+      if (!assistant && hasCompletedAssistant(state, event.turnId, event.taskId)) break;
+      const target = assistant ?? ensureAssistant(state, event.turnId, event.taskId);
+      target.text = stripPlanCompleteMarkers(redactSecretText(event.text));
+      target.streaming = false;
+      state.streaming = false;
+      state.waitingForFirstChunk = false;
+      const usage = usageDelta(event.usage);
+      state.session.usage = addUsage(state.session.usage, usage);
+      state.activeTaskUsage = addUsage(state.activeTaskUsage, usage);
+      state.assistantMessageId = undefined;
+      if (!target.text.trim() && event.toolCalls.length) removeTranscriptMessage(state, target.id);
+      break;
+    }
+    case "assistant_abort": {
+      const assistant = activeAssistant(state, event.turnId, event.taskId);
+      if (!assistant && hasCompletedAssistant(state, event.turnId, event.taskId)) break;
+      const target = assistant ?? ensureAssistant(state, event.turnId, event.taskId);
+      const abortMessage = redactSecretText(event.message);
+      target.text = `${target.text}${target.text ? "\n" : ""}[${abortMessage}]`;
+      target.abortMessage = abortMessage;
+      target.streaming = false;
+      state.streaming = false;
+      state.waitingForFirstChunk = false;
+      state.assistantMessageId = undefined;
+      break;
+    }
+    case "thought_start":
+      finishThought(state);
+      state.waitingForFirstChunk = false;
+      state.thoughtMessageId = appendTranscriptMessage(state, {
+        kind: "thought",
+        text: "",
+        streaming: true,
+        expanded: true,
+        ...(event.turnId ? { turnId: event.turnId } : {}),
+        taskId: event.taskId,
+      });
+      placeThoughtBeforeAssistant(state, state.thoughtMessageId, event.turnId, event.taskId);
+      break;
     case "thought_delta": {
       const thought = ensureThought(state, event.taskId, event.turnId);
       thought.text += redactSecretText(event.text);
@@ -151,7 +165,9 @@ export function reduceRuntimeEvent(state: TuiState, event: RuntimeEvent): void {
       // Assistant stream already rendered the plan body. Strip protocol markers
       // from the last assistant row and avoid a second plan block.
       const cleaned = redactSecretText(event.plan).trim();
-      const lastAssistant = [...state.transcript].reverse().find((message) => message.kind === "assistant" && message.taskId === event.taskId);
+      const lastAssistant = [...state.transcript]
+        .reverse()
+        .find((message) => message.kind === "assistant" && message.taskId === event.taskId);
       if (lastAssistant && lastAssistant.kind === "assistant") {
         lastAssistant.text = cleaned || stripPlanCompleteMarkers(lastAssistant.text);
         lastAssistant.streaming = false;
@@ -168,8 +184,7 @@ export function reduceRuntimeEvent(state: TuiState, event: RuntimeEvent): void {
       });
       if (event.autoExecute) {
         state.session.workMode = event.workMode ?? "auto";
-        state.session.permissionMode = event.permissionMode
-          ?? (state.session.workMode === "plan" ? "plan" : "default");
+        state.session.permissionMode = event.permissionMode ?? (state.session.workMode === "plan" ? "plan" : "default");
         state.session.status = "executing plan";
       } else {
         state.session.status = "plan decision required";
@@ -181,12 +196,12 @@ export function reduceRuntimeEvent(state: TuiState, event: RuntimeEvent): void {
       state.session.status = `plan ${completed}/${event.planState.steps.length}`;
       break;
     }
-   case "tool_start":
-     appendToolStart(state, event.call, event.permissionLevel, event.timestamp, event.taskId);
-     state.session.currentTool = event.call.name;
-     state.waitingForFirstChunk = false;
-     finishAssistant(state);
-     break;
+    case "tool_start":
+      appendToolStart(state, event.call, event.permissionLevel, event.timestamp, event.taskId);
+      state.session.currentTool = event.call.name;
+      state.waitingForFirstChunk = false;
+      finishAssistant(state);
+      break;
     case "tool_result":
       updateToolResult(state, event.call, event.result, event.taskId);
       state.session.currentTool = undefined;
@@ -244,7 +259,8 @@ export function reduceRuntimeEvent(state: TuiState, event: RuntimeEvent): void {
       finishRunningTools(state, event.taskId, "cancelled", "cancelled");
       state.session.taskState = "cancelled";
       state.session.status = `cancelled: ${redactSecretText(event.message)}`;
-      state.session.elapsedMs = state.session.startedAt === undefined ? undefined : Math.max(0, Date.now() - state.session.startedAt);
+      state.session.elapsedMs =
+        state.session.startedAt === undefined ? undefined : Math.max(0, Date.now() - state.session.startedAt);
       finishAssistant(state);
       finishThought(state);
       state.retiredTaskIds.add(event.taskId);
@@ -258,26 +274,22 @@ export function reduceRuntimeEvent(state: TuiState, event: RuntimeEvent): void {
   }
 }
 
-function reduceContextCompaction(
-  state: TuiState,
-  event: Extract<RuntimeEvent, { type: "context_compaction" }>,
-): void {
-  const replacementSuffix = (event.replacementCount ?? 0) > 0
-    ? `; offloaded ${event.replacementCount} tool result(s)`
-    : "";
+function reduceContextCompaction(state: TuiState, event: Extract<RuntimeEvent, { type: "context_compaction" }>): void {
+  const replacementSuffix =
+    (event.replacementCount ?? 0) > 0 ? `; offloaded ${event.replacementCount} tool result(s)` : "";
   switch (event.phase) {
     case "started": {
-      const message = event.reason === "emergency"
-        ? "Context limit reached; compacting before retry..."
-        : "Compacting context...";
+      const message =
+        event.reason === "emergency" ? "Context limit reached; compacting before retry..." : "Compacting context...";
       appendTranscriptMessage(state, { kind: "system", text: message });
       state.session.status = message.replace(/\.\.\.$/, "");
       break;
     }
     case "completed": {
-      const change = event.beforeTokens !== undefined && event.afterTokens !== undefined
-        ? `about ${event.beforeTokens} -> ${event.afterTokens} tokens`
-        : "token estimate unavailable";
+      const change =
+        event.beforeTokens !== undefined && event.afterTokens !== undefined
+          ? `about ${event.beforeTokens} -> ${event.afterTokens} tokens`
+          : "token estimate unavailable";
       appendTranscriptMessage(state, {
         kind: "system",
         text: `Context compacted: ${change}${replacementSuffix}.`,
@@ -298,7 +310,8 @@ function reduceContextCompaction(
           text: `Tool-result offload was incomplete: ${redactSecretText(event.message)}`,
         });
       }
-      state.session.status = runningTaskStatus(state) ?? (event.message ? "context offload incomplete" : "context offloaded");
+      state.session.status =
+        runningTaskStatus(state) ?? (event.message ? "context offload incomplete" : "context offloaded");
       break;
     }
     case "failed": {
@@ -308,19 +321,22 @@ function reduceContextCompaction(
         kind: cancelled ? "system" : "error",
         text: cancelled ? detail : `Context compaction failed (${event.reason}): ${detail}`,
       });
-      state.session.status = event.reason === "manual"
-        ? cancelled ? "context compaction cancelled" : "context compaction failed"
-        : runningTaskStatus(state) ?? (cancelled ? "context compaction cancelled" : "context compaction failed");
+      state.session.status =
+        event.reason === "manual"
+          ? cancelled
+            ? "context compaction cancelled"
+            : "context compaction failed"
+          : (runningTaskStatus(state) ?? (cancelled ? "context compaction cancelled" : "context compaction failed"));
       break;
     }
   }
 }
 
 function runningTaskStatus(state: TuiState): string | undefined {
-  return state.session.taskState === "planning"
-    || state.session.taskState === "executing"
-    || state.session.taskState === "verifying"
-    || state.session.taskState === "awaiting_approval"
+  return state.session.taskState === "planning" ||
+    state.session.taskState === "executing" ||
+    state.session.taskState === "verifying" ||
+    state.session.taskState === "awaiting_approval"
     ? state.session.taskState
     : undefined;
 }
@@ -336,7 +352,13 @@ export function appendSystemMessage(state: TuiState, text: string, kind: "system
   appendTranscriptMessage(state, { kind, text: redactSecretText(text) });
 }
 
-function appendToolStart(state: TuiState, call: ToolCall, permissionLevel: number, startedAt: string, taskId?: string): void {
+function appendToolStart(
+  state: TuiState,
+  call: ToolCall,
+  permissionLevel: number,
+  startedAt: string,
+  taskId?: string,
+): void {
   const callId = toolCallKey(call);
   if (getToolMessage(state, callId, taskId)) return;
   appendTranscriptMessage(state, {
@@ -361,7 +383,13 @@ function updateToolResult(state: TuiState, call: ToolCall, result: ToolResult, t
   const target = getToolMessage(state, callId, taskId);
   if (!target) return;
   if (target.status !== "running") return;
-  target.status = result.ok ? "success" : isCancelled(result) ? "cancelled" : isRejected(result) ? "rejected" : "failure";
+  target.status = result.ok
+    ? "success"
+    : isCancelled(result)
+      ? "cancelled"
+      : isRejected(result)
+        ? "rejected"
+        : "failure";
   if (result.durationMs === undefined) delete target.durationMs;
   else target.durationMs = result.durationMs;
   target.summary = redactSecretText(result.summary ?? result.error ?? (result.ok ? "ok" : "failed"));
@@ -371,13 +399,20 @@ function updateToolResult(state: TuiState, call: ToolCall, result: ToolResult, t
   else delete target.error;
 }
 
-function ensureAssistant(state: TuiState, turnId?: string, taskId?: string): Extract<TuiState["transcript"][number], { kind: "assistant" }> {
+function ensureAssistant(
+  state: TuiState,
+  turnId?: string,
+  taskId?: string,
+): Extract<TuiState["transcript"][number], { kind: "assistant" }> {
   const current = state.assistantMessageId
     ? state.transcript.find((message) => message.id === state.assistantMessageId)
     : undefined;
-  if (current?.kind === "assistant"
-    && (turnId === undefined || current.turnId === turnId)
-    && (taskId === undefined || current.taskId === taskId)) return current;
+  if (
+    current?.kind === "assistant" &&
+    (turnId === undefined || current.turnId === turnId) &&
+    (taskId === undefined || current.taskId === taskId)
+  )
+    return current;
   if (current?.kind === "assistant") finishAssistant(state);
   const id = appendTranscriptMessage(state, {
     kind: "assistant",
@@ -387,7 +422,10 @@ function ensureAssistant(state: TuiState, turnId?: string, taskId?: string): Ext
     ...(taskId ? { taskId } : {}),
   });
   state.assistantMessageId = id;
-  return state.transcript.find((message) => message.id === id)! as Extract<TuiState["transcript"][number], { kind: "assistant" }>;
+  return state.transcript.find((message) => message.id === id)! as Extract<
+    TuiState["transcript"][number],
+    { kind: "assistant" }
+  >;
 }
 
 function activeAssistant(
@@ -409,13 +447,17 @@ function findAssistantByTurnId(
   turnId: string,
   taskId?: string,
 ): Extract<TuiState["transcript"][number], { kind: "assistant" }> | undefined {
-  const message = [...state.transcript].reverse().find((entry) => entry.kind === "assistant" && entry.turnId === turnId && entry.taskId === taskId);
+  const message = [...state.transcript]
+    .reverse()
+    .find((entry) => entry.kind === "assistant" && entry.turnId === turnId && entry.taskId === taskId);
   return message?.kind === "assistant" ? message : undefined;
 }
 
 function hasCompletedAssistant(state: TuiState, turnId?: string, taskId?: string): boolean {
   if (turnId) return Boolean(findAssistantByTurnId(state, turnId, taskId));
-  return [...state.transcript].reverse().some((entry) => entry.kind === "assistant" && entry.taskId === taskId && !entry.streaming);
+  return [...state.transcript]
+    .reverse()
+    .some((entry) => entry.kind === "assistant" && entry.taskId === taskId && !entry.streaming);
 }
 
 function finishAssistant(state: TuiState): void {
@@ -438,9 +480,12 @@ function ensureThought(
   const current = state.thoughtMessageId
     ? state.transcript.find((message) => message.id === state.thoughtMessageId)
     : undefined;
-  if (current?.kind === "thought"
-    && (turnId === undefined || current.turnId === turnId)
-    && (taskId === undefined || current.taskId === taskId)) return current;
+  if (
+    current?.kind === "thought" &&
+    (turnId === undefined || current.turnId === turnId) &&
+    (taskId === undefined || current.taskId === taskId)
+  )
+    return current;
   if (current?.kind === "thought") finishThought(state);
   const id = appendTranscriptMessage(state, {
     kind: "thought",
@@ -452,16 +497,17 @@ function ensureThought(
   });
   state.thoughtMessageId = id;
   placeThoughtBeforeAssistant(state, id, turnId, taskId);
-  return state.transcript.find((message) => message.id === id)! as Extract<TuiState["transcript"][number], { kind: "thought" }>;
+  return state.transcript.find((message) => message.id === id)! as Extract<
+    TuiState["transcript"][number],
+    { kind: "thought" }
+  >;
 }
 
 function placeThoughtBeforeAssistant(state: TuiState, thoughtId: string, turnId?: string, taskId?: string): void {
   const thoughtIndex = state.transcript.findIndex((message) => message.id === thoughtId);
   if (thoughtIndex < 0) return;
 
-  const assistantId = turnId
-    ? findAssistantByTurnId(state, turnId, taskId)?.id
-    : state.assistantMessageId;
+  const assistantId = turnId ? findAssistantByTurnId(state, turnId, taskId)?.id : state.assistantMessageId;
   if (!assistantId) return;
 
   const assistantIndex = state.transcript.findIndex((message) => message.id === assistantId);
@@ -485,12 +531,7 @@ function finishThought(state: TuiState): void {
   state.thoughtMessageId = undefined;
 }
 
-function finishRunningTools(
-  state: TuiState,
-  taskId: string,
-  status: "failure" | "cancelled",
-  summary: string,
-): void {
+function finishRunningTools(state: TuiState, taskId: string, status: "failure" | "cancelled", summary: string): void {
   for (const message of state.transcript) {
     if (message.kind !== "tool" || message.taskId !== taskId || message.status !== "running") continue;
     message.status = status;
@@ -533,7 +574,10 @@ function usageDelta(next: Record<string, number>): TuiState["session"]["usage"] 
   return normalizeTokenUsage(next);
 }
 
-function addUsage(current: TuiState["session"]["usage"], delta: TuiState["session"]["usage"]): TuiState["session"]["usage"] {
+function addUsage(
+  current: TuiState["session"]["usage"],
+  delta: TuiState["session"]["usage"],
+): TuiState["session"]["usage"] {
   return {
     inputTokens: current.inputTokens + delta.inputTokens,
     outputTokens: current.outputTokens + delta.outputTokens,
@@ -545,27 +589,28 @@ function addUsage(current: TuiState["session"]["usage"], delta: TuiState["sessio
 
 function reconcileTaskUsage(state: TuiState, completed: TuiState["session"]["usage"]): void {
   for (const key of Object.keys(completed) as Array<keyof typeof completed>) {
-    state.session.usage[key] = Math.max(
-      0,
-      state.session.usage[key] + completed[key] - state.activeTaskUsage[key],
-    );
+    state.session.usage[key] = Math.max(0, state.session.usage[key] + completed[key] - state.activeTaskUsage[key]);
     state.activeTaskUsage[key] = completed[key];
   }
 }
 
 function isRejected(result: ToolResult): boolean {
-  return result.metadata?.blockedBeforeExecution === true
-    || /reject|denied|permission/i.test(`${result.summary ?? ""} ${result.error ?? ""}`);
+  return (
+    result.metadata?.blockedBeforeExecution === true ||
+    /reject|denied|permission/i.test(`${result.summary ?? ""} ${result.error ?? ""}`)
+  );
 }
 
 function isCancelled(result: ToolResult): boolean {
-  return result.metadata?.cancelled === true || /cancelled|canceled|aborted/i.test(`${result.summary ?? ""} ${result.error ?? ""}`);
+  return (
+    result.metadata?.cancelled === true ||
+    /cancelled|canceled|aborted/i.test(`${result.summary ?? ""} ${result.error ?? ""}`)
+  );
 }
 
 function redactVerification(result: VerificationResult): VerificationResult {
   return { ...result, command: redactSecretText(result.command), output: redactSecretText(result.output) };
 }
-
 
 function toolCallKey(call: ToolCall): string {
   return call.id ?? `${call.name}:${call.createdAt}`;

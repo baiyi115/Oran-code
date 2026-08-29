@@ -100,7 +100,9 @@ export class SubagentCoordinator {
       };
       if (runOptions.background) {
         const task = this.options.background.start(this.options.runner, runOptions);
-        return success(`Started background subagent ${task.id} (name="${task.name}"). The result will arrive as a task notification.`);
+        return success(
+          `Started background subagent ${task.id} (name="${task.name}"). The result will arrive as a task notification.`,
+        );
       }
       const result = await this.options.runner.run({
         ...runOptions,
@@ -131,114 +133,207 @@ export class SubagentCoordinator {
   }
 
   private teamCreateTool(): ToolDefinition {
-    return simpleTool("team_create", "Create an in-memory teammate team.", { team_name: { type: "string" } }, ["team_name"], async (args) => {
-      const result = this.options.teams.create(stringArg(args.team_name));
-      return result.ok ? success(result.output) : failed(result.output);
-    });
+    return simpleTool(
+      "team_create",
+      "Create an in-memory teammate team.",
+      { team_name: { type: "string" } },
+      ["team_name"],
+      async (args) => {
+        const result = this.options.teams.create(stringArg(args.team_name));
+        return result.ok ? success(result.output) : failed(result.output);
+      },
+    );
   }
 
   private teamSpawnTool(): ToolDefinition {
-    return simpleTool("team_spawn", "Spawn a persistent teammate and assign its first task.", {
-      team_name: { type: "string" }, description: { type: "string" }, prompt: { type: "string" },
-      subagent_type: { type: "string" }, model: { type: "string" },
-    }, ["team_name", "description", "prompt"], async (args) => {
-      const type = optionalStringArg(args.subagent_type);
-      const definition = type ? this.options.roles.get(type) : undefined;
-      if (type && !definition) return this.unknownRole(type);
-      let model: ModelConfig | undefined;
-      try {
-        const reference = optionalStringArg(args.model);
-        model = reference ? this.options.resolveModel(reference) : undefined;
-      } catch (error) {
-        return failed(error instanceof Error ? error.message : String(error));
-      }
-      const result = this.options.teams.spawn(stringArg(args.team_name), stringArg(args.description), stringArg(args.prompt), {
-        ...(definition ? { definition } : {}), ...(model ? { model } : {}),
-      });
-      return result.ok ? success(result.output) : failed(result.output);
-    });
+    return simpleTool(
+      "team_spawn",
+      "Spawn a persistent teammate and assign its first task.",
+      {
+        team_name: { type: "string" },
+        description: { type: "string" },
+        prompt: { type: "string" },
+        subagent_type: { type: "string" },
+        model: { type: "string" },
+      },
+      ["team_name", "description", "prompt"],
+      async (args) => {
+        const type = optionalStringArg(args.subagent_type);
+        const definition = type ? this.options.roles.get(type) : undefined;
+        if (type && !definition) return this.unknownRole(type);
+        let model: ModelConfig | undefined;
+        try {
+          const reference = optionalStringArg(args.model);
+          model = reference ? this.options.resolveModel(reference) : undefined;
+        } catch (error) {
+          return failed(error instanceof Error ? error.message : String(error));
+        }
+        const result = this.options.teams.spawn(
+          stringArg(args.team_name),
+          stringArg(args.description),
+          stringArg(args.prompt),
+          {
+            ...(definition ? { definition } : {}),
+            ...(model ? { model } : {}),
+          },
+        );
+        return result.ok ? success(result.output) : failed(result.output);
+      },
+    );
   }
 
   private teamSendTool(): ToolDefinition {
-    return simpleTool("team_send", "Queue a message for a persistent teammate.", {
-      team_name: { type: "string" }, member_name: { type: "string" }, prompt: { type: "string" },
-    }, ["team_name", "member_name", "prompt"], async (args) => {
-      const result = this.options.teams.send(stringArg(args.team_name), stringArg(args.member_name), stringArg(args.prompt));
-      return result.ok ? success(result.output) : failed(result.output);
-    });
+    return simpleTool(
+      "team_send",
+      "Queue a message for a persistent teammate.",
+      {
+        team_name: { type: "string" },
+        member_name: { type: "string" },
+        prompt: { type: "string" },
+      },
+      ["team_name", "member_name", "prompt"],
+      async (args) => {
+        const result = this.options.teams.send(
+          stringArg(args.team_name),
+          stringArg(args.member_name),
+          stringArg(args.prompt),
+        );
+        return result.ok ? success(result.output) : failed(result.output);
+      },
+    );
   }
 
   private teamListTool(): ToolDefinition {
-    return simpleTool("team_list", "List in-memory teams and teammate status.", {}, [], async () => success(JSON.stringify(this.options.teams.list(), null, 2)), { cacheable: false });
+    return simpleTool(
+      "team_list",
+      "List in-memory teams and teammate status.",
+      {},
+      [],
+      async () => success(JSON.stringify(this.options.teams.list(), null, 2)),
+      { cacheable: false },
+    );
   }
 
   private teamDeleteTool(): ToolDefinition {
-    return simpleTool("team_delete", "Delete a team and stop all teammates.", { team_name: { type: "string" } }, ["team_name"], async (args) => {
-      const result = await this.options.teams.delete(stringArg(args.team_name));
-      return result.ok ? success(result.output) : failed(result.output);
-    });
+    return simpleTool(
+      "team_delete",
+      "Delete a team and stop all teammates.",
+      { team_name: { type: "string" } },
+      ["team_name"],
+      async (args) => {
+        const result = await this.options.teams.delete(stringArg(args.team_name));
+        return result.ok ? success(result.output) : failed(result.output);
+      },
+    );
   }
 
   private teamResumeTool(): ToolDefinition {
-    return simpleTool("team_resume", "Resume an interrupted teammate and replay only its interrupted prompt.", {
-      team_name: { type: "string" }, member_name: { type: "string" },
-    }, ["team_name", "member_name"], async (args) => {
-      const result = this.options.teams.resume(stringArg(args.team_name), stringArg(args.member_name));
-      return result.ok ? success(result.output) : failed(result.output);
-    });
+    return simpleTool(
+      "team_resume",
+      "Resume an interrupted teammate and replay only its interrupted prompt.",
+      {
+        team_name: { type: "string" },
+        member_name: { type: "string" },
+      },
+      ["team_name", "member_name"],
+      async (args) => {
+        const result = this.options.teams.resume(stringArg(args.team_name), stringArg(args.member_name));
+        return result.ok ? success(result.output) : failed(result.output);
+      },
+    );
   }
 
   private taskListTool(): ToolDefinition {
-    return simpleTool("task_list", "List one-shot background subagent tasks.", {}, [], async () => success(JSON.stringify(
-      this.options.background.list().map(({ promise: _promise, abortController: _abortController, ...task }) => task), null, 2,
-    )), { cacheable: false });
+    return simpleTool(
+      "task_list",
+      "List one-shot background subagent tasks.",
+      {},
+      [],
+      async () =>
+        success(
+          JSON.stringify(
+            this.options.background
+              .list()
+              .map(({ promise: _promise, abortController: _abortController, ...task }) => task),
+            null,
+            2,
+          ),
+        ),
+      { cacheable: false },
+    );
   }
 
   private taskDetailTool(): ToolDefinition {
-    return simpleTool("task_detail", "Show one background subagent task.", { task_id: { type: "string" } }, ["task_id"], async (args) => {
-      const task = this.options.background.get(stringArg(args.task_id));
-      if (!task) return failed(`Unknown background task ${stringArg(args.task_id)}.`);
-      const { promise: _promise, abortController: _abortController, ...snapshot } = task;
-      return success(JSON.stringify(snapshot, null, 2));
-    }, { cacheable: false });
+    return simpleTool(
+      "task_detail",
+      "Show one background subagent task.",
+      { task_id: { type: "string" } },
+      ["task_id"],
+      async (args) => {
+        const task = this.options.background.get(stringArg(args.task_id));
+        if (!task) return failed(`Unknown background task ${stringArg(args.task_id)}.`);
+        const { promise: _promise, abortController: _abortController, ...snapshot } = task;
+        return success(JSON.stringify(snapshot, null, 2));
+      },
+      { cacheable: false },
+    );
   }
 
   private taskStopTool(): ToolDefinition {
-    return simpleTool("task_stop", "Cancel a running background subagent task.", { task_id: { type: "string" } }, ["task_id"], async (args) => {
-      const taskId = stringArg(args.task_id);
-      return this.options.background.cancel(taskId)
-        ? success(`Cancellation requested for ${taskId}.`)
-        : failed(`Task ${taskId} is unknown or already finished.`);
-    });
+    return simpleTool(
+      "task_stop",
+      "Cancel a running background subagent task.",
+      { task_id: { type: "string" } },
+      ["task_id"],
+      async (args) => {
+        const taskId = stringArg(args.task_id);
+        return this.options.background.cancel(taskId)
+          ? success(`Cancellation requested for ${taskId}.`)
+          : failed(`Task ${taskId} is unknown or already finished.`);
+      },
+    );
   }
 
   private taskRetryTool(): ToolDefinition {
-    return simpleTool("task_retry", "Retry a finished or interrupted background task as a new task.", {
-      task_id: { type: "string" },
-    }, ["task_id"], async (args) => {
-      const taskId = stringArg(args.task_id);
-      const previous = this.options.background.get(taskId);
-      if (!previous) return failed(`Unknown background task ${taskId}.`);
-      const definition = previous.definitionName ? this.options.roles.get(previous.definitionName) : undefined;
-      if (previous.definitionName && !definition) return failed(`Agent definition is not available: ${previous.definitionName}.`);
-      let model: ModelConfig | undefined;
-      try {
-        model = previous.modelReference ? this.options.resolveModel(previous.modelReference) : undefined;
-      } catch (error) {
-        return failed(error instanceof Error ? error.message : String(error));
-      }
-      const retried = this.options.background.retry(taskId, this.options.runner, {
-        ...(definition ? { definition } : {}),
-        ...(model ? { model } : {}),
-      });
-      return retried
-        ? success(`Retried ${taskId} as ${retried.id}.`)
-        : failed(`Task ${taskId} is still running and cannot be retried.`);
-    });
+    return simpleTool(
+      "task_retry",
+      "Retry a finished or interrupted background task as a new task.",
+      {
+        task_id: { type: "string" },
+      },
+      ["task_id"],
+      async (args) => {
+        const taskId = stringArg(args.task_id);
+        const previous = this.options.background.get(taskId);
+        if (!previous) return failed(`Unknown background task ${taskId}.`);
+        const definition = previous.definitionName ? this.options.roles.get(previous.definitionName) : undefined;
+        if (previous.definitionName && !definition)
+          return failed(`Agent definition is not available: ${previous.definitionName}.`);
+        let model: ModelConfig | undefined;
+        try {
+          model = previous.modelReference ? this.options.resolveModel(previous.modelReference) : undefined;
+        } catch (error) {
+          return failed(error instanceof Error ? error.message : String(error));
+        }
+        const retried = this.options.background.retry(taskId, this.options.runner, {
+          ...(definition ? { definition } : {}),
+          ...(model ? { model } : {}),
+        });
+        return retried
+          ? success(`Retried ${taskId} as ${retried.id}.`)
+          : failed(`Task ${taskId} is still running and cannot be retried.`);
+      },
+    );
   }
 
   private unknownRole(name: string): ToolResult {
-    return failed(JSON.stringify({ code: "unknown_subagent_type", subagent_type: name, available: this.options.roles.list().map((item) => item.name) }));
+    return failed(
+      JSON.stringify({
+        code: "unknown_subagent_type",
+        subagent_type: name,
+        available: this.options.roles.list().map((item) => item.name),
+      }),
+    );
   }
 }
 
@@ -251,7 +346,8 @@ function simpleTool(
   options: { cacheable?: boolean } = {},
 ): ToolDefinition {
   return {
-    name, description,
+    name,
+    description,
     parameters: { type: "object", additionalProperties: false, properties, required },
     permissionLevel: 0,
     kind: "readonly",
@@ -269,7 +365,14 @@ function parseAgentArguments(value: Record<string, unknown>): AgentToolArguments
   const model = optionalStringArg(value.model);
   const teamName = optionalStringArg(value.team_name);
   if (value.run_in_background !== undefined && typeof value.run_in_background !== "boolean") return undefined;
-  return { description, prompt, ...(subagentType ? { subagent_type: subagentType } : {}), ...(model ? { model } : {}), ...(value.run_in_background === true ? { run_in_background: true } : {}), ...(teamName ? { team_name: teamName } : {}) };
+  return {
+    description,
+    prompt,
+    ...(subagentType ? { subagent_type: subagentType } : {}),
+    ...(model ? { model } : {}),
+    ...(value.run_in_background === true ? { run_in_background: true } : {}),
+    ...(teamName ? { team_name: teamName } : {}),
+  };
 }
 
 function optionalStringArg(value: unknown): string | undefined {

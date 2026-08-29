@@ -119,7 +119,8 @@ export class TeamManager {
     const team = this.teams.get(normalizeTeamName(teamName) ?? "");
     const member = team?.members.get(normalizeMemberName(memberName));
     if (!team || !member) return { ok: false, output: `Unknown teammate ${teamName}/${memberName}.` };
-    if (member.status !== "interrupted") return { ok: false, output: `Teammate ${team.name}/${member.name} is not interrupted.` };
+    if (member.status !== "interrupted")
+      return { ok: false, output: `Teammate ${team.name}/${member.name} is not interrupted.` };
     if (member.currentPrompt) member.mailbox.unshift(member.currentPrompt);
     delete member.currentPrompt;
     member.status = "idle";
@@ -168,7 +169,9 @@ export class TeamManager {
       }
     }
     await this.persist();
-    await Promise.allSettled([...this.teams.values()].flatMap((team) => [...team.members.values()].map((member) => member.lock)));
+    await Promise.allSettled(
+      [...this.teams.values()].flatMap((team) => [...team.members.values()].map((member) => member.lock)),
+    );
   }
 
   async flush(): Promise<void> {
@@ -186,68 +189,73 @@ export class TeamManager {
   private schedule(team: Team, member: TeamMember): void {
     if (member.processing || !this.runtime || member.status !== "idle") return;
     member.processing = true;
-    member.lock = member.lock.then(async () => {
-      while (member.mailbox.length && member.status === "idle") {
-        const next = member.mailbox.shift();
-        if (!next) continue;
-        member.currentPrompt = next;
-        member.status = "running";
-        const abortController = new AbortController();
-        member.currentAbort = abortController;
-        await this.persist();
-        const previousToolCount = countToolMessages(member.conversation);
-        try {
-          const definition = member.definitionName ? this.runtime?.resolveDefinition(member.definitionName) : undefined;
-          if (member.definitionName && !definition) throw new Error(`agent definition is not available: ${member.definitionName}`);
-          const model = member.modelReference ? this.runtime?.resolveModel(member.modelReference) : undefined;
-          const result = await this.runtime!.runner.run({
-            description: `${team.name}/${member.name}`,
-            prompt: next,
-            origin: { kind: "teammate", teamName: team.name, name: member.name },
-            conversation: member.conversation,
-            abortController,
-            ...(definition ? { definition } : {}),
-            ...(model ? { model } : {}),
-            ...(member.worktreeLease ? { worktreeLease: member.worktreeLease } : {}),
-            worktreeLeaseCallback: async (lease) => {
-              if (lease) member.worktreeLease = lease;
+    member.lock = member.lock
+      .then(async () => {
+        while (member.mailbox.length && member.status === "idle") {
+          const next = member.mailbox.shift();
+          if (!next) continue;
+          member.currentPrompt = next;
+          member.status = "running";
+          const abortController = new AbortController();
+          member.currentAbort = abortController;
+          await this.persist();
+          const previousToolCount = countToolMessages(member.conversation);
+          try {
+            const definition = member.definitionName
+              ? this.runtime?.resolveDefinition(member.definitionName)
+              : undefined;
+            if (member.definitionName && !definition)
+              throw new Error(`agent definition is not available: ${member.definitionName}`);
+            const model = member.modelReference ? this.runtime?.resolveModel(member.modelReference) : undefined;
+            const result = await this.runtime!.runner.run({
+              description: `${team.name}/${member.name}`,
+              prompt: next,
+              origin: { kind: "teammate", teamName: team.name, name: member.name },
+              conversation: member.conversation,
+              abortController,
+              ...(definition ? { definition } : {}),
+              ...(model ? { model } : {}),
+              ...(member.worktreeLease ? { worktreeLease: member.worktreeLease } : {}),
+              worktreeLeaseCallback: async (lease) => {
+                if (lease) member.worktreeLease = lease;
+                else delete member.worktreeLease;
+                await this.persist();
+              },
+              customDeniedTools: ["agent"],
+            });
+            if (isInterrupted(member)) {
+              if (result.worktreeLease) member.worktreeLease = result.worktreeLease;
               else delete member.worktreeLease;
-              await this.persist();
-            },
-            customDeniedTools: ["agent"],
-          });
-          if (isInterrupted(member)) {
+              break;
+            }
+            member.conversation = result.conversation;
+            member.toolCount += Math.max(0, countToolMessages(result.conversation) - previousToolCount);
+            member.lastOutput = result.output;
             if (result.worktreeLease) member.worktreeLease = result.worktreeLease;
             else delete member.worktreeLease;
-            break;
+            delete member.currentPrompt;
+            if (result.status === "failed") {
+              member.status = "failed";
+              member.lastError = result.error ?? result.output;
+            } else {
+              member.status = "idle";
+              delete member.lastError;
+            }
+          } catch (error) {
+            if (!isInterrupted(member)) {
+              member.status = "failed";
+              member.lastError = error instanceof Error ? error.message : String(error);
+            }
+          } finally {
+            delete member.currentAbort;
+            await this.persist();
           }
-          member.conversation = result.conversation;
-          member.toolCount += Math.max(0, countToolMessages(result.conversation) - previousToolCount);
-          member.lastOutput = result.output;
-          if (result.worktreeLease) member.worktreeLease = result.worktreeLease;
-          else delete member.worktreeLease;
-          delete member.currentPrompt;
-          if (result.status === "failed") {
-            member.status = "failed";
-            member.lastError = result.error ?? result.output;
-          } else {
-            member.status = "idle";
-            delete member.lastError;
-          }
-        } catch (error) {
-          if (!isInterrupted(member)) {
-            member.status = "failed";
-            member.lastError = error instanceof Error ? error.message : String(error);
-          }
-        } finally {
-          delete member.currentAbort;
-          await this.persist();
         }
-      }
-    }).finally(() => {
-      member.processing = false;
-      if (member.status === "idle" && member.mailbox.length) this.schedule(team, member);
-    });
+      })
+      .finally(() => {
+        member.processing = false;
+        if (member.status === "idle" && member.mailbox.length) this.schedule(team, member);
+      });
   }
 
   private async persist(): Promise<void> {
@@ -282,7 +290,13 @@ function modelReference(model: ModelConfig): string {
 }
 
 function normalizeTeamName(value: string): string | undefined {
-  const normalized = value.trim().toLowerCase().replace(/\s+/g, "-").replace(/[^a-z0-9-]/g, "").replace(/-+/g, "-").replace(/^-|-$/g, "");
+  const normalized = value
+    .trim()
+    .toLowerCase()
+    .replace(/\s+/g, "-")
+    .replace(/[^a-z0-9-]/g, "")
+    .replace(/-+/g, "-")
+    .replace(/^-|-$/g, "");
   return normalized || undefined;
 }
 
@@ -291,7 +305,13 @@ function normalizeMemberName(value: string): string {
 }
 
 function deriveMemberName(description: string): string {
-  const normalized = description.trim().toLowerCase().replace(/\s+/g, "-").replace(/[^a-z0-9-]/g, "").replace(/-+/g, "-").replace(/^-|-$/g, "");
+  const normalized = description
+    .trim()
+    .toLowerCase()
+    .replace(/\s+/g, "-")
+    .replace(/[^a-z0-9-]/g, "")
+    .replace(/-+/g, "-")
+    .replace(/^-|-$/g, "");
   return (normalized || "teammate").slice(0, 32).replace(/-$/g, "") || "teammate";
 }
 

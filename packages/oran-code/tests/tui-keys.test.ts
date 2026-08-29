@@ -1,8 +1,15 @@
 import { describe, expect, it } from "vitest";
-import { isDeleteBackward, isDeleteForward, isEndKey, isHomeKey, isSessionDeleteKey, isSubmitKey } from "../src/tui/keys.js";
+import {
+  isDeleteBackward,
+  isDeleteForward,
+  isEndKey,
+  isHomeKey,
+  isSessionDeleteKey,
+  isSubmitKey,
+} from "../src/tui/keys.js";
 import type { Key } from "ink";
 
-function key(partial: Partial<Key> = {}, input = ""): Key {
+function key(partial: Partial<Key> = {}): Key {
   return partial as Key;
 }
 

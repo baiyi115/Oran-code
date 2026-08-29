@@ -11,7 +11,6 @@ import type {
   ModelConfig,
   ModelProvider,
   RuntimeConfig,
-  RuntimeEvent,
   ToolCall,
   ToolDefinition,
 } from "../types.js";
@@ -19,7 +18,13 @@ import { createTask } from "../types.js";
 import type { ToolRegistry } from "../tools.js";
 import { cleanupWorktree, ensureWorktree, hasChanges, worktreePromptText } from "../worktree/lifecycle.js";
 import { createSubagentToolFilter } from "./filter.js";
-import type { SubagentEvent, SubagentOrigin, SubagentRunOptions, SubagentRunResult, SubagentWorktreeLease } from "./types.js";
+import type {
+  SubagentEvent,
+  SubagentOrigin,
+  SubagentRunOptions,
+  SubagentRunResult,
+  SubagentWorktreeLease,
+} from "./types.js";
 
 export const FORK_BOILERPLATE_TAG = "<oran-fork-subagent-rules>";
 export const FORK_REPORT_PREFIX = "Fork result:";
@@ -30,7 +35,7 @@ export const FORK_BOILERPLATE = [
   "2. Do not ask questions, request confirmation, or hold a conversation.",
   "3. Use tools directly to complete the assigned task.",
   "4. Stay strictly within the assigned task scope.",
-  `5. Start the final report with \"${FORK_REPORT_PREFIX}\" and keep it under 500 words.`,
+  `5. Start the final report with "${FORK_REPORT_PREFIX}" and keep it under 500 words.`,
   `</oran-fork-subagent-rules>`,
 ].join("\n");
 
@@ -88,9 +93,9 @@ export class SubagentRunner {
         };
         await notifyWorktreeLease(options, worktreeLease);
       }
-      const model = options.model ?? (options.definition?.model
-        ? this.deps.resolveModel(options.definition.model)
-        : this.deps.baseModel);
+      const model =
+        options.model ??
+        (options.definition?.model ? this.deps.resolveModel(options.definition.model) : this.deps.baseModel);
       const config = subagentRuntimeConfig(this.deps.baseConfig, model, options, executionWorkspace);
       const permission = new PermissionPolicy(config.permissions);
       permission.registerTools(this.deps.registry.list());
@@ -114,13 +119,14 @@ export class SubagentRunner {
         conversation,
         contextManager,
         toolFilter: filter,
-        ...(customInstructions ? {
-          stablePromptModules: { customInstructions },
-        } : {}),
+        ...(customInstructions
+          ? {
+              stablePromptModules: { customInstructions },
+            }
+          : {}),
         ...(hookEngine ? { hookEngine } : {}),
-        approvalCallback: (call, level, description, requestId) => (
-          this.deps.approvalCallback?.(call, level, description, requestId, origin) ?? false
-        ),
+        approvalCallback: (call, level, description, requestId) =>
+          this.deps.approvalCallback?.(call, level, description, requestId, origin) ?? false,
         eventCallback: async (event) => {
           if (event.type === "assistant_end") {
             if (event.text.trim()) assistantText.push(event.text.trim());
@@ -225,7 +231,12 @@ export function forkPrompt(prompt: string): string {
   return `${FORK_BOILERPLATE}\n\nAssigned task:\n${prompt.trim()}`;
 }
 
-function subagentRuntimeConfig(base: RuntimeConfig, model: ModelConfig, options: SubagentRunOptions, workspace: string): RuntimeConfig {
+function subagentRuntimeConfig(
+  base: RuntimeConfig,
+  model: ModelConfig,
+  options: SubagentRunOptions,
+  workspace: string,
+): RuntimeConfig {
   const permissionMode = options.definition?.permissionMode ?? base.permissionMode;
   const workMode = options.definition?.workMode ?? (permissionMode === "plan" ? "plan" : base.workMode);
   return {
@@ -243,7 +254,7 @@ function subagentRuntimeConfig(base: RuntimeConfig, model: ModelConfig, options:
       workspace,
       mode: permissionMode,
       workMode,
-      allowedRoots: base.permissions.allowedRoots.map((root) => samePath(root, base.workspace) ? workspace : root),
+      allowedRoots: base.permissions.allowedRoots.map((root) => (samePath(root, base.workspace) ? workspace : root)),
     },
     skipVerify: true,
   };
@@ -260,7 +271,10 @@ async function settleWorktree(lease: SubagentWorktreeLease | undefined): Promise
   return cleanup.ok ? undefined : lease;
 }
 
-async function notifyWorktreeLease(options: SubagentRunOptions, lease: SubagentWorktreeLease | undefined): Promise<void> {
+async function notifyWorktreeLease(
+  options: SubagentRunOptions,
+  lease: SubagentWorktreeLease | undefined,
+): Promise<void> {
   try {
     await options.worktreeLeaseCallback?.(lease);
   } catch {
@@ -268,7 +282,10 @@ async function notifyWorktreeLease(options: SubagentRunOptions, lease: SubagentW
   }
 }
 
-function subagentInstructions(options: SubagentRunOptions, lease: SubagentWorktreeLease | undefined): string | undefined {
+function subagentInstructions(
+  options: SubagentRunOptions,
+  lease: SubagentWorktreeLease | undefined,
+): string | undefined {
   const instructions = [
     options.definition?.prompt?.trim(),
     lease ? worktreePromptText(lease.path, lease.repoRoot) : undefined,

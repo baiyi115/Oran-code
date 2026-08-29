@@ -20,7 +20,15 @@ export interface TraceStore {
   getTask(taskId: string): Task | undefined;
   listTasks(limit?: number): Task[];
   appendStep(taskId: string, kind: string, payload: unknown): number;
-  appendToolCall(taskId: string, name: string, argumentsValue: Record<string, unknown>, result: string | null, ok: boolean, durationMs: number, stepId?: number): void;
+  appendToolCall(
+    taskId: string,
+    name: string,
+    argumentsValue: Record<string, unknown>,
+    result: string | null,
+    ok: boolean,
+    durationMs: number,
+    stepId?: number,
+  ): void;
   appendFileChange(taskId: string, path: string, beforeHash: string | null, afterHash: string | null): void;
   exportTrace(taskId: string): TraceExport;
   close(): void;
@@ -50,16 +58,48 @@ export class InMemoryTraceStore implements TraceStore {
 
   appendStep(taskId: string, kind: string, payload: unknown): number {
     const stepIndex = this.steps.filter((step) => step.taskId === taskId).length;
-    this.steps.push({ id: this.steps.length + 1, taskId, stepIndex, kind, payload: JSON.stringify(payload), createdAt: new Date().toISOString() });
+    this.steps.push({
+      id: this.steps.length + 1,
+      taskId,
+      stepIndex,
+      kind,
+      payload: JSON.stringify(payload),
+      createdAt: new Date().toISOString(),
+    });
     return this.steps.length;
   }
 
-  appendToolCall(taskId: string, name: string, argumentsValue: Record<string, unknown>, result: string | null, ok: boolean, durationMs: number, stepId?: number): void {
-    this.toolCalls.push({ id: this.toolCalls.length + 1, taskId, ...(stepId !== undefined ? { stepId } : {}), name, arguments: JSON.stringify(argumentsValue), result, ok: ok ? 1 : 0, durationMs, createdAt: new Date().toISOString() });
+  appendToolCall(
+    taskId: string,
+    name: string,
+    argumentsValue: Record<string, unknown>,
+    result: string | null,
+    ok: boolean,
+    durationMs: number,
+    stepId?: number,
+  ): void {
+    this.toolCalls.push({
+      id: this.toolCalls.length + 1,
+      taskId,
+      ...(stepId !== undefined ? { stepId } : {}),
+      name,
+      arguments: JSON.stringify(argumentsValue),
+      result,
+      ok: ok ? 1 : 0,
+      durationMs,
+      createdAt: new Date().toISOString(),
+    });
   }
 
   appendFileChange(taskId: string, path: string, beforeHash: string | null, afterHash: string | null): void {
-    this.fileChanges.push({ id: this.fileChanges.length + 1, taskId, path, beforeHash, afterHash, createdAt: new Date().toISOString() });
+    this.fileChanges.push({
+      id: this.fileChanges.length + 1,
+      taskId,
+      path,
+      beforeHash,
+      afterHash,
+      createdAt: new Date().toISOString(),
+    });
   }
 
   exportTrace(taskId: string): TraceExport {
@@ -139,16 +179,34 @@ export class SqliteTraceStore implements TraceStore {
 
   saveTask(task: Task): void {
     const rootWorkspace = task.rootWorkspace ?? task.workspace;
-    if (this.workspace && (!samePath(rootWorkspace, this.workspace) || !isOwnedExecutionWorkspace(this.workspace, task.workspace))) {
+    if (
+      this.workspace &&
+      (!samePath(rootWorkspace, this.workspace) || !isOwnedExecutionWorkspace(this.workspace, task.workspace))
+    ) {
       throw new Error(`trace workspace mismatch: expected ${this.workspace}, received ${task.workspace}`);
     }
-    this.db.prepare(`
+    this.db
+      .prepare(
+        `
       INSERT INTO tasks (id, workspace, root_workspace, prompt, state, plan, model, result, created_at, updated_at)
       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
       ON CONFLICT(id) DO UPDATE SET workspace = excluded.workspace, root_workspace = excluded.root_workspace,
         state = excluded.state, plan = excluded.plan,
         model = excluded.model, result = excluded.result, updated_at = excluded.updated_at
-    `).run(task.id, task.workspace, rootWorkspace, task.prompt, task.state, task.plan ?? null, task.model ?? null, task.result ?? null, task.createdAt, task.updatedAt);
+    `,
+      )
+      .run(
+        task.id,
+        task.workspace,
+        rootWorkspace,
+        task.prompt,
+        task.state,
+        task.plan ?? null,
+        task.model ?? null,
+        task.result ?? null,
+        task.createdAt,
+        task.updatedAt,
+      );
   }
 
   getTask(taskId: string): Task | undefined {
@@ -160,31 +218,62 @@ export class SqliteTraceStore implements TraceStore {
 
   listTasks(limit = 50): Task[] {
     const rows = this.workspace
-      ? this.db.prepare("SELECT * FROM tasks WHERE root_workspace = ? ORDER BY created_at DESC LIMIT ?").all(this.workspace, limit)
+      ? this.db
+          .prepare("SELECT * FROM tasks WHERE root_workspace = ? ORDER BY created_at DESC LIMIT ?")
+          .all(this.workspace, limit)
       : this.db.prepare("SELECT * FROM tasks ORDER BY created_at DESC LIMIT ?").all(limit);
     return rows.map(taskFromRow);
   }
 
   appendStep(taskId: string, kind: string, payload: unknown): number {
-    const result = this.db.prepare(`
+    const result = this.db
+      .prepare(
+        `
       INSERT INTO task_steps (task_id, step_index, kind, payload, created_at)
       VALUES (?, (SELECT COALESCE(MAX(step_index), -1) + 1 FROM task_steps WHERE task_id = ?), ?, ?, ?)
-    `).run(taskId, taskId, kind, JSON.stringify(payload), new Date().toISOString());
+    `,
+      )
+      .run(taskId, taskId, kind, JSON.stringify(payload), new Date().toISOString());
     return Number(result.lastInsertRowid);
   }
 
-  appendToolCall(taskId: string, name: string, argumentsValue: Record<string, unknown>, result: string | null, ok: boolean, durationMs: number, stepId?: number): void {
-    this.db.prepare(`
+  appendToolCall(
+    taskId: string,
+    name: string,
+    argumentsValue: Record<string, unknown>,
+    result: string | null,
+    ok: boolean,
+    durationMs: number,
+    stepId?: number,
+  ): void {
+    this.db
+      .prepare(
+        `
       INSERT INTO tool_calls (task_id, step_id, name, arguments, result, ok, duration_ms, created_at)
       VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-    `).run(taskId, stepId ?? null, name, JSON.stringify(argumentsValue), result, ok ? 1 : 0, durationMs, new Date().toISOString());
+    `,
+      )
+      .run(
+        taskId,
+        stepId ?? null,
+        name,
+        JSON.stringify(argumentsValue),
+        result,
+        ok ? 1 : 0,
+        durationMs,
+        new Date().toISOString(),
+      );
   }
 
   appendFileChange(taskId: string, path: string, beforeHash: string | null, afterHash: string | null): void {
-    this.db.prepare(`
+    this.db
+      .prepare(
+        `
       INSERT INTO file_changes (task_id, path, before_hash, after_hash, created_at)
       VALUES (?, ?, ?, ?, ?)
-    `).run(taskId, path, beforeHash, afterHash, new Date().toISOString());
+    `,
+      )
+      .run(taskId, path, beforeHash, afterHash, new Date().toISOString());
   }
 
   exportTrace(taskId: string): TraceExport {

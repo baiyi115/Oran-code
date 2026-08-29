@@ -22,7 +22,7 @@ export function createRuntimeConfig(
   workMode: WorkMode = config.agent?.workMode ?? "auto",
   permissionMode: PermissionMode = workMode === "plan"
     ? "plan"
-    : config.agent?.permissionMode ?? (approveAll ? "bypass" : "default"),
+    : (config.agent?.permissionMode ?? (approveAll ? "bypass" : "default")),
 ): RuntimeConfig {
   const stateRoot = projectStateRoot(workspace);
   const permissions: PermissionConfig = {

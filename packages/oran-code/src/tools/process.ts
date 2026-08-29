@@ -39,7 +39,6 @@ export function executeCommandWithProcessTree(
   return new Promise((resolve, reject) => {
     let timer: NodeJS.Timeout | undefined;
     let timedOut = false;
-    let childPid: number | undefined;
 
     const child = exec(
       command,
@@ -74,7 +73,7 @@ export function executeCommandWithProcessTree(
       },
     );
 
-    childPid = child.pid;
+    const childPid = child.pid;
 
     const onAbort = () => {
       killProcessTree(childPid);
@@ -121,7 +120,9 @@ export function getWindowsCommandDiagnostic(cmd: string, output: string): string
   const trimmedCmd = cmd.trim();
 
   if (trimmedCmd.includes("'")) {
-    hints.push("Windows cmd.exe does not treat single quotes ('') as quote delimiters. Use double quotes (\"\") for arguments and strings.");
+    hints.push(
+      "Windows cmd.exe does not treat single quotes ('') as quote delimiters. Use double quotes (\"\") for arguments and strings.",
+    );
   }
 
   const unixToolMapping: Record<string, string> = {
@@ -144,7 +145,9 @@ export function getWindowsCommandDiagnostic(cmd: string, output: string): string
 
   const firstWord = trimmedCmd.split(/\s+/)[0]?.toLowerCase() ?? "";
   if (unixToolMapping[firstWord]) {
-    hints.push(`Command '${firstWord}' failed or may be unavailable on Windows. Prefer the native agent tool: ${unixToolMapping[firstWord]}.`);
+    hints.push(
+      `Command '${firstWord}' failed or may be unavailable on Windows. Prefer the native agent tool: ${unixToolMapping[firstWord]}.`,
+    );
   }
 
   if (
@@ -152,7 +155,9 @@ export function getWindowsCommandDiagnostic(cmd: string, output: string): string
     /The term .* is not recognized/i.test(output)
   ) {
     if (!hints.some((h) => h.includes("native agent tool"))) {
-      hints.push("If you are trying to read, search, or edit files, use dedicated agent tools (read_file, search_code, list_files, edit_file) instead of shell utilities.");
+      hints.push(
+        "If you are trying to read, search, or edit files, use dedicated agent tools (read_file, search_code, list_files, edit_file) instead of shell utilities.",
+      );
     }
   }
 

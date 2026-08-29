@@ -1,7 +1,7 @@
 import { Writable } from "node:stream";
 import { describe, expect, it } from "vitest";
 import { TerminalRenderer } from "../src/renderer.js";
-import type { RuntimeEvent, ToolCall } from "../src/types.js";
+import type { ToolCall } from "../src/types.js";
 
 function capture(): { output: Writable; text: () => string } {
   const chunks: string[] = [];

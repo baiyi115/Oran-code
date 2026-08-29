@@ -154,7 +154,11 @@ export class ContextManager {
     this.recentFiles.set(key, { path, content, readAt });
   }
 
-  recordUsage(usage: Record<string, number>, messages: readonly Message[], tools: readonly Record<string, unknown>[]): void {
+  recordUsage(
+    usage: Record<string, number>,
+    messages: readonly Message[],
+    tools: readonly Record<string, unknown>[],
+  ): void {
     const tokens = usageTotal(usage);
     if (tokens === undefined) return;
     this.usageAnchor = { tokens, contextEstimate: estimatedRequestTokens(messages, tools) };
@@ -183,7 +187,11 @@ export class ContextManager {
     return refreshed;
   }
 
-  shouldAutoCompact(messages: readonly Message[], contextWindow: number, tools: readonly Record<string, unknown>[] = []): boolean {
+  shouldAutoCompact(
+    messages: readonly Message[],
+    contextWindow: number,
+    tools: readonly Record<string, unknown>[] = [],
+  ): boolean {
     if (this.autoCompactionDisabled) return false;
     const threshold = contextWindow - CONTEXT_LIMITS.summaryOutputTokens - CONTEXT_LIMITS.automaticSafetyTokens;
     return this.estimateTokens(messages, tools) >= Math.max(1, threshold);
@@ -262,11 +270,14 @@ export class ContextManager {
       }
 
       const isHistoricalRound = end < copy.length;
-      const maxSingleBytes = isHistoricalRound ? CONTEXT_LIMITS.historicalToolResultBytes : CONTEXT_LIMITS.singleToolResultBytes;
+      const maxSingleBytes = isHistoricalRound
+        ? CONTEXT_LIMITS.historicalToolResultBytes
+        : CONTEXT_LIMITS.singleToolResultBytes;
       const maxRoundBytes = isHistoricalRound ? CONTEXT_LIMITS.historicalToolRoundBytes : CONTEXT_LIMITS.toolRoundBytes;
 
-      const candidates = [...candidatesById.values()]
-        .sort((left, right) => right.bytes - left.bytes || left.indices[0]! - right.indices[0]!);
+      const candidates = [...candidatesById.values()].sort(
+        (left, right) => right.bytes - left.bytes || left.indices[0]! - right.indices[0]!,
+      );
       const attempted = new Set<string>();
       const replace = async (candidate: ToolCandidate): Promise<void> => {
         attempted.add(candidate.id);
@@ -299,7 +310,9 @@ export class ContextManager {
     return { messages: copy, replacementCount, offloadedCount, failedCount };
   }
 
-  private async offloadToolResultsUnlocked(candidates: readonly ToolResultOffloadCandidate[]): Promise<ToolResultOffloadResult> {
+  private async offloadToolResultsUnlocked(
+    candidates: readonly ToolResultOffloadCandidate[],
+  ): Promise<ToolResultOffloadResult> {
     const replacements = new Map<string, string>();
     const unique = new Map<string, ToolCandidate>();
     let retainedBytes = 0;
@@ -328,8 +341,9 @@ export class ContextManager {
       retainedBytes += bytes;
     }
 
-    const ordered = [...unique.values()]
-      .sort((left, right) => right.bytes - left.bytes || left.indices[0]! - right.indices[0]!);
+    const ordered = [...unique.values()].sort(
+      (left, right) => right.bytes - left.bytes || left.indices[0]! - right.indices[0]!,
+    );
     const attempted = new Set<string>();
     let offloadedCount = 0;
     let failedCount = 0;
@@ -398,12 +412,7 @@ export class ContextManager {
     try {
       const prefix = source.filter(isStableRequestPrefix);
       const history = source.filter((message) => !isTransientRequestMessage(message));
-      const summarized = await this.requestSummary(
-        history,
-        options.provider,
-        options.contextWindow,
-        options.signal,
-      );
+      const summarized = await this.requestSummary(history, options.provider, options.contextWindow, options.signal);
       const summaryMessage: Message = {
         role: "system",
         content: `<context-summary>\n${summarized.summary}\n</context-summary>`,
@@ -419,11 +428,10 @@ export class ContextManager {
 
       this.resetUsageAnchor();
       const afterTokens = this.estimateTokens(compacted, options.tools);
-      if (options.reason === "emergency"
-        && afterTokens >= options.contextWindow - CONTEXT_LIMITS.manualSafetyTokens) {
+      if (options.reason === "emergency" && afterTokens >= options.contextWindow - CONTEXT_LIMITS.manualSafetyTokens) {
         throw new Error(
-          `context remains too large after emergency compaction (${afterTokens} estimated tokens; `
-          + `retry limit is ${options.contextWindow - CONTEXT_LIMITS.manualSafetyTokens})`,
+          `context remains too large after emergency compaction (${afterTokens} estimated tokens; ` +
+            `retry limit is ${options.contextWindow - CONTEXT_LIMITS.manualSafetyTokens})`,
         );
       }
       if (options.reason === "auto") this.automaticFailures = 0;
@@ -463,11 +471,7 @@ export class ContextManager {
         continue;
       }
       try {
-        const response = await provider.complete(
-          request,
-          undefined,
-          signal ? { signal } : undefined,
-        );
+        const response = await provider.complete(request, undefined, signal ? { signal } : undefined);
         const summary = extractSummary(response.text, coveredMessages);
         return { summary, coveredMessages, droppedGroups };
       } catch (error) {
@@ -550,7 +554,9 @@ export class ContextManager {
   private async withLedgerLock<T>(action: () => Promise<T>): Promise<T> {
     const previous = this.ledgerTail;
     let release = (): void => undefined;
-    this.ledgerTail = new Promise<void>((resolveLock) => { release = resolveLock; });
+    this.ledgerTail = new Promise<void>((resolveLock) => {
+      release = resolveLock;
+    });
     await previous;
     try {
       return await action();
@@ -562,7 +568,9 @@ export class ContextManager {
   private async withCompactionLock<T>(action: () => Promise<T>): Promise<T> {
     const previous = this.compactionTail;
     let release = (): void => undefined;
-    this.compactionTail = new Promise<void>((resolveLock) => { release = resolveLock; });
+    this.compactionTail = new Promise<void>((resolveLock) => {
+      release = resolveLock;
+    });
     await previous;
     try {
       return await action();
@@ -582,7 +590,10 @@ function resolveContextWindow(model: ModelConfig): number {
     model.options?.protocol,
     model.options?.api,
     model.options?.providerType,
-  ].filter((value): value is string => typeof value === "string").join(" ").toLowerCase();
+  ]
+    .filter((value): value is string => typeof value === "string")
+    .join(" ")
+    .toLowerCase();
   return protocolHints.includes("anthropic") || protocolHints.includes("claude") ? 200_000 : 128_000;
 }
 
@@ -605,8 +616,9 @@ function isPromptTooLongError(error: unknown): boolean {
     }
   };
   visit(error, 0);
-  return /(prompt(?:[_\s-]+is)?[_\s-]+too[_\s-]+long|context[_\s-]?length[_\s-]?exceeded|maximum context length|context window.{0,50}(?:exceed|too (?:large|long)|limit)|too many (?:input )?tokens|input.{0,30}too long|request too large.{0,30}token)/i
-    .test(fragments.join(" "));
+  return /(prompt(?:[_\s-]+is)?[_\s-]+too[_\s-]+long|context[_\s-]?length[_\s-]?exceeded|maximum context length|context window.{0,50}(?:exceed|too (?:large|long)|limit)|too many (?:input )?tokens|input.{0,30}too long|request too large.{0,30}token)/i.test(
+    fragments.join(" "),
+  );
 }
 
 function isSafeToolCallId(id: string): boolean {
@@ -631,7 +643,6 @@ function usageTotal(usage: Record<string, number>): number | undefined {
   }
   return value("total_tokens");
 }
-
 
 function buildToolReplacement(content: string, bytes: number, relativePath: string): string {
   const lines = content.split("\n").slice(0, CONTEXT_LIMITS.previewLines).join("\n");
@@ -753,10 +764,7 @@ function buildSummaryRequest(messages: readonly Message[]): Message[] {
   ];
 }
 
-function estimatedRequestTokens(
-  messages: readonly Message[],
-  tools: readonly Record<string, unknown>[],
-): number {
+function estimatedRequestTokens(messages: readonly Message[], tools: readonly Record<string, unknown>[]): number {
   const payload = JSON.stringify({ messages, tools });
   const bytes = Buffer.byteLength(payload, "utf8");
   const cjkCharacters = payload.match(CJK_CHARACTER_PATTERN)?.length ?? 0;
@@ -769,10 +777,7 @@ function estimatedRequestTokens(
 
 const CJK_CHARACTER_PATTERN = /[\u2E80-\u9FFF\uF900-\uFAFF\uFF00-\uFFEF]/g;
 
-function dropOldestGroups(
-  groups: readonly Message[][],
-  dropRound: number,
-): { groups: Message[][]; count: number } {
+function dropOldestGroups(groups: readonly Message[][], dropRound: number): { groups: Message[][]; count: number } {
   if (!groups.length) return { groups: [], count: 0 };
   const count = Math.min(
     groups.length,
@@ -842,13 +847,14 @@ function extractSummary(text: string, coveredMessages: readonly Message[]): stri
     }
   }
 
-  const userMessages = coveredMessages
-    .filter((message) => message.role === "user")
-    .map((message, index) => {
-      const content = message.content ?? "";
-      return `<user-message index="${index + 1}" bytes="${Buffer.byteLength(content, "utf8")}">${content}</user-message>`;
-    })
-    .join("\n\n") || "(no user messages in the covered conversation)";
+  const userMessages =
+    coveredMessages
+      .filter((message) => message.role === "user")
+      .map((message, index) => {
+        const content = message.content ?? "";
+        return `<user-message index="${index + 1}" bytes="${Buffer.byteLength(content, "utf8")}">${content}</user-message>`;
+      })
+      .join("\n\n") || "(no user messages in the covered conversation)";
 
   // If section 6 (User Messages) is injected (missing from model output), splice in
   // verbatim user messages ourselves. If it exists, replace its body with verbatim copies.
@@ -878,14 +884,9 @@ function formatRecentFile(file: RecentFile): string {
   const byteLimit = Math.floor(CONTEXT_LIMITS.recentFileTokens * CONTEXT_LIMITS.charactersPerToken);
   const truncated = Buffer.byteLength(file.content, "utf8") > byteLimit;
   const content = truncated ? `${truncateUtf8(file.content, byteLimit)}\n(content truncated)` : file.content;
-  return [
-    "<recent-file>",
-    `Path: ${file.path}`,
-    `Read at: ${file.readAt}`,
-    "Content:",
-    content,
-    "</recent-file>",
-  ].join("\n");
+  return ["<recent-file>", `Path: ${file.path}`, `Read at: ${file.readAt}`, "Content:", content, "</recent-file>"].join(
+    "\n",
+  );
 }
 
 function truncateUtf8(value: string, maxBytes: number): string {

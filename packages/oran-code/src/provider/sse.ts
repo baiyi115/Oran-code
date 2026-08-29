@@ -7,9 +7,7 @@ export async function* readSseEvents(
   idleTimeoutMs: number | undefined,
   onIdle: () => void,
 ): AsyncGenerator<string> {
-  const timeoutMs = Number.isFinite(idleTimeoutMs) && idleTimeoutMs! > 0
-    ? idleTimeoutMs!
-    : DEFAULT_SSE_IDLE_TIMEOUT_MS;
+  const timeoutMs = Number.isFinite(idleTimeoutMs) && idleTimeoutMs! > 0 ? idleTimeoutMs! : DEFAULT_SSE_IDLE_TIMEOUT_MS;
   const decoder = new TextDecoder();
   let buffer = "";
   const iterator = stream[Symbol.asyncIterator]();

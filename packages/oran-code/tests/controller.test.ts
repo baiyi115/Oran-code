@@ -39,12 +39,14 @@ class FakeProvider implements ModelProvider {
   }
 
   async *streamResponse(messages: Message[]): AsyncGenerator<ModelStreamChunk> {
-    this.requests.push(messages.map((message) => ({
-      ...message,
-      ...(message.toolCalls
-        ? { toolCalls: message.toolCalls.map((call) => ({ ...call, arguments: { ...call.arguments } })) }
-        : {}),
-    })));
+    this.requests.push(
+      messages.map((message) => ({
+        ...message,
+        ...(message.toolCalls
+          ? { toolCalls: message.toolCalls.map((call) => ({ ...call, arguments: { ...call.arguments } })) }
+          : {}),
+      })),
+    );
     const response = this.responses[this.index++];
     if (!response) throw new Error("fake provider ran out of responses");
     for (const chunk of response) yield chunk;
@@ -105,7 +107,9 @@ function createController(
     ...(options.approvalCallback ? { approvalCallback: options.approvalCallback } : {}),
     ...(options.hookEngine ? { hookEngine: options.hookEngine } : {}),
     ...(options.verifier ? { verifier: options.verifier } : {}),
-    eventCallback: (event) => { events.push(event); },
+    eventCallback: (event) => {
+      events.push(event);
+    },
   });
   return { controller, trace };
 }
@@ -113,7 +117,10 @@ function createController(
 class ScriptedVerifier extends Verifier {
   private index = 0;
 
-  constructor(workspace: string, private readonly batches: VerificationResult[][]) {
+  constructor(
+    workspace: string,
+    private readonly batches: VerificationResult[][],
+  ) {
     super(workspace);
   }
 
@@ -143,10 +150,18 @@ describe("TaskController", () => {
       expect(task.plan).toBeUndefined();
       expect(task.result).toBe("Hi! How can I help?");
       expect(provider.requests).toHaveLength(1);
-      expect(provider.requests[0]?.some((message) => typeof message.content === "string" && message.content.includes("User message:\nhi"))).toBe(true);
+      expect(
+        provider.requests[0]?.some(
+          (message) => typeof message.content === "string" && message.content.includes("User message:\nhi"),
+        ),
+      ).toBe(true);
       expect(events.some((event) => event.type === "plan")).toBe(false);
       expect(events.some((event) => event.type === "approval_request")).toBe(false);
-      expect(trace.exportTrace(task.id).steps.map((step) => step.kind)).toEqual(["context", "model_request", "model_response"]);
+      expect(trace.exportTrace(task.id).steps.map((step) => step.kind)).toEqual([
+        "context",
+        "model_request",
+        "model_response",
+      ]);
     } finally {
       await rm(workspace, { recursive: true, force: true });
     }
@@ -169,8 +184,18 @@ describe("TaskController", () => {
           invoke: async () => ({ ok: true, output: `status-${++invokeCount}` }),
         });
         const provider = new FakeProvider([
-          toolResponse({ id: "call_live_1", name: "live_status", arguments: { scope: "tasks" }, createdAt: new Date().toISOString() }),
-          toolResponse({ id: "call_live_2", name: "live_status", arguments: { scope: "tasks" }, createdAt: new Date().toISOString() }),
+          toolResponse({
+            id: "call_live_1",
+            name: "live_status",
+            arguments: { scope: "tasks" },
+            createdAt: new Date().toISOString(),
+          }),
+          toolResponse({
+            id: "call_live_2",
+            name: "live_status",
+            arguments: { scope: "tasks" },
+            createdAt: new Date().toISOString(),
+          }),
           textResponse("Status refreshed."),
         ]);
         const events: RuntimeEvent[] = [];
@@ -180,9 +205,13 @@ describe("TaskController", () => {
 
         expect(task.state).toBe("completed");
         expect(invokeCount).toBe(2);
-        expect(events.filter((event) => event.type === "tool_result").map((event) => event.result.output))
-          .toEqual(["status-1", "status-2"]);
-        expect(events.some((event) => event.type === "tool_result" && event.result.metadata?.cached === true)).toBe(false);
+        expect(events.filter((event) => event.type === "tool_result").map((event) => event.result.output)).toEqual([
+          "status-1",
+          "status-2",
+        ]);
+        expect(events.some((event) => event.type === "tool_result" && event.result.metadata?.cached === true)).toBe(
+          false,
+        );
       } finally {
         await rm(workspace, { recursive: true, force: true });
       }
@@ -203,8 +232,18 @@ describe("TaskController", () => {
           invoke: async () => ({ ok: true, output: `status-${++invokeCount}` }),
         });
         const provider = new FakeProvider([
-          toolResponse({ id: "call_stable_1", name: "stable_status", arguments: { scope: "tasks" }, createdAt: new Date().toISOString() }),
-          toolResponse({ id: "call_stable_2", name: "stable_status", arguments: { scope: "tasks" }, createdAt: new Date().toISOString() }),
+          toolResponse({
+            id: "call_stable_1",
+            name: "stable_status",
+            arguments: { scope: "tasks" },
+            createdAt: new Date().toISOString(),
+          }),
+          toolResponse({
+            id: "call_stable_2",
+            name: "stable_status",
+            arguments: { scope: "tasks" },
+            createdAt: new Date().toISOString(),
+          }),
           textResponse("Status reused."),
         ]);
         const events: RuntimeEvent[] = [];
@@ -214,10 +253,13 @@ describe("TaskController", () => {
 
         expect(task.state).toBe("completed");
         expect(invokeCount).toBe(1);
-        expect(events.filter((event) => event.type === "tool_result").map((event) => event.result.output))
-          .toEqual(["status-1", "status-1"]);
-        expect(events.filter((event) => event.type === "tool_result").map((event) => event.result.metadata?.cached === true))
-          .toEqual([false, true]);
+        expect(events.filter((event) => event.type === "tool_result").map((event) => event.result.output)).toEqual([
+          "status-1",
+          "status-1",
+        ]);
+        expect(
+          events.filter((event) => event.type === "tool_result").map((event) => event.result.metadata?.cached === true),
+        ).toEqual([false, true]);
       } finally {
         await rm(workspace, { recursive: true, force: true });
       }
@@ -240,14 +282,18 @@ describe("TaskController", () => {
         },
       };
       registry.register(tool);
-    const call: ToolCall = { id: "call_1", name: "custom_writer", arguments: { content: "hello" }, createdAt: new Date().toISOString() };
-     // fixture mismatch fix: align tool call name with registered tool
-     const provider = new FakeProvider([
-        toolResponse(call),
-        textResponse("Done. The note was written."),
-      ]);
+      const call: ToolCall = {
+        id: "call_1",
+        name: "custom_writer",
+        arguments: { content: "hello" },
+        createdAt: new Date().toISOString(),
+      };
+      // fixture mismatch fix: align tool call name with registered tool
+      const provider = new FakeProvider([toolResponse(call), textResponse("Done. The note was written.")]);
       const events: RuntimeEvent[] = [];
-      const { controller, trace } = createController(workspace, provider, registry, events, { approvalCallback: () => true });
+      const { controller, trace } = createController(workspace, provider, registry, events, {
+        approvalCallback: () => true,
+      });
 
       const task = await controller.execute(createTask(workspace, "write a note"));
 
@@ -265,7 +311,12 @@ describe("TaskController", () => {
       expect(exported.task.state).toBe("completed");
       expect(exported.toolCalls).toHaveLength(1);
       expect(exported.toolCalls[0]).toMatchObject({ name: "custom_writer", ok: 1 });
-      expect(provider.requests[1]?.some((message) => message.role === "tool" && message.toolCallId === "call_1" && message.content === "wrote note.txt")).toBe(true);
+      expect(
+        provider.requests[1]?.some(
+          (message) =>
+            message.role === "tool" && message.toolCallId === "call_1" && message.content === "wrote note.txt",
+        ),
+      ).toBe(true);
     } finally {
       await rm(workspace, { recursive: true, force: true });
     }
@@ -287,7 +338,12 @@ describe("TaskController", () => {
           return { ok: true, output: "changed" };
         },
       });
-      const call: ToolCall = { id: "call_rejected", name: "dangerous_change", arguments: {}, createdAt: new Date().toISOString() };
+      const call: ToolCall = {
+        id: "call_rejected",
+        name: "dangerous_change",
+        arguments: {},
+        createdAt: new Date().toISOString(),
+      };
       const provider = new FakeProvider([
         toolResponse(call),
         textResponse("I could not make the change without approval."),
@@ -301,10 +357,17 @@ describe("TaskController", () => {
 
       expect(task.state).toBe("completed");
       expect(invoked).toBe(false);
-      expect(events).toContainEqual(expect.objectContaining({ type: "approval_request", call: expect.objectContaining({ name: "dangerous_change" }) }));
+      expect(events).toContainEqual(
+        expect.objectContaining({
+          type: "approval_request",
+          call: expect.objectContaining({ name: "dangerous_change" }),
+        }),
+      );
       expect(events.some((event) => event.type === "approval_request" && event.call.name === "__plan__")).toBe(false);
       expect(events.some((event) => event.type === "plan")).toBe(false);
-      expect(events).toContainEqual(expect.objectContaining({ type: "tool_result", result: expect.objectContaining({ ok: false }) }));
+      expect(events).toContainEqual(
+        expect.objectContaining({ type: "tool_result", result: expect.objectContaining({ ok: false }) }),
+      );
       expect(trace.exportTrace(task.id).toolCalls[0]).toMatchObject({ name: "dangerous_change", ok: 0 });
     } finally {
       await rm(workspace, { recursive: true, force: true });
@@ -318,8 +381,9 @@ describe("TaskController", () => {
       const events: RuntimeEvent[] = [];
       const { controller } = createController(workspace, provider, new ToolRegistry(), events);
 
-      await expect(controller.execute(createTask(workspace, "hi")))
-        .rejects.toThrow("provider emitted text_delta after response_complete");
+      await expect(controller.execute(createTask(workspace, "hi"))).rejects.toThrow(
+        "provider emitted text_delta after response_complete",
+      );
       expect(events.find((event) => event.type === "error")?.message).toBe(
         "provider emitted text_delta after response_complete",
       );
@@ -335,7 +399,9 @@ describe("TaskController", () => {
       const hookEngine: HookEnginePort = {
         hasRules: true,
         getErrors: () => [],
-        dispatch: async (context) => { hookEvents.push(context.event); },
+        dispatch: async (context) => {
+          hookEvents.push(context.event);
+        },
         dispatchBeforeTool: async () => ({ intercepted: false }),
         drainNotices: () => [],
         resetOnce: () => undefined,
@@ -345,8 +411,10 @@ describe("TaskController", () => {
 
       await controller.execute(createTask(workspace, "hi"));
 
-      expect(hookEvents.filter((event) => event === "turn_start" || event === "turn_end"))
-        .toEqual(["turn_start", "turn_end"]);
+      expect(hookEvents.filter((event) => event === "turn_start" || event === "turn_end")).toEqual([
+        "turn_start",
+        "turn_end",
+      ]);
       expect(hookEvents.at(-1)).toBe("session_end");
     } finally {
       await rm(workspace, { recursive: true, force: true });
@@ -370,7 +438,12 @@ describe("TaskController", () => {
         },
       });
       const provider = new FakeProvider([
-        toolResponse({ id: "call_verify", name: "write_file", arguments: { content: "hello" }, createdAt: new Date().toISOString() }),
+        toolResponse({
+          id: "call_verify",
+          name: "write_file",
+          arguments: { content: "hello" },
+          createdAt: new Date().toISOString(),
+        }),
         textResponse("The change is ready."),
         textResponse("The verification failure is fixed."),
       ]);
@@ -389,8 +462,15 @@ describe("TaskController", () => {
       expect(task.state).toBe("completed");
       expect(task.result).toBe("The verification failure is fixed.");
       expect(provider.requests).toHaveLength(3);
-      expect(provider.requests[2]?.some((message) => message.role === "user" && typeof message.content === "string" && message.content.includes("build failed"))).toBe(true);
-      const verifyEvents = events.filter((event): event is Extract<RuntimeEvent, { type: "verify" }> => event.type === "verify");
+      expect(
+        provider.requests[2]?.some(
+          (message) =>
+            message.role === "user" && typeof message.content === "string" && message.content.includes("build failed"),
+        ),
+      ).toBe(true);
+      const verifyEvents = events.filter(
+        (event): event is Extract<RuntimeEvent, { type: "verify" }> => event.type === "verify",
+      );
       expect(verifyEvents).toHaveLength(2);
       expect(verifyEvents[0]?.results).toEqual([
         verification("typecheck", true),

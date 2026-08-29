@@ -1,7 +1,14 @@
 import { describe, expect, it } from "vitest";
 import { homedir } from "node:os";
 import { join, resolve } from "node:path";
-import { ensureUserConfig, loadConfigFile, resolveModelConfig, saveConfig, userConfigPath, userHistoryPath } from "../src/config.js";
+import {
+  ensureUserConfig,
+  loadConfigFile,
+  resolveModelConfig,
+  saveConfig,
+  userConfigPath,
+  userHistoryPath,
+} from "../src/config.js";
 import type { UserConfig } from "../src/types.js";
 import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
@@ -31,25 +38,39 @@ describe("resolveModelConfig", () => {
       },
     };
     expect(() => resolveModelConfig(config, undefined)).toThrow("no model selected");
-    expect(resolveModelConfig(config, "deepseek/chat")).toMatchObject({ provider: "deepseek", model: "chat", maxTokens: 2048, baseUrl: "https://api.deepseek.com/v1" });
-    expect(resolveModelConfig(config, "deepseek/reasoner")).toMatchObject({ provider: "deepseek", model: "reasoner", temperature: 0.1, reasoningEffort: "high" });
+    expect(resolveModelConfig(config, "deepseek/chat")).toMatchObject({
+      provider: "deepseek",
+      model: "chat",
+      maxTokens: 2048,
+      baseUrl: "https://api.deepseek.com/v1",
+    });
+    expect(resolveModelConfig(config, "deepseek/reasoner")).toMatchObject({
+      provider: "deepseek",
+      model: "reasoner",
+      temperature: 0.1,
+      reasoningEffort: "high",
+    });
   });
 
   it("reads OpenCode-shaped JSON and writes the same public shape without defaults", async () => {
     const directory = await mkdtemp(join(tmpdir(), "liteagent-config-"));
     const path = join(directory, "config.json");
     try {
-      await writeFile(path, JSON.stringify({
-        providers: {
-          Yanami: {
-            npm: "@ai-sdk/openai-compatible",
-            name: "Yanami",
-            options: { baseURL: "https://yanami.example/v1", apiKey: "secret", permission: "allow" },
-            models: { "grok-4.5": { name: "grok-4.5", options: { reasoningEffort: "high" } } },
+      await writeFile(
+        path,
+        JSON.stringify({
+          providers: {
+            Yanami: {
+              npm: "@ai-sdk/openai-compatible",
+              name: "Yanami",
+              options: { baseURL: "https://yanami.example/v1", apiKey: "secret", permission: "allow" },
+              models: { "grok-4.5": { name: "grok-4.5", options: { reasoningEffort: "high" } } },
+            },
           },
-        },
-        agent: { maxSteps: 20 },
-      }), "utf8");
+          agent: { maxSteps: 20 },
+        }),
+        "utf8",
+      );
       const config = await loadConfigFile(path);
       expect(resolveModelConfig(config, "Yanami/grok-4.5")).toMatchObject({
         baseUrl: "https://yanami.example/v1",

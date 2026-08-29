@@ -56,7 +56,10 @@ export function deleteBackward(composer: ComposerState): void {
   const { line, column } = composer.cursor;
   if (column > 0) {
     const symbols = graphemes(composer.lines[line] ?? "");
-    composer.lines[line] = symbols.slice(0, column - 1).concat(symbols.slice(column)).join("");
+    composer.lines[line] = symbols
+      .slice(0, column - 1)
+      .concat(symbols.slice(column))
+      .join("");
     composer.cursor.column -= 1;
   } else if (line > 0) {
     const previous = composer.lines[line - 1] ?? "";
@@ -72,7 +75,10 @@ export function deleteForward(composer: ComposerState): void {
   const current = composer.lines[line] ?? "";
   if (column < graphemeLength(current)) {
     const symbols = graphemes(current);
-    composer.lines[line] = symbols.slice(0, column).concat(symbols.slice(column + 1)).join("");
+    composer.lines[line] = symbols
+      .slice(0, column)
+      .concat(symbols.slice(column + 1))
+      .join("");
   } else if (line < composer.lines.length - 1) {
     composer.lines.splice(line, 2, current + (composer.lines[line + 1] ?? ""));
   }

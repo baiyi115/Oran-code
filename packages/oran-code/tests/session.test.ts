@@ -54,8 +54,22 @@ describe("TerminalSession", () => {
   it("selects the TUI only when both streams are TTYs", () => {
     const ttyInput = Object.assign(Readable.from([]), { isTTY: true });
     const nonTtyInput = Object.assign(Readable.from([]), { isTTY: false });
-    const ttyOutput = Object.assign(new Writable({ write(_chunk, _encoding, callback) { callback(); } }), { isTTY: true });
-    const nonTtyOutput = Object.assign(new Writable({ write(_chunk, _encoding, callback) { callback(); } }), { isTTY: false });
+    const ttyOutput = Object.assign(
+      new Writable({
+        write(_chunk, _encoding, callback) {
+          callback();
+        },
+      }),
+      { isTTY: true },
+    );
+    const nonTtyOutput = Object.assign(
+      new Writable({
+        write(_chunk, _encoding, callback) {
+          callback();
+        },
+      }),
+      { isTTY: false },
+    );
 
     expect(supportsTui(ttyInput, ttyOutput as NodeJS.WriteStream)).toBe(true);
     expect(supportsTui(nonTtyInput, ttyOutput as NodeJS.WriteStream)).toBe(false);
@@ -66,11 +80,15 @@ describe("TerminalSession", () => {
     const workspace = await mkdtemp(join(tmpdir(), "liteagent-session-"));
     let session: TerminalSession | undefined;
     try {
-      session = new TerminalSession({
-        workspace,
-        config: { providers: {} },
-        approveAll: true,
-      }, process.stdin, process.stdout);
+      session = new TerminalSession(
+        {
+          workspace,
+          config: { providers: {} },
+          approveAll: true,
+        },
+        process.stdin,
+        process.stdout,
+      );
 
       await expect(session.runOnce("do work")).rejects.toThrow("no model selected");
     } finally {
@@ -86,23 +104,31 @@ describe("TerminalSession", () => {
     let session: TerminalSession | undefined;
     try {
       await mkdir(join(workspace, ".oran"), { recursive: true });
-      await writeFile(projectConfig, JSON.stringify({
-        providers: {
-          demo: {
-            options: { baseURL: "https://example.test/v1" },
-            models: { chat: { options: { reasoningEffort: "high" } } },
+      await writeFile(
+        projectConfig,
+        JSON.stringify({
+          providers: {
+            demo: {
+              options: { baseURL: "https://example.test/v1" },
+              models: { chat: { options: { reasoningEffort: "high" } } },
+            },
+          },
+        }),
+        "utf8",
+      );
+      session = new TerminalSession(
+        {
+          workspace,
+          config: { providers: {} },
+          approveAll: true,
+          providerFactory: (selected) => {
+            seenModels.push(selected);
+            return new FakeProvider();
           },
         },
-      }), "utf8");
-      session = new TerminalSession({
-        workspace,
-        config: { providers: {} },
-        approveAll: true,
-        providerFactory: (selected) => {
-          seenModels.push(selected);
-          return new FakeProvider();
-        },
-      }, process.stdin, process.stdout);
+        process.stdin,
+        process.stdout,
+      );
 
       await session.handleInput("/model demo/chat");
       const task = await session.runOnce("do work");
@@ -125,14 +151,22 @@ describe("TerminalSession", () => {
     let session: TerminalSession | undefined;
     try {
       await mkdir(join(workspace, ".oran"), { recursive: true });
-      await writeFile(join(workspace, ".oran", "config.json"), JSON.stringify({
-        providers: { demo: { models: { chat: {} } } },
-      }), "utf8");
-      session = new TerminalSession({
-        workspace,
-        config: { providers: {} },
-        approveAll: true,
-      }, process.stdin, process.stdout);
+      await writeFile(
+        join(workspace, ".oran", "config.json"),
+        JSON.stringify({
+          providers: { demo: { models: { chat: {} } } },
+        }),
+        "utf8",
+      );
+      session = new TerminalSession(
+        {
+          workspace,
+          config: { providers: {} },
+          approveAll: true,
+        },
+        process.stdin,
+        process.stdout,
+      );
 
       await session.handleInput("/model");
 
@@ -175,10 +209,16 @@ describe("TerminalSession", () => {
     const workspace = await mkdtemp(join(tmpdir(), "liteagent-session-durable-user-"));
     let markStarted: (() => void) | undefined;
     let release: (() => void) | undefined;
-    const started = new Promise<void>((resolve) => { markStarted = resolve; });
-    const gate = new Promise<void>((resolve) => { release = resolve; });
+    const started = new Promise<void>((resolve) => {
+      markStarted = resolve;
+    });
+    const gate = new Promise<void>((resolve) => {
+      release = resolve;
+    });
     const provider: ModelProvider = {
-      async complete() { throw new Error("not used"); },
+      async complete() {
+        throw new Error("not used");
+      },
       async *streamResponse(messages: Message[]) {
         markStarted?.();
         await gate;
@@ -187,13 +227,17 @@ describe("TerminalSession", () => {
     };
     let session: TerminalSession | undefined;
     try {
-      session = new TerminalSession({
-        workspace,
-        model,
-        config: { providers: {}, agent: { maxSteps: 2, skipVerify: false } },
-        approveAll: true,
-        providerFactory: () => provider,
-      }, process.stdin, process.stdout);
+      session = new TerminalSession(
+        {
+          workspace,
+          model,
+          config: { providers: {}, agent: { maxSteps: 2, skipVerify: false } },
+          approveAll: true,
+          providerFactory: () => provider,
+        },
+        process.stdin,
+        process.stdout,
+      );
       const taskPromise = session.runOnce("persist before response");
       await started;
 
@@ -218,14 +262,22 @@ describe("TerminalSession", () => {
   it("treats piped EOF as a normal session shutdown", async () => {
     const workspace = await mkdtemp(join(tmpdir(), "liteagent-session-"));
     const input = Readable.from(["/model\n", "/clear\n"]);
-    const output = new Writable({ write(_chunk, _encoding, callback) { callback(); } });
+    const output = new Writable({
+      write(_chunk, _encoding, callback) {
+        callback();
+      },
+    });
     let session: TerminalSession | undefined;
     try {
-      session = new TerminalSession({
-        workspace,
-        config: { providers: {} },
-        approveAll: true,
-      }, input, output as NodeJS.WriteStream);
+      session = new TerminalSession(
+        {
+          workspace,
+          config: { providers: {} },
+          approveAll: true,
+        },
+        input,
+        output as NodeJS.WriteStream,
+      );
 
       await expect(session.run()).resolves.toBeUndefined();
     } finally {

@@ -12,8 +12,13 @@ export class WorkspaceFileIndex {
   private readonly ignoredNames: ReadonlySet<string>;
   private readonly maxEntries: number;
 
-  constructor(private readonly workspace: string, options: WorkspaceFileIndexOptions = {}) {
-    this.ignoredNames = new Set(options.ignoredNames ?? [".git", ".venv", "node_modules", "dist", "build", ".next", "coverage"]);
+  constructor(
+    private readonly workspace: string,
+    options: WorkspaceFileIndexOptions = {},
+  ) {
+    this.ignoredNames = new Set(
+      options.ignoredNames ?? [".git", ".venv", "node_modules", "dist", "build", ".next", "coverage"],
+    );
     this.maxEntries = Math.max(1, options.maxEntries ?? 10000);
   }
 
@@ -30,9 +35,11 @@ export class WorkspaceFileIndex {
   }
 
   async search(query: string, limit = 200): Promise<string[]> {
-    const entries = this.entries ?? await this.refresh();
+    const entries = this.entries ?? (await this.refresh());
     const normalized = query.toLowerCase();
-    return entries.filter((entry) => !normalized || entry.toLowerCase().includes(normalized)).slice(0, Math.max(1, limit));
+    return entries
+      .filter((entry) => !normalized || entry.toLowerCase().includes(normalized))
+      .slice(0, Math.max(1, limit));
   }
 
   private async scan(): Promise<string[]> {

@@ -3,13 +3,7 @@ import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { describe, expect, it } from "vitest";
 import { CONTEXT_LIMITS, ContextManager } from "../src/context-manager.js";
-import type {
-  Message,
-  ModelProvider,
-  ModelResponse,
-  ModelStreamChunk,
-  ProviderRequestOptions,
-} from "../src/types.js";
+import type { Message, ModelProvider, ModelResponse, ModelStreamChunk, ProviderRequestOptions } from "../src/types.js";
 
 class SummaryProvider implements ModelProvider {
   readonly requests: Message[][] = [];
@@ -108,13 +102,13 @@ describe("ContextManager tool-result offloading", () => {
 
       const result = await manager.offloadToolResults(candidates);
 
-      expect(candidates.reduce((sum, candidate) => sum + Buffer.byteLength(candidate.content), 0))
-        .toBeGreaterThan(CONTEXT_LIMITS.toolRoundBytes);
+      expect(candidates.reduce((sum, candidate) => sum + Buffer.byteLength(candidate.content), 0)).toBeGreaterThan(
+        CONTEXT_LIMITS.toolRoundBytes,
+      );
       expect(result.offloadedCount).toBe(1);
       expect([...result.replacements.keys()]).toEqual(["largest"]);
       const replacement = result.replacements.get("largest")!;
-      expect(await readFile(resolve(workspace, offloadedPath(replacement)), "utf8"))
-        .toBe(candidates[1]!.content);
+      expect(await readFile(resolve(workspace, offloadedPath(replacement)), "utf8")).toBe(candidates[1]!.content);
     });
   });
 
@@ -142,14 +136,16 @@ describe("ContextManager compaction", () => {
         "2026-08-28T10:00:00.000Z",
       );
       const provider = new SummaryProvider();
-      const tools = [{
-        type: "function",
-        function: {
-          name: "read_file",
-          description: "Read a workspace file",
-          parameters: { type: "object", properties: { path: { type: "string" } } },
+      const tools = [
+        {
+          type: "function",
+          function: {
+            name: "read_file",
+            description: "Read a workspace file",
+            parameters: { type: "object", properties: { path: { type: "string" } } },
+          },
         },
-      }];
+      ];
       const stable: Message = {
         role: "system",
         content: "You are Oran code.",

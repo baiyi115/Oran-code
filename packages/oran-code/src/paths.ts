@@ -40,18 +40,18 @@ export async function ensureProjectStateRoot(workspace: string): Promise<string>
 
   try {
     if (!existsSync(preferred)) {
-     try {
-       await rename(legacy, preferred);
-       return preferred;
-     } catch (error) {
-       // Another process may have completed the same migration first.
-       if (!existsSync(legacy)) return preferred;
-       if (errorCode(error) === "EXDEV") {
-         await moveAcrossDevices(legacy, preferred);
-         return preferred;
-       }
-       if (!existsSync(preferred)) throw error;
-     }
+      try {
+        await rename(legacy, preferred);
+        return preferred;
+      } catch (error) {
+        // Another process may have completed the same migration first.
+        if (!existsSync(legacy)) return preferred;
+        if (errorCode(error) === "EXDEV") {
+          await moveAcrossDevices(legacy, preferred);
+          return preferred;
+        }
+        if (!existsSync(preferred)) throw error;
+      }
     }
 
     await mergeLegacyDirectory(legacy, preferred, resolve(preferred, "legacy-litecode"));
@@ -59,8 +59,9 @@ export async function ensureProjectStateRoot(workspace: string): Promise<string>
   } catch (error) {
     const detail = error instanceof Error ? error.message : String(error);
     throw new Error(
-      `Failed to migrate ${LEGACY_PROJECT_STATE_DIRECTORY} to ${PROJECT_STATE_DIRECTORY}. `
-      + `Close other Oran/Litecode processes and retry. ${detail}`,
+      `Failed to migrate ${LEGACY_PROJECT_STATE_DIRECTORY} to ${PROJECT_STATE_DIRECTORY}. ` +
+        `Close other Oran/Litecode processes and retry. ${detail}`,
+      { cause: error },
     );
   }
 }
@@ -73,7 +74,9 @@ export function userDataRoot(): string {
 
 /** Stable short hash for a workspace path, used to isolate user-scoped stores. */
 export function projectHash(workspace: string): string {
-  const normalized = resolve(workspace).replace(/[\\/]+$/, "").toLowerCase();
+  const normalized = resolve(workspace)
+    .replace(/[\\/]+$/, "")
+    .toLowerCase();
   return createHash("sha256").update(normalized).digest("hex").slice(0, 12);
 }
 
@@ -209,10 +212,10 @@ async function migrateLegacyEntry(source: string, destination: string, archiveDe
 }
 
 async function availableArchivePath(requested: string): Promise<string> {
-  if (!await safeLstat(requested)) return requested;
+  if (!(await safeLstat(requested))) return requested;
   for (let suffix = 1; ; suffix += 1) {
     const candidate = `${requested}.${suffix}`;
-    if (!await safeLstat(candidate)) return candidate;
+    if (!(await safeLstat(candidate))) return candidate;
   }
 }
 
@@ -251,7 +254,5 @@ async function safeLstat(path: string): Promise<Awaited<ReturnType<typeof lstat>
 }
 
 function errorCode(error: unknown): string | undefined {
-  return error && typeof error === "object" && "code" in error
-    ? String((error as { code?: unknown }).code)
-    : undefined;
+  return error && typeof error === "object" && "code" in error ? String((error as { code?: unknown }).code) : undefined;
 }

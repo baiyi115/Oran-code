@@ -23,11 +23,13 @@ export class StructuredSubagentScope {
     if (options.continueAfterParentExit) return unsupportedContinueAfterParentExit();
     const id = options.taskId ?? `fork-${randomUUID()}`;
     const abortController = options.abortController ?? new AbortController();
-    const promise = Promise.resolve().then(() => this.runner.run({
-      ...options,
-      taskId: id,
-      abortController,
-    }));
+    const promise = Promise.resolve().then(() =>
+      this.runner.run({
+        ...options,
+        taskId: id,
+        abortController,
+      }),
+    );
     const task: StructuredSubagentTask = {
       id,
       name: options.description,
@@ -114,7 +116,8 @@ export function unsupportedContinueAfterParentExit(): UnsupportedSubagentOperati
 }
 
 function assertTimeout(value: number): void {
-  if (!Number.isFinite(value) || value < 0) throw new Error("subagent fork wait timeout must be a finite non-negative number");
+  if (!Number.isFinite(value) || value < 0)
+    throw new Error("subagent fork wait timeout must be a finite non-negative number");
 }
 
 function singleLine(value: string): string {

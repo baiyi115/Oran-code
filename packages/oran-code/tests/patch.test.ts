@@ -1,24 +1,13 @@
 import { describe, expect, it } from "vitest";
 import { applyUnifiedDiff, parseUnifiedDiff } from "../src/patch.js";
 
-const SAMPLE = [
-  "line one",
-  "line two",
-  "line three",
-  "line four",
-  "line five",
-].join("\n");
+const SAMPLE = ["line one", "line two", "line three", "line four", "line five"].join("\n");
 
 describe("parseUnifiedDiff", () => {
   it("parses a simple hunk", () => {
-    const diff = [
-      "--- a/file.txt",
-      "+++ b/file.txt",
-      "@@ -1,2 +1,2 @@",
-      " line one",
-      "-line two",
-      "+line TWO",
-    ].join("\n");
+    const diff = ["--- a/file.txt", "+++ b/file.txt", "@@ -1,2 +1,2 @@", " line one", "-line two", "+line TWO"].join(
+      "\n",
+    );
     const parsed = parseUnifiedDiff(diff);
     expect(parsed.ok).toBe(true);
     if (parsed.ok) {
@@ -58,14 +47,9 @@ describe("applyUnifiedDiff", () => {
   });
 
   it("applies multiple hunks in order", () => {
-    const diff = [
-      "@@ -1,1 +1,1 @@",
-      "-line one",
-      "+line ONE",
-      "@@ -5,1 +5,1 @@",
-      "-line five",
-      "+line FIVE",
-    ].join("\n");
+    const diff = ["@@ -1,1 +1,1 @@", "-line one", "+line ONE", "@@ -5,1 +5,1 @@", "-line five", "+line FIVE"].join(
+      "\n",
+    );
     const result = applyUnifiedDiff(SAMPLE, diff);
     expect(result.ok).toBe(true);
     expect(result.content).toBe(["line ONE", "line two", "line three", "line four", "line FIVE"].join("\n"));
@@ -73,14 +57,7 @@ describe("applyUnifiedDiff", () => {
   });
 
   it("adds and removes lines together", () => {
-    const diff = [
-      "@@ -2,2 +2,3 @@",
-      "-line two",
-      "-line three",
-      "+line 2",
-      "+line 3",
-      "+line 3.5",
-    ].join("\n");
+    const diff = ["@@ -2,2 +2,3 @@", "-line two", "-line three", "+line 2", "+line 3", "+line 3.5"].join("\n");
     const result = applyUnifiedDiff(SAMPLE, diff);
     expect(result.ok).toBe(true);
     expect(result.content).toBe(["line one", "line 2", "line 3", "line 3.5", "line four", "line five"].join("\n"));

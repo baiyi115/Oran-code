@@ -7,7 +7,6 @@ import { commandCandidates } from "./command-palette.js";
 import { approvalResponse, moveSelection } from "./interaction.js";
 import { formatErrorMessage } from "../error-format.js";
 import { isSessionDeleteKey, isSubmitKey } from "./keys.js";
-import { fileQuery } from "./render.js";
 
 /**
  * Overlay 键处理状态机与 InkTuiApp 之间的上下文。app 保留渲染调度、composer
@@ -16,7 +15,8 @@ import { fileQuery } from "./render.js";
 export interface OverlayHandlerContext {
   readonly state: TuiState;
   readonly loadModels: () => Promise<string[]>;
-  readonly loadSessions?: () => Promise<SessionOption[]> | Promise<SessionOption[] | undefined> | Promise<SessionOption[]>;
+  readonly loadSessions?: () =>
+    Promise<SessionOption[]> | Promise<SessionOption[] | undefined> | Promise<SessionOption[]>;
   readonly onSessionSelected?: (id: string) => Promise<SessionView | undefined>;
   readonly onSessionDeleted?: (id: string) => Promise<SessionView | undefined>;
   readonly onModelSelected: (reference: string) => Promise<boolean | void>;
@@ -53,7 +53,14 @@ export class OverlayHandlers {
       const options = await this.ctx.loadModels();
       setOverlay(this.ctx.state, { kind: "models", query: "", selectedIndex: 0, options, loading: false });
     } catch (error) {
-      setOverlay(this.ctx.state, { kind: "models", query: "", selectedIndex: 0, options: [], loading: false, error: formatErrorMessage(error) });
+      setOverlay(this.ctx.state, {
+        kind: "models",
+        query: "",
+        selectedIndex: 0,
+        options: [],
+        loading: false,
+        error: formatErrorMessage(error),
+      });
     }
     this.ctx.invalidate();
   }
@@ -94,12 +101,18 @@ export class OverlayHandlers {
     const candidates = commandCandidates(composerValue(this.ctx.state.composer), this.ctx.state.commands);
     if (this.ctx.state.overlay.kind !== "commands") return;
     if (key.upArrow) {
-      this.ctx.state.overlay = { ...this.ctx.state.overlay, selectedIndex: candidates.length ? (this.ctx.state.overlay.selectedIndex - 1 + candidates.length) % candidates.length : 0 };
-    }
-    else if (key.downArrow) {
-      this.ctx.state.overlay = { ...this.ctx.state.overlay, selectedIndex: candidates.length ? (this.ctx.state.overlay.selectedIndex + 1) % candidates.length : 0 };
-    }
-    else if (key.tab) {
+      this.ctx.state.overlay = {
+        ...this.ctx.state.overlay,
+        selectedIndex: candidates.length
+          ? (this.ctx.state.overlay.selectedIndex - 1 + candidates.length) % candidates.length
+          : 0,
+      };
+    } else if (key.downArrow) {
+      this.ctx.state.overlay = {
+        ...this.ctx.state.overlay,
+        selectedIndex: candidates.length ? (this.ctx.state.overlay.selectedIndex + 1) % candidates.length : 0,
+      };
+    } else if (key.tab) {
       const command = candidates[this.ctx.state.overlay.selectedIndex];
       if (command) {
         this.ctx.detachInputHistory();
@@ -113,8 +126,7 @@ export class OverlayHandlers {
     } else if (key.escape) {
       this.ctx.noteDismissedCommandInput(composerValue(this.ctx.state.composer));
       this.ctx.state.overlay = { kind: "none" };
-    }
-    else {
+    } else {
       this.ctx.handleComposerKey(input, key);
       return;
     }
@@ -124,8 +136,16 @@ export class OverlayHandlers {
   handleModelKey(input: string, key: Key): void {
     if (this.ctx.state.overlay.kind !== "models") return;
     const options = this.ctx.state.overlay.options;
-    if (key.upArrow) this.ctx.state.overlay = { ...this.ctx.state.overlay, selectedIndex: Math.max(0, this.ctx.state.overlay.selectedIndex - 1) };
-    else if (key.downArrow) this.ctx.state.overlay = { ...this.ctx.state.overlay, selectedIndex: Math.min(Math.max(0, options.length - 1), this.ctx.state.overlay.selectedIndex + 1) };
+    if (key.upArrow)
+      this.ctx.state.overlay = {
+        ...this.ctx.state.overlay,
+        selectedIndex: Math.max(0, this.ctx.state.overlay.selectedIndex - 1),
+      };
+    else if (key.downArrow)
+      this.ctx.state.overlay = {
+        ...this.ctx.state.overlay,
+        selectedIndex: Math.min(Math.max(0, options.length - 1), this.ctx.state.overlay.selectedIndex + 1),
+      };
     else if (key.escape) this.ctx.state.overlay = { kind: "none" };
     else if (isSubmitKey(input, key)) {
       const selected = options[this.ctx.state.overlay.selectedIndex];
@@ -144,14 +164,21 @@ export class OverlayHandlers {
     if (this.ctx.state.overlay.kind !== "sessions") return;
     if (this.selectingSession) return;
     const options = this.ctx.state.overlay.options;
-    if (key.upArrow) this.ctx.state.overlay = { ...this.ctx.state.overlay, selectedIndex: Math.max(0, this.ctx.state.overlay.selectedIndex - 1) };
-    else if (key.downArrow) this.ctx.state.overlay = { ...this.ctx.state.overlay, selectedIndex: Math.min(Math.max(0, options.length - 1), this.ctx.state.overlay.selectedIndex + 1) };
+    if (key.upArrow)
+      this.ctx.state.overlay = {
+        ...this.ctx.state.overlay,
+        selectedIndex: Math.max(0, this.ctx.state.overlay.selectedIndex - 1),
+      };
+    else if (key.downArrow)
+      this.ctx.state.overlay = {
+        ...this.ctx.state.overlay,
+        selectedIndex: Math.min(Math.max(0, options.length - 1), this.ctx.state.overlay.selectedIndex + 1),
+      };
     else if (key.escape) this.ctx.state.overlay = { kind: "none" };
     else if (isSessionDeleteKey(input, key)) {
       const selected = options[this.ctx.state.overlay.selectedIndex];
       if (selected) this.requestSessionDelete(selected);
-    }
-    else if (isSubmitKey(input, key)) {
+    } else if (isSubmitKey(input, key)) {
       const selected = options[this.ctx.state.overlay.selectedIndex];
       if (selected && this.ctx.onSessionSelected) void this.selectSession(selected.id);
     }
@@ -173,8 +200,16 @@ export class OverlayHandlers {
 
   handleFileKey(input: string, key: Key): void {
     if (this.ctx.state.overlay.kind !== "files") return;
-    if (key.upArrow) this.ctx.state.overlay = { ...this.ctx.state.overlay, selectedIndex: moveSelection(this.ctx.state.overlay.selectedIndex, -1, this.ctx.state.overlay.options.length) };
-    else if (key.downArrow) this.ctx.state.overlay = { ...this.ctx.state.overlay, selectedIndex: moveSelection(this.ctx.state.overlay.selectedIndex, 1, this.ctx.state.overlay.options.length) };
+    if (key.upArrow)
+      this.ctx.state.overlay = {
+        ...this.ctx.state.overlay,
+        selectedIndex: moveSelection(this.ctx.state.overlay.selectedIndex, -1, this.ctx.state.overlay.options.length),
+      };
+    else if (key.downArrow)
+      this.ctx.state.overlay = {
+        ...this.ctx.state.overlay,
+        selectedIndex: moveSelection(this.ctx.state.overlay.selectedIndex, 1, this.ctx.state.overlay.options.length),
+      };
     else if (key.tab || isSubmitKey(input, key)) {
       const file = this.ctx.state.overlay.options[this.ctx.state.overlay.selectedIndex];
       if (file) {
@@ -239,7 +274,12 @@ export class OverlayHandlers {
           }
         } catch (error) {
           this.ctx.state.session.status = formatErrorMessage(error);
-          this.ctx.state.overlay = { kind: "sessions", query: "", selectedIndex: overlay.returnSelectedIndex, options: overlay.options };
+          this.ctx.state.overlay = {
+            kind: "sessions",
+            query: "",
+            selectedIndex: overlay.returnSelectedIndex,
+            options: overlay.options,
+          };
         } finally {
           this.deletingSession = false;
         }
@@ -251,15 +291,28 @@ export class OverlayHandlers {
   private cancelSessionDeleteConfirmation(): void {
     if (this.ctx.state.overlay.kind !== "session-delete-confirm") return;
     const overlay = this.ctx.state.overlay;
-    this.ctx.state.overlay = { kind: "sessions", query: "", selectedIndex: overlay.returnSelectedIndex, options: overlay.options };
+    this.ctx.state.overlay = {
+      kind: "sessions",
+      query: "",
+      selectedIndex: overlay.returnSelectedIndex,
+      options: overlay.options,
+    };
     this.ctx.invalidate();
   }
 
   async handleFollowUpKey(input: string, key: Key): Promise<void> {
     if (this.ctx.state.overlay.kind !== "follow-ups" || this.followUpBusy) return;
     const overlay = this.ctx.state.overlay;
-    if (key.upArrow) this.ctx.state.overlay = { ...overlay, selectedIndex: moveSelection(overlay.selectedIndex, -1, overlay.options.length) };
-    else if (key.downArrow) this.ctx.state.overlay = { ...overlay, selectedIndex: moveSelection(overlay.selectedIndex, 1, overlay.options.length) };
+    if (key.upArrow)
+      this.ctx.state.overlay = {
+        ...overlay,
+        selectedIndex: moveSelection(overlay.selectedIndex, -1, overlay.options.length),
+      };
+    else if (key.downArrow)
+      this.ctx.state.overlay = {
+        ...overlay,
+        selectedIndex: moveSelection(overlay.selectedIndex, 1, overlay.options.length),
+      };
     else if (key.escape) this.ctx.state.overlay = { kind: "none" };
     else if (isSubmitKey(input, key)) {
       const selected = overlay.options[overlay.selectedIndex];
@@ -267,8 +320,13 @@ export class OverlayHandlers {
         this.followUpBusy = true;
         try {
           if (await this.ctx.onFollowUpCancelled(selected.id)) {
-            const options = await this.ctx.loadFollowUps?.() ?? overlay.options.filter((item) => item.id !== selected.id);
-            this.ctx.state.overlay = { kind: "follow-ups", selectedIndex: Math.min(overlay.selectedIndex, Math.max(0, options.length - 1)), options: [...options] };
+            const options =
+              (await this.ctx.loadFollowUps?.()) ?? overlay.options.filter((item) => item.id !== selected.id);
+            this.ctx.state.overlay = {
+              kind: "follow-ups",
+              selectedIndex: Math.min(overlay.selectedIndex, Math.max(0, options.length - 1)),
+              options: [...options],
+            };
           }
         } catch (error) {
           this.ctx.state.session.status = formatErrorMessage(error);

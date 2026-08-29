@@ -51,13 +51,15 @@ export function assembleSubagentStack(options: SubagentStackOptions): SubagentSt
 }
 
 /** 等待结构化 fork 收尾,并把执行摘要附加到任务结果。 */
-export async function joinStructuredForkSummaries(scope: StructuredSubagentScope, task: Task, timeoutMs: number): Promise<void> {
+export async function joinStructuredForkSummaries(
+  scope: StructuredSubagentScope,
+  task: Task,
+  timeoutMs: number,
+): Promise<void> {
   await scope.waitForChildren(timeoutMs);
   const summary = scope.summary();
   if (summary) {
-    task.result = task.result?.trim()
-      ? `${task.result.trim()}\n\n${summary}`
-      : summary;
+    task.result = task.result?.trim() ? `${task.result.trim()}\n\n${summary}` : summary;
   }
 }
 

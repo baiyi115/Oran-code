@@ -3,9 +3,7 @@ import { dirname, resolve } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 
 const root = dirname(fileURLToPath(import.meta.url));
-const packageRequire = createRequire(
-  pathToFileURL(resolve(root, "packages/oran-code/package.json")),
-);
+const packageRequire = createRequire(pathToFileURL(resolve(root, "packages/oran-code/package.json")));
 const tsxApi = pathToFileURL(packageRequire.resolve("tsx/esm/api")).href;
 const entryPoint = resolve(root, "packages/oran-code/src/cli.ts");
 

@@ -61,7 +61,11 @@ export function ghostCommandSuggestion(state: TuiState, input: string): string {
 export function renderOverlayLines(state: TuiState, commandLines: string[], width: number): string[] {
   switch (state.overlay.kind) {
     case "models":
-      return ["Select model", dimHorizontalRule(width), ...modelSelectorLines(state.overlay.options, state.overlay.selectedIndex)];
+      return [
+        "Select model",
+        dimHorizontalRule(width),
+        ...modelSelectorLines(state.overlay.options, state.overlay.selectedIndex),
+      ];
     case "approval":
       return approvalDialogLines(
         state.overlay.approval.call,
@@ -81,10 +85,9 @@ export function renderOverlayLines(state: TuiState, commandLines: string[], widt
         dimHorizontalRule(width),
         "Enter Resume   Del Remove   Esc Close",
         "",
-        ...overlay.options.map((item, index) => highlightSelection(
-          `  ${sessionOptionLabel(item, Math.max(1, width - 2))}`,
-          index === overlay.selectedIndex,
-        )),
+        ...overlay.options.map((item, index) =>
+          highlightSelection(`  ${sessionOptionLabel(item, Math.max(1, width - 2))}`, index === overlay.selectedIndex),
+        ),
       ];
     }
     case "session-delete-confirm": {
@@ -107,7 +110,12 @@ export function renderOverlayLines(state: TuiState, commandLines: string[], widt
         "Enter Cancel selected   Esc Close",
         "",
         ...(overlay.options.length
-          ? overlay.options.map((item, index) => highlightSelection(`  ${item.id}  ${truncateVisible(item.prompt.replace(/\s+/g, " ").trim(), Math.max(1, width - 2))}`, index === overlay.selectedIndex))
+          ? overlay.options.map((item, index) =>
+              highlightSelection(
+                `  ${item.id}  ${truncateVisible(item.prompt.replace(/\s+/g, " ").trim(), Math.max(1, width - 2))}`,
+                index === overlay.selectedIndex,
+              ),
+            )
           : ["  (no queued follow-ups)"]),
       ];
     }
@@ -121,7 +129,12 @@ export function renderOverlayLines(state: TuiState, commandLines: string[], widt
         ...(overlay.loading && !overlay.options.length
           ? ["  loading..."]
           : overlay.options.length
-            ? overlay.options.map((item, index) => highlightSelection(`  ${truncateVisible(item, Math.max(1, width - 2))}`, index === overlay.selectedIndex))
+            ? overlay.options.map((item, index) =>
+                highlightSelection(
+                  `  ${truncateVisible(item, Math.max(1, width - 2))}`,
+                  index === overlay.selectedIndex,
+                ),
+              )
             : ["  (no matching files)"]),
       ];
     }
@@ -147,7 +160,10 @@ export function fitOverlayLines(lines: readonly string[], capacity: number): str
   const headerHeight = Math.min(2, height - 1);
   const header = lines.slice(0, headerHeight);
   const body = lines.slice(headerHeight);
-  const selectedLine = Math.max(0, body.findIndex((line) => line.includes("{inverse}")));
+  const selectedLine = Math.max(
+    0,
+    body.findIndex((line) => line.includes("{inverse}")),
+  );
   const bodyHeight = height - header.length;
   const start = Math.max(0, Math.min(selectedLine - bodyHeight + 1, body.length - bodyHeight));
   return [...header, ...body.slice(start, start + bodyHeight)];
@@ -171,10 +187,14 @@ export function HighlightedLine({ value }: { value: string }): React.JSX.Element
     if (match.index > lastIndex) {
       parts.push(<Text key={`t-${key++}`}>{value.slice(lastIndex, match.index)}</Text>);
     }
-    parts.push(<Text key={`s-${key++}`} inverse>{match[1]}</Text>);
+    parts.push(
+      <Text key={`s-${key++}`} inverse>
+        {match[1]}
+      </Text>,
+    );
     lastIndex = match.index + match[0].length;
   }
-  if (lastIndex < value.length) parts.push(<Text key={`t-${key++}`}>{value.slice(lastIndex)}</Text>);
+  if (lastIndex < value.length) parts.push(<Text key={`t-${key}`}>{value.slice(lastIndex)}</Text>);
   if (!parts.length) return <Text> </Text>;
   return <Text>{parts}</Text>;
 }
@@ -201,9 +221,19 @@ export function renderComposerLines(
       {lines.map((line, index) => {
         const prefix = index === 0 ? "" : "\n  ";
         if (index !== safeRow || busy) {
-          return <Text key={`composer-line-${index}`}>{prefix}{line.text || " "}</Text>;
+          return (
+            <Text key={`composer-line-${index}`}>
+              {prefix}
+              {line.text || " "}
+            </Text>
+          );
         }
-        return <Text key={`composer-line-${index}`}>{prefix}{renderComposerLineWithCaret(line.text, cursorColumn)}</Text>;
+        return (
+          <Text key={`composer-line-${index}`}>
+            {prefix}
+            {renderComposerLineWithCaret(line.text, cursorColumn)}
+          </Text>
+        );
       })}
     </Text>
   );

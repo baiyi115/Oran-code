@@ -32,14 +32,21 @@ export function isSessionBusy(state: TuiState): boolean {
  * Single: "[Subagent: explore] Searching codebase... 8.4s"
  * Multiple: "[2 subagents running] explore (18.1s), tester (5.2s)"
  */
-export function formatBackgroundTasksIndicator(tasks: readonly TuiBackgroundTask[], now = Date.now()): string | undefined {
+export function formatBackgroundTasksIndicator(
+  tasks: readonly TuiBackgroundTask[],
+  now = Date.now(),
+): string | undefined {
   const running = tasks.filter((task) => task.status === "running");
   const queued = tasks.filter((task) => task.status === "queued");
   if (running.length === 0 && queued.length === 0) return undefined;
 
   if (running.length === 1 && queued.length === 0) {
     const task = running[0]!;
-    const name = task.definitionName || (task.origin?.kind === "definition" ? task.origin.name : undefined) || task.name || "agent";
+    const name =
+      task.definitionName ||
+      (task.origin?.kind === "definition" ? task.origin.name : undefined) ||
+      task.name ||
+      "agent";
     const description = task.name && task.name !== name ? task.name : undefined;
     const startTime = Date.parse(task.startedAt);
     const elapsed = Number.isFinite(startTime) ? formatCompactDuration(Math.max(0, now - startTime)) : undefined;
@@ -56,7 +63,11 @@ export function formatBackgroundTasksIndicator(tasks: readonly TuiBackgroundTask
   }
 
   const taskSummaries = running.map((task) => {
-    const name = task.definitionName || (task.origin?.kind === "definition" ? task.origin.name : undefined) || task.name || "agent";
+    const name =
+      task.definitionName ||
+      (task.origin?.kind === "definition" ? task.origin.name : undefined) ||
+      task.name ||
+      "agent";
     const startTime = Date.parse(task.startedAt);
     const elapsed = Number.isFinite(startTime) ? formatCompactDuration(Math.max(0, now - startTime)) : undefined;
     return elapsed ? `${name} (${elapsed})` : name;
@@ -118,7 +129,9 @@ function workingLabel(state: TuiState): string {
   if (state.session.taskState === "verifying") return "Verifying...";
   if (state.session.taskState === "planning") return "Planning...";
 
-  const runningTool = [...state.transcript].reverse().find((message) => message.kind === "tool" && message.status === "running");
+  const runningTool = [...state.transcript]
+    .reverse()
+    .find((message) => message.kind === "tool" && message.status === "running");
   if (runningTool && runningTool.kind === "tool") {
     return `Running ${toolDisplayName(runningTool.name)}`;
   }
@@ -129,7 +142,8 @@ function workingLabel(state: TuiState): string {
   const thoughtStreaming = state.transcript.some((message) => message.kind === "thought" && message.streaming);
   if (thoughtStreaming || state.thoughtMessageId) return "Thinking...";
 
-  const assistantStreaming = state.streaming || state.transcript.some((message) => message.kind === "assistant" && message.streaming);
+  const assistantStreaming =
+    state.streaming || state.transcript.some((message) => message.kind === "assistant" && message.streaming);
   if (assistantStreaming) return "Writing...";
 
   if (state.session.taskState === "executing") return "Working...";

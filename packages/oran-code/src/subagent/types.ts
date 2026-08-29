@@ -1,11 +1,4 @@
-import type {
-  Message,
-  ModelConfig,
-  PermissionMode,
-  RuntimeEvent,
-  ToolResult,
-  WorkMode,
-} from "../types.js";
+import type { Message, ModelConfig, PermissionMode, RuntimeEvent, ToolResult, WorkMode } from "../types.js";
 
 export type AgentDefinitionScope = "builtin" | "user" | "project";
 export type AgentIsolationMode = "shared-workspace" | "worktree";

@@ -51,16 +51,18 @@ describe("OpenAICompatibleProvider", () => {
         headers: { "content-type": "application/json" },
       }),
     );
-    const provider = new OpenAICompatibleProvider(model({
-      reasoningEffort: "high",
-      options: {
-        response_format: { type: "json_object" },
-        permission: "allow",
-        baseURL: "https://should-not-win.example",
-        temperature: 9,
-        max_tokens: 99,
-      },
-    }));
+    const provider = new OpenAICompatibleProvider(
+      model({
+        reasoningEffort: "high",
+        options: {
+          response_format: { type: "json_object" },
+          permission: "allow",
+          baseURL: "https://should-not-win.example",
+          temperature: 9,
+          max_tokens: 99,
+        },
+      }),
+    );
 
     await provider.complete(messages);
 
@@ -97,22 +99,41 @@ describe("OpenAICompatibleProvider", () => {
   });
 
   it("keeps SSE tail bytes, usage, reasoning, and tool-call index order", async () => {
-    const fetchMock = vi.spyOn(globalThis, "fetch").mockResolvedValue(sseResponse([
-      `data: ${JSON.stringify({ choices: [{ delta: { content: "你", reasoning_content: "think" } }] })}\n\n`,
-      `data: ${JSON.stringify({ choices: [{ delta: { tool_calls: [{ index: 1, id: "call_second", function: { name: "second", arguments: '{"value":2}' } }] } }] })}\n\n`,
-      `data: ${JSON.stringify({ choices: [{ delta: { tool_calls: [{ index: 0, id: "call_first", function: { name: "first", arguments: '{"value":1}' } }] } }] })}\n\n`,
-      `data: ${JSON.stringify({ usage: { prompt_tokens: 3, completion_tokens: 4 }, choices: [] })}\n\n`,
-      `data: ${JSON.stringify({ choices: [{ delta: {}, finish_reason: "tool_calls" }] })}`,
-    ].join(""), true));
+    const fetchMock = vi
+      .spyOn(globalThis, "fetch")
+      .mockResolvedValue(
+        sseResponse(
+          [
+            `data: ${JSON.stringify({ choices: [{ delta: { content: "你", reasoning_content: "think" } }] })}\n\n`,
+            `data: ${JSON.stringify({ choices: [{ delta: { tool_calls: [{ index: 1, id: "call_second", function: { name: "second", arguments: '{"value":2}' } }] } }] })}\n\n`,
+            `data: ${JSON.stringify({ choices: [{ delta: { tool_calls: [{ index: 0, id: "call_first", function: { name: "first", arguments: '{"value":1}' } }] } }] })}\n\n`,
+            `data: ${JSON.stringify({ usage: { prompt_tokens: 3, completion_tokens: 4 }, choices: [] })}\n\n`,
+            `data: ${JSON.stringify({ choices: [{ delta: {}, finish_reason: "tool_calls" }] })}`,
+          ].join(""),
+          true,
+        ),
+      );
 
     const chunks = await collect(new OpenAICompatibleProvider(model()).streamResponse(messages));
     const completedCalls = chunks.filter((chunk) => chunk.type === "tool_call_complete");
     const completed = chunks.find((chunk) => chunk.type === "response_complete");
 
     expect(fetchMock).toHaveBeenCalledOnce();
-    expect(chunks.filter((chunk) => chunk.type === "text_delta").map((chunk) => chunk.text).join("")).toBe("你");
-    expect(chunks.filter((chunk) => chunk.type === "reasoning_delta").map((chunk) => chunk.text).join("")).toBe("think");
-    expect(chunks.find((chunk) => chunk.type === "usage" && chunk.usage.prompt_tokens === 3)).toMatchObject({ usage: { prompt_tokens: 3, completion_tokens: 4 } });
+    expect(
+      chunks
+        .filter((chunk) => chunk.type === "text_delta")
+        .map((chunk) => chunk.text)
+        .join(""),
+    ).toBe("你");
+    expect(
+      chunks
+        .filter((chunk) => chunk.type === "reasoning_delta")
+        .map((chunk) => chunk.text)
+        .join(""),
+    ).toBe("think");
+    expect(chunks.find((chunk) => chunk.type === "usage" && chunk.usage.prompt_tokens === 3)).toMatchObject({
+      usage: { prompt_tokens: 3, completion_tokens: 4 },
+    });
     expect(completed).toMatchObject({ type: "response_complete", finishReason: "tool_calls" });
     expect(completedCalls.map((chunk) => chunk.toolCall.name)).toEqual(["first", "second"]);
     expect(completedCalls.map((chunk) => chunk.toolCall.id)).toEqual(["call_first", "call_second"]);
@@ -120,11 +141,15 @@ describe("OpenAICompatibleProvider", () => {
   });
 
   it("emits response_complete only after finish_reason and trailing usage", async () => {
-    vi.spyOn(globalThis, "fetch").mockResolvedValue(sseResponse([
-      `data: ${JSON.stringify({ choices: [{ delta: { content: "ok" } }] })}\n\n`,
-      `data: ${JSON.stringify({ choices: [{ delta: {}, finish_reason: "stop" }] })}\n\n`,
-      `data: ${JSON.stringify({ usage: { prompt_tokens: 1, completion_tokens: 2 }, choices: [] })}\n\n`,
-    ].join("")));
+    vi.spyOn(globalThis, "fetch").mockResolvedValue(
+      sseResponse(
+        [
+          `data: ${JSON.stringify({ choices: [{ delta: { content: "ok" } }] })}\n\n`,
+          `data: ${JSON.stringify({ choices: [{ delta: {}, finish_reason: "stop" }] })}\n\n`,
+          `data: ${JSON.stringify({ usage: { prompt_tokens: 1, completion_tokens: 2 }, choices: [] })}\n\n`,
+        ].join(""),
+      ),
+    );
 
     const chunks = await collect(new OpenAICompatibleProvider(model()).streamResponse(messages));
 
@@ -133,46 +158,67 @@ describe("OpenAICompatibleProvider", () => {
   });
 
   it("rejects an OpenAI-compatible stream that ends without finish_reason", async () => {
-    vi.spyOn(globalThis, "fetch").mockResolvedValue(sseResponse(
-      `data: ${JSON.stringify({ choices: [{ delta: { content: "partial" } }] })}`,
-    ));
+    vi.spyOn(globalThis, "fetch").mockResolvedValue(
+      sseResponse(`data: ${JSON.stringify({ choices: [{ delta: { content: "partial" } }] })}`),
+    );
 
-    await expect(collect(new OpenAICompatibleProvider(model()).streamResponse(messages)))
-      .rejects.toThrow("OpenAI-compatible stream ended without a finish_reason");
+    await expect(collect(new OpenAICompatibleProvider(model()).streamResponse(messages))).rejects.toThrow(
+      "OpenAI-compatible stream ended without a finish_reason",
+    );
   });
 });
 
 describe("AnthropicProvider", () => {
   it("parses a final SSE event without a delimiter and preserves tool input", async () => {
-    vi.spyOn(globalThis, "fetch").mockResolvedValue(sseResponse([
-      `data: ${JSON.stringify({ type: "message_start", message: { usage: { input_tokens: 3 } } })}\n\n`,
-      `data: ${JSON.stringify({ type: "content_block_start", index: 0, content_block: { type: "text" } })}\n\n`,
-      `data: ${JSON.stringify({ type: "content_block_delta", index: 0, delta: { type: "text_delta", text: "hello" } })}\n\n`,
-      `data: ${JSON.stringify({ type: "content_block_start", index: 1, content_block: { type: "tool_use", id: "call_1", name: "lookup" } })}\n\n`,
-      `data: ${JSON.stringify({ type: "content_block_delta", index: 1, delta: { type: "input_json_delta", partial_json: '{"query":' } })}\n\n`,
-      `data: ${JSON.stringify({ type: "content_block_delta", index: 1, delta: { type: "input_json_delta", partial_json: '"status"}' } })}\n\n`,
-      `data: ${JSON.stringify({ type: "content_block_stop", index: 1 })}\n\n`,
-      `data: ${JSON.stringify({ type: "message_delta", delta: { stop_reason: "tool_use" }, usage: { output_tokens: 4 } })}`,
-      `\n\ndata: ${JSON.stringify({ type: "message_stop" })}`,
-    ].join(""), true));
+    vi.spyOn(globalThis, "fetch").mockResolvedValue(
+      sseResponse(
+        [
+          `data: ${JSON.stringify({ type: "message_start", message: { usage: { input_tokens: 3 } } })}\n\n`,
+          `data: ${JSON.stringify({ type: "content_block_start", index: 0, content_block: { type: "text" } })}\n\n`,
+          `data: ${JSON.stringify({ type: "content_block_delta", index: 0, delta: { type: "text_delta", text: "hello" } })}\n\n`,
+          `data: ${JSON.stringify({ type: "content_block_start", index: 1, content_block: { type: "tool_use", id: "call_1", name: "lookup" } })}\n\n`,
+          `data: ${JSON.stringify({ type: "content_block_delta", index: 1, delta: { type: "input_json_delta", partial_json: '{"query":' } })}\n\n`,
+          `data: ${JSON.stringify({ type: "content_block_delta", index: 1, delta: { type: "input_json_delta", partial_json: '"status"}' } })}\n\n`,
+          `data: ${JSON.stringify({ type: "content_block_stop", index: 1 })}\n\n`,
+          `data: ${JSON.stringify({ type: "message_delta", delta: { stop_reason: "tool_use" }, usage: { output_tokens: 4 } })}`,
+          `\n\ndata: ${JSON.stringify({ type: "message_stop" })}`,
+        ].join(""),
+        true,
+      ),
+    );
 
     const chunks = await collect(new AnthropicProvider(model({ provider: "anthropic" })).streamResponse(messages));
     const completedCall = chunks.find((chunk) => chunk.type === "tool_call_complete");
     const completed = chunks.find((chunk) => chunk.type === "response_complete");
 
-    expect(chunks.filter((chunk) => chunk.type === "text_delta").map((chunk) => chunk.text).join("")).toBe("hello");
-    expect(chunks.find((chunk) => chunk.type === "usage" && chunk.usage.input_tokens === 3)).toMatchObject({ usage: { input_tokens: 3 } });
+    expect(
+      chunks
+        .filter((chunk) => chunk.type === "text_delta")
+        .map((chunk) => chunk.text)
+        .join(""),
+    ).toBe("hello");
+    expect(chunks.find((chunk) => chunk.type === "usage" && chunk.usage.input_tokens === 3)).toMatchObject({
+      usage: { input_tokens: 3 },
+    });
     expect(completed).toMatchObject({ type: "response_complete", finishReason: "tool_use" });
-    expect(completedCall).toMatchObject({ type: "tool_call_complete", toolCall: { id: "call_1", name: "lookup", argumentsJson: '{"query":"status"}' } });
+    expect(completedCall).toMatchObject({
+      type: "tool_call_complete",
+      toolCall: { id: "call_1", name: "lookup", argumentsJson: '{"query":"status"}' },
+    });
   });
 
   it("rejects an Anthropic stream that ends without message_stop", async () => {
-    vi.spyOn(globalThis, "fetch").mockResolvedValue(sseResponse([
-      `data: ${JSON.stringify({ type: "content_block_start", index: 0, content_block: { type: "text" } })}\n\n`,
-      `data: ${JSON.stringify({ type: "content_block_delta", index: 0, delta: { type: "text_delta", text: "partial" } })}\n\n`,
-    ].join("")));
+    vi.spyOn(globalThis, "fetch").mockResolvedValue(
+      sseResponse(
+        [
+          `data: ${JSON.stringify({ type: "content_block_start", index: 0, content_block: { type: "text" } })}\n\n`,
+          `data: ${JSON.stringify({ type: "content_block_delta", index: 0, delta: { type: "text_delta", text: "partial" } })}\n\n`,
+        ].join(""),
+      ),
+    );
 
-    await expect(collect(new AnthropicProvider(model({ provider: "anthropic" })).streamResponse(messages)))
-      .rejects.toThrow("anthropic stream ended without a message_stop event");
+    await expect(
+      collect(new AnthropicProvider(model({ provider: "anthropic" })).streamResponse(messages)),
+    ).rejects.toThrow("anthropic stream ended without a message_stop event");
   });
 });

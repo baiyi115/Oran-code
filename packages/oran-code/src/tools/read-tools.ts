@@ -42,7 +42,12 @@ export function registerReadTools(registry: { register(tool: ToolDefinition): vo
         const dir = pathFor(context, call.arguments.path ?? ".");
         const info = await stat(dir);
         if (!info.isDirectory()) {
-          return { ok: false, output: "", error: `not a directory: ${displayPath(workspace, dir)}`, summary: "not a directory" };
+          return {
+            ok: false,
+            output: "",
+            error: `not a directory: ${displayPath(workspace, dir)}`,
+            summary: "not a directory",
+          };
         }
         const entries = await readdir(dir, { withFileTypes: true });
         return {
@@ -61,13 +66,18 @@ export function registerReadTools(registry: { register(tool: ToolDefinition): vo
 
   register({
     name: "read_file",
-    description: "Read a UTF-8 text file with optional 1-based start line offset and line limit. Output includes line numbers.",
+    description:
+      "Read a UTF-8 text file with optional 1-based start line offset and line limit. Output includes line numbers.",
     parameters: {
       type: "object",
       properties: {
         path: { type: "string", description: "Path relative to workspace root." },
         offset: { type: "integer", description: "1-based start line. Defaults to 1.", default: 1 },
-        limit: { type: "integer", description: "Maximum number of lines to return. Defaults to 200.", default: DEFAULT_READ_LIMIT },
+        limit: {
+          type: "integer",
+          description: "Maximum number of lines to return. Defaults to 200.",
+          default: DEFAULT_READ_LIMIT,
+        },
       },
       required: ["path"],
     },
@@ -80,7 +90,12 @@ export function registerReadTools(registry: { register(tool: ToolDefinition): vo
         const path = pathFor(context, call.arguments.path);
         const info = await stat(path);
         if (info.isDirectory()) {
-          return { ok: false, output: "", error: `path is a directory: ${displayPath(workspace, path)}`, summary: "is directory" };
+          return {
+            ok: false,
+            output: "",
+            error: `path is a directory: ${displayPath(workspace, path)}`,
+            summary: "is directory",
+          };
         }
         const content = await readFile(path, "utf8");
         const lines = content.split(/\r?\n/);
@@ -122,8 +137,16 @@ export function registerReadTools(registry: { register(tool: ToolDefinition): vo
       type: "object",
       properties: {
         pattern: { type: "string", description: "Glob pattern, e.g. **/*.ts or src/**/*.md" },
-        path: { type: "string", description: "Optional search root relative to workspace. Defaults to .", default: "." },
-        limit: { type: "integer", description: "Maximum paths to return. Defaults to 200.", default: DEFAULT_GLOB_LIMIT },
+        path: {
+          type: "string",
+          description: "Optional search root relative to workspace. Defaults to .",
+          default: ".",
+        },
+        limit: {
+          type: "integer",
+          description: "Maximum paths to return. Defaults to 200.",
+          default: DEFAULT_GLOB_LIMIT,
+        },
       },
       required: ["pattern"],
     },
@@ -138,7 +161,12 @@ export function registerReadTools(registry: { register(tool: ToolDefinition): vo
         const base = pathFor(context, call.arguments.path ?? ".");
         const baseInfo = await stat(base);
         if (!baseInfo.isDirectory()) {
-          return { ok: false, output: "", error: `search root is not a directory: ${displayPath(workspace, base)}`, summary: "not a directory" };
+          return {
+            ok: false,
+            output: "",
+            error: `search root is not a directory: ${displayPath(workspace, base)}`,
+            summary: "not a directory",
+          };
         }
         const limit = Math.max(1, intArg(call.arguments.limit, DEFAULT_GLOB_LIMIT));
         const matcher = compileGlob(pattern);
@@ -174,9 +202,17 @@ export function registerReadTools(registry: { register(tool: ToolDefinition): vo
       type: "object",
       properties: {
         pattern: { type: "string", description: "JavaScript regular expression source." },
-        path: { type: "string", description: "Optional search root relative to workspace. Defaults to .", default: "." },
+        path: {
+          type: "string",
+          description: "Optional search root relative to workspace. Defaults to .",
+          default: ".",
+        },
         glob: { type: "string", description: "Optional file-name glob filter, e.g. *.{ts,tsx}." },
-        limit: { type: "integer", description: "Maximum hits to return. Defaults to 200.", default: DEFAULT_SEARCH_LIMIT },
+        limit: {
+          type: "integer",
+          description: "Maximum hits to return. Defaults to 200.",
+          default: DEFAULT_SEARCH_LIMIT,
+        },
       },
       required: ["pattern"],
     },
@@ -191,14 +227,20 @@ export function registerReadTools(registry: { register(tool: ToolDefinition): vo
         try {
           regex = new RegExp(source);
         } catch (error) {
-          return { ok: false, output: "", error: `invalid regular expression: ${errorMessage(error)}`, summary: "invalid regex" };
+          return {
+            ok: false,
+            output: "",
+            error: `invalid regular expression: ${errorMessage(error)}`,
+            summary: "invalid regex",
+          };
         }
         const workspace = activeRoot(context);
         const base = pathFor(context, call.arguments.path ?? ".");
         const limit = Math.max(1, intArg(call.arguments.limit, DEFAULT_SEARCH_LIMIT));
-        const fileFilter = typeof call.arguments.glob === "string" && call.arguments.glob.trim()
-          ? compileGlob(String(call.arguments.glob))
-          : undefined;
+        const fileFilter =
+          typeof call.arguments.glob === "string" && call.arguments.glob.trim()
+            ? compileGlob(String(call.arguments.glob))
+            : undefined;
         const hits: string[] = [];
         let total = 0;
         // 模型提供的正则可能有灾难性回溯:长行截断 + 总时间预算双保险。
@@ -218,7 +260,8 @@ export function registerReadTools(registry: { register(tool: ToolDefinition): vo
               }
               const line = lines[index] ?? "";
               regex.lastIndex = 0;
-              if (!regex.test(line.length > SEARCH_MAX_LINE_LENGTH ? line.slice(0, SEARCH_MAX_LINE_LENGTH) : line)) continue;
+              if (!regex.test(line.length > SEARCH_MAX_LINE_LENGTH ? line.slice(0, SEARCH_MAX_LINE_LENGTH) : line))
+                continue;
               total += 1;
               if (hits.length < limit) {
                 hits.push(`${rel}:${index + 1}:${line.trim().slice(0, 200)}`);
@@ -236,7 +279,9 @@ export function registerReadTools(registry: { register(tool: ToolDefinition): vo
           output: hits.join("\n") || "no matches",
           summary: timedOut
             ? `partial: ${Math.min(total, limit)}/${total}+ matches (time budget reached)`
-            : truncated ? `${Math.min(total, limit)}/${total} matches` : `${total} matches`,
+            : truncated
+              ? `${Math.min(total, limit)}/${total} matches`
+              : `${total} matches`,
           metadata: { total, returned: Math.min(total, limit), truncated, ...(timedOut ? { timedOut: true } : {}) },
         };
       } catch (error) {
@@ -250,14 +295,14 @@ export function registerReadTools(registry: { register(tool: ToolDefinition): vo
     ["get_diff", ["diff", "--stat"], "git"],
   ] as const) {
     register({
-     name,
-     description: name === "git_status" ? "Show short git status and branch." : "Show the workspace diff stat.",
-     parameters: { type: "object", properties: {} },
-     permissionLevel: 0,
-     kind: "readonly",
-     maxOutputChars: 16_000,
-    deferred: true,
-     invoke: async (_call, context) => {
+      name,
+      description: name === "git_status" ? "Show short git status and branch." : "Show the workspace diff stat.",
+      parameters: { type: "object", properties: {} },
+      permissionLevel: 0,
+      kind: "readonly",
+      maxOutputChars: 16_000,
+      deferred: true,
+      invoke: async (_call, context) => {
         try {
           const result = await execFileAsync(command, ["-C", activeRoot(context), ...args], { encoding: "utf8" });
           return { ok: true, output: result.stdout.trim() || "(empty)", summary: "ok" };

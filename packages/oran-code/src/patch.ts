@@ -164,7 +164,13 @@ export function applyUnifiedDiff(content: string, diff: string): PatchApplyResul
         continue;
       }
       if (cursor >= lines.length) {
-        return { ok: false, error: "hunk extends beyond the end of the file", hunksApplied: 0, linesAdded: 0, linesRemoved: 0 };
+        return {
+          ok: false,
+          error: "hunk extends beyond the end of the file",
+          hunksApplied: 0,
+          linesAdded: 0,
+          linesRemoved: 0,
+        };
       }
       if (entry.type === "context") output.push(lines[cursor] ?? "");
       else linesRemoved += 1;

@@ -133,7 +133,15 @@ async function temporaryDirectory(prefix: string): Promise<string> {
 }
 
 async function commit(root: string, message: string): Promise<void> {
-  await runGit(root, ["-c", "user.name=Oran Test", "-c", "user.email=oran-test@example.invalid", "commit", "-m", message]);
+  await runGit(root, [
+    "-c",
+    "user.name=Oran Test",
+    "-c",
+    "user.email=oran-test@example.invalid",
+    "commit",
+    "-m",
+    message,
+  ]);
 }
 
 async function runGit(root: string, args: readonly string[]): Promise<string> {

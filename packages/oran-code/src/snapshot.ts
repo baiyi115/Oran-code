@@ -58,8 +58,14 @@ export class SnapshotStore implements SnapshotStorePort {
   }
 
   async finalize(task: Task): Promise<void> {
-    const files = await readdir(resolve(projectStateRoot(this.rootWorkspace), "snapshots"), { withFileTypes: true }).catch(() => []);
-    const manifestPath = (await this.findManifestPath(task.id, files.map((entry) => entry.name))) ?? undefined;
+    const files = await readdir(resolve(projectStateRoot(this.rootWorkspace), "snapshots"), {
+      withFileTypes: true,
+    }).catch(() => []);
+    const manifestPath =
+      (await this.findManifestPath(
+        task.id,
+        files.map((entry) => entry.name),
+      )) ?? undefined;
     if (!manifestPath) return;
     const manifest = await readJson<SnapshotManifest>(manifestPath);
     if (!manifest || manifest.status !== "open") return;
@@ -114,7 +120,10 @@ export class SnapshotStore implements SnapshotStorePort {
     if (!manifest.postTree) return { ok: false, output: "The latest snapshot is incomplete and cannot be undone." };
     const currentHead = await gitHead(manifest.workspace);
     if (manifest.preHead !== manifest.postHead || currentHead !== manifest.postHead) {
-      return { ok: false, output: "Undo refused: Git HEAD changed during or after the Agent task. Use Git to recover commits." };
+      return {
+        ok: false,
+        output: "Undo refused: Git HEAD changed during or after the Agent task. Use Git to recover commits.",
+      };
     }
     const currentTree = await captureTree(manifest.workspace);
     const currentEntries = await treeEntries(currentTree, manifest.workspace);
@@ -122,7 +131,10 @@ export class SnapshotStore implements SnapshotStorePort {
     const conflicts = manifest.changedPaths.filter((path) => currentEntries.get(path) !== postEntries.get(path));
     if (conflicts.length) {
       await this.updateStatus(manifest, "conflicted");
-      return { ok: false, output: `Undo refused because files changed after the Agent task:\n${conflicts.map((path) => `- ${path}`).join("\n")}` };
+      return {
+        ok: false,
+        output: `Undo refused because files changed after the Agent task:\n${conflicts.map((path) => `- ${path}`).join("\n")}`,
+      };
     }
     const preEntries = await treeEntries(manifest.preTree, manifest.workspace);
     const unsupported = manifest.changedPaths.filter((path) => !isRestorableEntry(preEntries.get(path)));
@@ -172,7 +184,11 @@ async function captureTree(workspace: string): Promise<string> {
   const indexPath = resolve(temporaryRoot, "index");
   try {
     await git(workspace, ["read-tree", "--empty"], indexPath);
-    await git(workspace, ["add", "-A", "--", ".", ...PROJECT_STATE_DIR_NAMES.map((name) => `:(exclude)${name}`)], indexPath);
+    await git(
+      workspace,
+      ["add", "-A", "--", ".", ...PROJECT_STATE_DIR_NAMES.map((name) => `:(exclude)${name}`)],
+      indexPath,
+    );
     const result = await git(workspace, ["write-tree"], indexPath);
     return result.stdout.trim();
   } finally {
@@ -180,7 +196,11 @@ async function captureTree(workspace: string): Promise<string> {
   }
 }
 
-async function git(workspace: string, args: readonly string[], indexPath?: string): Promise<{ stdout: string; stderr: string }> {
+async function git(
+  workspace: string,
+  args: readonly string[],
+  indexPath?: string,
+): Promise<{ stdout: string; stderr: string }> {
   return execFileAsync("git", ["-C", workspace, ...args], {
     encoding: "utf8",
     windowsHide: true,
@@ -202,7 +222,11 @@ async function gitBuffer(workspace: string, args: readonly string[]): Promise<Bu
 }
 
 async function gitHead(workspace: string): Promise<string> {
-  try { return (await git(workspace, ["rev-parse", "HEAD"])).stdout.trim(); } catch { return ""; }
+  try {
+    return (await git(workspace, ["rev-parse", "HEAD"])).stdout.trim();
+  } catch {
+    return "";
+  }
 }
 
 async function treeEntries(tree: string, workspace: string): Promise<Map<string, string>> {
@@ -249,7 +273,8 @@ function isRestorableEntry(entry: string | undefined): boolean {
 
 function assertContained(root: string, target: string): void {
   const rel = relative(resolve(root), resolve(target));
-  if (isAbsolute(rel) || rel === ".." || rel.startsWith(`..${sep}`)) throw new Error(`snapshot path escapes workspace: ${target}`);
+  if (isAbsolute(rel) || rel === ".." || rel.startsWith(`..${sep}`))
+    throw new Error(`snapshot path escapes workspace: ${target}`);
 }
 
 async function writeJsonAtomic(path: string, value: unknown): Promise<void> {
@@ -260,11 +285,20 @@ async function writeJsonAtomic(path: string, value: unknown): Promise<void> {
 }
 
 async function readJson<T>(path: string): Promise<T | undefined> {
-  try { return JSON.parse(await readFile(path, "utf8")) as T; } catch { return undefined; }
+  try {
+    return JSON.parse(await readFile(path, "utf8")) as T;
+  } catch {
+    return undefined;
+  }
 }
 
 async function exists(path: string): Promise<boolean> {
-  try { await lstat(path); return true; } catch { return false; }
+  try {
+    await lstat(path);
+    return true;
+  } catch {
+    return false;
+  }
 }
 
 function safePart(value: string): string {

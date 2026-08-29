@@ -420,7 +420,15 @@ export type ApprovalCallback = (
 ) => ApprovalResponse | Promise<ApprovalResponse>;
 
 export interface AgentEvent {
-  type: "state" | "assistant_start" | "assistant_delta" | "assistant_end" | "tool_start" | "tool_result" | "error" | "completed";
+  type:
+    | "state"
+    | "assistant_start"
+    | "assistant_delta"
+    | "assistant_end"
+    | "tool_start"
+    | "tool_result"
+    | "error"
+    | "completed";
   state?: string;
   text?: string;
   toolCalls?: ToolCall[];

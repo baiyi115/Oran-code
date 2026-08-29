@@ -47,9 +47,11 @@ export class ApprovalQueue {
     // Non-interactive sessions (e.g. `oran run --once`) have no readline or
     // TUI to present an approval prompt. Auto-deny rather than hanging forever.
     if (!this.deps.isInteractive()) {
-      this.deps.renderer().error(
-        `approval required for ${call.name} but no interactive session is available; use --approve-all to run non-interactively`,
-      );
+      this.deps
+        .renderer()
+        .error(
+          `approval required for ${call.name} but no interactive session is available; use --approve-all to run non-interactively`,
+        );
       return Promise.resolve(false);
     }
     return new Promise<ApprovalResponse>((resolveApproval) => {
@@ -71,12 +73,7 @@ export class ApprovalQueue {
     const pending = this.pending[0];
     if (!pending || pending.presented || pending.settled) return;
     pending.presented = true;
-    const rendered = this.deps.renderer().approval(
-      pending.call,
-      pending.level,
-      pending.description,
-      pending.origin,
-    );
+    const rendered = this.deps.renderer().approval(pending.call, pending.level, pending.description, pending.origin);
     if (rendered && typeof rendered.then === "function") {
       void rendered.then((response) => this.settle(pending, response));
     }

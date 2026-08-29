@@ -18,7 +18,9 @@ export function parseCondition(expression: string): HookCondition | undefined {
   const tokens = splitLogical(trimmed);
   if (!tokens) return undefined;
 
-  const clauses = tokens.parts.map((part) => parseClause(part.trim())).filter((c): c is HookConditionClause => c !== undefined);
+  const clauses = tokens.parts
+    .map((part) => parseClause(part.trim()))
+    .filter((c): c is HookConditionClause => c !== undefined);
   if (clauses.length !== tokens.parts.length) return undefined;
   if (clauses.length === 0) return undefined;
 
@@ -32,7 +34,7 @@ interface SplitResult {
 
 function splitLogical(expression: string): SplitResult | undefined {
   // Capturing the separators yields [part, sep, part, sep, ...].
-  const pieces = expression.split(/\s*(\&{2}|\|{2})\s*/);
+  const pieces = expression.split(/\s*(&{2}|\|{2})\s*/);
   const parts: string[] = [];
   const seps: string[] = [];
   for (let i = 0; i < pieces.length; i += 1) {
