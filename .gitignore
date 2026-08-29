@@ -32,9 +32,6 @@ liteagent.db
 *.sqlite
 *.sqlite3
 
-docs/
-README*
-
 tmp/
 temp/
 *.tmp
