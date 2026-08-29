@@ -1,10 +1,19 @@
 import { randomUUID } from "node:crypto";
+import { createRequire } from "node:module";
 import { basename, dirname, relative, resolve, sep } from "node:path";
 import { mkdir, readFile, readdir, rename, stat, unlink, writeFile } from "node:fs/promises";
-import { parse, stringify } from "yaml";
 import type { ModelProvider } from "./types.js";
 import { isRecord } from "./types.js";
 import { compatibleUserDataPath, projectHash, userMemoryRoot, USER_DATA_DIRECTORY } from "./paths.js";
+
+// yaml 只服务于记忆笔记的 frontmatter;同步 API 无法 await 动态导入,
+// 改为首次调用时经 require 同步加载,避免 46ms 的 yaml 进入交互启动关键模块图。
+const requireYaml = createRequire(import.meta.url);
+let yamlModule: typeof import("yaml") | undefined;
+function yaml(): typeof import("yaml") {
+  yamlModule ??= requireYaml("yaml") as typeof import("yaml");
+  return yamlModule!;
+}
 
 export const MEMORY_NOTE_TYPES = ["user-preference", "correction-feedback", "project-knowledge", "reference-material"] as const;
 export type MemoryNoteType = (typeof MEMORY_NOTE_TYPES)[number];
@@ -159,7 +168,7 @@ export function parseMemoryNote(content: string): (MemoryNoteMetadata & { body: 
   const match = /^---\s*\r?\n([\s\S]*?)\r?\n---\s*(?:\r?\n|$)([\s\S]*)$/u.exec(content);
   if (!match) return undefined;
   try {
-    const frontmatter = parse(match[1] ?? "") as unknown;
+    const frontmatter = yaml().parse(match[1] ?? "") as unknown;
     if (!isRecord(frontmatter)) return undefined;
     const metadata = isRecord(frontmatter.metadata) ? frontmatter.metadata : undefined;
     const id = stringField(frontmatter.id) ?? stringField(frontmatter.identifier) ?? stringField(metadata?.id) ?? stringField(metadata?.identifier);
@@ -171,7 +180,7 @@ export function parseMemoryNote(content: string): (MemoryNoteMetadata & { body: 
 }
 
 export function serializeMemoryNote(note: MemoryWriteInput): string {
-  const frontmatter = stringify({ id: note.id, description: note.description, type: note.type }).trimEnd();
+  const frontmatter = yaml().stringify({ id: note.id, description: note.description, type: note.type }).trimEnd();
   return `---\n${frontmatter}\n---\n${note.body.trim()}\n`;
 }
 

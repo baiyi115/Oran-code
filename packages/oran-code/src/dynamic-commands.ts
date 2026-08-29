@@ -1,9 +1,17 @@
 import { readdir, readFile } from "node:fs/promises";
+import { createRequire } from "node:module";
 import { extname, relative, resolve } from "node:path";
-import { parse } from "yaml";
 import { CommandRegistry, type SlashCommand } from "./commands.js";
 import { compatibleUserDataPath, projectStateRoot } from "./paths.js";
 import { isRecord } from "./types.js";
+
+// 与 memory-manager 同理:同步 API 无法 await 动态导入,首次调用时经 require 加载 yaml。
+const requireYaml = createRequire(import.meta.url);
+let yamlModule: typeof import("yaml") | undefined;
+function yaml(): typeof import("yaml") {
+  yamlModule ??= requireYaml("yaml") as typeof import("yaml");
+  return yamlModule!;
+}
 
 type SlashCommandKind = SlashCommand["kind"];
 
@@ -173,7 +181,7 @@ function parseCommandDocument(raw: string, allowKindMetadata: boolean): CommandD
   if (closing < 0) return defaultDocument(source);
 
   try {
-    const metadata = parse(lines.slice(1, closing).join("\n")) as unknown;
+    const metadata = yaml().parse(lines.slice(1, closing).join("\n")) as unknown;
     if (!isRecord(metadata)) return defaultDocument(lines.slice(closing + 1).join("\n"));
     const description = stringValue(metadata.description);
     const argumentHint = stringValue(metadata["argument-hint"] ?? metadata.argumentHint);
