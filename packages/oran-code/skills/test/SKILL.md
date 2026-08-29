@@ -6,6 +6,7 @@ allowedTools:
 mode: inline
 context: none
 ---
+
 Choose the smallest verification command that covers the requested change. Explain failures using the first actionable root cause and avoid unrelated test suites.
 
 $ARGUMENTS

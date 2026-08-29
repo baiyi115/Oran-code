@@ -2,16 +2,7 @@
 
 import { createHash } from "node:crypto";
 import { spawn } from "node:child_process";
-import {
-  access,
-  cp,
-  mkdir,
-  readFile,
-  readdir,
-  rm,
-  stat,
-  writeFile,
-} from "node:fs/promises";
+import { access, cp, mkdir, readFile, readdir, rm, stat, writeFile } from "node:fs/promises";
 import path from "node:path";
 import process from "node:process";
 
@@ -100,7 +91,10 @@ function parsePositiveInteger(value, option) {
 }
 
 function splitCases(value) {
-  const values = value.split(/[,\s]+/).map((item) => item.trim()).filter(Boolean);
+  const values = value
+    .split(/[,\s]+/)
+    .map((item) => item.trim())
+    .filter(Boolean);
   if (values.length === 0) throw new Error("--case requires at least one case id");
   return values;
 }
@@ -147,7 +141,10 @@ async function safeRemove(target, allowedRoot) {
 async function discoverCaseIds() {
   if (!(await exists(CASES_ROOT))) return [];
   const entries = await readdir(CASES_ROOT, { withFileTypes: true });
-  return entries.filter((entry) => entry.isDirectory()).map((entry) => entry.name).sort();
+  return entries
+    .filter((entry) => entry.isDirectory())
+    .map((entry) => entry.name)
+    .sort();
 }
 
 function assertString(value, field, caseId) {
@@ -187,9 +184,10 @@ async function loadCase(caseId) {
     throw new Error(`Case ${caseId}: timeoutMs must be a positive integer`);
   }
 
-  const hiddenVerifier = raw.hiddenVerifier === undefined
-    ? undefined
-    : path.resolve(caseDir, assertString(raw.hiddenVerifier, "hiddenVerifier", caseId));
+  const hiddenVerifier =
+    raw.hiddenVerifier === undefined
+      ? undefined
+      : path.resolve(caseDir, assertString(raw.hiddenVerifier, "hiddenVerifier", caseId));
   if (hiddenVerifier && !isWithin(caseDir, hiddenVerifier)) {
     throw new Error(`Case ${caseId}: hiddenVerifier must stay inside the case directory and outside fixture/`);
   }
@@ -236,8 +234,12 @@ async function runProcess(command, args, options = {}) {
   let stderr = "";
   child.stdout.setEncoding("utf8");
   child.stderr.setEncoding("utf8");
-  child.stdout.on("data", (chunk) => { stdout += chunk; });
-  child.stderr.on("data", (chunk) => { stderr += chunk; });
+  child.stdout.on("data", (chunk) => {
+    stdout += chunk;
+  });
+  child.stderr.on("data", (chunk) => {
+    stderr += chunk;
+  });
 
   const completion = new Promise((resolve, reject) => {
     child.once("error", reject);
@@ -284,20 +286,22 @@ async function terminateProcessTree(pid) {
   try {
     process.kill(-pid, "SIGTERM");
   } catch {
-    try { process.kill(pid, "SIGTERM"); } catch { /* already exited */ }
+    try {
+      process.kill(pid, "SIGTERM");
+    } catch {
+      /* already exited */
+    }
   }
 }
 
 async function runShellCommand(command, cwd, timeoutMs, env = {}) {
   if (process.platform === "win32") {
     const executable = process.env.RESUME_EVAL_POWERSHELL || "powershell.exe";
-    return runProcess(executable, [
-      "-NoLogo",
-      "-NoProfile",
-      "-NonInteractive",
-      "-ExecutionPolicy", "Bypass",
-      "-Command", command,
-    ], { cwd, timeoutMs, env });
+    return runProcess(
+      executable,
+      ["-NoLogo", "-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass", "-Command", command],
+      { cwd, timeoutMs, env },
+    );
   }
   return runProcess("/bin/sh", ["-lc", command], { cwd, timeoutMs, env });
 }
@@ -526,9 +530,7 @@ async function executeRun({ caseInfo, runNumber, batch, model, commit, resultsDi
   const setupPassed = commandsPassed(setupResults, caseInfo.definition.setupCommands.length);
   await writeCommandLogs(runDir, "setup", setupResults);
   const beforeSnapshot = await snapshotWorkspace(workspace);
-  const protectedBefore = setupPassed
-    ? await hashProtectedPaths(workspace, caseInfo.definition.protectedPaths)
-    : {};
+  const protectedBefore = setupPassed ? await hashProtectedPaths(workspace, caseInfo.definition.protectedPaths) : {};
 
   let agentResult = {
     command: "not run because setup failed",
@@ -541,39 +543,26 @@ async function executeRun({ caseInfo, runNumber, batch, model, commit, resultsDi
   };
 
   if (setupPassed) {
-    agentResult = await runProcess(process.execPath, [
-      CLI_PATH,
-      "run",
-      prompt,
-      "--workspace", workspace,
-      "--model", model,
-      "--approve-all",
-    ], { cwd: ROOT, timeoutMs: caseInfo.definition.timeoutMs, env });
+    agentResult = await runProcess(
+      process.execPath,
+      [CLI_PATH, "run", prompt, "--workspace", workspace, "--model", model, "--approve-all"],
+      { cwd: ROOT, timeoutMs: caseInfo.definition.timeoutMs, env },
+    );
   }
 
   await writeFile(path.join(runDir, "stdout.log"), agentResult.stdout, "utf8");
   await writeFile(path.join(runDir, "stderr.log"), agentResult.stderr, "utf8");
   await writeFile(path.join(runDir, "diff.patch"), await captureDiff(workspace, beforeSnapshot), "utf8");
 
-  const protectedAfter = setupPassed
-    ? await hashProtectedPaths(workspace, caseInfo.definition.protectedPaths)
-    : {};
+  const protectedAfter = setupPassed ? await hashProtectedPaths(workspace, caseInfo.definition.protectedPaths) : {};
   const protectedChanged = caseInfo.definition.protectedPaths.filter(
     (relativePath) => protectedBefore[relativePath] !== protectedAfter[relativePath],
   );
 
   const verifyResults = setupPassed
-    ? await runCommandList(
-      caseInfo.definition.verifyCommands,
-      workspace,
-      caseInfo.definition.timeoutMs,
-      env,
-    )
+    ? await runCommandList(caseInfo.definition.verifyCommands, workspace, caseInfo.definition.timeoutMs, env)
     : [];
-  const verifyPassed = setupPassed && commandsPassed(
-    verifyResults,
-    caseInfo.definition.verifyCommands.length,
-  );
+  const verifyPassed = setupPassed && commandsPassed(verifyResults, caseInfo.definition.verifyCommands.length);
   await writeCommandLogs(runDir, "verify", verifyResults);
 
   const hiddenResult = setupPassed
@@ -643,7 +632,9 @@ function renderSummary(summary) {
   ];
 
   for (const result of summary.results) {
-    lines.push(`| ${result.case.id} | ${result.case.category} | ${result.run} | ${result.success ? "PASS" : "FAIL"} | ${result.durationMs} ms | ${result.failureReason ?? "-"} |`);
+    lines.push(
+      `| ${result.case.id} | ${result.case.category} | ${result.run} | ${result.success ? "PASS" : "FAIL"} | ${result.durationMs} ms | ${result.failureReason ?? "-"} |`,
+    );
   }
   lines.push("");
   return `${lines.join("\n")}\n`;
@@ -672,12 +663,18 @@ async function main() {
   for (const caseId of selected) cases.push(await loadCase(caseId));
 
   if (options.dryRun) {
-    console.log(JSON.stringify({
-      model: options.model,
-      runs: options.runs,
-      smoke: options.smoke,
-      cases: cases.map((item) => item.definition),
-    }, null, 2));
+    console.log(
+      JSON.stringify(
+        {
+          model: options.model,
+          runs: options.runs,
+          smoke: options.smoke,
+          cases: cases.map((item) => item.definition),
+        },
+        null,
+        2,
+      ),
+    );
     return;
   }
 
@@ -700,7 +697,9 @@ async function main() {
         resultsDir,
       });
       results.push(result);
-      console.log(`[resume-eval] ${result.success ? "PASS" : "FAIL"} ${caseInfo.definition.id} ${runNumber}/${options.runs}${result.failureReason ? ` (${result.failureReason})` : ""}`);
+      console.log(
+        `[resume-eval] ${result.success ? "PASS" : "FAIL"} ${caseInfo.definition.id} ${runNumber}/${options.runs}${result.failureReason ? ` (${result.failureReason})` : ""}`,
+      );
     }
   }
 
