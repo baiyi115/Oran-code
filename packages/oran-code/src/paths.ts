@@ -2,7 +2,7 @@ import { existsSync } from "node:fs";
 import { createHash } from "node:crypto";
 import { copyFile, lstat, mkdir, readdir, rename, rm, rmdir } from "node:fs/promises";
 import { homedir } from "node:os";
-import { dirname, resolve } from "node:path";
+import { dirname, isAbsolute, relative, resolve } from "node:path";
 
 export const PRODUCT_NAME = "Oran code";
 export const PRODUCT_VERSION = "0.1.0";
@@ -101,7 +101,12 @@ export function userMemoryRoot(workspace: string): string {
  * archived under the destination rather than overwritten.
  */
 export async function migrateUserDataOutOfWorkspace(workspace: string): Promise<void> {
-  const projectRoot = projectStateRoot(workspace);
+  // 工作区是用户主目录(或其祖先)时,~/.oran 就位于 workspace/.oran 之内,
+  // 迁移会变成把目录 rename 进自身(EINVAL);两者本就是同一处,直接跳过。
+  const userRoot = resolve(userDataRoot());
+  const projectRoot = resolve(projectStateRoot(workspace));
+  const userRootRelative = relative(projectRoot, userRoot);
+  if (!userRootRelative.startsWith("..") && !isAbsolute(userRootRelative)) return;
   const moves: Array<[source: string, destination: string]> = [
     [resolve(projectRoot, "sessions"), userSessionsRoot(workspace)],
     [resolve(projectRoot, "trace.db"), resolve(userTraceRoot(workspace), "trace.db")],
