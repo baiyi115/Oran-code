@@ -1,5 +1,12 @@
 import { describe, expect, it } from "vitest";
-import { cursorVisualPosition, deleteBackward, deleteForward, insertText, moveCursor, visualLines } from "../src/tui/composer.js";
+import {
+  cursorVisualPosition,
+  deleteBackward,
+  deleteForward,
+  insertText,
+  moveCursor,
+  visualLines,
+} from "../src/tui/composer.js";
 import { composerValue, createComposerState, setComposerValue } from "../src/tui/state.js";
 
 describe("TUI composer editing", () => {

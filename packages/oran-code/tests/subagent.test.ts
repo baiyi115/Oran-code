@@ -12,11 +12,7 @@ import { AgentDefinitionLoader } from "../src/subagent/roles.js";
 import { StructuredSubagentScope } from "../src/subagent/scope.js";
 import { subagentOriginLabel } from "../src/subagent/types.js";
 import type { SubagentRunner } from "../src/subagent/runner.js";
-import type {
-  AgentDefinition,
-  SubagentRunOptions,
-  SubagentRunResult,
-} from "../src/subagent/types.js";
+import type { AgentDefinition, SubagentRunOptions, SubagentRunResult } from "../src/subagent/types.js";
 import type { ToolDefinition } from "../src/types.js";
 
 const roots: string[] = [];
@@ -32,7 +28,14 @@ afterEach(async () => {
 });
 
 function tool(name: string): ToolDefinition {
-  return { name, description: name, parameters: {}, permissionLevel: 0, maxOutputChars: 1_000, invoke: async () => ({ ok: true, output: "" }) };
+  return {
+    name,
+    description: name,
+    parameters: {},
+    permissionLevel: 0,
+    maxOutputChars: 1_000,
+    invoke: async () => ({ ok: true, output: "" }),
+  };
 }
 
 function definition(overrides: Partial<AgentDefinition> = {}): AgentDefinition {
@@ -190,7 +193,11 @@ You are a code reviewer subagent.`;
     await mkdir(userDir, { recursive: true });
     await mkdir(projectDir, { recursive: true });
     await writeFile(join(userDir, "reviewer.md"), VALID_DEFINITION, "utf8");
-    await writeFile(join(projectDir, "auditor.md"), VALID_DEFINITION.replace("name: Reviewer", "name: auditor"), "utf8");
+    await writeFile(
+      join(projectDir, "auditor.md"),
+      VALID_DEFINITION.replace("name: Reviewer", "name: auditor"),
+      "utf8",
+    );
     // Non-markdown and hidden files are ignored.
     await writeFile(join(userDir, "notes.txt"), "nope", "utf8");
 
@@ -218,8 +225,16 @@ You are a code reviewer subagent.`;
     await mkdir(userDir, { recursive: true });
     await mkdir(projectDir, { recursive: true });
     await writeFile(join(userDir, "reviewer.md"), VALID_DEFINITION, "utf8");
-    await writeFile(join(projectDir, "reviewer.md"), VALID_DEFINITION.replace("Reviews diffs", "Project-level reviewer"), "utf8");
-    await writeFile(join(projectDir, "explore.md"), VALID_DEFINITION.replace("name: Reviewer", "name: explore"), "utf8");
+    await writeFile(
+      join(projectDir, "reviewer.md"),
+      VALID_DEFINITION.replace("Reviews diffs", "Project-level reviewer"),
+      "utf8",
+    );
+    await writeFile(
+      join(projectDir, "explore.md"),
+      VALID_DEFINITION.replace("name: Reviewer", "name: explore"),
+      "utf8",
+    );
 
     const loader = new AgentDefinitionLoader(workspace, { user: userDir, project: projectDir });
     await loader.scan();
@@ -283,9 +298,14 @@ describe("StructuredSubagentScope", () => {
   });
 
   it("marks stuck children as timed out and aborts them", async () => {
-    const runner = fakeRunner((options) => new Promise<SubagentRunResult>((resolve) => {
-      options.abortController?.signal.addEventListener("abort", () => resolve(runResult(options, "cancelled")), { once: true });
-    }));
+    const runner = fakeRunner(
+      (options) =>
+        new Promise<SubagentRunResult>((resolve) => {
+          options.abortController?.signal.addEventListener("abort", () => resolve(runResult(options, "cancelled")), {
+            once: true,
+          });
+        }),
+    );
     const scope = new StructuredSubagentScope(runner);
     const started = scope.start({ description: "stuck", prompt: "hang", origin: { kind: "fork", name: "stuck" } });
     if (!("promise" in started)) throw new Error("expected a structured task");
@@ -307,9 +327,14 @@ describe("StructuredSubagentScope", () => {
     await scope.waitForChildren(1_000);
     expect(scope.summary()).toContain("a: completed");
 
-    const hanging = fakeRunner((options) => new Promise<SubagentRunResult>((resolve) => {
-      options.abortController?.signal.addEventListener("abort", () => resolve(runResult(options, "cancelled")), { once: true });
-    }));
+    const hanging = fakeRunner(
+      (options) =>
+        new Promise<SubagentRunResult>((resolve) => {
+          options.abortController?.signal.addEventListener("abort", () => resolve(runResult(options, "cancelled")), {
+            once: true,
+          });
+        }),
+    );
     const cancelScope = new StructuredSubagentScope(hanging);
     const second = cancelScope.start({ description: "b", prompt: "b", origin: { kind: "fork", name: "b" } });
     if (!("promise" in second)) throw new Error("expected a structured task");
@@ -318,7 +343,13 @@ describe("StructuredSubagentScope", () => {
   });
 
   it("rejects invalid fork wait timeouts", () => {
-    expect(() => new StructuredSubagentScope(fakeRunner(async (options) => runResult(options)), -1)).toThrowError(/finite non-negative/);
+    expect(
+      () =>
+        new StructuredSubagentScope(
+          fakeRunner(async (options) => runResult(options)),
+          -1,
+        ),
+    ).toThrowError(/finite non-negative/);
   });
 });
 
@@ -355,7 +386,11 @@ describe("AgentStateStore", () => {
   it("ignores state files with an unknown version", async () => {
     const workspace = await makeWorkspace();
     await mkdir(join(workspace, ".oran", "agents"), { recursive: true });
-    await writeFile(join(workspace, ".oran", "agents", "state.json"), JSON.stringify({ version: 99, background: [1] }), "utf8");
+    await writeFile(
+      join(workspace, ".oran", "agents", "state.json"),
+      JSON.stringify({ version: 99, background: [1] }),
+      "utf8",
+    );
     const store = new AgentStateStore(workspace);
     expect(await store.load()).toMatchObject({ version: 1, background: [], teams: [] });
   });

@@ -4,27 +4,39 @@ import type { ApprovalResponse, ToolCall } from "../types.js";
 import { REASONING_EFFORTS, type WorkMode } from "../types.js";
 import { formatErrorMessage } from "../error-format.js";
 import { commandCandidates } from "./command-palette.js";
-import { approvalResponse, moveSelection, navigateHistory } from "./interaction.js";
+import { navigateHistory } from "./interaction.js";
 import { TuiTranscriptRenderer } from "./renderer.js";
 import { composerValue, createTuiState, setComposerValue, setOverlay } from "./state.js";
-import type { ComposerState, PasteBlock, SessionOption, SessionView, TuiAppOptions, TuiRenderCommitKind, TuiState, TranscriptMessage } from "./types.js";
-import type { ConnectInput, ConnectModelOption } from "./types.js";
+import type {
+  ComposerState,
+  PasteBlock,
+  SessionView,
+  TuiAppOptions,
+  TuiRenderCommitKind,
+  TuiState,
+  TranscriptMessage,
+} from "./types.js";
+import type { ConnectInput } from "./types.js";
 import { appendSystemMessage } from "./message-reducer.js";
 import { nextMessageNumber } from "./state.js";
-import { composerCursorOffset, cursorVisualPosition, deleteBackward, deleteForward, insertText, moveCursor, moveToLineEdge, visualLines } from "./composer.js";
+import {
+  composerCursorOffset,
+  cursorVisualPosition,
+  deleteBackward,
+  deleteForward,
+  insertText,
+  moveCursor,
+  moveToLineEdge,
+  visualLines,
+} from "./composer.js";
 import { TranscriptView, collapsibleSegments } from "./transcript/transcript-view.js";
 import { footerLines, workSummaryLine } from "./footer.js";
-import { approvalDialogLines } from "./approval-dialog.js";
 import type { SubagentOrigin } from "../subagent/types.js";
-import { modelSelectorLines } from "./model-selector.js";
 import { commandPaletteLines } from "./command-palette.js";
-import { ANSI, COLORS, dimHorizontalRule, horizontalRule } from "./theme.js";
-import { highlightSelection } from "./overlay/select-list.js";
-import { abbreviatePath, graphemes, truncateVisible, visibleWidth } from "./text-width.js";
+import { COLORS, horizontalRule } from "./theme.js";
 import { scrollPercent, scrollTranscript, syncTranscriptScroll } from "./scroll-controller.js";
-import { currentSessionLine, sessionOptionLabel } from "./session-list.js";
 import { hasActiveBackgroundTasks, isSessionBusy, workingIndicatorLine } from "./status-indicator.js";
-import { isDeleteBackward, isDeleteForward, isEndKey, isHomeKey, isSessionDeleteKey, isSubmitKey } from "./keys.js";
+import { isDeleteBackward, isDeleteForward, isEndKey, isHomeKey, isSubmitKey } from "./keys.js";
 import { ConnectWizard } from "./connect-wizard.js";
 import { OverlayHandlers } from "./overlay-handlers.js";
 import {
@@ -34,7 +46,6 @@ import {
   fitOverlayLines,
   ghostCommandSuggestion,
   oranWelcomeLines,
-  renderComposerLineWithCaret,
   renderComposerLines,
   renderOverlayLines,
 } from "./render.js";
@@ -50,10 +61,11 @@ interface StaticTranscriptItem {
 
 /** Only in-progress transcript entries need Ink's height-bounded live frame. */
 export function staticTranscriptCount(messages: readonly TranscriptMessage[]): number {
-  const firstMutableIndex = messages.findIndex((message) =>
-    (message.kind === "assistant" && message.streaming)
-    || (message.kind === "thought" && message.streaming)
-    || (message.kind === "tool" && message.status === "running"),
+  const firstMutableIndex = messages.findIndex(
+    (message) =>
+      (message.kind === "assistant" && message.streaming) ||
+      (message.kind === "thought" && message.streaming) ||
+      (message.kind === "tool" && message.status === "running"),
   );
   return firstMutableIndex >= 0 ? firstMutableIndex : messages.length;
 }
@@ -66,6 +78,8 @@ const RESTORE_NATIVE_MOUSE = "\x1b[?1003l\x1b[?1002l\x1b[?1000l\x1b[?1015l\x1b[?
 // waitUntilRenderFlush(). Boundary events wait past that window so a short,
 // burst-delivered response cannot skip directly to its completed frame.
 const INK_PAINT_BARRIER_MS = 40;
+/** boundary/terminal 事件等待渲染提交的上限;超时兜底放行并补一次渲染。 */
+const RENDER_WAIT_TIMEOUT_MS = 1_000;
 
 /**
  * Ink-backed TUI.
@@ -135,12 +149,19 @@ export class InkTuiApp {
       submit: (forcedCommand) => this.submit(forcedCommand),
       handleComposerKey: (input, key) => this.handleComposerKey(input, key),
       detachInputHistory: () => this.detachInputHistory(),
-      noteDismissedCommandInput: (value) => { this.dismissedCommandInput = value; },
+      noteDismissedCommandInput: (value) => {
+        this.dismissedCommandInput = value;
+      },
       resolveApproval: (response) => this.resolveApproval(response),
     });
     this.connectWizard = new ConnectWizard({
       state: this.state,
-      ...(options.loadRemoteModels ? { loadRemoteModels: (baseURL: string, apiKey: string, protocol: "openai" | "anthropic") => options.loadRemoteModels!(baseURL, apiKey, protocol) } : {}),
+      ...(options.loadRemoteModels
+        ? {
+            loadRemoteModels: (baseURL: string, apiKey: string, protocol: "openai" | "anthropic") =>
+              options.loadRemoteModels!(baseURL, apiKey, protocol),
+          }
+        : {}),
       ...(options.onConnect ? { onConnect: (input: ConnectInput) => options.onConnect!(input) } : {}),
       invalidate: () => this.invalidate(),
       rejectIfBlocked: (message) => this.rejectIfBlocked(message),
@@ -157,21 +178,20 @@ export class InkTuiApp {
       },
     };
     this.renderer = new TuiTranscriptRenderer(layout, this.state);
-    this.renderer.setApprovalHandler((call, level, description, origin) => this.openApproval(call, level, description, origin));
+    this.renderer.setApprovalHandler((call, level, description, origin) =>
+      this.openApproval(call, level, description, origin),
+    );
     this.renderer.setApprovalCancelHandler(() => this.cancelApproval());
   }
 
   run(): Promise<void> {
     if (this.destroyed) return Promise.resolve();
     this.restoreNativeMouse();
-    this.inkInstance = this.renderInk(
-      <InkRoot app={this} revision={this.renderRevision} />,
-      {
-        stdin: this.options.input as NodeJS.ReadStream,
-        stdout: this.options.output,
-        exitOnCtrlC: false,
-      },
-    );
+    this.inkInstance = this.renderInk(<InkRoot app={this} revision={this.renderRevision} />, {
+      stdin: this.options.input as NodeJS.ReadStream,
+      stdout: this.options.output,
+      exitOnCtrlC: false,
+    });
     return new Promise<void>((resolve) => {
       this.resolveRun = resolve;
     });
@@ -369,20 +389,17 @@ export class InkTuiApp {
       if (key.shift || (key.ctrl && (input === "j" || input === "\n"))) {
         this.detachInputHistory();
         insertText(this.state.composer, "\n");
-      }
-      else void this.submit();
+      } else void this.submit();
     } else if (key.ctrl && input === "j") {
       this.detachInputHistory();
       insertText(this.state.composer, "\n");
     } else if (isDeleteBackward(input, key)) {
       this.detachInputHistory();
       deleteBackward(this.state.composer);
-    }
-    else if (isDeleteForward(input, key)) {
+    } else if (isDeleteForward(input, key)) {
       this.detachInputHistory();
       deleteForward(this.state.composer);
-    }
-    else if (key.pageUp) this.scrollTranscriptBy(this.pageScrollDelta());
+    } else if (key.pageUp) this.scrollTranscriptBy(this.pageScrollDelta());
     else if (key.pageDown) this.scrollTranscriptBy(-this.pageScrollDelta());
     else if (key.ctrl && key.upArrow) this.scrollTranscriptBy(3);
     else if (key.ctrl && key.downArrow) this.scrollTranscriptBy(-3);
@@ -394,16 +411,14 @@ export class InkTuiApp {
     } else if (key.downArrow) {
       if (this.canMoveComposerVertically("down")) moveCursor(this.state.composer, "down", this.editorWidth());
       else this.navigateInputHistory("newer");
-    }
-    else if (isHomeKey(input, key)) moveToLineEdge(this.state.composer, "start");
+    } else if (isHomeKey(input, key)) moveToLineEdge(this.state.composer, "start");
     else if (isEndKey(input, key)) moveToLineEdge(this.state.composer, "end");
     else if (key.escape) {
       // Idle Esc clears the draft; busy Esc is handled in handleKey before this.
       this.detachInputHistory();
       setComposerValue(this.state.composer, "");
       this.state.composer.pastes = [];
-    }
-    else if (input && !key.ctrl && !key.meta) {
+    } else if (input && !key.ctrl && !key.meta) {
       // Multi-char payloads are paste events from Ink; keep newlines intact.
       if (input === "\r" || input === "\n") {
         // bare CR/LF already handled as submit above
@@ -435,18 +450,29 @@ export class InkTuiApp {
         loading: true,
         tokenStart: file.start,
       };
-      void this.options.loadFiles(file.query).then((options) => {
-        if (this.state.overlay.kind === "files" && this.state.overlay.query === file.query && this.state.overlay.tokenStart === file.start) {
-          this.state.overlay = { ...this.state.overlay, options, loading: false };
-          this.invalidate();
-        }
-      }).catch((error: unknown) => {
-        if (this.state.overlay.kind === "files" && this.state.overlay.query === file.query && this.state.overlay.tokenStart === file.start) {
-          this.state.overlay = { ...this.state.overlay, options: [], loading: false };
-          this.state.session.status = errorMessage(error);
-          this.invalidate();
-        }
-      });
+      void this.options
+        .loadFiles(file.query)
+        .then((options) => {
+          if (
+            this.state.overlay.kind === "files" &&
+            this.state.overlay.query === file.query &&
+            this.state.overlay.tokenStart === file.start
+          ) {
+            this.state.overlay = { ...this.state.overlay, options, loading: false };
+            this.invalidate();
+          }
+        })
+        .catch((error: unknown) => {
+          if (
+            this.state.overlay.kind === "files" &&
+            this.state.overlay.query === file.query &&
+            this.state.overlay.tokenStart === file.start
+          ) {
+            this.state.overlay = { ...this.state.overlay, options: [], loading: false };
+            this.state.session.status = errorMessage(error);
+            this.invalidate();
+          }
+        });
       return;
     }
     if (value.startsWith("/") && !value.includes(" ") && !value.includes("\n")) {
@@ -462,7 +488,8 @@ export class InkTuiApp {
       });
       return;
     }
-    if (this.state.overlay.kind === "commands" || this.state.overlay.kind === "files") this.state.overlay = { kind: "none" };
+    if (this.state.overlay.kind === "commands" || this.state.overlay.kind === "files")
+      this.state.overlay = { kind: "none" };
   }
 
   restoreSessionView(session: SessionView, notice?: string): void {
@@ -477,8 +504,12 @@ export class InkTuiApp {
     this.state.session.sessionId = session.id;
     this.state.session.sessionName = session.name;
     this.state.session.workMode = session.workMode ?? this.options.getWorkMode?.() ?? this.state.session.workMode;
-    this.state.session.permissionMode = session.permissionMode ?? this.options.getPermissionMode?.() ?? (this.state.session.workMode === "plan" ? "plan" : "default");
-    this.state.session.reasoningEffort = session.reasoningEffort ?? this.options.getReasoningEffort?.() ?? this.state.session.reasoningEffort;
+    this.state.session.permissionMode =
+      session.permissionMode ??
+      this.options.getPermissionMode?.() ??
+      (this.state.session.workMode === "plan" ? "plan" : "default");
+    this.state.session.reasoningEffort =
+      session.reasoningEffort ?? this.options.getReasoningEffort?.() ?? this.state.session.reasoningEffort;
     if (session.modelReference) this.state.session.modelReference = { ...session.modelReference };
     else delete this.state.session.modelReference;
     if (session.modelWarning) this.state.session.modelWarning = session.modelWarning;
@@ -487,7 +518,10 @@ export class InkTuiApp {
       .filter((message) => !isTransientRestoredMessage(message))
       .map((message) => ({ ...message }));
     this.state.expandedToolGroupIds.clear();
-    if (session.modelWarning && !this.state.transcript.some((message) => message.kind === "error" && message.text === session.modelWarning)) {
+    if (
+      session.modelWarning &&
+      !this.state.transcript.some((message) => message.kind === "error" && message.text === session.modelWarning)
+    ) {
       appendSystemMessage(this.state, session.modelWarning, "error");
     }
     this.state.composer.history = [...session.history];
@@ -500,7 +534,13 @@ export class InkTuiApp {
     this.state.thoughtMessageId = undefined;
     this.state.streaming = false;
     this.state.activeTaskId = undefined;
-    this.state.activeTaskUsage = { inputTokens: 0, outputTokens: 0, totalTokens: 0, cacheReadTokens: 0, cacheWriteTokens: 0 };
+    this.state.activeTaskUsage = {
+      inputTokens: 0,
+      outputTokens: 0,
+      totalTokens: 0,
+      cacheReadTokens: 0,
+      cacheWriteTokens: 0,
+    };
     this.state.lastSequence = 0;
     this.state.processedSequences.clear();
     this.state.session.taskState = "ready";
@@ -511,7 +551,13 @@ export class InkTuiApp {
     this.state.session.elapsedMs = undefined;
     this.state.session.modelElapsedMs = undefined;
     this.state.session.outputTokensPerSecond = undefined;
-    this.state.session.usage = { inputTokens: 0, outputTokens: 0, totalTokens: 0, cacheReadTokens: 0, cacheWriteTokens: 0 };
+    this.state.session.usage = {
+      inputTokens: 0,
+      outputTokens: 0,
+      totalTokens: 0,
+      cacheReadTokens: 0,
+      cacheWriteTokens: 0,
+    };
     this.state.session.followUpCount = this.options.getFollowUpCount?.() ?? 0;
     this.state.overlay = { kind: "none" };
     this.staticTranscriptGeneration += 1;
@@ -545,7 +591,10 @@ export class InkTuiApp {
       // Pastes are cleared only on success; on failure the composer is
       // restored with its placeholders so they can be re-expanded.
       this.state.composer.pastes = [];
-      this.state.composer.history = [value, ...this.state.composer.history.filter((entry) => entry !== value)].slice(0, 1000);
+      this.state.composer.history = [value, ...this.state.composer.history.filter((entry) => entry !== value)].slice(
+        0,
+        1000,
+      );
       this.refreshContext();
     } catch (error) {
       if (!accepted) setComposerValue(this.state.composer, previousValue || value);
@@ -601,10 +650,19 @@ export class InkTuiApp {
     }
   }
 
-  private openApproval(call: ToolCall, level: number, description: string, origin: SubagentOrigin): Promise<ApprovalResponse> {
+  private openApproval(
+    call: ToolCall,
+    level: number,
+    description: string,
+    origin: SubagentOrigin,
+  ): Promise<ApprovalResponse> {
     // Replace any previous unresolved approval promise so callers never hang.
     this.cancelApproval();
-    this.state.overlay = { kind: "approval", approval: { call, level, description, workspace: this.options.getWorkspace(), origin }, selectedIndex: 0 };
+    this.state.overlay = {
+      kind: "approval",
+      approval: { call, level, description, workspace: this.options.getWorkspace(), origin },
+      selectedIndex: 0,
+    };
     this.state.session.status = "approval required";
     this.invalidate();
     return new Promise<ApprovalResponse>((resolve) => {
@@ -679,8 +737,12 @@ export class InkTuiApp {
     // deltas collapse into one frame; boundary events explicitly wait here.
     queueMicrotask(() => {
       const revision = this.renderRevision;
+      // 捕获后立即释放调度位:Ink reconciler/stdout 写入的提交窗口内新到的
+      // invalidate 必须重新排队渲染。否则窗口内被吞掉的 revision 永远没有
+      // 提交帧,等待它的 flushPendingRender waiter 会把运行时事件永久挂起
+      // (表现为任务完成后 TUI 不再推进,直到手动停止触发 destroy 兜底)。
+      this.renderScheduled = false;
       if (this.destroyed || !this.inkInstance) {
-        this.renderScheduled = false;
         this.resolveRenderWaiters(revision);
         return;
       }
@@ -714,7 +776,26 @@ export class InkTuiApp {
     if (commit === "normal") return;
     if (this.committedRenderRevision < revision) {
       await new Promise<void>((resolve) => {
-        this.renderWaiters.push({ revision, resolve });
+        const timer = setTimeout(() => {
+          const index = this.renderWaiters.findIndex((waiter) => waiter.resolve === settle);
+          if (index >= 0) this.renderWaiters.splice(index, 1);
+          // 兜底:提交帧迟迟未到时不得让运行时事件挂在渲染上;
+          // 强制补一次渲染,让可能被吞掉的 revision 也有提交机会。
+          this.options.onRenderDebug?.({
+            phase: "render_wait_timeout",
+            revision,
+            committedRevision: this.committedRenderRevision,
+            staticCount: staticTranscriptCount(this.state.transcript),
+          });
+          this.invalidate();
+          settle();
+        }, RENDER_WAIT_TIMEOUT_MS);
+        timer.unref?.();
+        const settle = (): void => {
+          clearTimeout(timer);
+          resolve();
+        };
+        this.renderWaiters.push({ revision, resolve: settle });
       });
     }
     if (commit === "terminal" && !this.destroyed && this.inkInstance) {
@@ -740,7 +821,6 @@ export class InkTuiApp {
       // stdout may already be closed during process teardown
     }
   }
-
 
   /**
    * Park the hidden terminal cursor on the composer caret for IME anchoring.
@@ -786,10 +866,7 @@ export class InkTuiApp {
     return this.state.transcriptScroll;
   }
 
-  syncViewportScroll(
-    renderedLines: ReturnType<TranscriptView["linesWithAnchors"]>,
-    viewportLines: number,
-  ): void {
+  syncViewportScroll(renderedLines: ReturnType<TranscriptView["linesWithAnchors"]>, viewportLines: number): void {
     const contentLines = renderedLines.length;
     const maximumOffset = Math.max(0, contentLines - Math.max(1, viewportLines));
     const anchor = this.state.transcriptScroll.anchor;
@@ -799,12 +876,7 @@ export class InkTuiApp {
         this.state.transcriptScroll.offsetFromBottom = Math.max(0, maximumOffset - anchoredLine);
       }
     }
-    syncTranscriptScroll(
-      this.state.transcriptScroll,
-      contentLines,
-      viewportLines,
-      this.state.lastTranscriptLines,
-    );
+    syncTranscriptScroll(this.state.transcriptScroll, contentLines, viewportLines, this.state.lastTranscriptLines);
     this.state.lastTranscriptLines = contentLines;
     this.state.lastTranscriptViewportLines = viewportLines;
     this.lastTranscriptRenderLines = renderedLines;
@@ -817,10 +889,7 @@ export class InkTuiApp {
     // multiline input, overlays, and the history indicator all change the
     // actual transcript viewport, so estimating from terminal rows can turn a
     // single PageUp into a jump to the beginning.
-    const viewportLines = Math.max(
-      1,
-      this.state.lastTranscriptViewportLines || rows - 6,
-    );
+    const viewportLines = Math.max(1, this.state.lastTranscriptViewportLines || rows - 6);
     const renderedLines = this.transcript.linesWithAnchors(this.state, width);
     const maximum = Math.max(0, renderedLines.length - viewportLines);
     const before = this.state.transcriptScroll.offsetFromBottom;
@@ -832,7 +901,10 @@ export class InkTuiApp {
     if (this.state.transcriptScroll.offsetFromBottom !== before) this.invalidate();
   }
 
-  transcriptRenderSections(width: number, liveTick = 0): {
+  transcriptRenderSections(
+    width: number,
+    liveTick = 0,
+  ): {
     staticItems: StaticTranscriptItem[];
     liveLines: ReturnType<TranscriptView["linesWithAnchors"]>;
   } {
@@ -851,9 +923,7 @@ export class InkTuiApp {
     return {
       staticItems: staticMessages.flatMap((message) => {
         const messageLines = groupedLines.get(message.id);
-        return messageLines?.length
-          ? [{ id: message.id, text: messageLines.join("\n") }]
-          : [];
+        return messageLines?.length ? [{ id: message.id, text: messageLines.join("\n") }] : [];
       }),
       liveLines: lines.filter((line) => !staticIds.has(line.messageId)),
     };
@@ -873,22 +943,17 @@ export class InkTuiApp {
       return;
     }
 
-    const segment = collapsibleSegments(this.state.transcript)
-      .find((entry) => entry.messages.some((message) => message.id === target.id));
-    const detailMessages = (segment?.messages ?? [target]).map((message) => (
-      message.kind === "thought" || message.kind === "tool"
-        ? { ...message, expanded: true }
-        : { ...message }
-    ));
+    const segment = collapsibleSegments(this.state.transcript).find((entry) =>
+      entry.messages.some((message) => message.id === target.id),
+    );
+    const detailMessages = (segment?.messages ?? [target]).map((message) =>
+      message.kind === "thought" || message.kind === "tool" ? { ...message, expanded: true } : { ...message },
+    );
     const width = Math.max(20, (this.options.output.columns || 80) - 2);
     const lines = new TranscriptView()
       .renderLines(detailMessages, width, 0, segment ? new Set([segment.id]) : new Set())
       .map((line) => line.text);
-    const title = segment
-      ? "Latest activity"
-      : target.kind === "tool"
-        ? `Tool: ${target.name}`
-        : "Thought";
+    const title = segment ? "Latest activity" : target.kind === "tool" ? `Tool: ${target.name}` : "Thought";
 
     setOverlay(this.state, { kind: "details", title, lines });
     this.invalidate();
@@ -896,10 +961,7 @@ export class InkTuiApp {
 
   private pageScrollDelta(): number {
     const rows = Math.max(1, this.options.output.rows || 24);
-    const viewportLines = Math.max(
-      1,
-      this.state.lastTranscriptViewportLines || rows - 6,
-    );
+    const viewportLines = Math.max(1, this.state.lastTranscriptViewportLines || rows - 6);
     // Keep two lines of context between pages so the user's eye can retain its
     // position while reviewing a long response.
     return Math.max(1, viewportLines - 2);
@@ -912,14 +974,12 @@ export class InkTuiApp {
     }
     const top = Math.max(
       0,
-      this.lastTranscriptRenderLines.length
-        - this.state.lastTranscriptViewportLines
-        - this.state.transcriptScroll.offsetFromBottom,
+      this.lastTranscriptRenderLines.length -
+        this.state.lastTranscriptViewportLines -
+        this.state.transcriptScroll.offsetFromBottom,
     );
     const line = this.lastTranscriptRenderLines[Math.min(top, this.lastTranscriptRenderLines.length - 1)];
-    this.state.transcriptScroll.anchor = line
-      ? { messageId: line.messageId, lineOffset: line.lineOffset }
-      : undefined;
+    this.state.transcriptScroll.anchor = line ? { messageId: line.messageId, lineOffset: line.lineOffset } : undefined;
   }
 
   private resetTranscriptViewport(): void {
@@ -961,7 +1021,7 @@ function isTransientRestoredMessage(message: TranscriptMessage): boolean {
     return (
       /^Attempt \d+\/\d+ failed/.test(text) || // legacy retry notice
       /^retrying \(\d+\/\d+\)/.test(text) || // current retry notice
-      /\nRetrying \(\d+\/\d+\)/.test(text)   // legacy multi-line retry
+      /\nRetrying \(\d+\/\d+\)/.test(text) // legacy multi-line retry
     );
   }
   if (message.kind === "assistant" && message.abortMessage !== undefined && !message.streaming) {
@@ -990,7 +1050,6 @@ function expandPastes(value: string, pastes: readonly PasteBlock[]): string {
     return pastes[index]?.text ?? match;
   });
 }
-
 
 function errorMessage(error: unknown): string {
   // Footer/status lines are single-line truncated; keep the headline only there.
@@ -1047,45 +1106,43 @@ function InkRoot({ app, revision }: { app: InkTuiApp; revision: number }): React
   }, [activeSpinner]);
   const transcript = app.transcriptRenderSections(width, spinnerTick);
   const transcriptLines = transcript.liveLines;
-  const welcomeLines = state.transcript.length === 0 && state.overlay.kind === "none"
-    ? oranWelcomeLines(state, width)
-    : [];
+  const welcomeLines =
+    state.transcript.length === 0 && state.overlay.kind === "none" ? oranWelcomeLines(state, width) : [];
   const showScrollStatus = state.transcriptScroll.offsetFromBottom > 0;
   const summaryLine = summary;
-  const baseChromeLines = 4
-    + welcomeLines.length
-    + 1 // extra breathing room above the composer
-    + Math.max(0, footer.length - 1)
-    + (editorLines.length > 1 ? editorLines.length - 1 : 0)
-    + (workingLine ? 1 : 0)
-    + (summaryLine ? 1 : 0)
-    + (showScrollStatus ? 1 : 0);
+  const baseChromeLines =
+    4 +
+    welcomeLines.length +
+    1 + // extra breathing room above the composer
+    Math.max(0, footer.length - 1) +
+    (editorLines.length > 1 ? editorLines.length - 1 : 0) +
+    (workingLine ? 1 : 0) +
+    (summaryLine ? 1 : 0) +
+    (showScrollStatus ? 1 : 0);
   // Reserve one row for the live tail and one for the overlay's bottom margin.
   // Candidate lists are windowed so a short terminal never pushes the composer away.
   const overlayCapacity = Math.max(1, rows - baseChromeLines - 2);
   const commandItemCapacity = Math.max(1, Math.min(7, overlayCapacity - 2));
-  const commandLines = state.overlay.kind === "commands"
-    ? commandPaletteLines(state.overlay.query, state.overlay.selectedIndex, state.commands, width, commandItemCapacity)
-    : [];
-  const overlayLines = fitOverlayLines(
-    renderOverlayLines(state, commandLines, width),
-    overlayCapacity,
-  );
+  const commandLines =
+    state.overlay.kind === "commands"
+      ? commandPaletteLines(
+          state.overlay.query,
+          state.overlay.selectedIndex,
+          state.commands,
+          width,
+          commandItemCapacity,
+        )
+      : [];
+  const overlayLines = fitOverlayLines(renderOverlayLines(state, commandLines, width), overlayCapacity);
   // Keep the mutable frame below the terminal height so Ink never enters its
   // clearTerminal paint path. The completed form is emitted to Static in full.
   const viewportLines = Math.max(
     1,
-    rows
-      - baseChromeLines
-      - (overlayLines.length > 0 ? overlayLines.length + 1 : 0)
-      - 1,
+    rows - baseChromeLines - (overlayLines.length > 0 ? overlayLines.length + 1 : 0) - 1,
   );
   app.syncViewportScroll(transcriptLines, viewportLines);
   const maximumStart = Math.max(0, transcriptLines.length - viewportLines);
-  const viewportStart = Math.max(
-    0,
-    maximumStart - Math.min(maximumStart, state.transcriptScroll.offsetFromBottom),
-  );
+  const viewportStart = Math.max(0, maximumStart - Math.min(maximumStart, state.transcriptScroll.offsetFromBottom));
   const visibleTranscriptLines = transcriptLines
     .slice(viewportStart, viewportStart + viewportLines)
     .map((line) => line.text);
@@ -1105,10 +1162,11 @@ function InkRoot({ app, revision }: { app: InkTuiApp; revision: number }): React
   //   footer lines -> bottom rule -> composer rows below the caret.
   // Column is absolute CHA: prompt ("> ") is 2 cells, then display-width offset.
   const composerLineCount = Math.max(1, editorLines.length);
-  const frameHeight = visibleTranscriptLines.length
-    + baseChromeLines
-    + (overlayLines.length > 0 ? overlayLines.length + 1 : 0)
-    + (visibleTranscriptLines.length === 0 && overlayLines.length === 0 ? 1 : 0);
+  const frameHeight =
+    visibleTranscriptLines.length +
+    baseChromeLines +
+    (overlayLines.length > 0 ? overlayLines.length + 1 : 0) +
+    (visibleTranscriptLines.length === 0 && overlayLines.length === 0 ? 1 : 0);
   const frameEndOffset = frameHeight >= rows ? 1 : 2;
   const parkUp = footer.length + frameEndOffset + Math.max(0, composerLineCount - 1 - cursor.row);
   const parkColumn = 1 + 2 + Math.max(0, cursor.column);
@@ -1130,14 +1188,23 @@ function InkRoot({ app, revision }: { app: InkTuiApp; revision: number }): React
       if (second) clearTimeout(second);
       app.unparkComposerCursor();
     };
-  }, [app, parkUp, parkColumn, visibleTranscriptLines.length, overlayLines.length, workingLine, summaryLine, busy, state.overlay.kind, editorLines.length, footer.length]);
+  }, [
+    app,
+    parkUp,
+    parkColumn,
+    visibleTranscriptLines.length,
+    overlayLines.length,
+    workingLine,
+    summaryLine,
+    busy,
+    state.overlay.kind,
+    editorLines.length,
+    footer.length,
+  ]);
 
   return (
     <Box flexDirection="column" width="100%">
-      <Static
-        key={`${state.session.sessionId}:${app.staticTranscriptKey()}`}
-        items={transcript.staticItems}
-      >
+      <Static key={`${state.session.sessionId}:${app.staticTranscriptKey()}`} items={transcript.staticItems}>
         {(item) => <Text key={item.id}>{item.text}</Text>}
       </Static>
       {welcomeLines.length > 0 ? <Text>{welcomeLines.join("\n")}</Text> : null}
@@ -1159,16 +1226,29 @@ function InkRoot({ app, revision }: { app: InkTuiApp; revision: number }): React
         {summaryLine ? <Text color={COLORS.success}>{summaryLine}</Text> : null}
         <Text dimColor>{horizontalRule(width)}</Text>
         <Text>
-          <Text color={COLORS.accent} bold>{composerPrefix(state.overlay.kind).trimEnd()}</Text>
-          <Text>{composerPrefix(state.overlay.kind).endsWith(" ") ? " " : ""}{renderComposerLines(editorLines, cursor.row, cursor.column, busy)}</Text>
-          {ghostCommandSuggestion(state, composerValue(state.composer)) ? <Text dimColor>{ghostCommandSuggestion(state, composerValue(state.composer))}</Text> : null}
+          <Text color={COLORS.accent} bold>
+            {composerPrefix(state.overlay.kind).trimEnd()}
+          </Text>
+          <Text>
+            {composerPrefix(state.overlay.kind).endsWith(" ") ? " " : ""}
+            {renderComposerLines(editorLines, cursor.row, cursor.column, busy)}
+          </Text>
+          {ghostCommandSuggestion(state, composerValue(state.composer)) ? (
+            <Text dimColor>{ghostCommandSuggestion(state, composerValue(state.composer))}</Text>
+          ) : null}
         </Text>
         <Text dimColor>{horizontalRule(width)}</Text>
-        {footer.map((line, index) => (
-          index === 0
-            ? <Text key={`footer-${index}`} color={COLORS.accentDim}>{line}</Text>
-            : <Text key={`footer-${index}`} dimColor>{line}</Text>
-        ))}
+        {footer.map((line, index) =>
+          index === 0 ? (
+            <Text key={`footer-${index}`} color={COLORS.accentDim}>
+              {line}
+            </Text>
+          ) : (
+            <Text key={`footer-${index}`} dimColor>
+              {line}
+            </Text>
+          ),
+        )}
       </Box>
     </Box>
   );

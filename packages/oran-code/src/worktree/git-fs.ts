@@ -84,9 +84,10 @@ export async function readWorktreeHead(repoRoot: string): Promise<WorktreeHead> 
 
     const ref = parsed.ref ?? "";
     if (!isSafeRefName(ref)) return { commit: "", branch: undefined };
-    const branch = ref.startsWith("refs/heads/") && isSafeRefName(ref.slice("refs/heads/".length))
-      ? ref.slice("refs/heads/".length)
-      : undefined;
+    const branch =
+      ref.startsWith("refs/heads/") && isSafeRefName(ref.slice("refs/heads/".length))
+        ? ref.slice("refs/heads/".length)
+        : undefined;
     const commit = await resolveRef(ref, gitDir, commonDir);
     return { commit, branch };
   } catch {

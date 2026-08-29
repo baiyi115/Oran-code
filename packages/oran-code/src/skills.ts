@@ -66,9 +66,11 @@ export class SkillLoader {
       user: directories.user ?? resolve(homedir(), ".agents", "skills"),
       project: directories.project ?? resolve(projectStateRoot(this.workspace), "skills"),
     };
-    this.legacyUserDirectory = directories.legacyUser === false
-      ? undefined
-      : directories.legacyUser ?? (directories.user === undefined ? resolve(homedir(), LEGACY_USER_DATA_DIRECTORY, "skills") : undefined);
+    this.legacyUserDirectory =
+      directories.legacyUser === false
+        ? undefined
+        : (directories.legacyUser ??
+          (directories.user === undefined ? resolve(homedir(), LEGACY_USER_DATA_DIRECTORY, "skills") : undefined));
   }
 
   async scan(): Promise<readonly SkillDefinition[]> {
@@ -81,23 +83,34 @@ export class SkillLoader {
     }
     layers.push(["user", this.directories.user], ["project", this.directories.project]);
 
-    const candidatesByLayer = await Promise.all(layers.map(async ([scope, directory]) => ({
-      scope,
-      candidates: await collectCandidates(directory),
-    })));
+    const candidatesByLayer = await Promise.all(
+      layers.map(async ([scope, directory]) => ({
+        scope,
+        candidates: await collectCandidates(directory),
+      })),
+    );
     const persisted: PersistedSkillRecord[] = [];
     for (const { scope, candidates } of candidatesByLayer) {
-      const loadedCandidates = await Promise.all(candidates.map(async (candidate) => {
-        const file = await statSkill(candidate.filePath);
-        const cached = persistedByFile.get(candidate.filePath);
-        if (file && cached && cached.skill.rootDirectory === candidate.rootDirectory && cached.skill.scope === scope
-          && cached.skill.mtimeMs === file.mtimeMs && cached.size === file.size) {
-          return { file, skill: cached.skill };
-        }
-        const skill = await loadSkill(candidate.filePath, candidate.rootDirectory, scope, file)
-          ?? previousByFile.get(candidate.filePath);
-        return { file, skill };
-      }));
+      const loadedCandidates = await Promise.all(
+        candidates.map(async (candidate) => {
+          const file = await statSkill(candidate.filePath);
+          const cached = persistedByFile.get(candidate.filePath);
+          if (
+            file &&
+            cached &&
+            cached.skill.rootDirectory === candidate.rootDirectory &&
+            cached.skill.scope === scope &&
+            cached.skill.mtimeMs === file.mtimeMs &&
+            cached.size === file.size
+          ) {
+            return { file, skill: cached.skill };
+          }
+          const skill =
+            (await loadSkill(candidate.filePath, candidate.rootDirectory, scope, file)) ??
+            previousByFile.get(candidate.filePath);
+          return { file, skill };
+        }),
+      );
       for (const { file, skill } of loadedCandidates) {
         const loaded = skill;
         if (loaded) next.set(loaded.name, loaded);
@@ -208,9 +221,7 @@ export async function registerSkillCommands(
   registry: CommandRegistry,
   loaderOrOptions: SkillLoader | { readonly workspace: string },
 ): Promise<readonly SlashCommand[]> {
-  const loader = loaderOrOptions instanceof SkillLoader
-    ? loaderOrOptions
-    : new SkillLoader(loaderOrOptions.workspace);
+  const loader = loaderOrOptions instanceof SkillLoader ? loaderOrOptions : new SkillLoader(loaderOrOptions.workspace);
   await loader.scan();
   const registered: SlashCommand[] = [];
   for (const skill of loader.list()) {
@@ -220,7 +231,7 @@ export async function registerSkillCommands(
       description: `${skill.description} [skill]`,
       kind: skill.mode === "derived" ? "isolated-skill" : "prompt",
       handler: async (argument) => {
-        const current = await loader.get(skill.name) ?? skill;
+        const current = (await loader.get(skill.name)) ?? skill;
         return renderSkillPrompt(current, argument);
       },
     };
@@ -274,7 +285,7 @@ async function loadSkill(
   knownFile?: Stats,
 ): Promise<SkillDefinition | undefined> {
   try {
-    const file = knownFile ?? await statSkill(filePath);
+    const file = knownFile ?? (await statSkill(filePath));
     if (!file) return undefined;
     const content = await readFile(filePath, "utf8");
     if (!file.isFile()) return undefined;
@@ -296,39 +307,45 @@ async function statSkill(filePath: string): Promise<Stats | undefined> {
 }
 
 function isPersistedSkillCache(value: unknown): value is PersistedSkillCache {
-  return isRecord(value)
-    && value.version === SKILL_CACHE_VERSION
-    && Array.isArray(value.skills)
-    && value.skills.every(isPersistedSkillRecord);
+  return (
+    isRecord(value) &&
+    value.version === SKILL_CACHE_VERSION &&
+    Array.isArray(value.skills) &&
+    value.skills.every(isPersistedSkillRecord)
+  );
 }
 
 function isPersistedSkillRecord(value: unknown): value is PersistedSkillRecord {
-  return isRecord(value)
-    && typeof value.size === "number"
-    && Number.isFinite(value.size)
-    && value.size >= 0
-    && isSkillDefinition(value.skill);
+  return (
+    isRecord(value) &&
+    typeof value.size === "number" &&
+    Number.isFinite(value.size) &&
+    value.size >= 0 &&
+    isSkillDefinition(value.skill)
+  );
 }
 
 function isSkillDefinition(value: unknown): value is SkillDefinition {
-  return isRecord(value)
-    && typeof value.name === "string"
-    && SKILL_NAME.test(value.name)
-    && typeof value.description === "string"
-    && Array.isArray(value.allowedTools)
-    && value.allowedTools.every((tool) => typeof tool === "string")
-    && typeof value.mode === "string"
-    && SKILL_MODES.has(value.mode as SkillMode)
-    && typeof value.context === "string"
-    && CONTEXT_LEVELS.has(value.context as SkillContextLevel)
-    && (value.model === undefined || typeof value.model === "string")
-    && typeof value.body === "string"
-    && typeof value.filePath === "string"
-    && typeof value.rootDirectory === "string"
-    && typeof value.scope === "string"
-    && SKILL_SCOPES.has(value.scope as SkillScope)
-    && typeof value.mtimeMs === "number"
-    && Number.isFinite(value.mtimeMs);
+  return (
+    isRecord(value) &&
+    typeof value.name === "string" &&
+    SKILL_NAME.test(value.name) &&
+    typeof value.description === "string" &&
+    Array.isArray(value.allowedTools) &&
+    value.allowedTools.every((tool) => typeof tool === "string") &&
+    typeof value.mode === "string" &&
+    SKILL_MODES.has(value.mode as SkillMode) &&
+    typeof value.context === "string" &&
+    CONTEXT_LEVELS.has(value.context as SkillContextLevel) &&
+    (value.model === undefined || typeof value.model === "string") &&
+    typeof value.body === "string" &&
+    typeof value.filePath === "string" &&
+    typeof value.rootDirectory === "string" &&
+    typeof value.scope === "string" &&
+    SKILL_SCOPES.has(value.scope as SkillScope) &&
+    typeof value.mtimeMs === "number" &&
+    Number.isFinite(value.mtimeMs)
+  );
 }
 
 async function parseSkillContent(
@@ -358,12 +375,14 @@ async function parseSkillContent(
     const description = strictString(descriptionValue) ?? "reusable skill";
 
     const toolsValue = metadata.allowedTools ?? metadata["allowed-tools"];
-    if (toolsValue !== undefined && (!Array.isArray(toolsValue) || toolsValue.some((item) => typeof item !== "string" || !item.trim()))) {
+    if (
+      toolsValue !== undefined &&
+      (!Array.isArray(toolsValue) || toolsValue.some((item) => typeof item !== "string" || !item.trim()))
+    ) {
       return undefined;
     }
-    const allowedTools = toolsValue === undefined
-      ? []
-      : [...new Set((toolsValue as string[]).map((tool) => tool.trim()))];
+    const allowedTools =
+      toolsValue === undefined ? [] : [...new Set((toolsValue as string[]).map((tool) => tool.trim()))];
 
     const modeValue = metadata.mode ?? "inline";
     if (typeof modeValue !== "string" || !SKILL_MODES.has(modeValue as SkillMode)) return undefined;
@@ -372,7 +391,10 @@ async function parseSkillContent(
     const modelValue = metadata.model;
     if (modelValue !== undefined && (typeof modelValue !== "string" || !modelValue.trim())) return undefined;
 
-    const body = lines.slice(closing + 1).join("\n").trim();
+    const body = lines
+      .slice(closing + 1)
+      .join("\n")
+      .trim();
     if (!body) return undefined;
     return {
       name,
@@ -394,7 +416,7 @@ async function readSkillSource(source: string, workspace: string): Promise<strin
     try {
       response = await fetch(source);
     } catch (error) {
-      throw new Error(`failed to fetch skill ${source}: ${errorMessage(error)}`);
+      throw new Error(`failed to fetch skill ${source}: ${errorMessage(error)}`, { cause: error });
     }
     if (!response.ok) throw new Error(`failed to fetch skill ${source}: HTTP ${response.status}`);
     return response.text();
@@ -406,7 +428,7 @@ async function readSkillSource(source: string, workspace: string): Promise<strin
     const filePath = details.isDirectory() ? resolve(localPath, "SKILL.md") : localPath;
     return await readFile(filePath, "utf8");
   } catch (error) {
-    throw new Error(`failed to read skill ${source}: ${errorMessage(error)}`);
+    throw new Error(`failed to read skill ${source}: ${errorMessage(error)}`, { cause: error });
   }
 }
 

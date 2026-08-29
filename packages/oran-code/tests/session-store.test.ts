@@ -78,13 +78,17 @@ describe("SessionStore JSONL archives", () => {
       ];
       await store.update(created.id, { conversation: replacement });
       const archive = join(store.directory, `${created.id}.jsonl`);
-      await appendFile(archive, [
-        "{broken-json",
-        "",
-        JSON.stringify({ role: "user", content: "", timestamp: new Date().toISOString() }),
-        JSON.stringify({ role: "user", content: "after-boundary", timestamp: new Date().toISOString() }),
-        "",
-      ].join("\n"), "utf8");
+      await appendFile(
+        archive,
+        [
+          "{broken-json",
+          "",
+          JSON.stringify({ role: "user", content: "", timestamp: new Date().toISOString() }),
+          JSON.stringify({ role: "user", content: "after-boundary", timestamp: new Date().toISOString() }),
+          "",
+        ].join("\n"),
+        "utf8",
+      );
 
       const reopened = new SessionStore(root);
       await reopened.open();
@@ -131,11 +135,15 @@ describe("SessionStore JSONL archives", () => {
       const id = "legacy-lines-only";
       const timestamp = new Date().toISOString();
       const archive = join(directory, `${id}.jsonl`);
-      await writeFile(archive, [
-        JSON.stringify({ role: "user", content: "first legacy prompt", timestamp }),
-        JSON.stringify({ role: "assistant", content: "legacy answer", timestamp }),
-        JSON.stringify({ type: "compaction-boundary", role: "system", timestamp, content: { retainedTail: [null] } }),
-      ].join("\n"), "utf8");
+      await writeFile(
+        archive,
+        [
+          JSON.stringify({ role: "user", content: "first legacy prompt", timestamp }),
+          JSON.stringify({ role: "assistant", content: "legacy answer", timestamp }),
+          JSON.stringify({ type: "compaction-boundary", role: "system", timestamp, content: { retainedTail: [null] } }),
+        ].join("\n"),
+        "utf8",
+      );
 
       const store = new SessionStore(root);
       await store.open();
@@ -162,12 +170,22 @@ describe("SessionStore JSONL archives", () => {
       const store = new SessionStore(root);
       await store.open();
       const created = await store.create("compact", { conversation: [{ role: "user", content: "old prompt" }] });
-      await store.update(created.id, { conversation: [
-        { role: "system", content: "<context-summary>\nfinished setup\n</context-summary>", metadata: { promptBlock: "context-summary", contextManaged: true } },
-        { role: "system", content: "recovery instructions", metadata: { promptBlock: "context-recovery", contextManaged: true } },
-        { role: "user", content: "continue here", metadata: { ignored: true } },
-        { role: "assistant", content: "ready", name: "assistant-name" },
-      ] });
+      await store.update(created.id, {
+        conversation: [
+          {
+            role: "system",
+            content: "<context-summary>\nfinished setup\n</context-summary>",
+            metadata: { promptBlock: "context-summary", contextManaged: true },
+          },
+          {
+            role: "system",
+            content: "recovery instructions",
+            metadata: { promptBlock: "context-recovery", contextManaged: true },
+          },
+          { role: "user", content: "continue here", metadata: { ignored: true } },
+          { role: "assistant", content: "ready", name: "assistant-name" },
+        ],
+      });
 
       const records = parseSessionJsonl(await readFile(join(store.directory, `${created.id}.jsonl`), "utf8"));
       const boundary = records.find((record) => record.type === "compaction-boundary");
@@ -232,15 +250,21 @@ describe("SessionStore JSONL archives", () => {
       const legacyPath = join(root, ".oran", "sessions.json");
       await mkdir(join(root, ".oran"), { recursive: true });
       const now = new Date().toISOString();
-      await writeFile(legacyPath, `${JSON.stringify([{
-        id: "session-invalid-abort",
-        name: "Invalid abort",
-        workspace: root,
-        createdAt: now,
-        updatedAt: now,
-        messages: [{ id: "assistant-1", kind: "assistant", text: "partial", abortMessage: 42 }],
-        history: [],
-      }])}\n`, "utf8");
+      await writeFile(
+        legacyPath,
+        `${JSON.stringify([
+          {
+            id: "session-invalid-abort",
+            name: "Invalid abort",
+            workspace: root,
+            createdAt: now,
+            updatedAt: now,
+            messages: [{ id: "assistant-1", kind: "assistant", text: "partial", abortMessage: 42 }],
+            history: [],
+          },
+        ])}\n`,
+        "utf8",
+      );
 
       const store = new SessionStore(root);
       await store.open();

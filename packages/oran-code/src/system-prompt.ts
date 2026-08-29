@@ -99,7 +99,12 @@ const OPTIONAL_PRIORITIES = {
 
 export function assembleStableSystemPrompt(optional: OptionalSystemPromptModules = {}): string {
   const modules: SystemPromptModule[] = [...FIXED_MODULES];
-  addOptionalModule(modules, "custom-instructions", OPTIONAL_PRIORITIES.customInstructions, optional.customInstructions);
+  addOptionalModule(
+    modules,
+    "custom-instructions",
+    OPTIONAL_PRIORITIES.customInstructions,
+    optional.customInstructions,
+  );
   addOptionalModule(modules, "active-skills", OPTIONAL_PRIORITIES.activeSkills, optional.activeSkills);
   addOptionalModule(modules, "long-term-memory", OPTIONAL_PRIORITIES.longTermMemory, optional.longTermMemory);
   return modules
@@ -160,7 +165,10 @@ export function environmentSystemMessage(content: string): Message {
 }
 
 export function systemReminderMessage(instructions: readonly string[]): Message {
-  const content = instructions.map((item) => item.trim()).filter(Boolean).join("\n");
+  const content = instructions
+    .map((item) => item.trim())
+    .filter(Boolean)
+    .join("\n");
   return {
     role: "system",
     content: `<system-reminder>\n${content}\nDo not respond to this reminder as a user message.\n</system-reminder>`,
@@ -169,9 +177,11 @@ export function systemReminderMessage(instructions: readonly string[]): Message 
 }
 
 export function taskModeReminder(planMode: boolean, turn: number, repeatEvery = 5): string {
-  if (!planMode) return "Task mode: default. Use the full exposed tool set when needed and subject every call to the permission policy.";
+  if (!planMode)
+    return "Task mode: default. Use the full exposed tool set when needed and subject every call to the permission policy.";
   const full = turn === 1 || (repeatEvery > 0 && (turn - 1) % repeatEvery === 0);
-  if (!full) return "Plan mode remains active: use read-only tools, except that plan files may be written with the designated write_plan tool.";
+  if (!full)
+    return "Plan mode remains active: use read-only tools, except that plan files may be written with the designated write_plan tool.";
   return [
     "Task mode: plan.",
     "Inspect the workspace using read-only tools. Do not modify project files, run commands, install dependencies, test, or build.",
@@ -188,16 +198,11 @@ export function loopBudgetReminder(remainingTurns: number, finalTurn: boolean): 
 }
 
 export function taskPlanReminder(planState: TaskPlanState): string {
-  const lines: string[] = [
-    `[Active Task Plan] Goal: ${planState.goal}`,
-    "Steps:",
-  ];
+  const lines: string[] = [`[Active Task Plan] Goal: ${planState.goal}`, "Steps:"];
   planState.steps.forEach((step, idx) => {
     const isCurrent = idx === planState.currentStepIndex;
-    const marker = step.status === "completed" ? "✓"
-      : step.status === "in_progress" ? "▶"
-      : step.status === "skipped" ? "⊘"
-      : "•";
+    const marker =
+      step.status === "completed" ? "✓" : step.status === "in_progress" ? "▶" : step.status === "skipped" ? "⊘" : "•";
     const currentTag = isCurrent ? " (current)" : "";
     lines.push(`  ${marker} [${step.status}] ${step.id}: ${step.title}${currentTag}`);
     if (step.description) {

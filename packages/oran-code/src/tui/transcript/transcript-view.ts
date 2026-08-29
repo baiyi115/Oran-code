@@ -11,13 +11,16 @@ export interface TranscriptRenderLine {
 }
 
 export class TranscriptView {
-  private readonly cache = new Map<string, {
-    width: number;
-    signature: string;
-    text: string | undefined;
-    lines: string[];
-    markdownRenderer: MarkdownRenderer;
-  }>();
+  private readonly cache = new Map<
+    string,
+    {
+      width: number;
+      signature: string;
+      text: string | undefined;
+      lines: string[];
+      markdownRenderer: MarkdownRenderer;
+    }
+  >();
 
   render(messages: readonly TranscriptMessage[], width: number): string[] {
     const safeWidth = Math.max(12, width);
@@ -70,22 +73,33 @@ export class TranscriptView {
           lineOffset,
         }));
       }
-      return this.renderMessage(item.message, width, liveTick, item.expandThoughts === true).map((text, lineOffset) => ({
-        text,
-        messageId: item.message.id,
-        lineOffset,
-      }));
+      return this.renderMessage(item.message, width, liveTick, item.expandThoughts === true).map(
+        (text, lineOffset) => ({
+          text,
+          messageId: item.message.id,
+          lineOffset,
+        }),
+      );
     });
   }
 
-  private renderMessage(message: TranscriptMessage, width: number, liveTick = 0, forceThoughtExpanded = false): string[] {
+  private renderMessage(
+    message: TranscriptMessage,
+    width: number,
+    liveTick = 0,
+    forceThoughtExpanded = false,
+  ): string[] {
     const signature = `${messageSignature(message)}:${liveSignature(message, liveTick)}:${forceThoughtExpanded ? 1 : 0}`;
     const text = messageText(message);
     const cached = this.cache.get(message.id);
     if (cached && cached.width === width && cached.signature === signature && cached.text === text) return cached.lines;
 
     const markdownRenderer = cached?.markdownRenderer ?? new MarkdownRenderer();
-    const lines = renderMessage(message, width, { markdownRenderer, liveTick, forceExpandThoughts: forceThoughtExpanded });
+    const lines = renderMessage(message, width, {
+      markdownRenderer,
+      liveTick,
+      forceExpandThoughts: forceThoughtExpanded,
+    });
     this.cache.set(message.id, { width, signature, text, lines, markdownRenderer });
     return lines;
   }
@@ -224,16 +238,17 @@ function renderCollapsedSegment(segment: TranscriptSegment, width: number): stri
   const lines: string[] = [];
   if (segment.thoughtCount > 0) {
     const label = segment.thoughtCount === 1 ? "Thought" : "Thoughts";
-    const thought = segment.thoughtDurationMs > 0
-      ? `${label} for ${formatSegmentDuration(segment.thoughtDurationMs)}`
-      : label;
+    const thought =
+      segment.thoughtDurationMs > 0 ? `${label} for ${formatSegmentDuration(segment.thoughtDurationMs)}` : label;
     lines.push(...wrapDisplayText(`${ANSI.amberBold}${thought}${ANSI.reset}`, width));
   }
   const tools = `${segment.toolCount} tool${segment.toolCount === 1 ? "" : "s"}`;
-  lines.push(...wrapDisplayText(
-    `${ANSI.greenBold}◇${ANSI.reset} ${ANSI.toolBold}${tools}${ANSI.reset} ${ANSI.gray}· ctrl+t to expand${ANSI.reset}`,
-    width,
-  ));
+  lines.push(
+    ...wrapDisplayText(
+      `${ANSI.greenBold}◇${ANSI.reset} ${ANSI.toolBold}${tools}${ANSI.reset} ${ANSI.gray}· ctrl+t to expand${ANSI.reset}`,
+      width,
+    ),
+  );
   return [...lines, ""];
 }
 

@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { createTuiState, setComposerValue } from "../src/tui/state.js";
+import { createTuiState } from "../src/tui/state.js";
 import {
   composerPrefix,
   fileQuery,
@@ -28,7 +28,16 @@ describe("TUI render helpers", () => {
     const commands = { ...base, overlay: { kind: "commands" as const, query: "/mo", selectedIndex: 0 } };
     expect(renderOverlayLines(commands, ["/model"], 60)).toEqual(["/model"]);
 
-    const models = { ...base, overlay: { kind: "models" as const, query: "", selectedIndex: 0, options: ["openai/a", "openai/b"], loading: false } };
+    const models = {
+      ...base,
+      overlay: {
+        kind: "models" as const,
+        query: "",
+        selectedIndex: 0,
+        options: ["openai/a", "openai/b"],
+        loading: false,
+      },
+    };
     expect(renderOverlayLines(models, [], 60)[0]).toBe("Select model");
 
     const sessions = {
@@ -46,11 +55,25 @@ describe("TUI render helpers", () => {
 
     const followUps = {
       ...base,
-      overlay: { kind: "follow-ups" as const, selectedIndex: 0, options: [{ id: "f1", prompt: "continue tests", createdAt: "" }] },
+      overlay: {
+        kind: "follow-ups" as const,
+        selectedIndex: 0,
+        options: [{ id: "f1", prompt: "continue tests", createdAt: "" }],
+      },
     };
     expect(renderOverlayLines(followUps, [], 60).join("\n")).toContain("Follow-ups");
 
-    const files = { ...base, overlay: { kind: "files" as const, query: "re", selectedIndex: 0, options: ["readme.md"], loading: false, tokenStart: 0 } };
+    const files = {
+      ...base,
+      overlay: {
+        kind: "files" as const,
+        query: "re",
+        selectedIndex: 0,
+        options: ["readme.md"],
+        loading: false,
+        tokenStart: 0,
+      },
+    };
     expect(renderOverlayLines(files, [], 60)[0]).toBe("@re");
 
     expect(renderOverlayLines({ ...base, overlay: { kind: "none" } }, [], 60)).toEqual([]);

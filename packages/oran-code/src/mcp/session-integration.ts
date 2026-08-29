@@ -84,10 +84,10 @@ export class McpSessionIntegration {
     const conversation = this.deps.conversation();
     let changed = false;
     for (const instruction of manager.instructions()) {
-      const exists = conversation.some((message) => (
-        message.metadata?.promptBlock === "mcp-instructions"
-        && message.metadata.mcpServer === instruction.server
-      ));
+      const exists = conversation.some(
+        (message) =>
+          message.metadata?.promptBlock === "mcp-instructions" && message.metadata.mcpServer === instruction.server,
+      );
       if (exists) continue;
       conversation.push({
         role: "system",
@@ -119,7 +119,10 @@ export class McpSessionIntegration {
     const failures = manager.failures();
     const hasFailureMessage = conversation.some((message) => message.metadata?.promptBlock === "mcp-failure");
     if (failures.length && !hasFailureMessage) {
-      const content = ["Some MCP servers failed to connect:", ...failures.map((item) => `- ${item.name}: ${item.error}`)].join("\n");
+      const content = [
+        "Some MCP servers failed to connect:",
+        ...failures.map((item) => `- ${item.name}: ${item.error}`),
+      ].join("\n");
       conversation.push({
         role: "system",
         content,

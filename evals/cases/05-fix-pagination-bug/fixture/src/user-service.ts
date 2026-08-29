@@ -6,7 +6,7 @@ const USERS: readonly User[] = [
   { id: 3, name: "Grace" },
   { id: 4, name: "Margaret" },
   { id: 5, name: "Ken" },
-  { id: 6, name: "Barbara" }
+  { id: 6, name: "Barbara" },
 ];
 
 function requireNonNegativeInteger(value: number, label: string): void {

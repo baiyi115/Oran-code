@@ -2,7 +2,13 @@ import { existsSync } from "node:fs";
 import { copyFile, mkdir, readFile, writeFile } from "node:fs/promises";
 import { homedir } from "node:os";
 import { dirname, resolve } from "node:path";
-import { LEGACY_PROJECT_CONFIG_DIRECTORY, LEGACY_PROJECT_STATE_DIRECTORY, legacyUserDataRoot, PROJECT_STATE_DIRECTORY, userDataRoot } from "./paths.js";
+import {
+  LEGACY_PROJECT_CONFIG_DIRECTORY,
+  LEGACY_PROJECT_STATE_DIRECTORY,
+  legacyUserDataRoot,
+  PROJECT_STATE_DIRECTORY,
+  userDataRoot,
+} from "./paths.js";
 import { isPermissionMode, isReasoningEffort } from "./types.js";
 import type {
   AgentSettings,
@@ -93,7 +99,9 @@ async function readConfig(path: string): Promise<UserConfig> {
     };
   } catch (error) {
     if (isMissingFile(error)) return { ...defaultConfig };
-    throw new Error(`cannot read config ${path}: ${error instanceof Error ? error.message : String(error)}`);
+    throw new Error(`cannot read config ${path}: ${error instanceof Error ? error.message : String(error)}`, {
+      cause: error,
+    });
   }
 }
 
@@ -150,7 +158,10 @@ function normalizeSubagentSettings(value: unknown): SubagentSettings | undefined
     throw new Error("subagent must be an object");
   }
   const forkWaitTimeoutMs = (value as Record<string, unknown>).forkWaitTimeoutMs;
-  if (forkWaitTimeoutMs !== undefined && (typeof forkWaitTimeoutMs !== "number" || !Number.isFinite(forkWaitTimeoutMs) || forkWaitTimeoutMs < 0)) {
+  if (
+    forkWaitTimeoutMs !== undefined &&
+    (typeof forkWaitTimeoutMs !== "number" || !Number.isFinite(forkWaitTimeoutMs) || forkWaitTimeoutMs < 0)
+  ) {
     throw new Error("subagent.forkWaitTimeoutMs must be a finite non-negative number");
   }
   return forkWaitTimeoutMs === undefined ? {} : { forkWaitTimeoutMs };
@@ -316,14 +327,37 @@ function normalizeOptions(value: unknown): ProviderOptions & ModelOptions {
   const item = value as Record<string, unknown>;
   const result: Record<string, unknown> = {};
   for (const [key, raw] of Object.entries(item)) {
-    if (["providers", "agent", "sessionTitles", "mcpServers", "workspace", "default", "model", "models", "options", "name", "npm", "default_model", "defaultModel"].includes(key)) continue;
+    if (
+      [
+        "providers",
+        "agent",
+        "sessionTitles",
+        "mcpServers",
+        "workspace",
+        "default",
+        "model",
+        "models",
+        "options",
+        "name",
+        "npm",
+        "default_model",
+        "defaultModel",
+      ].includes(key)
+    )
+      continue;
     if (raw === undefined || raw === null) continue;
-    const normalizedKey = key === "base_url" || key === "baseURL" ? "baseUrl"
-      : key === "api_key" ? "apiKey"
-        : key === "max_tokens" ? "maxTokens"
-          : key === "context_window" ? "contextWindow"
-          : key === "reasoning_effort" ? "reasoningEffort"
-          : key;
+    const normalizedKey =
+      key === "base_url" || key === "baseURL"
+        ? "baseUrl"
+        : key === "api_key"
+          ? "apiKey"
+          : key === "max_tokens"
+            ? "maxTokens"
+            : key === "context_window"
+              ? "contextWindow"
+              : key === "reasoning_effort"
+                ? "reasoningEffort"
+                : key;
     result[normalizedKey] = raw;
   }
   return result as ProviderOptions & ModelOptions;
@@ -367,9 +401,7 @@ function merge(base: UserConfig, override: UserConfig): UserConfig {
     ...(base.sessionTitles || override.sessionTitles
       ? { sessionTitles: { ...base.sessionTitles, ...override.sessionTitles } }
       : {}),
-    ...(base.mcpServers || override.mcpServers
-      ? { mcpServers: { ...base.mcpServers, ...override.mcpServers } }
-      : {}),
+    ...(base.mcpServers || override.mcpServers ? { mcpServers: { ...base.mcpServers, ...override.mcpServers } } : {}),
   };
 }
 
@@ -430,9 +462,7 @@ function serializeOptions(options: Record<string, unknown>): Record<string, unkn
   const result: Record<string, unknown> = {};
   for (const [key, value] of Object.entries(options)) {
     if (value === undefined) continue;
-    const outputKey = key === "baseUrl" ? "baseURL"
-      : key === "contextWindow" ? "context_window"
-        : key;
+    const outputKey = key === "baseUrl" ? "baseURL" : key === "contextWindow" ? "context_window" : key;
     result[outputKey] = value;
   }
   return result;
@@ -446,7 +476,8 @@ export function resolveModelConfig(config: UserConfig, requested: string | undef
   let modelName: string;
   if (reference.includes("/")) {
     const [provider, ...rest] = reference.split("/");
-    if (!provider || rest.length === 0 || !rest.join("/").trim()) throw new Error("model must use provider/model format");
+    if (!provider || rest.length === 0 || !rest.join("/").trim())
+      throw new Error("model must use provider/model format");
     providerName = provider;
     modelName = rest.join("/");
   } else {
@@ -464,19 +495,22 @@ export function resolveModelConfig(config: UserConfig, requested: string | undef
   if (!profile) throw new Error(`model is not configured: ${providerName}/${modelName}`);
   const providerOptions = provider.options;
   const modelOptions = profile.options;
-  const baseUrl = process.env.ORAN_BASE_URL
-    ?? process.env.LITEAGENT_BASE_URL
-    ?? stringOrUndefined(modelOptions.baseUrl)
-    ?? stringOrUndefined(providerOptions.baseUrl);
-  const apiKey = process.env.ORAN_API_KEY
-    ?? process.env.LITEAGENT_API_KEY
-    ?? stringOrUndefined(modelOptions.apiKey)
-    ?? stringOrUndefined(providerOptions.apiKey);
+  const baseUrl =
+    process.env.ORAN_BASE_URL ??
+    process.env.LITEAGENT_BASE_URL ??
+    stringOrUndefined(modelOptions.baseUrl) ??
+    stringOrUndefined(providerOptions.baseUrl);
+  const apiKey =
+    process.env.ORAN_API_KEY ??
+    process.env.LITEAGENT_API_KEY ??
+    stringOrUndefined(modelOptions.apiKey) ??
+    stringOrUndefined(providerOptions.apiKey);
   const temperature = numberOrUndefined(modelOptions.temperature) ?? 0.2;
   const maxTokens = numberOrUndefined(modelOptions.maxTokens) ?? 4096;
-  const contextWindow = numberOrUndefined(modelOptions.contextWindow)
-    ?? numberOrUndefined(providerOptions.contextWindow)
-    ?? defaultContextWindow(providerName, baseUrl, { ...providerOptions, ...modelOptions });
+  const contextWindow =
+    numberOrUndefined(modelOptions.contextWindow) ??
+    numberOrUndefined(providerOptions.contextWindow) ??
+    defaultContextWindow(providerName, baseUrl, { ...providerOptions, ...modelOptions });
   const rawReasoningEffort = modelOptions.reasoningEffort;
   if (rawReasoningEffort !== undefined && !isReasoningEffort(rawReasoningEffort)) {
     throw new Error(`invalid reasoningEffort for model ${providerName}/${modelName}; use low, medium, high, or xhigh`);

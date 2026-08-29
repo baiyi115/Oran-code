@@ -30,15 +30,29 @@ export function registerSearchTools(registry: ToolRegistry): void {
         const requestedName = query.slice("select:".length).trim();
         const name = resolveDeferredToolName(registry, requestedName);
         if (!name) {
-          return { ok: false, output: "", error: `tool not found or not discoverable: ${requestedName}`, summary: "tool not found" };
+          return {
+            ok: false,
+            output: "",
+            error: `tool not found or not discoverable: ${requestedName}`,
+            summary: "tool not found",
+          };
         }
         const tool = registry.activate(name);
         if (!tool) {
-          return { ok: false, output: "", error: `tool not found or not discoverable: ${requestedName}`, summary: "tool not found" };
+          return {
+            ok: false,
+            output: "",
+            error: `tool not found or not discoverable: ${requestedName}`,
+            summary: "tool not found",
+          };
         }
         return {
           ok: true,
-          output: JSON.stringify({ name: tool.name, description: tool.description, parameters: tool.parameters }, null, 2),
+          output: JSON.stringify(
+            { name: tool.name, description: tool.description, parameters: tool.parameters },
+            null,
+            2,
+          ),
           summary: `activated ${tool.name}`,
         };
       }

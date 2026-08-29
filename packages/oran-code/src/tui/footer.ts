@@ -13,22 +13,21 @@ import { formatCompactDuration } from "./status-indicator.js";
  */
 export function footerLines(state: TuiState, width: number): string[] {
   const available = Math.max(1, Math.floor(width));
-  const primary = [
-    state.session.workMode,
-    state.session.reasoningEffort,
-    state.session.modelLabel || "(not selected)",
-  ].filter(Boolean).join(" · ");
+  const primary = [state.session.workMode, state.session.reasoningEffort, state.session.modelLabel || "(not selected)"]
+    .filter(Boolean)
+    .join(" · ");
 
   const workspace = state.session.workspace || ".";
   const usage = usageLabel(state);
   const queue = state.session.followUpCount > 0 ? `follow-ups: ${state.session.followUpCount}` : undefined;
   const runningBgCount = (state.session.backgroundTasks ?? []).filter((t) => t.status === "running").length;
   const queuedBgCount = (state.session.backgroundTasks ?? []).filter((t) => t.status === "queued").length;
-  const subagentBadge = runningBgCount > 0
-    ? `${runningBgCount} subagent${runningBgCount === 1 ? "" : "s"} running${queuedBgCount > 0 ? ` (+${queuedBgCount} queued)` : ""}`
-    : queuedBgCount > 0
-      ? `${queuedBgCount} subagent${queuedBgCount === 1 ? "" : "s"} queued`
-      : undefined;
+  const subagentBadge =
+    runningBgCount > 0
+      ? `${runningBgCount} subagent${runningBgCount === 1 ? "" : "s"} running${queuedBgCount > 0 ? ` (+${queuedBgCount} queued)` : ""}`
+      : queuedBgCount > 0
+        ? `${queuedBgCount} subagent${queuedBgCount === 1 ? "" : "s"} queued`
+        : undefined;
   const status = explicitStatus(state);
 
   const detail = [usage, queue, subagentBadge, status].filter(Boolean).join(" · ");
@@ -52,13 +51,14 @@ export function workSummaryLine(state: TuiState): string | undefined {
   if (isSessionBusy(state) || hasActiveBackgroundTasks(state)) return undefined;
   const elapsed = state.session.elapsedMs;
   if (elapsed === undefined || elapsed < 0) return undefined;
-  const label = state.session.taskState === "failed"
-    ? "× Failed"
-    : state.session.taskState === "cancelled"
-      ? "■ Cancelled"
-      : state.session.taskState === "paused"
-        ? "■ Paused"
-        : "✓ Done";
+  const label =
+    state.session.taskState === "failed"
+      ? "× Failed"
+      : state.session.taskState === "cancelled"
+        ? "■ Cancelled"
+        : state.session.taskState === "paused"
+          ? "■ Paused"
+          : "✓ Done";
   const details = [label, formatCompactDuration(elapsed)];
   const toolCount = currentTaskMessages(state).filter((message) => message.kind === "tool").length;
   if (toolCount > 0) details.push(`${toolCount} tool${toolCount === 1 ? "" : "s"}`);
@@ -74,10 +74,11 @@ export function workSummaryLine(state: TuiState): string | undefined {
 
 function currentTaskMessages(state: TuiState): readonly TranscriptMessage[] {
   if (state.activeTaskId) {
-    const taskMessages = state.transcript.filter((message) => (
-      (message.kind === "assistant" || message.kind === "thought" || message.kind === "tool")
-      && message.taskId === state.activeTaskId
-    ));
+    const taskMessages = state.transcript.filter(
+      (message) =>
+        (message.kind === "assistant" || message.kind === "thought" || message.kind === "tool") &&
+        message.taskId === state.activeTaskId,
+    );
     if (taskMessages.length > 0) return taskMessages;
   }
   const lastUserIndex = latestUserMessageIndex(state);
@@ -106,9 +107,8 @@ function usageLabel(state: TuiState): string | undefined {
 }
 
 function cacheReadLabel(cacheReadTokens: number, inputTokens: number): string {
-  const ratio = inputTokens > 0
-    ? Math.max(0, Math.min(100, Math.round((cacheReadTokens / inputTokens) * 100)))
-    : undefined;
+  const ratio =
+    inputTokens > 0 ? Math.max(0, Math.min(100, Math.round((cacheReadTokens / inputTokens) * 100))) : undefined;
   return ratio === undefined
     ? `cache ${compactNumber(cacheReadTokens)}`
     : `cache ${compactNumber(cacheReadTokens)} (${ratio}%)`;
@@ -133,7 +133,8 @@ function explicitStatus(state: TuiState): string | undefined {
   // Suppress noisy machine states; keep user-facing hints (exit, errors, renames).
   // Duration already appears as "- Work for ..." above the composer.
   const lower = raw.toLowerCase();
-  if (["ready", "completed", "planning", "executing", "verifying", "cancelled", "failed"].includes(lower)) return undefined;
+  if (["ready", "completed", "planning", "executing", "verifying", "cancelled", "failed"].includes(lower))
+    return undefined;
   if (lower.startsWith("completed in")) return undefined;
   if (lower === "task completed" || lower === "task completed." || lower.startsWith("task completed")) return undefined;
   return raw;

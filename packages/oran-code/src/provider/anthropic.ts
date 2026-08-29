@@ -1,4 +1,12 @@
-import type { Message, ModelConfig, ModelProvider, ModelResponse, ModelStreamChunk, ProviderRequestOptions, ToolCall } from "../types.js";
+import type {
+  Message,
+  ModelConfig,
+  ModelProvider,
+  ModelResponse,
+  ModelStreamChunk,
+  ProviderRequestOptions,
+  ToolCall,
+} from "../types.js";
 import { CLIENT_ID, CLIENT_USER_AGENT, PRODUCT_VERSION } from "../paths.js";
 import { ModelRequestError, boundedError, streamErrorMessage } from "./errors.js";
 import { parseSseJson, readSseEvents } from "./sse.js";
@@ -16,15 +24,18 @@ export class AnthropicProvider implements ModelProvider {
 
   constructor(private readonly config: ModelConfig) {
     const base = (config.baseUrl ?? "https://api.anthropic.com").replace(/\/$/, "");
-    this.endpoint = base.endsWith("/messages") || base.endsWith("/v1/messages")
-      ? base
-      : `${base}/v1/messages`;
-    this.apiVersion = stringOption(config.options, "anthropicVersion")
-      ?? stringOption(config.options, "anthropic-version")
-      ?? "2023-06-01";
+    this.endpoint = base.endsWith("/messages") || base.endsWith("/v1/messages") ? base : `${base}/v1/messages`;
+    this.apiVersion =
+      stringOption(config.options, "anthropicVersion") ??
+      stringOption(config.options, "anthropic-version") ??
+      "2023-06-01";
   }
 
-  async complete(messages: Message[], tools?: Record<string, unknown>[], options?: ProviderRequestOptions): Promise<ModelResponse> {
+  async complete(
+    messages: Message[],
+    tools?: Record<string, unknown>[],
+    options?: ProviderRequestOptions,
+  ): Promise<ModelResponse> {
     const response = await fetch(this.endpoint, {
       method: "POST",
       headers: this.headers(),
@@ -32,11 +43,15 @@ export class AnthropicProvider implements ModelProvider {
       ...(options?.signal ? { signal: options.signal } : {}),
     });
     if (!response.ok) throw new ModelRequestError(response.status, await boundedError(response));
-    const data = await response.json() as Record<string, unknown>;
+    const data = (await response.json()) as Record<string, unknown>;
     return parseAnthropicMessage(data, false);
   }
 
-  async *streamResponse(messages: Message[], tools?: Record<string, unknown>[], options?: ProviderRequestOptions): AsyncGenerator<ModelStreamChunk> {
+  async *streamResponse(
+    messages: Message[],
+    tools?: Record<string, unknown>[],
+    options?: ProviderRequestOptions,
+  ): AsyncGenerator<ModelStreamChunk> {
     const request = createStreamingRequest(options?.signal);
     try {
       const response = await fetch(this.endpoint, {
@@ -48,7 +63,7 @@ export class AnthropicProvider implements ModelProvider {
       if (!response.ok) throw new ModelRequestError(response.status, await boundedError(response));
       const contentType = response.headers.get("content-type") ?? "";
       if (!contentType.includes("text/event-stream") || !response.body) {
-        yield* modelResponseChunks(parseAnthropicMessage(await response.json() as Record<string, unknown>, false));
+        yield* modelResponseChunks(parseAnthropicMessage((await response.json()) as Record<string, unknown>, false));
         return;
       }
 
@@ -58,10 +73,8 @@ export class AnthropicProvider implements ModelProvider {
       let currentBlockIndex: number | undefined;
       let currentBlockType: string | undefined;
 
-      for await (const event of readSseEvents(
-        response.body as AsyncIterable<Uint8Array>,
-        options?.idleTimeoutMs,
-        () => request.abort(),
+      for await (const event of readSseEvents(response.body as AsyncIterable<Uint8Array>, options?.idleTimeoutMs, () =>
+        request.abort(),
       )) {
         const parsed = parseSseJson(event);
         if (!parsed) continue;
@@ -158,7 +171,11 @@ export class AnthropicProvider implements ModelProvider {
     };
   }
 
-  private payload(messages: Message[], tools: Record<string, unknown>[] | undefined, stream: boolean): Record<string, unknown> {
+  private payload(
+    messages: Message[],
+    tools: Record<string, unknown>[] | undefined,
+    stream: boolean,
+  ): Record<string, unknown> {
     const options = requestOptions(this.config.options);
     delete options.protocol;
     delete options.api;
@@ -191,26 +208,31 @@ function toAnthropicTool(tool: Record<string, unknown>): Record<string, unknown>
     return {
       name: fn.name,
       ...(typeof fn.description === "string" ? { description: fn.description } : {}),
-      input_schema: (fn.parameters && typeof fn.parameters === "object" && !Array.isArray(fn.parameters))
-        ? fn.parameters
-        : { type: "object", properties: {} },
+      input_schema:
+        fn.parameters && typeof fn.parameters === "object" && !Array.isArray(fn.parameters)
+          ? fn.parameters
+          : { type: "object", properties: {} },
     };
   }
   if (typeof tool.name === "string") {
     return {
       name: tool.name,
       ...(typeof tool.description === "string" ? { description: tool.description } : {}),
-      input_schema: (tool.input_schema && typeof tool.input_schema === "object" && !Array.isArray(tool.input_schema))
-        ? tool.input_schema
-        : (tool.parameters && typeof tool.parameters === "object" && !Array.isArray(tool.parameters))
-          ? tool.parameters
-          : { type: "object", properties: {} },
+      input_schema:
+        tool.input_schema && typeof tool.input_schema === "object" && !Array.isArray(tool.input_schema)
+          ? tool.input_schema
+          : tool.parameters && typeof tool.parameters === "object" && !Array.isArray(tool.parameters)
+            ? tool.parameters
+            : { type: "object", properties: {} },
     };
   }
   return undefined;
 }
 
-function toAnthropicMessages(messages: Message[]): { system: Record<string, unknown>[]; conversation: Record<string, unknown>[] } {
+function toAnthropicMessages(messages: Message[]): {
+  system: Record<string, unknown>[];
+  conversation: Record<string, unknown>[];
+} {
   const system: Record<string, unknown>[] = [];
   const conversation: Record<string, unknown>[] = [];
   const tailReminders: string[] = [];
@@ -264,7 +286,10 @@ function toAnthropicMessages(messages: Message[]): { system: Record<string, unkn
           input: call.arguments ?? {},
         });
       }
-      conversation.push({ role: "assistant", content: content.length ? content : [{ type: "text", text: message.content ?? "" }] });
+      conversation.push({
+        role: "assistant",
+        content: content.length ? content : [{ type: "text", text: message.content ?? "" }],
+      });
     }
   }
   flushToolResults();
@@ -303,12 +328,12 @@ function parseAnthropicMessage(data: Record<string, unknown>, streamed: boolean)
     const block = raw as Record<string, unknown>;
     const type = typeof block.type === "string" ? block.type : "";
     if (type === "text" && typeof block.text === "string") textParts.push(block.text);
-    else if ((type === "thinking" || type === "reasoning") && typeof block.thinking === "string") reasoningParts.push(block.thinking);
+    else if ((type === "thinking" || type === "reasoning") && typeof block.thinking === "string")
+      reasoningParts.push(block.thinking);
     else if (type === "tool_use") {
       const input = block.input;
-      const argumentsValue = input && typeof input === "object" && !Array.isArray(input)
-        ? input as Record<string, unknown>
-        : {};
+      const argumentsValue =
+        input && typeof input === "object" && !Array.isArray(input) ? (input as Record<string, unknown>) : {};
       toolCalls.push({
         ...(typeof block.id === "string" ? { id: block.id } : {}),
         name: typeof block.name === "string" ? block.name : "unknown",

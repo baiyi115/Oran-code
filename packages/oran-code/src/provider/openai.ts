@@ -1,4 +1,12 @@
-import type { Message, ModelConfig, ModelProvider, ModelResponse, ModelStreamChunk, ProviderRequestOptions, ToolCall } from "../types.js";
+import type {
+  Message,
+  ModelConfig,
+  ModelProvider,
+  ModelResponse,
+  ModelStreamChunk,
+  ProviderRequestOptions,
+  ToolCall,
+} from "../types.js";
 import { CLIENT_ID, CLIENT_USER_AGENT, PRODUCT_VERSION } from "../paths.js";
 import { ModelRequestError, boundedError, streamErrorMessage } from "./errors.js";
 import { parseSseJson, readSseEvents } from "./sse.js";
@@ -14,7 +22,11 @@ export class OpenAICompatibleProvider implements ModelProvider {
       : `${base.replace(/\/$/, "")}/chat/completions`;
   }
 
-  async complete(messages: Message[], tools?: Record<string, unknown>[], options?: ProviderRequestOptions): Promise<ModelResponse> {
+  async complete(
+    messages: Message[],
+    tools?: Record<string, unknown>[],
+    options?: ProviderRequestOptions,
+  ): Promise<ModelResponse> {
     const response = await fetch(this.endpoint, {
       method: "POST",
       headers: this.headers(),
@@ -22,11 +34,15 @@ export class OpenAICompatibleProvider implements ModelProvider {
       ...(options?.signal ? { signal: options.signal } : {}),
     });
     if (!response.ok) throw new ModelRequestError(response.status, await boundedError(response));
-    const data = await response.json() as Record<string, unknown>;
+    const data = (await response.json()) as Record<string, unknown>;
     return parseCompletion(data, false);
   }
 
-  async *streamResponse(messages: Message[], tools?: Record<string, unknown>[], options?: ProviderRequestOptions): AsyncGenerator<ModelStreamChunk> {
+  async *streamResponse(
+    messages: Message[],
+    tools?: Record<string, unknown>[],
+    options?: ProviderRequestOptions,
+  ): AsyncGenerator<ModelStreamChunk> {
     const request = createStreamingRequest(options?.signal);
     try {
       const response = await fetch(this.endpoint, {
@@ -38,17 +54,15 @@ export class OpenAICompatibleProvider implements ModelProvider {
       if (!response.ok) throw new ModelRequestError(response.status, await boundedError(response));
       const contentType = response.headers.get("content-type") ?? "";
       if (!contentType.includes("text/event-stream") || !response.body) {
-        yield* modelResponseChunks(parseCompletion(await response.json() as Record<string, unknown>, false));
+        yield* modelResponseChunks(parseCompletion((await response.json()) as Record<string, unknown>, false));
         return;
       }
       const state: OpenAiStreamState = {
         calls: new Map<number, { id?: string; name: string; arguments: string }>(),
         emittedCalls: false,
       };
-      for await (const event of readSseEvents(
-        response.body as AsyncIterable<Uint8Array>,
-        options?.idleTimeoutMs,
-        () => request.abort(),
+      for await (const event of readSseEvents(response.body as AsyncIterable<Uint8Array>, options?.idleTimeoutMs, () =>
+        request.abort(),
       )) {
         for (const update of parseOpenAiStreamEvent(event, state)) yield update;
       }
@@ -77,13 +91,19 @@ export class OpenAICompatibleProvider implements ModelProvider {
     };
   }
 
-  private payload(messages: Message[], tools: Record<string, unknown>[] | undefined, stream: boolean): Record<string, unknown> {
+  private payload(
+    messages: Message[],
+    tools: Record<string, unknown>[] | undefined,
+    stream: boolean,
+  ): Record<string, unknown> {
     const options = requestOptions(this.config.options);
     if (this.config.reasoningEffort !== undefined) options.reasoning_effort = this.config.reasoningEffort;
     if (stream) {
       const configured = options.stream_options;
       options.stream_options = {
-        ...(configured && typeof configured === "object" && !Array.isArray(configured) ? configured as Record<string, unknown> : {}),
+        ...(configured && typeof configured === "object" && !Array.isArray(configured)
+          ? (configured as Record<string, unknown>)
+          : {}),
         include_usage: true,
       };
     }
@@ -191,9 +211,8 @@ function toOpenAiMessages(messages: readonly Message[]): Record<string, unknown>
 function toApiMessage(message: Message): Record<string, unknown> {
   const result: Record<string, unknown> = {
     role: message.role,
-    content: message.role === "assistant" && message.toolCalls?.length && !message.content
-      ? null
-      : message.content ?? "",
+    content:
+      message.role === "assistant" && message.toolCalls?.length && !message.content ? null : (message.content ?? ""),
   };
   if (message.toolCallId) result.tool_call_id = message.toolCallId;
   if (message.name) result.name = message.name;
@@ -257,7 +276,9 @@ function parseToolCall(raw: Record<string, unknown>): ToolCall {
     if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) throw new Error("expected an object");
     argumentsValue = parsed as Record<string, unknown>;
   } catch (error) {
-    throw new Error(`invalid tool-call arguments: ${error instanceof Error ? error.message : String(error)}`);
+    throw new Error(`invalid tool-call arguments: ${error instanceof Error ? error.message : String(error)}`, {
+      cause: error,
+    });
   }
   return {
     ...(typeof raw.id === "string" ? { id: raw.id } : {}),

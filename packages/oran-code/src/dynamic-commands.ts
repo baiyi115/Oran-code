@@ -62,8 +62,10 @@ export async function loadDynamicMarkdownCommands(
   const directories = resolveCommandDirectories(options);
   const merged = new Map<string, DynamicMarkdownCommand>();
 
-  for (const command of await loadLayer(directories.user, "user", options.allowKindMetadata === true)) merged.set(command.name, command);
-  for (const command of await loadLayer(directories.project, "project", options.allowKindMetadata === true)) merged.set(command.name, command);
+  for (const command of await loadLayer(directories.user, "user", options.allowKindMetadata === true))
+    merged.set(command.name, command);
+  for (const command of await loadLayer(directories.project, "project", options.allowKindMetadata === true))
+    merged.set(command.name, command);
 
   return [...merged.values()].sort((left, right) => left.name.localeCompare(right.name));
 }
@@ -102,9 +104,13 @@ export function renderDynamicCommand(body: string, argument: string): string {
 export function commandNameFromRelativePath(path: string): string | undefined {
   const extension = extname(path);
   const withoutExtension = extension ? path.slice(0, -extension.length) : path;
-  const segments = withoutExtension
-    .split(/[\\/]+/)
-    .map((segment) => segment.trim().toLowerCase().replace(/\s+/g, "-").replace(/^[-:]+|[-:]+$/g, ""));
+  const segments = withoutExtension.split(/[\\/]+/).map((segment) =>
+    segment
+      .trim()
+      .toLowerCase()
+      .replace(/\s+/g, "-")
+      .replace(/^[-:]+|[-:]+$/g, ""),
+  );
   if (segments.length === 0 || segments.some((segment) => !segment)) return undefined;
   return `/${segments.join(":")}`;
 }
@@ -116,7 +122,11 @@ function resolveCommandDirectories(options: LoadDynamicCommandsOptions): Dynamic
   };
 }
 
-async function loadLayer(root: string, scope: DynamicCommandSource["scope"], allowKindMetadata: boolean): Promise<DynamicMarkdownCommand[]> {
+async function loadLayer(
+  root: string,
+  scope: DynamicCommandSource["scope"],
+  allowKindMetadata: boolean,
+): Promise<DynamicMarkdownCommand[]> {
   const paths = await collectMarkdownFiles(root);
   const commands: DynamicMarkdownCommand[] = [];
   for (const path of paths) {
@@ -138,7 +148,7 @@ async function collectMarkdownFiles(directory: string): Promise<string[]> {
   entries.sort((left, right) => left.name.localeCompare(right.name));
   for (const entry of entries) {
     const path = resolve(directory, entry.name);
-    if (entry.isDirectory()) paths.push(...await collectMarkdownFiles(path));
+    if (entry.isDirectory()) paths.push(...(await collectMarkdownFiles(path)));
     else if (entry.isFile() && extname(entry.name).toLowerCase() === ".md") paths.push(path);
   }
   return paths;
@@ -187,9 +197,10 @@ function parseCommandDocument(raw: string, allowKindMetadata: boolean): CommandD
     const argumentHint = stringValue(metadata["argument-hint"] ?? metadata.argumentHint);
     const aliases = aliasValues(metadata.aliases);
     const requestedKind = stringValue(metadata.kind)?.toLowerCase();
-    const kind = allowKindMetadata && requestedKind && COMMAND_KINDS.has(requestedKind as SlashCommandKind)
-      ? requestedKind as SlashCommandKind
-      : "prompt";
+    const kind =
+      allowKindMetadata && requestedKind && COMMAND_KINDS.has(requestedKind as SlashCommandKind)
+        ? (requestedKind as SlashCommandKind)
+        : "prompt";
     return {
       ...(description ? { description } : {}),
       ...(argumentHint ? { argumentHint } : {}),
@@ -207,9 +218,12 @@ function defaultDocument(body: string): CommandDocument {
 }
 
 function aliasValues(value: unknown): string[] {
-  const values = typeof value === "string"
-    ? value.split(",")
-    : Array.isArray(value) ? value.filter((item): item is string => typeof item === "string") : [];
+  const values =
+    typeof value === "string"
+      ? value.split(",")
+      : Array.isArray(value)
+        ? value.filter((item): item is string => typeof item === "string")
+        : [];
   return [...new Set(values.map((item) => item.trim()).filter(Boolean))];
 }
 
@@ -218,4 +232,3 @@ function stringValue(value: unknown): string | undefined {
   const normalized = value.trim();
   return normalized || undefined;
 }
-

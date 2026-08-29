@@ -1,0 +1,8 @@
+node_modules/
+dist/
+coverage/
+pnpm-lock.yaml
+tmp/
+evals/workspaces/
+evals/results/
+.oran/

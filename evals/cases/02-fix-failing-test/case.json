@@ -4,20 +4,9 @@
   "category": "failing-test",
   "promptFile": "prompt.md",
   "fixtureDir": "fixture",
-  "setupCommands": [
-    "pnpm install --offline --ignore-scripts"
-  ],
-  "verifyCommands": [
-    "pnpm typecheck",
-    "pnpm test"
-  ],
+  "setupCommands": ["pnpm install --offline --ignore-scripts"],
+  "verifyCommands": ["pnpm typecheck", "pnpm test"],
   "hiddenVerifier": "verify.mjs",
-  "protectedPaths": [
-    "package.json",
-    "tsconfig.json",
-    "AGENTS.md",
-    "pnpm-workspace.yaml",
-    "tests/**"
-  ],
+  "protectedPaths": ["package.json", "tsconfig.json", "AGENTS.md", "pnpm-workspace.yaml", "tests/**"],
   "timeoutMs": 300000
 }

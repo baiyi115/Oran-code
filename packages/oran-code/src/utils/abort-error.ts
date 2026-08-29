@@ -3,6 +3,8 @@
  * `Error({ name: "AbortError" })`。判定取最宽语义,避免漏判取消。
  */
 export function isAbortError(error: unknown): boolean {
-  return (error instanceof DOMException && error.name === "AbortError")
-    || (error instanceof Error && error.name === "AbortError");
+  return (
+    (error instanceof DOMException && error.name === "AbortError") ||
+    (error instanceof Error && error.name === "AbortError")
+  );
 }

@@ -12,8 +12,8 @@ describe("script-aware token estimation", () => {
     const estimate = manager().estimateTokens(messages, []);
     const bytes = Buffer.byteLength(JSON.stringify({ messages, tools: [] }), "utf8");
     // ASCII: 与旧公式同量级(允许 ±20% 的 JSON 结构开销扰动)。
-    expect(estimate).toBeGreaterThan(bytes / 3.5 * 0.8);
-    expect(estimate).toBeLessThan(bytes / 3.5 * 1.2);
+    expect(estimate).toBeGreaterThan((bytes / 3.5) * 0.8);
+    expect(estimate).toBeLessThan((bytes / 3.5) * 1.2);
   });
 
   it("no longer underestimates CJK-heavy payloads", () => {
@@ -37,7 +37,10 @@ describe("script-aware token estimation", () => {
     expect(m.estimateTokens(ascii, [])).toBe(anchorEstimate);
 
     // 追加大量中文:CJK 增量按新斜率计,必须高于旧字节斜率的增量。
-    const grown: Message[] = [...ascii, { role: "user", content: "补充一段很长的中文说明以推动上下文增长,验证锚点斜率修正生效。".repeat(10) }];
+    const grown: Message[] = [
+      ...ascii,
+      { role: "user", content: "补充一段很长的中文说明以推动上下文增长,验证锚点斜率修正生效。".repeat(10) },
+    ];
     const newEstimate = m.estimateTokens(grown, []);
     const grownBytes = Buffer.byteLength(JSON.stringify({ messages: grown, tools: [] }), "utf8");
     const anchorBytes = Buffer.byteLength(JSON.stringify({ messages: ascii, tools: [] }), "utf8");

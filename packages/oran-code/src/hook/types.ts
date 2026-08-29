@@ -79,10 +79,7 @@ export interface HookValidationError {
   message: string;
 }
 
-export type HookSubAgentExecutor = (
-  prompt: string,
-  context: HookEventContext,
-) => Promise<HookResult>;
+export type HookSubAgentExecutor = (prompt: string, context: HookEventContext) => Promise<HookResult>;
 
 export interface HookDispatchResult {
   results: HookResult[];
@@ -101,8 +98,15 @@ export type HookNoticeSink = {
 };
 
 export interface HookEngineDeps {
-  runCommand: (command: string, env: Record<string, string>, timeoutMs?: number) => Promise<{ ok: boolean; stdout: string }>;
-  fetch: (url: string, init: { method: string; headers?: Record<string, string>; body?: string }) => Promise<{ ok: boolean; status: number; body: string }>;
+  runCommand: (
+    command: string,
+    env: Record<string, string>,
+    timeoutMs?: number,
+  ) => Promise<{ ok: boolean; stdout: string }>;
+  fetch: (
+    url: string,
+    init: { method: string; headers?: Record<string, string>; body?: string },
+  ) => Promise<{ ok: boolean; status: number; body: string }>;
   subAgentExecutor?: HookSubAgentExecutor;
   log?: (message: string) => void;
   notices: HookNoticeSink;

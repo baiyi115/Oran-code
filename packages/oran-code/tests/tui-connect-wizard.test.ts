@@ -12,7 +12,6 @@ const tab = key({ tab: true });
 const escape = key({ escape: true });
 const backspace = key({ backspace: true });
 const up = key({ upArrow: true });
-const down = key({ downArrow: true });
 
 interface WizardHarness {
   state: TuiState;
@@ -84,20 +83,20 @@ describe("ConnectWizard", () => {
     expect(overlay(h)).toMatchObject({ kind: "connect", step: "providerName" });
 
     type(h, "p");
-    advance(h);      // -> baseURL
+    advance(h); // -> baseURL
     expect(overlay(h).step).toBe("baseURL");
-    advance(h);      // empty baseURL blocks advance
+    advance(h); // empty baseURL blocks advance
     expect(overlay(h).step).toBe("baseURL");
 
     type(h, "https://api.example.com/v1");
-    advance(h);      // -> apiKey (protocol preselected from URL)
+    advance(h); // -> apiKey (protocol preselected from URL)
     expect(overlay(h)).toMatchObject({ step: "apiKey", protocol: "openai" });
 
-    advance(h);      // -> protocol list
+    advance(h); // -> protocol list
     expect(overlay(h).step).toBe("protocol");
-    advance(h);      // confirm openai -> reasoningEffort
+    advance(h); // confirm openai -> reasoningEffort
     expect(overlay(h).step).toBe("reasoningEffort");
-    advance(h);      // confirm medium -> models (fetch fires)
+    advance(h); // confirm medium -> models (fetch fires)
     expect(overlay(h).step).toBe("models");
     await new Promise((resolve) => setTimeout(resolve, 0));
     expect(overlay(h).models.map((model) => model.id)).toEqual(["gpt-4o", "gpt-4o-mini"]);
@@ -107,14 +106,16 @@ describe("ConnectWizard", () => {
     expect(overlay(h).models[0]).toMatchObject({ id: "gpt-4o", selected: true });
     h.wizard.handleKey("s", key({ ctrl: true })); // Ctrl+S confirms
     await new Promise((resolve) => setTimeout(resolve, 0));
-    expect(h.submitted).toEqual([{
-      providerName: "p",
-      baseURL: "https://api.example.com/v1",
-      apiKey: "",
-      protocol: "openai",
-      reasoningEffort: "medium",
-      models: [{ id: "gpt-4o", selected: true }],
-    }]);
+    expect(h.submitted).toEqual([
+      {
+        providerName: "p",
+        baseURL: "https://api.example.com/v1",
+        apiKey: "",
+        protocol: "openai",
+        reasoningEffort: "medium",
+        models: [{ id: "gpt-4o", selected: true }],
+      },
+    ]);
     expect(h.state.overlay.kind).toBe("none");
     expect(h.state.session.status).toContain("Connected p (1 model)");
   });

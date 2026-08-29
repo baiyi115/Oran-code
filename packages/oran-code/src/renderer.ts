@@ -25,7 +25,12 @@ export interface SessionRenderer {
   markdown(title: string, content: string): void;
   error(message: string): void;
   clearTranscript(): void;
-  approval(call: ToolCall, level: number, description: string, origin: SubagentOrigin): Promise<ApprovalResponse> | void;
+  approval(
+    call: ToolCall,
+    level: number,
+    description: string,
+    origin: SubagentOrigin,
+  ): Promise<ApprovalResponse> | void;
   cancelApproval?(): void;
 }
 
@@ -66,11 +71,12 @@ export class TerminalRenderer implements SessionRenderer {
   }
 
   state(state: string): void {
-    const style: Style = state === "completed" || state === "ready"
-      ? "green"
-      : state === "failed" || state === "cancelled"
-        ? "red"
-        : "cyan";
+    const style: Style =
+      state === "completed" || state === "ready"
+        ? "green"
+        : state === "failed" || state === "cancelled"
+          ? "red"
+          : "cyan";
     this.status(`[${state}]`, style);
   }
 
@@ -181,9 +187,9 @@ export class TerminalRenderer implements SessionRenderer {
     const args = JSON.stringify(call.arguments, undefined, 2);
     this.block(
       `${paint("Approval required", "yellow", this.colorEnabled)}: ${call.name} (L${level})\n` +
-      `Source: ${subagentOriginLabel(origin)}\n` +
-      `${description}\n${truncate(args, 1200)}\n` +
-      "Reply y to allow once, a to always allow this exact tool request, or n to reject.\n",
+        `Source: ${subagentOriginLabel(origin)}\n` +
+        `${description}\n${truncate(args, 1200)}\n` +
+        "Reply y to allow once, a to always allow this exact tool request, or n to reject.\n",
     );
   }
 
@@ -199,23 +205,51 @@ export class TerminalRenderer implements SessionRenderer {
 
   render(event: RuntimeEvent): void {
     switch (event.type) {
-      case "state": this.state(event.state); break;
-      case "assistant_start": this.assistantStart(event.model, event.source); break;
-      case "assistant_delta": this.assistantDelta(event.text); break;
-      case "thought_start": this.status("+ Thinking...", "cyan"); break;
-      case "thought_delta": break;
-      case "thought_end": break;
-      case "assistant_end": this.assistantEnd(event.text); break;
-      case "assistant_abort": this.assistantAbort(event.message); break;
-      case "plan": if (!event.streamed) this.plan(event.plan); break;
-      case "plan_complete": this.status(
-        event.autoExecute ? "Plan complete; executing..." : "Plan complete. Reply y to execute it or n to discard it.",
-        "cyan",
-      ); break;
-      case "tool_start": this.toolStart(event.call, event.permissionLevel); break;
-      case "tool_result": this.toolResult(event.call, event.result); break;
-      case "verify": this.verify(event.results); break;
-      case "retry": this.retry(event.message, event.nextAttempt, event.maxRetries); break;
+      case "state":
+        this.state(event.state);
+        break;
+      case "assistant_start":
+        this.assistantStart(event.model, event.source);
+        break;
+      case "assistant_delta":
+        this.assistantDelta(event.text);
+        break;
+      case "thought_start":
+        this.status("+ Thinking...", "cyan");
+        break;
+      case "thought_delta":
+        break;
+      case "thought_end":
+        break;
+      case "assistant_end":
+        this.assistantEnd(event.text);
+        break;
+      case "assistant_abort":
+        this.assistantAbort(event.message);
+        break;
+      case "plan":
+        if (!event.streamed) this.plan(event.plan);
+        break;
+      case "plan_complete":
+        this.status(
+          event.autoExecute
+            ? "Plan complete; executing..."
+            : "Plan complete. Reply y to execute it or n to discard it.",
+          "cyan",
+        );
+        break;
+      case "tool_start":
+        this.toolStart(event.call, event.permissionLevel);
+        break;
+      case "tool_result":
+        this.toolResult(event.call, event.result);
+        break;
+      case "verify":
+        this.verify(event.results);
+        break;
+      case "retry":
+        this.retry(event.message, event.nextAttempt, event.maxRetries);
+        break;
       case "context_compaction": {
         if (event.phase === "started") {
           this.status(
@@ -225,9 +259,10 @@ export class TerminalRenderer implements SessionRenderer {
             "cyan",
           );
         } else if (event.phase === "completed") {
-          const change = event.beforeTokens !== undefined && event.afterTokens !== undefined
-            ? `${event.beforeTokens} -> ${event.afterTokens} estimated tokens`
-            : "token estimate unavailable";
+          const change =
+            event.beforeTokens !== undefined && event.afterTokens !== undefined
+              ? `${event.beforeTokens} -> ${event.afterTokens} estimated tokens`
+              : "token estimate unavailable";
           this.status(`Context compacted (${change}).`, "green");
         } else if (event.phase === "offloaded") {
           if ((event.replacementCount ?? 0) > 0) {
@@ -241,7 +276,9 @@ export class TerminalRenderer implements SessionRenderer {
         }
         break;
       }
-      case "error": this.error(event.message); break;
+      case "error":
+        this.error(event.message);
+        break;
       case "completed": {
         const inT = event.inputTokens;
         const outT = event.outputTokens;
@@ -256,9 +293,14 @@ export class TerminalRenderer implements SessionRenderer {
         this.status(`[${details.join(" · ")}]`, "green");
         break;
       }
-      case "cancelled": this.status(`[cancelled] ${event.message}`, "yellow"); break;
-      case "approval_request": break;
-      case "log": this.status(event.message); break;
+      case "cancelled":
+        this.status(`[cancelled] ${event.message}`, "yellow");
+        break;
+      case "approval_request":
+        break;
+      case "log":
+        this.status(event.message);
+        break;
     }
   }
 
@@ -329,7 +371,6 @@ function formatElapsed(value: number): string {
 function formatRate(value: number): string {
   return value < 10 ? value.toFixed(1) : String(Math.round(value));
 }
-
 
 export function createPromptHooks(output: NodeJS.WriteStream, redraw: () => void): PromptOutputHooks {
   return {

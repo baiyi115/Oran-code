@@ -26,18 +26,30 @@ function recordTurn(loop: AgentLoop, toolCall: ToolCall, toolResult: ToolResult,
 
 describe("tool signatures", () => {
   it("is stable across key order and volatile values", () => {
-    const left = call("run_command", { id: "123e4567-e89b-12d3-a456-426614174000", at: "2026-08-28T01:02:03.000Z", options: { cwd: "C:\\Users\\baiyi\\AppData\\Local\\Temp\\run-123", retries: 1 } });
-    const right = call("run_command", { options: { retries: 1, cwd: "C:\\Users\\other\\AppData\\Local\\Temp\\run-999" }, at: "2025-01-01T10:20:30Z", id: "223e4567-e89b-12d3-a456-426614174111" });
+    const left = call("run_command", {
+      id: "123e4567-e89b-12d3-a456-426614174000",
+      at: "2026-08-28T01:02:03.000Z",
+      options: { cwd: "C:\\Users\\baiyi\\AppData\\Local\\Temp\\run-123", retries: 1 },
+    });
+    const right = call("run_command", {
+      options: { retries: 1, cwd: "C:\\Users\\other\\AppData\\Local\\Temp\\run-999" },
+      at: "2025-01-01T10:20:30Z",
+      id: "223e4567-e89b-12d3-a456-426614174111",
+    });
     expect(toolCallSignature(left)).toBe(toolCallSignature(right));
   });
 
   it("changes for meaningful arguments and result content", () => {
-    expect(toolCallSignature(call("read_file", { path: "a.ts" }))).not.toBe(toolCallSignature(call("read_file", { path: "b.ts" })));
+    expect(toolCallSignature(call("read_file", { path: "a.ts" }))).not.toBe(
+      toolCallSignature(call("read_file", { path: "b.ts" })),
+    );
     expect(toolResultSignature(result("done"))).not.toBe(toolResultSignature(result("failed")));
   });
 
   it("normalizes volatile timestamps in results", () => {
-    expect(toolResultSignature(result("done at 2026-08-28T01:02:03Z"))).toBe(toolResultSignature(result("done at 2025-01-01T10:20:30Z")));
+    expect(toolResultSignature(result("done at 2026-08-28T01:02:03Z"))).toBe(
+      toolResultSignature(result("done at 2025-01-01T10:20:30Z")),
+    );
   });
 });
 
@@ -47,7 +59,11 @@ describe("AgentLoop no-progress guards", () => {
     const toolCall = call();
     recordTurn(loop, toolCall, result("unchanged"));
     recordTurn(loop, toolCall, result("unchanged"));
-    expect(loop.noProgressDiagnosticForNextCalls([toolCall])).toMatchObject({ reason: "repeated_execution", stage: "pause", repeatCount: 3 });
+    expect(loop.noProgressDiagnosticForNextCalls([toolCall])).toMatchObject({
+      reason: "repeated_execution",
+      stage: "pause",
+      repeatCount: 3,
+    });
   });
 
   it("does not preempt a repeated call when its result changed", () => {

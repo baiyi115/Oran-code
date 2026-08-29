@@ -6,7 +6,11 @@
  * TerminalSession 通过端口提供状态读写与副作用回调。
  */
 import type { ContextManager } from "./context-manager.js";
-import { sessionOptionsFromStore, toSessionView as toSessionViewOf, workModeForPermission } from "./session-lifecycle.js";
+import {
+  sessionOptionsFromStore,
+  toSessionView as toSessionViewOf,
+  workModeForPermission,
+} from "./session-lifecycle.js";
 import type { SessionStore, StoredSession } from "./session-store.js";
 import type { Message, ModelConfig, ModelReference, PermissionMode, ReasoningEffort, WorkMode } from "./types.js";
 import type { SessionOption, SessionView } from "./tui/types.js";
@@ -53,7 +57,9 @@ export class SessionCrudService {
 
   async loadSessionOptions(): Promise<SessionOption[]> {
     await this.port.persistTuiSession();
-    return sessionOptionsFromStore(this.port.sessionStore.list(), this.port.currentSession()?.id, (session) => this.port.sessionName(session));
+    return sessionOptionsFromStore(this.port.sessionStore.list(), this.port.currentSession()?.id, (session) =>
+      this.port.sessionName(session),
+    );
   }
 
   toSessionView(session: StoredSession): SessionView {
@@ -69,8 +75,7 @@ export class SessionCrudService {
 
   async selectSession(id: string): Promise<SessionView | undefined> {
     if (this.selection) return this.selection;
-    let selection: Promise<SessionView | undefined>;
-    selection = this.selectSessionUnlocked(id).finally(() => {
+    const selection = this.selectSessionUnlocked(id).finally(() => {
       if (this.selection === selection) this.selection = undefined;
     });
     this.selection = selection;
@@ -83,7 +88,7 @@ export class SessionCrudService {
       await this.port.waitForInteraction();
     }
     await this.port.persistTuiSession();
-    const stored = await this.port.sessionStore.ensureConversation(id) ?? this.port.sessionStore.find(id);
+    const stored = (await this.port.sessionStore.ensureConversation(id)) ?? this.port.sessionStore.find(id);
     if (!stored) return undefined;
     await this.port.restoreStoredSession(stored, !this.port.explicitModel());
     await this.port.persistTuiSession(false);
@@ -141,7 +146,9 @@ export class SessionCrudService {
     this.port.deleteContextManager(stored.id);
     await this.port.ensureCurrentContextManager();
     this.port.setModelWarning(undefined);
-    this.port.setPermissionMode(stored.permissionMode ?? (stored.workMode === "plan" ? "plan" : this.port.permissionMode()));
+    this.port.setPermissionMode(
+      stored.permissionMode ?? (stored.workMode === "plan" ? "plan" : this.port.permissionMode()),
+    );
     this.port.setWorkMode(workModeForPermission(this.port.permissionMode()));
     this.port.setReasoningEffort(stored.reasoningEffort ?? "medium");
     this.port.clearFollowUps();

@@ -31,23 +31,22 @@ export async function fetchRemoteModels(
     if (protocol === "anthropic") headers["x-api-key"] = apiKey;
     else headers.authorization = `Bearer ${apiKey}`;
   }
-  const endpoint = base.endsWith("/v1")
-    ? `${base}/models`
-    : `${base}/v1/models`;
+  const endpoint = base.endsWith("/v1") ? `${base}/models` : `${base}/v1/models`;
   const response = await fetch(endpoint, { headers });
   if (!response.ok) {
     throw new Error(`model catalog request failed (${response.status} ${response.statusText})`);
   }
-  const payload = await response.json() as Record<string, unknown>;
+  const payload = (await response.json()) as Record<string, unknown>;
   const data = Array.isArray(payload.data) ? payload.data : [];
   const models: RemoteModel[] = [];
   for (const entry of data) {
     if (!entry || typeof entry !== "object") continue;
     const id = (entry as Record<string, unknown>).id;
     if (typeof id !== "string" || !id) continue;
-    const contextWindow = numberField((entry as Record<string, unknown>).max_input_tokens)
-      ?? numberField((entry as Record<string, unknown>).context_window)
-      ?? numberField((entry as Record<string, unknown>).context_length);
+    const contextWindow =
+      numberField((entry as Record<string, unknown>).max_input_tokens) ??
+      numberField((entry as Record<string, unknown>).context_window) ??
+      numberField((entry as Record<string, unknown>).context_length);
     models.push({ id, ...(contextWindow !== undefined ? { contextWindow } : {}) });
   }
   models.sort((a, b) => a.id.localeCompare(b.id));
@@ -59,9 +58,10 @@ function numberField(value: unknown): number | undefined {
 }
 
 export function resolveProviderProtocol(config: ModelConfig): "openai" | "anthropic" {
-  const explicit = stringOption(config.options, "protocol")
-    ?? stringOption(config.options, "api")
-    ?? stringOption(config.options, "providerType");
+  const explicit =
+    stringOption(config.options, "protocol") ??
+    stringOption(config.options, "api") ??
+    stringOption(config.options, "providerType");
   if (explicit) {
     const normalized = explicit.toLowerCase();
     if (normalized.includes("anthropic") || normalized === "claude") return "anthropic";

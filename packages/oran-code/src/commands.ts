@@ -1,7 +1,18 @@
 import type { ModelConfig } from "./types.js";
 
-export type SlashCommandAction = "clear" | "compact" | "connect" | "exit" | "model" | "new"
-  | "permission" | "plan" | "rename" | "session" | "skills" | "undo";
+export type SlashCommandAction =
+  | "clear"
+  | "compact"
+  | "connect"
+  | "exit"
+  | "model"
+  | "new"
+  | "permission"
+  | "plan"
+  | "rename"
+  | "session"
+  | "skills"
+  | "undo";
 
 export interface SlashCommand {
   readonly name: string;
@@ -25,11 +36,31 @@ export const DEFAULT_COMMANDS: readonly SlashCommand[] = [
   { name: "/mcp", description: "show connected extension servers", kind: "local", hidden: true },
   { name: "/model", description: "select model", kind: "ui", action: "model" },
   { name: "/new", description: "start a new session", kind: "ui", action: "new" },
-  { name: "/permission", description: "set advanced permission policy", argumentHint: "MODE", kind: "ui", action: "permission", hidden: true },
+  {
+    name: "/permission",
+    description: "set advanced permission policy",
+    argumentHint: "MODE",
+    kind: "ui",
+    action: "permission",
+    hidden: true,
+  },
   { name: "/plan", description: "enter plan mode", kind: "ui", action: "plan" },
   { name: "/rename", description: "rename current session", argumentHint: "NAME", kind: "ui", action: "rename" },
-  { name: "/undo", aliases: ["/rollback"], description: "undo the latest Agent file change batch", kind: "ui", action: "undo" },
-  { name: "/session", description: "list or resume a session", usage: "/session [ID]", argumentHint: "ID", kind: "ui", action: "session" },
+  {
+    name: "/undo",
+    aliases: ["/rollback"],
+    description: "undo the latest Agent file change batch",
+    kind: "ui",
+    action: "undo",
+  },
+  {
+    name: "/session",
+    description: "list or resume a session",
+    usage: "/session [ID]",
+    argumentHint: "ID",
+    kind: "ui",
+    action: "session",
+  },
   { name: "/skills", description: "show available skills", kind: "local", action: "skills" },
   { name: "/status", description: "show current agent status", kind: "local" },
   { name: "/tasks", aliases: ["/subagents"], description: "list background subagent tasks", kind: "local" },
@@ -60,8 +91,7 @@ export class CommandRegistry {
 
   canRegister(command: Pick<SlashCommand, "name" | "aliases">): boolean {
     const keys = [normalizeCommandName(command.name), ...(command.aliases ?? []).map(normalizeCommandName)];
-    return new Set(keys).size === keys.length
-      && keys.every((key) => !this.byName.has(key) && !this.byAlias.has(key));
+    return new Set(keys).size === keys.length && keys.every((key) => !this.byName.has(key) && !this.byAlias.has(key));
   }
 
   get(name: string): SlashCommand | undefined {
@@ -80,8 +110,11 @@ export class CommandRegistry {
     const value = query.replace(/^\//, "").toLowerCase();
     const commands = this.list();
     if (!value) return commands;
-    return commands.filter((command) => command.name.slice(1).toLowerCase().startsWith(value)
-      || (command.aliases ?? []).some((alias) => alias.slice(1).toLowerCase().startsWith(value)));
+    return commands.filter(
+      (command) =>
+        command.name.slice(1).toLowerCase().startsWith(value) ||
+        (command.aliases ?? []).some((alias) => alias.slice(1).toLowerCase().startsWith(value)),
+    );
   }
 }
 
@@ -109,7 +142,9 @@ export function parseSlashCommand(value: string): ParsedCommand | undefined {
 }
 
 export function commandHelp(commands: readonly SlashCommand[] = DEFAULT_COMMANDS): string {
-  return [...commands].filter((command) => !command.hidden).sort((a, b) => a.name.localeCompare(b.name))
+  return [...commands]
+    .filter((command) => !command.hidden)
+    .sort((a, b) => a.name.localeCompare(b.name))
     .map((command) => {
       const usage = command.usage ?? `${command.name}${command.argumentHint ? ` ${command.argumentHint}` : ""}`;
       return `  ${usage}  ${command.description}`;
@@ -121,9 +156,7 @@ export function formatModelReference(model: Pick<ModelConfig, "provider" | "mode
   return `${model.provider}/${model.model}`;
 }
 
-export function modelCandidates(
-  providers: Record<string, { models: Record<string, unknown> }>,
-): string[] {
+export function modelCandidates(providers: Record<string, { models: Record<string, unknown> }>): string[] {
   return Object.entries(providers)
     .flatMap(([provider, profile]) => Object.keys(profile.models).map((model) => `${provider}/${model}`))
     .sort((left, right) => left.localeCompare(right));
@@ -152,8 +185,11 @@ export function completeInput(
 
   if (line.includes(" ")) return [[], line];
   const matches = commands
-    .filter((command) => command.name.toLowerCase().startsWith(normalizedCommandToken)
-      || (command.aliases ?? []).some((alias) => alias.toLowerCase().startsWith(normalizedCommandToken)))
+    .filter(
+      (command) =>
+        command.name.toLowerCase().startsWith(normalizedCommandToken) ||
+        (command.aliases ?? []).some((alias) => alias.toLowerCase().startsWith(normalizedCommandToken)),
+    )
     .map((command) => command.name);
   return [matches, commandToken];
 }

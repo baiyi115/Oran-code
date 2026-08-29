@@ -41,13 +41,11 @@ describe("loadProjectInstructions", () => {
     await writeFile(join(workspace, "docs", "relative.md"), "relative body", "utf8");
     await writeFile(join(fixture.home, "home.md"), "home body", "utf8");
     await writeFile(external, "absolute body", "utf8");
-    await writeFile(join(workspace, "AGENTS.md"), [
-      "@docs/relative.md",
-      "@~/home.md",
-      `@${external}`,
-      "@../external.md",
-      "@missing.md",
-    ].join("\n"), "utf8");
+    await writeFile(
+      join(workspace, "AGENTS.md"),
+      ["@docs/relative.md", "@~/home.md", `@${external}`, "@../external.md", "@missing.md"].join("\n"),
+      "utf8",
+    );
 
     const result = await loadProjectInstructions({ workspace, repositoryRoot: workspace, userHome: fixture.home });
 
@@ -63,14 +61,11 @@ describe("loadProjectInstructions", () => {
     const fixture = await createFixture();
     const workspace = join(fixture.root, "project");
     await mkdir(workspace, { recursive: true });
-    await writeFile(join(workspace, "AGENTS.md"), [
-      "@@literal.md",
-      "@has whitespace.md",
-      "```text",
-      "@inside-fence.md",
-      "```",
-      "@a.md",
-    ].join("\n"), "utf8");
+    await writeFile(
+      join(workspace, "AGENTS.md"),
+      ["@@literal.md", "@has whitespace.md", "```text", "@inside-fence.md", "```", "@a.md"].join("\n"),
+      "utf8",
+    );
     await writeFile(join(workspace, "a.md"), "A\n@b.md", "utf8");
     await writeFile(join(workspace, "b.md"), "B\n@a.md", "utf8");
 
@@ -96,7 +91,9 @@ describe("loadProjectInstructions", () => {
     const workspace = join(fixture.root, "project");
     await mkdir(workspace, { recursive: true });
 
-    await expect(loadProjectInstructions({ workspace, repositoryRoot: workspace, userHome: fixture.home })).resolves.toBe("");
+    await expect(
+      loadProjectInstructions({ workspace, repositoryRoot: workspace, userHome: fixture.home }),
+    ).resolves.toBe("");
   });
 });
 

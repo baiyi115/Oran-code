@@ -1,4 +1,15 @@
-import type { ApprovalResponse, Message, ModelReference, PermissionMode, ReasoningEffort, RuntimeEvent, TaskState, ToolCall, VerificationResult, WorkMode } from "../types.js";
+import type {
+  ApprovalResponse,
+  Message,
+  ModelReference,
+  PermissionMode,
+  ReasoningEffort,
+  RuntimeEvent,
+  TaskState,
+  ToolCall,
+  VerificationResult,
+  WorkMode,
+} from "../types.js";
 import type { SlashCommand } from "../commands.js";
 import type { SubagentOrigin } from "../subagent/types.js";
 
@@ -15,7 +26,11 @@ export interface TuiAppOptions {
   onCancel: () => boolean;
   loadModels: () => Promise<string[]>;
   onModelSelected: (reference: string) => Promise<boolean | void>;
-  loadRemoteModels?: (baseURL: string, apiKey: string, protocol: "openai" | "anthropic") => Promise<ConnectModelOption[]>;
+  loadRemoteModels?: (
+    baseURL: string,
+    apiKey: string,
+    protocol: "openai" | "anthropic",
+  ) => Promise<ConnectModelOption[]>;
   onConnect?: (input: ConnectInput) => Promise<boolean | void>;
   loadSessions?: () => Promise<SessionOption[]>;
   onSessionSelected?: (id: string) => Promise<SessionView | undefined>;
@@ -42,7 +57,7 @@ export interface TuiAppOptions {
 }
 
 export interface TuiRenderDebugInfo {
-  phase: "committed" | "destroyed";
+  phase: "committed" | "destroyed" | "render_wait_timeout";
   revision: number;
   committedRevision: number;
   staticCount: number;
@@ -50,7 +65,17 @@ export interface TuiRenderDebugInfo {
 
 export type TuiRenderCommitKind = "normal" | "boundary" | "terminal";
 
-export type TuiOverlay = "none" | "commands" | "models" | "sessions" | "session-delete-confirm" | "follow-ups" | "files" | "approval" | "details" | "connect";
+export type TuiOverlay =
+  | "none"
+  | "commands"
+  | "models"
+  | "sessions"
+  | "session-delete-confirm"
+  | "follow-ups"
+  | "files"
+  | "approval"
+  | "details"
+  | "connect";
 
 export interface CursorPosition {
   line: number;
@@ -205,14 +230,40 @@ export interface ApprovalDetails {
 export type OverlayState =
   | { kind: "none" }
   | { kind: "commands"; query: string; selectedIndex: number }
-  | { kind: "models"; query: string; selectedIndex: number; options: string[]; loading: boolean; error?: string | undefined }
+  | {
+      kind: "models";
+      query: string;
+      selectedIndex: number;
+      options: string[];
+      loading: boolean;
+      error?: string | undefined;
+    }
   | { kind: "sessions"; query: string; selectedIndex: number; options: SessionOption[] }
-  | { kind: "session-delete-confirm"; sessionId: string; sessionName: string; selectedIndex: number; returnSelectedIndex: number; options: SessionOption[] }
+  | {
+      kind: "session-delete-confirm";
+      sessionId: string;
+      sessionName: string;
+      selectedIndex: number;
+      returnSelectedIndex: number;
+      options: SessionOption[];
+    }
   | { kind: "follow-ups"; selectedIndex: number; options: FollowUpOption[] }
   | { kind: "files"; query: string; selectedIndex: number; options: string[]; loading: boolean; tokenStart: number }
   | { kind: "approval"; approval: ApprovalDetails; selectedIndex: number }
   | { kind: "details"; title: string; lines: string[] }
-  | { kind: "connect"; step: ConnectStep; providerName: string; baseURL: string; apiKey: string; protocol: "openai" | "anthropic" | ""; reasoningEffort: ReasoningEffort; models: ConnectModelOption[]; selectedIndex: number; loading: boolean; error?: string | undefined };
+  | {
+      kind: "connect";
+      step: ConnectStep;
+      providerName: string;
+      baseURL: string;
+      apiKey: string;
+      protocol: "openai" | "anthropic" | "";
+      reasoningEffort: ReasoningEffort;
+      models: ConnectModelOption[];
+      selectedIndex: number;
+      loading: boolean;
+      error?: string | undefined;
+    };
 
 export type ConnectStep = "providerName" | "baseURL" | "apiKey" | "protocol" | "reasoningEffort" | "models";
 
@@ -291,5 +342,10 @@ export interface TuiEventSink {
   markdown(title: string, content: string): void;
   error(message: string): void;
   clearTranscript(): void;
-  approval(call: ToolCall, level: number, description: string, origin: SubagentOrigin): Promise<ApprovalResponse> | void;
+  approval(
+    call: ToolCall,
+    level: number,
+    description: string,
+    origin: SubagentOrigin,
+  ): Promise<ApprovalResponse> | void;
 }

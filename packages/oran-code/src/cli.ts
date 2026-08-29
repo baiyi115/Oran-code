@@ -16,7 +16,14 @@ import {
 } from "./config.js";
 import type { UserConfig } from "./types.js";
 import { formatErrorDetail } from "./error-format.js";
-import { CLI_NAME, ensureProjectStateRoot, PRODUCT_NAME, PROJECT_STATE_DIRECTORY, projectStateRoot, USER_DATA_DIRECTORY } from "./paths.js";
+import {
+  CLI_NAME,
+  ensureProjectStateRoot,
+  PRODUCT_NAME,
+  PROJECT_STATE_DIRECTORY,
+  projectStateRoot,
+  USER_DATA_DIRECTORY,
+} from "./paths.js";
 
 const VERSION = "0.1.0";
 
@@ -25,10 +32,10 @@ const VERSION = "0.1.0";
 // it doesn't pollute the TUI, while every other warning passes through unchanged.
 const originalEmitWarning = process.emitWarning;
 process.emitWarning = ((warning: unknown, ...rest: unknown[]) => {
-  const type = typeof rest[0] === "string"
-    ? rest[0]
-    : (rest[0] as { type?: string } | undefined)?.type
-      ?? (warning instanceof Error ? warning.name : undefined);
+  const type =
+    typeof rest[0] === "string"
+      ? rest[0]
+      : ((rest[0] as { type?: string } | undefined)?.type ?? (warning instanceof Error ? warning.name : undefined));
   const message = typeof warning === "string" ? warning : (warning as Error | undefined)?.message;
   if (type === "ExperimentalWarning" && typeof message === "string" && message.includes("SQLite")) return;
   return (originalEmitWarning as (...args: unknown[]) => void).call(process, warning, ...rest);

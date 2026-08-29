@@ -36,16 +36,18 @@ describe("TuiTranscriptRenderer", () => {
     renderer.render(event({ type: "assistant_start", step: 0, source: "turn", attempt: 0, model: "chat" }));
     renderer.render(event({ type: "assistant_delta", step: 0, source: "turn", attempt: 0, text: "hello" }));
     renderer.render(event({ type: "assistant_delta", step: 0, source: "turn", attempt: 0, text: " world" }));
-    renderer.render(event({
-      type: "assistant_end",
-      step: 0,
-      source: "turn",
-      attempt: 0,
-      text: "hello world",
-      toolCalls: [],
-      usage: {},
-      streamed: true,
-    }));
+    renderer.render(
+      event({
+        type: "assistant_end",
+        step: 0,
+        source: "turn",
+        attempt: 0,
+        text: "hello world",
+        toolCalls: [],
+        usage: {},
+        streamed: true,
+      }),
+    );
 
     expect(state.transcript).toHaveLength(1);
     expect(state.transcript[0]).toMatchObject({ kind: "assistant", text: "hello world", streaming: false });
@@ -58,16 +60,18 @@ describe("TuiTranscriptRenderer", () => {
     const renderer = new TuiTranscriptRenderer(layout, state);
 
     renderer.render(event({ type: "assistant_delta", step: 0, source: "turn", attempt: 0, text: "helxo" }));
-    renderer.render(event({
-      type: "assistant_end",
-      step: 0,
-      source: "turn",
-      attempt: 0,
-      text: "hello",
-      toolCalls: [],
-      usage: {},
-      streamed: true,
-    }));
+    renderer.render(
+      event({
+        type: "assistant_end",
+        step: 0,
+        source: "turn",
+        attempt: 0,
+        text: "hello",
+        toolCalls: [],
+        usage: {},
+        streamed: true,
+      }),
+    );
 
     expect(state.transcript).toHaveLength(1);
     expect(state.transcript[0]).toMatchObject({ kind: "assistant", text: "hello", streaming: false });
@@ -180,11 +184,14 @@ describe("TuiTranscriptRenderer", () => {
   });
 
   it("keeps the primary error visible and mutes retry details", () => {
-    const lines = renderMessage({
-      id: "error-1",
-      kind: "error",
-      text: "Attempt 1/6 failed: model API returned 503:\n{\"error\":{\"message\":\"busy\"}}\nRetrying (1/5)...",
-    }, 120);
+    const lines = renderMessage(
+      {
+        id: "error-1",
+        kind: "error",
+        text: 'Attempt 1/6 failed: model API returned 503:\n{"error":{"message":"busy"}}\nRetrying (1/5)...',
+      },
+      120,
+    );
 
     expect(lines[0]).toContain(`${ANSI.redBold}Error${ANSI.reset}`);
     expect(lines[0]).toContain("Attempt 1/6 failed: model API returned 503:");
@@ -213,7 +220,9 @@ describe("TuiTranscriptRenderer", () => {
         status: "running",
         startedAt: new Date(1700000005000).toISOString(),
       };
-      expect(formatBackgroundTasksIndicator([task1, task2], fixedNow)).toBe("[2 subagents running] explore (10s), tester (5.0s)");
+      expect(formatBackgroundTasksIndicator([task1, task2], fixedNow)).toBe(
+        "[2 subagents running] explore (10s), tester (5.0s)",
+      );
 
       const completedTask: TuiBackgroundTask = {
         id: "agent-3",
@@ -230,7 +239,9 @@ describe("TuiTranscriptRenderer", () => {
         status: "queued",
         startedAt: new Date(1700000005000).toISOString(),
       };
-      expect(formatBackgroundTasksIndicator([task1, queuedTask], fixedNow)).toBe("[1 subagents running (+1 queued)] explore (10s)");
+      expect(formatBackgroundTasksIndicator([task1, queuedTask], fixedNow)).toBe(
+        "[1 subagents running (+1 queued)] explore (10s)",
+      );
       expect(formatBackgroundTasksIndicator([queuedTask], fixedNow)).toBe("[1 subagent queued: reviewer]");
     });
 

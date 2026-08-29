@@ -77,7 +77,12 @@ export class ToolRegistry {
   async invoke(call: ToolCall, context?: ToolExecutionContext): Promise<ToolResult> {
     const tool = this.get(call.name);
     if (this.isDeferred(tool) && !this.activated.has(call.name) && context?.bypassActivation !== true) {
-      return { ok: false, output: "", error: `tool is not activated: ${call.name}; discover it with search_tools first`, summary: "not activated" };
+      return {
+        ok: false,
+        output: "",
+        error: `tool is not activated: ${call.name}; discover it with search_tools first`,
+        summary: "not activated",
+      };
     }
     return tool.invoke(call, context);
   }

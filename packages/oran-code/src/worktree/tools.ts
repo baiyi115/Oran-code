@@ -15,7 +15,10 @@ import {
 import { isSafeBranchName, isValidSlug, shortBranchName, slugRuleDescription } from "./safety.js";
 
 /** F18：注册两个按需暴露的 Worktree 工具。 */
-export function registerWorktreeTools(registry: { register(tool: ToolDefinition): void }, fallbackWorkspace: string): void {
+export function registerWorktreeTools(
+  registry: { register(tool: ToolDefinition): void },
+  fallbackWorkspace: string,
+): void {
   registry.register(enterWorktreeDefinition(fallbackWorkspace));
   registry.register(exitWorktreeDefinition(fallbackWorkspace));
 }
@@ -27,10 +30,10 @@ function enterWorktreeDefinition(fallbackWorkspace: string): ToolDefinition {
   return {
     name: "enter_worktree",
     description:
-      "Create or fast-recover an isolated Git worktree for parallel work. "
-      + "Accepts a slug (letters, digits, hyphen, underscore only). The worktree is created under .oran/worktrees/<slug> "
-      + "on branch worktree-<slug>, initialized with project config, hooks, and symlinked dependencies. "
-      + "Use the returned absolute worktree path as the cwd/root for subsequent file tools.",
+      "Create or fast-recover an isolated Git worktree for parallel work. " +
+      "Accepts a slug (letters, digits, hyphen, underscore only). The worktree is created under .oran/worktrees/<slug> " +
+      "on branch worktree-<slug>, initialized with project config, hooks, and symlinked dependencies. " +
+      "Use the returned absolute worktree path as the cwd/root for subsequent file tools.",
     parameters: {
       type: "object",
       properties: {
@@ -91,16 +94,19 @@ function exitWorktreeDefinition(fallbackWorkspace: string): ToolDefinition {
   return {
     name: "exit_worktree",
     description:
-      "Leave and clean up a Git worktree. Pass the worktree path, branch, and repository root returned by enter_worktree. "
-      + "When a baseline commit is provided, deletion is blocked if the worktree has uncommitted changes or its HEAD differs "
-      + "from the baseline. With no baseline, the worktree is removed unconditionally.",
+      "Leave and clean up a Git worktree. Pass the worktree path, branch, and repository root returned by enter_worktree. " +
+      "When a baseline commit is provided, deletion is blocked if the worktree has uncommitted changes or its HEAD differs " +
+      "from the baseline. With no baseline, the worktree is removed unconditionally.",
     parameters: {
       type: "object",
       properties: {
         path: { type: "string", description: "Absolute worktree path returned by enter_worktree." },
         branch: { type: "string", description: "Worktree branch name returned by enter_worktree." },
         repoRoot: { type: "string", description: "Absolute repository root returned by enter_worktree." },
-        baseline: { type: "string", description: "Optional baseline commit SHA. When provided, dirty worktrees are preserved." },
+        baseline: {
+          type: "string",
+          description: "Optional baseline commit SHA. When provided, dirty worktrees are preserved.",
+        },
       },
       required: ["path", "branch", "repoRoot"],
     },
@@ -115,7 +121,13 @@ function exitWorktreeDefinition(fallbackWorkspace: string): ToolDefinition {
       const rawRepoRoot = call.arguments.repoRoot;
       const baseline = call.arguments.baseline === undefined ? undefined : String(call.arguments.baseline).trim();
 
-      if (typeof rawPath !== "string" || !rawPath.trim() || !branch || typeof rawRepoRoot !== "string" || !rawRepoRoot.trim()) {
+      if (
+        typeof rawPath !== "string" ||
+        !rawPath.trim() ||
+        !branch ||
+        typeof rawRepoRoot !== "string" ||
+        !rawRepoRoot.trim()
+      ) {
         return {
           ok: false,
           output: "",
@@ -129,11 +141,21 @@ function exitWorktreeDefinition(fallbackWorkspace: string): ToolDefinition {
       const shortBranch = shortBranchName(branch);
       const branchPrefix = "worktree-";
       if (!shortBranch.startsWith(branchPrefix)) {
-        return { ok: false, output: "", error: `branch is not managed by Oran worktrees: ${shortBranch}`, summary: "invalid branch" };
+        return {
+          ok: false,
+          output: "",
+          error: `branch is not managed by Oran worktrees: ${shortBranch}`,
+          summary: "invalid branch",
+        };
       }
       const slug = shortBranch.slice(branchPrefix.length);
       if (!isValidSlug(slug)) {
-        return { ok: false, output: "", error: `invalid worktree branch slug: ${slug || "(empty)"}`, summary: "invalid branch" };
+        return {
+          ok: false,
+          output: "",
+          error: `invalid worktree branch slug: ${slug || "(empty)"}`,
+          summary: "invalid branch",
+        };
       }
 
       try {
@@ -148,10 +170,12 @@ function exitWorktreeDefinition(fallbackWorkspace: string): ToolDefinition {
           throw new Error(`path does not match the managed worktree location: ${expectedWorktreePath}`);
         }
         const workspaceRepoRoot = await resolveRepoRoot(workspace);
-        const belongsToWorkspace = sameResolvedPath(repoRootPath, workspaceRepoRoot)
-          || sameResolvedPath(worktreePath, workspaceRepoRoot)
-          || sameResolvedPath(worktreePath, workspace);
-        if (!belongsToWorkspace) throw new Error("repoRoot and worktree path are not associated with the current workspace");
+        const belongsToWorkspace =
+          sameResolvedPath(repoRootPath, workspaceRepoRoot) ||
+          sameResolvedPath(worktreePath, workspaceRepoRoot) ||
+          sameResolvedPath(worktreePath, workspace);
+        if (!belongsToWorkspace)
+          throw new Error("repoRoot and worktree path are not associated with the current workspace");
 
         let changed = false;
         if (baseline) {
@@ -209,4 +233,3 @@ function failedResult(error: unknown, fallback: string): ToolResult {
   const message = error instanceof Error ? error.message : String(error);
   return { ok: false, output: "", error: message || fallback, summary: "error" };
 }
-

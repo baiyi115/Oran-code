@@ -1,4 +1,4 @@
-import type { Product } from './types.js';
+import type { Product } from "./types.js";
 
 export function indexProducts(products: readonly Product[]): Map<string, Product> {
   const index = new Map<string, Product>();

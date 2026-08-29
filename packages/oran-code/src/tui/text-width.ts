@@ -1,14 +1,20 @@
+// eslint-disable-next-line no-control-regex -- 控制字符是刻意匹配的目标（ANSI 转义/文本清洗）
 const ANSI_PATTERN = /\u001b\[[0-?]*[ -/]*[@-~]/g;
 export function stripTerminalMarkup(value: string): string {
   return value.replace(ANSI_PATTERN, "").replace(INK_TAG_PATTERN, "");
 }
 
 export function graphemes(value: string): string[] {
-  const segmenter = (Intl as typeof Intl & {
-    Segmenter?: new (locale?: string, options?: { granularity?: string }) => {
-      segment(value: string): Iterable<{ segment: string }>;
-    };
-  }).Segmenter;
+  const segmenter = (
+    Intl as typeof Intl & {
+      Segmenter?: new (
+        locale?: string,
+        options?: { granularity?: string },
+      ) => {
+        segment(value: string): Iterable<{ segment: string }>;
+      };
+    }
+  ).Segmenter;
   if (segmenter) {
     return Array.from(new segmenter(undefined, { granularity: "grapheme" }).segment(value), (item) => item.segment);
   }
@@ -108,31 +114,36 @@ export function abbreviatePath(path: string, width: number): string {
 
 export function wrapDisplayText(value: string, width: number): string[] {
   const safeWidth = Math.max(1, Math.floor(width));
-  return stripTerminalMarkup(value).replace(/\r\n/g, "\n").split("\n").flatMap((line) => {
-    if (!line) return [""];
-    const output: string[] = [];
-    let remaining = line;
-    while (visibleWidth(remaining) > safeWidth) {
-      const chunk = sliceByDisplayWidth(remaining, 0, safeWidth);
-      let splitAt = chunk.length;
-      const whitespace = chunk.lastIndexOf(" ");
-      if (whitespace > 0) splitAt = whitespace;
-      const piece = remaining.slice(0, splitAt).trimEnd();
-      output.push(piece || chunk);
-      remaining = remaining.slice(splitAt).trimStart();
-      if (!splitAt) remaining = remaining.slice(chunk.length);
-    }
-    output.push(remaining);
-    return output;
-  });
+  return stripTerminalMarkup(value)
+    .replace(/\r\n/g, "\n")
+    .split("\n")
+    .flatMap((line) => {
+      if (!line) return [""];
+      const output: string[] = [];
+      let remaining = line;
+      while (visibleWidth(remaining) > safeWidth) {
+        const chunk = sliceByDisplayWidth(remaining, 0, safeWidth);
+        let splitAt = chunk.length;
+        const whitespace = chunk.lastIndexOf(" ");
+        if (whitespace > 0) splitAt = whitespace;
+        const piece = remaining.slice(0, splitAt).trimEnd();
+        output.push(piece || chunk);
+        remaining = remaining.slice(splitAt).trimStart();
+        if (!splitAt) remaining = remaining.slice(chunk.length);
+      }
+      output.push(remaining);
+      return output;
+    });
 }
 
 function isCombining(code: number): boolean {
-  return (code >= 0x300 && code <= 0x36f)
-    || (code >= 0x1ab0 && code <= 0x1aff)
-    || (code >= 0x1dc0 && code <= 0x1dff)
-    || (code >= 0x20d0 && code <= 0x20ff)
-    || (code >= 0xfe20 && code <= 0xfe2f);
+  return (
+    (code >= 0x300 && code <= 0x36f) ||
+    (code >= 0x1ab0 && code <= 0x1aff) ||
+    (code >= 0x1dc0 && code <= 0x1dff) ||
+    (code >= 0x20d0 && code <= 0x20ff) ||
+    (code >= 0xfe20 && code <= 0xfe2f)
+  );
 }
 
 function isVariationSelector(code: number): boolean {
@@ -144,18 +155,20 @@ function isEmojiModifier(code: number): boolean {
 }
 
 function isWide(code: number): boolean {
-  return code >= 0x1100
-    && (code <= 0x115f
-      || code === 0x2329
-      || code === 0x232a
-      || (code >= 0x2e80 && code <= 0xa4cf)
-      || (code >= 0xac00 && code <= 0xd7a3)
-      || (code >= 0xf900 && code <= 0xfaff)
-      || (code >= 0xfe10 && code <= 0xfe19)
-      || (code >= 0xfe30 && code <= 0xfe6f)
-      || (code >= 0xff00 && code <= 0xff60)
-      || (code >= 0xffe0 && code <= 0xffe6)
-      || (code >= 0x1f300 && code <= 0x1faff));
+  return (
+    code >= 0x1100 &&
+    (code <= 0x115f ||
+      code === 0x2329 ||
+      code === 0x232a ||
+      (code >= 0x2e80 && code <= 0xa4cf) ||
+      (code >= 0xac00 && code <= 0xd7a3) ||
+      (code >= 0xf900 && code <= 0xfaff) ||
+      (code >= 0xfe10 && code <= 0xfe19) ||
+      (code >= 0xfe30 && code <= 0xfe6f) ||
+      (code >= 0xff00 && code <= 0xff60) ||
+      (code >= 0xffe0 && code <= 0xffe6) ||
+      (code >= 0x1f300 && code <= 0x1faff))
+  );
 }
 
 // `{inverse}...{/inverse}` selection tags are produced by overlay selectors and

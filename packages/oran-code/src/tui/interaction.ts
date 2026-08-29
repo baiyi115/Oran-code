@@ -4,10 +4,13 @@ import { commandCandidates } from "./command-palette.js";
 
 export function moveSelection(index: number, delta: number, length: number): number {
   if (length <= 0) return 0;
-  return ((index + delta) % length + length) % length;
+  return (((index + delta) % length) + length) % length;
 }
 
-export function filterCommands(query: string, commands: readonly SlashCommand[] = DEFAULT_COMMAND_REGISTRY.list()): SlashCommand[] {
+export function filterCommands(
+  query: string,
+  commands: readonly SlashCommand[] = DEFAULT_COMMAND_REGISTRY.list(),
+): SlashCommand[] {
   return commandCandidates(query.trim() || "/", commands);
 }
 
@@ -51,10 +54,12 @@ export function redactSecrets(value: unknown): unknown {
   if (!value || typeof value !== "object") {
     return typeof value === "string" ? redactSecretText(value) : value;
   }
-  return Object.fromEntries(Object.entries(value).map(([key, item]) => {
-    if (/api[_-]?key|token|secret|password|authorization/i.test(key)) return [key, "[redacted]"];
-    return [key, redactSecrets(item)];
-  }));
+  return Object.fromEntries(
+    Object.entries(value).map(([key, item]) => {
+      if (/api[_-]?key|token|secret|password|authorization/i.test(key)) return [key, "[redacted]"];
+      return [key, redactSecrets(item)];
+    }),
+  );
 }
 
 export function redactSecretText(value: string): string {

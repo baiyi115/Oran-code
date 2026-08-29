@@ -1,4 +1,12 @@
-import type { ApprovalDetails, ComposerState, OverlayState, TranscriptMessage, TranscriptMessageInput, TuiSessionState, TuiState } from "./types.js";
+import type {
+  ApprovalDetails,
+  ComposerState,
+  OverlayState,
+  TranscriptMessage,
+  TranscriptMessageInput,
+  TuiSessionState,
+  TuiState,
+} from "./types.js";
 import type { PermissionMode, ReasoningEffort, WorkMode } from "../types.js";
 import { graphemeLength } from "./text-width.js";
 import { DEFAULT_COMMAND_REGISTRY } from "../commands.js";
@@ -69,11 +77,22 @@ export function createTuiState(
 ): TuiState {
   return {
     commands: DEFAULT_COMMAND_REGISTRY.list(),
-    session: createTuiSessionState(workspace, modelLabel, sessionId, sessionName, workMode, permissionMode, reasoningEffort, contextWindow, modelReference, modelWarning),
+    session: createTuiSessionState(
+      workspace,
+      modelLabel,
+      sessionId,
+      sessionName,
+      workMode,
+      permissionMode,
+      reasoningEffort,
+      contextWindow,
+      modelReference,
+      modelWarning,
+    ),
     composer: createComposerState(history),
-   overlay: { kind: "none" },
-   transcript: [...initialTranscript],
-   expandedToolGroupIds: new Set(),
+    overlay: { kind: "none" },
+    transcript: [...initialTranscript],
+    expandedToolGroupIds: new Set(),
     streaming: false,
     assistantMessageId: undefined,
     thoughtMessageId: undefined,
@@ -103,21 +122,26 @@ export function setComposerValue(composer: ComposerState, value: string): void {
   composer.preferredDisplayColumn = undefined;
 }
 
-export function appendTranscriptMessage(
-  state: TuiState,
-  message: TranscriptMessageInput,
-): string {
+export function appendTranscriptMessage(state: TuiState, message: TranscriptMessageInput): string {
   const id = `message-${state.nextMessageId++}`;
   state.transcript.push({ id, ...message });
   return id;
 }
 
-export function getToolMessage(state: TuiState, callId: string, taskId?: string): Extract<TranscriptMessage, { kind: "tool" }> | undefined {
+export function getToolMessage(
+  state: TuiState,
+  callId: string,
+  taskId?: string,
+): Extract<TranscriptMessage, { kind: "tool" }> | undefined {
   if (taskId !== undefined) {
-    const exact = state.transcript.find((entry) => entry.kind === "tool" && entry.callId === callId && entry.taskId === taskId);
+    const exact = state.transcript.find(
+      (entry) => entry.kind === "tool" && entry.callId === callId && entry.taskId === taskId,
+    );
     if (exact?.kind === "tool") return exact;
   }
-  const legacy = state.transcript.filter((entry) => entry.kind === "tool" && entry.callId === callId && entry.taskId === undefined);
+  const legacy = state.transcript.filter(
+    (entry) => entry.kind === "tool" && entry.callId === callId && entry.taskId === undefined,
+  );
   return legacy.length === 1 && legacy[0]?.kind === "tool" ? legacy[0] : undefined;
 }
 

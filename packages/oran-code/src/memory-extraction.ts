@@ -76,7 +76,11 @@ export class MemoryExtractionScheduler {
           this.pendingSnapshots.delete(processedSnapshot);
           if (!processedSessionId) return;
           if (succeeded) this.snapshots.set(processedSessionId, processedSnapshot);
-          if (notes.length) this.deps.onNotesSaved(processedSessionId, notes.map((note) => note.id));
+          if (notes.length)
+            this.deps.onNotesSaved(
+              processedSessionId,
+              notes.map((note) => note.id),
+            );
         },
       });
       this.extractor = extractor;
@@ -85,8 +89,12 @@ export class MemoryExtractionScheduler {
     })();
     this.extractorInit = initialization;
     void initialization.then(
-      () => { if (this.extractorInit === initialization) this.extractorInit = undefined; },
-      () => { if (this.extractorInit === initialization) this.extractorInit = undefined; },
+      () => {
+        if (this.extractorInit === initialization) this.extractorInit = undefined;
+      },
+      () => {
+        if (this.extractorInit === initialization) this.extractorInit = undefined;
+      },
     );
     return initialization;
   }

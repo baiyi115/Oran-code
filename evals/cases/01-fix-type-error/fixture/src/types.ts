@@ -1,4 +1,4 @@
-export type StockState = 'available' | 'low' | 'out';
+export type StockState = "available" | "low" | "out";
 
 export interface Product {
   id: string;

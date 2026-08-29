@@ -1,10 +1,5 @@
 import type { ModelProvider } from "./types.js";
-import {
-  MemoryManager,
-  normalizeMemoryNoteType,
-  type MemoryNote,
-  type MemoryWriteInput,
-} from "./memory-manager.js";
+import { MemoryManager, normalizeMemoryNoteType, type MemoryNote, type MemoryWriteInput } from "./memory-manager.js";
 
 export interface MemoryExtractorOptions {
   readonly manager: MemoryManager;
@@ -57,8 +52,9 @@ export class MemoryExtractor {
     }
 
     let firstResult: MemoryNote[] = [];
-    let job: Promise<void>;
-    job = this.drain(normalized, (notes) => { firstResult = notes; })
+    const job = this.drain(normalized, (notes) => {
+      firstResult = notes;
+    })
       .catch(() => undefined)
       .finally(() => {
         if (this.runningJob === job) this.runningJob = undefined;
@@ -98,12 +94,7 @@ export class MemoryExtractor {
         { role: "system", content: EXTRACTION_SYSTEM_PROMPT },
         {
           role: "user",
-          content: [
-            "Existing memory summary:",
-            summary || "(empty)",
-            "Conversation snapshot:",
-            snapshot,
-          ].join("\n\n"),
+          content: ["Existing memory summary:", summary || "(empty)", "Conversation snapshot:", snapshot].join("\n\n"),
         },
       ]);
       const extracted = parseExtractedMemories(response.text);

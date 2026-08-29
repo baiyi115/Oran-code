@@ -13,6 +13,17 @@
     "test": "pnpm --filter @oran-code/cli test",
     "typecheck": "pnpm --filter @oran-code/cli typecheck",
     "dev:node": "node dev.mjs",
-    "eval:resume": "node scripts/resume-eval.mjs"
+    "eval:resume": "node scripts/resume-eval.mjs",
+    "lint": "eslint .",
+    "format": "prettier --write .",
+    "format:check": "prettier --check .",
+    "coverage": "pnpm --filter @oran-code/cli test -- --coverage"
+  },
+  "devDependencies": {
+    "@eslint/js": "^10.0.1",
+    "eslint": "^10.9.1",
+    "globals": "^17.11.0",
+    "prettier": "^3.9.6",
+    "typescript-eslint": "^8.68.0"
   }
 }

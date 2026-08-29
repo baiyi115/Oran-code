@@ -1,5 +1,5 @@
 import { mkdir, readFile, rename, writeFile } from "node:fs/promises";
-import { dirname, isAbsolute, resolve } from "node:path";
+import { dirname } from "node:path";
 import { parse, stringify } from "yaml";
 import type { PermissionConfig, PermissionMode, ToolCall, ToolKind } from "./types.js";
 import { isWithinPath, resolvePhysicalPath } from "./utils/path-containment.js";
@@ -32,13 +32,27 @@ interface PermissionRule {
 }
 
 const DANGEROUS_COMMANDS: readonly { readonly label: string; readonly pattern: RegExp }[] = [
-  { label: "recursive forced deletion of a root or home directory", pattern: /(?:^|[\s;&|])rm\b(?=[^\r\n]*(?:--recursive\b|-[^\s-]*r[^\s-]*\b))(?=[^\r\n]*(?:--force\b|-[^\s-]*f[^\s-]*\b))[^\r\n]*\s+(?:--\s+)?(?:\/(?:\s|$)|~(?:\/|\s|$)|\$HOME(?:\/|\s|$))/i },
-  { label: "recursive forced deletion through PowerShell", pattern: /\b(?:remove-item|ri)\b[^\r\n]*(?:-recurse[^\r\n]*-force|-force[^\r\n]*-recurse)[^\r\n]*(?:[A-Z]:\\(?:\s|$)|\\\\|\$HOME|~)/i },
+  {
+    label: "recursive forced deletion of a root or home directory",
+    pattern:
+      /(?:^|[\s;&|])rm\b(?=[^\r\n]*(?:--recursive\b|-[^\s-]*r[^\s-]*\b))(?=[^\r\n]*(?:--force\b|-[^\s-]*f[^\s-]*\b))[^\r\n]*\s+(?:--\s+)?(?:\/(?:\s|$)|~(?:\/|\s|$)|\$HOME(?:\/|\s|$))/i,
+  },
+  {
+    label: "recursive forced deletion through PowerShell",
+    pattern:
+      /\b(?:remove-item|ri)\b[^\r\n]*(?:-recurse[^\r\n]*-force|-force[^\r\n]*-recurse)[^\r\n]*(?:[A-Z]:\\(?:\s|$)|\\\\|\$HOME|~)/i,
+  },
   { label: "filesystem formatting", pattern: /(?:^|[\s;&|])(?:mkfs(?:\.[\w-]+)?|format(?:\.com)?)\b/i },
   { label: "raw write to a block device", pattern: /(?:^|[\s;&|])dd\b[^\r\n]*\bof=(?:\/dev\/|\\\\\.\\PhysicalDrive)/i },
-  { label: "recursive permission change on the filesystem root", pattern: /(?:^|[\s;&|])chmod\s+-R\s+(?:777|a\+rwx)\s+\//i },
+  {
+    label: "recursive permission change on the filesystem root",
+    pattern: /(?:^|[\s;&|])chmod\s+-R\s+(?:777|a\+rwx)\s+\//i,
+  },
   { label: "shell fork bomb", pattern: /:\s*\(\s*\)\s*\{\s*:\s*\|\s*:\s*&\s*\}\s*;\s*:/ },
-  { label: "remote script piped to a shell", pattern: /\b(?:curl|wget)\b[^\r\n|]*\|\s*(?:sudo\s+)?(?:sh|bash|zsh|pwsh|powershell)\b/i },
+  {
+    label: "remote script piped to a shell",
+    pattern: /\b(?:curl|wget)\b[^\r\n|]*\|\s*(?:sudo\s+)?(?:sh|bash|zsh|pwsh|powershell)\b/i,
+  },
   { label: "forced git push", pattern: /\bgit\s+push\b[^\r\n]*(?:--force(?:-with-lease)?|-f(?:\s|$))/i },
   { label: "hard git reset", pattern: /\bgit\s+reset\b[^\r\n]*--hard\b/i },
   { label: "destructive git clean", pattern: /\bgit\s+clean\b[^\r\n]*(?:--force\b|-[a-z]*f[a-z]*\b)/i },
@@ -47,7 +61,13 @@ const DANGEROUS_COMMANDS: readonly { readonly label: string; readonly pattern: R
 const SHELL_META = /[\r\n><|;&`]|\$\(/;
 const SAFE_COMMAND_PREFIXES = [
   "pwd",
-  "git status", "git log", "git diff", "git show", "git branch", "git rev-parse", "git ls-files",
+  "git status",
+  "git log",
+  "git diff",
+  "git show",
+  "git branch",
+  "git rev-parse",
+  "git ls-files",
 ] as const;
 
 const TOOL_ALIASES: Readonly<Record<string, string>> = {
@@ -81,9 +101,7 @@ export interface ShellCompoundNode {
   hasParseError?: boolean | undefined;
 }
 
-const DANGEROUS_PIPELINE_DESTINATIONS = new Set([
-  "sh", "bash", "zsh", "pwsh", "powershell", "eval", "source", "cmd",
-]);
+const DANGEROUS_PIPELINE_DESTINATIONS = new Set(["sh", "bash", "zsh", "pwsh", "powershell", "eval", "source", "cmd"]);
 
 export function parseShellCommand(input: string): ShellCompoundNode {
   const text = input.trim();
@@ -276,7 +294,10 @@ export function inspectShellAst(ast: ShellCompoundNode): {
     if (cmds.length > 1) {
       for (let i = 1; i < cmds.length; i++) {
         const execName = (cmds[i]?.executable ?? "").toLowerCase().replace(/\.exe$/, "");
-        if (DANGEROUS_PIPELINE_DESTINATIONS.has(execName) || (execName === "sudo" && cmds[i]?.args.some((a) => DANGEROUS_PIPELINE_DESTINATIONS.has(a.toLowerCase())))) {
+        if (
+          DANGEROUS_PIPELINE_DESTINATIONS.has(execName) ||
+          (execName === "sudo" && cmds[i]?.args.some((a) => DANGEROUS_PIPELINE_DESTINATIONS.has(a.toLowerCase())))
+        ) {
           return {
             dangerousReason: "remote script or dynamic input piped directly into shell interpreter",
             isStrictlySafe: false,
@@ -323,7 +344,9 @@ function isSafeCommandNode(cmd: ShellCommandNode): boolean {
     if (!safeGitSubs.includes(sub)) return false;
     if (full.includes("--output") || full.includes("--ext-diff") || full.includes("--textconv")) return false;
     if (sub === "branch") {
-      const hasBranchMutation = cmd.args.some((arg) => /^(?:-[dDmMfFcC]|--(?:delete|move|rename|force|copy|edit|set-upstream|unset-upstream))/.test(arg));
+      const hasBranchMutation = cmd.args.some((arg) =>
+        /^(?:-[dDmMfFcC]|--(?:delete|move|rename|force|copy|edit|set-upstream|unset-upstream))/.test(arg),
+      );
       if (hasBranchMutation) return false;
     }
     return true;
@@ -352,10 +375,12 @@ export class PermissionPolicy {
       return decision("deny", `path could not be resolved safely: ${path}`, "path-sandbox", level);
     }
 
-    if (this.config.mode === "plan"
-      && kind === "write"
-      && this.registeredKinds.get(canonicalTool(call.name)) === "write"
-      && resolvedPath !== undefined) {
+    if (
+      this.config.mode === "plan" &&
+      kind === "write" &&
+      this.registeredKinds.get(canonicalTool(call.name)) === "write" &&
+      resolvedPath !== undefined
+    ) {
       const planRoot = await resolvePhysicalPath(this.config.planDirectory, this.config.workspace);
       if (planRoot !== undefined && isWithinPath(planRoot, resolvedPath)) {
         return decision("allow", "plan files may be written inside .oran/plans", "plan-directory", level);
@@ -379,9 +404,16 @@ export class PermissionPolicy {
     }
 
     if (kind !== "command" && resolvedPath !== undefined) {
-      const roots = await Promise.all(this.config.allowedRoots.map((root) => resolvePhysicalPath(root, this.config.workspace)));
+      const roots = await Promise.all(
+        this.config.allowedRoots.map((root) => resolvePhysicalPath(root, this.config.workspace)),
+      );
       if (!roots.some((root) => root !== undefined && isWithinPath(root, resolvedPath))) {
-        return decision("deny", `path escapes the allowed workspace and temporary roots: ${path ?? "(missing path)"}`, "path-sandbox", level);
+        return decision(
+          "deny",
+          `path escapes the allowed workspace and temporary roots: ${path ?? "(missing path)"}`,
+          "path-sandbox",
+          level,
+        );
       }
     }
 
@@ -421,9 +453,8 @@ export class PermissionPolicy {
       effect: "allow" as const,
       match: "exact" as const,
     };
-    if (!rules.some((item) => (
-      item.rule === nextRule.rule && item.effect === "allow" && item.match === "exact"
-    ))) rules.push(nextRule);
+    if (!rules.some((item) => item.rule === nextRule.rule && item.effect === "allow" && item.match === "exact"))
+      rules.push(nextRule);
     await mkdir(dirname(this.config.localRulesPath), { recursive: true });
     const temporary = `${this.config.localRulesPath}.tmp-${process.pid}`;
     await writeFile(temporary, stringify({ ...existing, rules }), "utf8");
@@ -432,15 +463,20 @@ export class PermissionPolicy {
 }
 
 export function structuredPermissionDenial(call: ToolCall, result: ApprovalDecision): string {
-  return JSON.stringify({
-    error: {
-      type: "permission_denied",
-      source: result.source,
-      tool: call.name,
-      reason: result.reason,
+  return JSON.stringify(
+    {
+      error: {
+        type: "permission_denied",
+        source: result.source,
+        tool: call.name,
+        reason: result.reason,
+      },
+      instruction:
+        "This tool call was blocked by Oran code's safety policy. Tell the user what was blocked and why; do not describe how to execute the blocked operation.",
     },
-    instruction: "This tool call was blocked by Oran code's safety policy. Tell the user what was blocked and why; do not describe how to execute the blocked operation.",
-  }, null, 2);
+    null,
+    2,
+  );
 }
 
 function decision(
@@ -465,18 +501,26 @@ function modeDecision(mode: PermissionMode, kind: ToolKind, level: number): Appr
 function isSafeCommand(command: string): boolean {
   const normalized = command.trim().toLowerCase();
   if (!normalized || SHELL_META.test(normalized) || /['"]/.test(normalized)) return false;
-  const prefix = SAFE_COMMAND_PREFIXES.find((candidate) => (
-    normalized === candidate || normalized.startsWith(`${candidate} `) || normalized.startsWith(`${candidate}\t`)
-  ));
+  const prefix = SAFE_COMMAND_PREFIXES.find(
+    (candidate) =>
+      normalized === candidate || normalized.startsWith(`${candidate} `) || normalized.startsWith(`${candidate}\t`),
+  );
   if (!prefix) return false;
   if (/\bgit\b[\s\S]*(?:--output(?:=|\s|$)|--ext-diff\b|--textconv\b)/i.test(normalized)) return false;
-  if (prefix === "git branch" && /(?:^|\s)(?:-[^-\s]*[dDmMfF]|--(?:delete|move|rename|force|copy|edit|set-upstream|unset-upstream))(?:=|\s|$)/i.test(normalized)) return false;
+  if (
+    prefix === "git branch" &&
+    /(?:^|\s)(?:-[^-\s]*[dDmMfF]|--(?:delete|move|rename|force|copy|edit|set-upstream|unset-upstream))(?:=|\s|$)/i.test(
+      normalized,
+    )
+  )
+    return false;
   return true;
 }
 
 function inferToolKind(name: string): ToolKind {
   if (["write_file", "edit_file", "apply_patch", "write_plan"].includes(name)) return "write";
-  if (["list_files", "read_file", "glob_files", "search_code", "git_status", "get_diff"].includes(name)) return "readonly";
+  if (["list_files", "read_file", "glob_files", "search_code", "git_status", "get_diff"].includes(name))
+    return "readonly";
   return "command";
 }
 
@@ -514,9 +558,10 @@ function ruleKey(call: ToolCall, kind: ToolKind): string {
 function stableArguments(value: unknown): string {
   if (value === null || typeof value !== "object") return JSON.stringify(value);
   if (Array.isArray(value)) return `[${value.map(stableArguments).join(",")}]`;
-  return `{${Object.keys(value as Record<string, unknown>).sort().map((key) => (
-    `${JSON.stringify(key)}:${stableArguments((value as Record<string, unknown>)[key])}`
-  )).join(",")}}`;
+  return `{${Object.keys(value as Record<string, unknown>)
+    .sort()
+    .map((key) => `${JSON.stringify(key)}:${stableArguments((value as Record<string, unknown>)[key])}`)
+    .join(",")}}`;
 }
 
 function formatRule(rule: PermissionRule): string {
@@ -544,7 +589,7 @@ async function loadRuleDocumentForWrite(path: string): Promise<Record<string, un
     return {};
   } catch (error) {
     if ((error as { code?: string }).code === "ENOENT") return {};
-    throw new Error(`cannot update malformed permission file ${path}`);
+    throw new Error(`cannot update malformed permission file ${path}`, { cause: error });
   }
 }
 
@@ -575,9 +620,8 @@ function parseRule(value: unknown): PermissionRule | undefined {
   if (!value || typeof value !== "object" || Array.isArray(value)) return undefined;
   const item = value as Record<string, unknown>;
   const effect = item.effect === "allow" || item.effect === "deny" ? item.effect : undefined;
-  const match = item.match === undefined || item.match === "glob"
-    ? "glob"
-    : item.match === "exact" ? "exact" : undefined;
+  const match =
+    item.match === undefined || item.match === "glob" ? "glob" : item.match === "exact" ? "exact" : undefined;
   if (!effect || !match) return undefined;
   if (typeof item.rule === "string") return parseRuleText(item.rule, effect, match);
   if (typeof item.tool === "string" && typeof item.pattern === "string") {
@@ -651,7 +695,5 @@ function isWritableRule(value: unknown): value is Record<string, unknown> & { ef
   const hasRuleText = typeof item.rule === "string";
   const hasStructuredRule = typeof item.tool === "string" && typeof item.pattern === "string";
   const hasValidMatch = item.match === undefined || item.match === "exact" || item.match === "glob";
-  return (hasRuleText || hasStructuredRule)
-    && (item.effect === "allow" || item.effect === "deny")
-    && hasValidMatch;
+  return (hasRuleText || hasStructuredRule) && (item.effect === "allow" || item.effect === "deny") && hasValidMatch;
 }

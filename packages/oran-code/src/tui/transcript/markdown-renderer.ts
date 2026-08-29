@@ -1,10 +1,5 @@
 import { ANSI } from "../theme.js";
-import {
-  graphemeWidth,
-  graphemes,
-  stripTerminalMarkup,
-  visibleWidth,
-} from "../text-width.js";
+import { graphemeWidth, graphemes, stripTerminalMarkup, visibleWidth } from "../text-width.js";
 
 interface FenceState {
   marker: "`" | "~";
@@ -196,7 +191,9 @@ function renderMarkdownInternal(value: string, safeWidth: number, options: Markd
       }
       index -= 1;
       pushBlank(lines);
-      lines.push(...renderTable(rows, safeWidth, Boolean(options.streaming && index >= sourceLines.length - 1), alignments));
+      lines.push(
+        ...renderTable(rows, safeWidth, Boolean(options.streaming && index >= sourceLines.length - 1), alignments),
+      );
       pushBlank(lines);
       continue;
     }
@@ -212,26 +209,42 @@ function renderMarkdownInternal(value: string, safeWidth: number, options: Markd
     if (heading) {
       pushBlank(lines);
       const color: InlineColor = heading.level <= 2 ? "orange" : "amber";
-      lines.push(...wrapInlineSegments(withStyle(parseInline(heading.body, isStreamingTail), { bold: true, color }), safeWidth));
+      lines.push(
+        ...wrapInlineSegments(withStyle(parseInline(heading.body, isStreamingTail), { bold: true, color }), safeWidth),
+      );
       pushBlank(lines);
       continue;
     }
 
-    const unordered = /^(\s*)[-*+][ \t]+(.+)$/.exec(line)
-      ?? /^(\s*)[-*+](?=[^\x00-\x7f])(.+)$/.exec(line);
+    // eslint-disable-next-line no-control-regex -- 控制字符是刻意匹配的目标（ANSI 转义/文本清洗）
+    const unordered = /^(\s*)[-*+][ \t]+(.+)$/.exec(line) ?? /^(\s*)[-*+](?=[^\x00-\x7f])(.+)$/.exec(line);
     if (unordered) {
       const indent = listIndent(unordered[1] ?? "");
       const bullet = `${"  ".repeat(indent)}${ANSI.orange}•${ANSI.reset} `;
-      lines.push(...renderPrefixed(parseInline(unordered[2] ?? "", isStreamingTail), bullet, " ".repeat(visibleWidth(bullet)), safeWidth));
+      lines.push(
+        ...renderPrefixed(
+          parseInline(unordered[2] ?? "", isStreamingTail),
+          bullet,
+          " ".repeat(visibleWidth(bullet)),
+          safeWidth,
+        ),
+      );
       continue;
     }
 
-    const ordered = /^(\s*)(\d+)[.)][ \t]+(.+)$/.exec(line)
-      ?? /^(\s*)(\d+)[.)](?=[^\x00-\x7f])(.+)$/.exec(line);
+    // eslint-disable-next-line no-control-regex -- 控制字符是刻意匹配的目标（ANSI 转义/文本清洗）
+    const ordered = /^(\s*)(\d+)[.)][ \t]+(.+)$/.exec(line) ?? /^(\s*)(\d+)[.)](?=[^\x00-\x7f])(.+)$/.exec(line);
     if (ordered) {
       const indent = "  ".repeat(listIndent(ordered[1] ?? ""));
       const prefix = `${indent}${ANSI.orange}${ordered[2]}.${ANSI.reset} `;
-      lines.push(...renderPrefixed(parseInline(ordered[3] ?? "", isStreamingTail), prefix, " ".repeat(visibleWidth(prefix)), safeWidth));
+      lines.push(
+        ...renderPrefixed(
+          parseInline(ordered[3] ?? "", isStreamingTail),
+          prefix,
+          " ".repeat(visibleWidth(prefix)),
+          safeWidth,
+        ),
+      );
       continue;
     }
 
@@ -250,6 +263,7 @@ function renderMarkdownInternal(value: string, safeWidth: number, options: Markd
 
 function parseHeading(value: string): Heading | undefined {
   const standard = /^\s{0,3}(#{1,6})[ \t]+(.+?)\s*#*\s*$/.exec(value);
+  // eslint-disable-next-line no-control-regex -- 控制字符是刻意匹配的目标（ANSI 转义/文本清洗）
   const compactCjk = /^\s{0,3}(#{1,6})(?=[^\x00-\x7f])(.+?)\s*#*\s*$/.exec(value);
   const match = standard ?? compactCjk;
   if (!match) return undefined;
@@ -284,24 +298,27 @@ function parseFenceOpen(value: string): FenceState | undefined {
 function isFenceClose(value: string, fence: FenceState): boolean {
   const trimmed = value.trim();
   if (!trimmed || trimmed[0] !== fence.marker) return false;
-  return trimmed.length >= fence.length
-    && Array.from(trimmed).every((character) => character === fence.marker);
+  return trimmed.length >= fence.length && Array.from(trimmed).every((character) => character === fence.marker);
 }
 
 function isPartialFenceClose(value: string, fence: FenceState): boolean {
   const trimmed = value.trim();
-  return trimmed.length > 0
-    && trimmed.length < fence.length
-    && Array.from(trimmed).every((character) => character === fence.marker);
+  return (
+    trimmed.length > 0 &&
+    trimmed.length < fence.length &&
+    Array.from(trimmed).every((character) => character === fence.marker)
+  );
 }
 
 function isIncompleteBlockMarker(value: string): boolean {
   const trimmed = value.trim();
-  return /^#{1,6}$/.test(trimmed)
-    || /^[-*+]$/.test(trimmed)
-    || /^\d+[.)]?$/.test(trimmed)
-    || /^-{1,2}$/.test(trimmed)
-    || /^~{1,2}$/.test(trimmed);
+  return (
+    /^#{1,6}$/.test(trimmed) ||
+    /^[-*+]$/.test(trimmed) ||
+    /^\d+[.)]?$/.test(trimmed) ||
+    /^-{1,2}$/.test(trimmed) ||
+    /^~{1,2}$/.test(trimmed)
+  );
 }
 
 function isHorizontalRule(value: string): boolean {
@@ -343,15 +360,14 @@ function renderTable(
   alignments: readonly TableAlignment[],
 ): string[] {
   const columnCount = Math.max(1, ...rows.map((row) => row.length));
-  const available = width - (columnCount * 3) - 1;
+  const available = width - columnCount * 3 - 1;
   if (available < columnCount * 6) {
     return renderCompactTable(rows, width, streaming);
   }
 
-  const naturalWidths = Array.from({ length: columnCount }, (_, column) => Math.max(
-    3,
-    ...rows.map((row) => visibleWidth(row[column] ?? "")),
-  ));
+  const naturalWidths = Array.from({ length: columnCount }, (_, column) =>
+    Math.max(3, ...rows.map((row) => visibleWidth(row[column] ?? ""))),
+  );
   // Allot each column up to 40% of available width so long paths can breathe
   // instead of being chopped at 24 chars and wrapped mid-filename.
   const columnCap = Math.max(8, Math.floor(available * 0.4));
@@ -375,7 +391,10 @@ function renderCompactTable(rows: readonly string[][], width: number, streaming:
   const headers = rows[0] ?? [];
   const records = rows.slice(1);
   if (records.length === 0) {
-    return wrapInlineSegments(withStyle(parseInline(headers.join("  "), streaming), { bold: true, color: "orange" }), width);
+    return wrapInlineSegments(
+      withStyle(parseInline(headers.join("  "), streaming), { bold: true, color: "orange" }),
+      width,
+    );
   }
   return records.flatMap((row, rowIndex) => {
     const lines = Array.from({ length: Math.max(headers.length, row.length) }, (_, column) => {
@@ -403,16 +422,20 @@ function renderTableRow(
   streaming: boolean,
   alignments: readonly TableAlignment[],
 ): string[] {
-  const cells = widths.map((cellWidth, index) => wrapInlineSegments(withStyle(
-    parseInline(row[index] ?? "", streaming),
-    header ? { bold: true, color: "orange" } : {},
-  ), cellWidth));
+  const cells = widths.map((cellWidth, index) =>
+    wrapInlineSegments(
+      withStyle(parseInline(row[index] ?? "", streaming), header ? { bold: true, color: "orange" } : {}),
+      cellWidth,
+    ),
+  );
   const height = Math.max(1, ...cells.map((cell) => cell.length));
   return Array.from({ length: height }, (_, lineIndex) => {
-    const content = cells.map((cell, column) => {
-      const item = cell[lineIndex] ?? "";
-      return ` ${padTableCell(item, widths[column] ?? 1, alignments[column] ?? "left")} `;
-    }).join(`${ANSI.gray}│${ANSI.reset}`);
+    const content = cells
+      .map((cell, column) => {
+        const item = cell[lineIndex] ?? "";
+        return ` ${padTableCell(item, widths[column] ?? 1, alignments[column] ?? "left")} `;
+      })
+      .join(`${ANSI.gray}│${ANSI.reset}`);
     return `${ANSI.gray}│${ANSI.reset}${content}${ANSI.gray}│${ANSI.reset}`;
   });
 }
@@ -446,22 +469,28 @@ function parseInline(value: string, streaming: boolean, inherited: InlineStyle =
         const targetEnd = value.indexOf(")", labelEnd + 2);
         if (targetEnd >= 0 || streaming) {
           if (image) pushSegment(output, "image: ", { ...inherited, color: "gray" });
-          appendSegments(output, parseInline(value.slice(labelStart, labelEnd), streaming, {
-            ...inherited,
-            color: image ? "gray" : "orange",
-            underline: !image,
-          }));
+          appendSegments(
+            output,
+            parseInline(value.slice(labelStart, labelEnd), streaming, {
+              ...inherited,
+              color: image ? "gray" : "orange",
+              underline: !image,
+            }),
+          );
           index = targetEnd >= 0 ? targetEnd + 1 : value.length;
           continue;
         }
       }
       if (streaming) {
         const partialEnd = labelEnd >= 0 ? labelEnd : value.length;
-        appendSegments(output, parseInline(value.slice(labelStart, partialEnd), true, {
-          ...inherited,
-          color: image ? "gray" : "orange",
-          underline: !image,
-        }));
+        appendSegments(
+          output,
+          parseInline(value.slice(labelStart, partialEnd), true, {
+            ...inherited,
+            color: image ? "gray" : "orange",
+            underline: !image,
+          }),
+        );
         index = labelEnd >= 0 ? labelEnd + 1 : value.length;
         continue;
       }
@@ -471,18 +500,24 @@ function parseInline(value: string, streaming: boolean, inherited: InlineStyle =
     if (marker) {
       const close = value.indexOf(marker.text, index + marker.text.length);
       if (close >= 0) {
-        appendSegments(output, parseInline(value.slice(index + marker.text.length, close), streaming, {
-          ...inherited,
-          ...marker.style,
-        }));
+        appendSegments(
+          output,
+          parseInline(value.slice(index + marker.text.length, close), streaming, {
+            ...inherited,
+            ...marker.style,
+          }),
+        );
         index = close + marker.text.length;
         continue;
       }
       if (streaming) {
-        appendSegments(output, parseInline(value.slice(index + marker.text.length), true, {
-          ...inherited,
-          ...marker.style,
-        }));
+        appendSegments(
+          output,
+          parseInline(value.slice(index + marker.text.length), true, {
+            ...inherited,
+            ...marker.style,
+          }),
+        );
         break;
       }
     }
@@ -518,10 +553,12 @@ function renderPrefixed(
 
 function wrapInlineSegments(segments: readonly InlineSegment[], width: number): string[] {
   const safeWidth = Math.max(1, Math.floor(width));
-  let units: InlineUnit[] = segments.flatMap((segment) => graphemes(segment.text).map((text) => ({
-    text,
-    style: segment.style,
-  })));
+  let units: InlineUnit[] = segments.flatMap((segment) =>
+    graphemes(segment.text).map((text) => ({
+      text,
+      style: segment.style,
+    })),
+  );
   if (!units.length) return [""];
   const lines: string[] = [];
 

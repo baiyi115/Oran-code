@@ -40,7 +40,11 @@ describe("Subagent worktree lifecycle", () => {
   it("preserves the worktree lease when the subagent leaves changes", async () => {
     const root = await createGitFixture("oran-subagent-dirty-");
     const provider = new FakeProvider([
-      toolResponse({ name: "write_file", arguments: { path: "changed.txt", content: "changed" }, createdAt: new Date().toISOString() }),
+      toolResponse({
+        name: "write_file",
+        arguments: { path: "changed.txt", content: "changed" },
+        createdAt: new Date().toISOString(),
+      }),
       textResponse("Done"),
     ]);
     const runner = createRunner(root, provider);
@@ -129,7 +133,12 @@ function createRunner(workspace: string, provider: ModelProvider): SubagentRunne
     workspace,
     registry,
     trace: new InMemoryTraceStore(),
-    baseConfig: createRuntimeConfig(workspace, baseModel, { providers: {}, agent: { maxSteps: 5, skipVerify: true } }, false),
+    baseConfig: createRuntimeConfig(
+      workspace,
+      baseModel,
+      { providers: {}, agent: { maxSteps: 5, skipVerify: true } },
+      false,
+    ),
     baseModel,
     providerFactory: () => provider,
     resolveModel: () => baseModel,
@@ -152,7 +161,15 @@ async function temporaryDirectory(prefix: string): Promise<string> {
 }
 
 async function commit(root: string, message: string): Promise<void> {
-  await runGit(root, ["-c", "user.name=Oran Test", "-c", "user.email=oran-test@example.invalid", "commit", "-m", message]);
+  await runGit(root, [
+    "-c",
+    "user.name=Oran Test",
+    "-c",
+    "user.email=oran-test@example.invalid",
+    "commit",
+    "-m",
+    message,
+  ]);
 }
 
 async function runGit(root: string, args: readonly string[]): Promise<string> {

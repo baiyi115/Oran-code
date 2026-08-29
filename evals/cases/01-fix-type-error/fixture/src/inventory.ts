@@ -1,16 +1,13 @@
-import { indexProducts, requireProduct } from './catalog.js';
-import type { InventoryLine, InventoryReport, Product, StockRecord, StockState } from './types.js';
+import { indexProducts, requireProduct } from "./catalog.js";
+import type { InventoryLine, InventoryReport, Product, StockRecord, StockState } from "./types.js";
 
 function stateFor(available: number, reorderPoint: number): StockState {
-  if (available === 0) return 'out';
-  if (available <= reorderPoint) return 'low';
-  return 'available';
+  if (available === 0) return "out";
+  if (available <= reorderPoint) return "low";
+  return "available";
 }
 
-export function buildInventoryReport(
-  products: readonly Product[],
-  records: readonly StockRecord[],
-): InventoryReport {
+export function buildInventoryReport(products: readonly Product[], records: readonly StockRecord[]): InventoryReport {
   const catalog = indexProducts(products);
   const lines: InventoryLine[] = records.map((record) => {
     const product = requireProduct(catalog, record.productId);
@@ -25,6 +22,6 @@ export function buildInventoryReport(
   return {
     lines,
     totalAvailable: lines.reduce((sum, line) => sum + line.availableUnits, 0),
-    outOfStockIds: lines.filter((line) => line.state === 'out').map((line) => line.product.id),
+    outOfStockIds: lines.filter((line) => line.state === "out").map((line) => line.product.id),
   };
 }

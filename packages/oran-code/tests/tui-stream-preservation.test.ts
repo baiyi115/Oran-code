@@ -19,6 +19,7 @@ function event(value: Record<string, unknown>): RuntimeEvent {
 }
 
 function visible(lines: string): string {
+  // eslint-disable-next-line no-control-regex -- 控制字符是刻意匹配的目标（ANSI 转义/文本清洗）
   return lines.replace(/\x1B\[[0-?]*[ -/]*[@-~]/g, "");
 }
 
@@ -36,16 +37,19 @@ describe("streamed TUI text preservation", () => {
     expect(state.transcript[0]).toMatchObject({ kind: "assistant", streaming: true });
     expect(staticTranscriptCount(state.transcript)).toBe(0);
 
-    reduceRuntimeEvent(state, event({
-      type: "assistant_end",
-      step: 0,
-      source: "turn",
-      attempt: 0,
-      text: expected,
-      toolCalls: [],
-      usage: {},
-      streamed: true,
-    }));
+    reduceRuntimeEvent(
+      state,
+      event({
+        type: "assistant_end",
+        step: 0,
+        source: "turn",
+        attempt: 0,
+        text: expected,
+        toolCalls: [],
+        usage: {},
+        streamed: true,
+      }),
+    );
 
     expect(state.transcript[0]).toMatchObject({ kind: "assistant", text: expected, streaming: false });
     expect(state.streaming).toBe(false);
@@ -56,7 +60,10 @@ describe("streamed TUI text preservation", () => {
     const state = createTuiState("D:\\workspace", "demo/chat");
 
     reduceRuntimeEvent(state, event({ type: "assistant_start", step: 0, source: "turn", attempt: 0, model: "chat" }));
-    reduceRuntimeEvent(state, event({ type: "assistant_delta", step: 0, source: "turn", attempt: 0, text: "部分回答仍然" }));
+    reduceRuntimeEvent(
+      state,
+      event({ type: "assistant_delta", step: 0, source: "turn", attempt: 0, text: "部分回答仍然" }),
+    );
     reduceRuntimeEvent(state, event({ type: "cancelled", message: "user cancelled" }));
 
     expect(state.transcript[0]).toMatchObject({ kind: "assistant", text: "部分回答仍然", streaming: false });
@@ -72,17 +79,23 @@ describe("streamed TUI text preservation", () => {
     ];
 
     for (const { input, expected } of cases) {
-      const streaming = renderMessage({
-        id: "assistant-streaming",
-        kind: "assistant",
-        text: input,
-        streaming: true,
-      }, 100).join("\n");
-      const completed = renderMessage({
-        id: "assistant-completed",
-        kind: "assistant",
-        text: input,
-      }, 100).join("\n");
+      const streaming = renderMessage(
+        {
+          id: "assistant-streaming",
+          kind: "assistant",
+          text: input,
+          streaming: true,
+        },
+        100,
+      ).join("\n");
+      const completed = renderMessage(
+        {
+          id: "assistant-completed",
+          kind: "assistant",
+          text: input,
+        },
+        100,
+      ).join("\n");
 
       expect(visible(streaming)).toContain(expected);
       expect(visible(completed)).toContain(expected);
@@ -90,12 +103,15 @@ describe("streamed TUI text preservation", () => {
   });
 
   it("renders a partial markdown table while it is still streaming", () => {
-    const lines = renderMessage({
-      id: "assistant-table",
-      kind: "assistant",
-      text: "| A | B |\n| --- | --- |\n| 1 |",
-      streaming: true,
-    }, 100);
+    const lines = renderMessage(
+      {
+        id: "assistant-table",
+        kind: "assistant",
+        text: "| A | B |\n| --- | --- |\n| 1 |",
+        streaming: true,
+      },
+      100,
+    );
 
     const rendered = visible(lines.join("\n"));
     expect(rendered).toContain("A");

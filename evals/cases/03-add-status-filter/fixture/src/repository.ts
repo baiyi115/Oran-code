@@ -1,4 +1,4 @@
-import type { Customer } from './types.js';
+import type { Customer } from "./types.js";
 
 export interface CustomerRepository {
   list(): readonly Customer[];

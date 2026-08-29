@@ -1,5 +1,11 @@
 import { describe, expect, it } from "vitest";
-import { approvalResponse, filterCommands, moveSelection, navigateHistory, redactSecrets } from "../src/tui/interaction.js";
+import {
+  approvalResponse,
+  filterCommands,
+  moveSelection,
+  navigateHistory,
+  redactSecrets,
+} from "../src/tui/interaction.js";
 
 describe("TUI interaction helpers", () => {
   it("wraps selection movement", () => {

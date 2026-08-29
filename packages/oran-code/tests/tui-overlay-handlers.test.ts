@@ -53,7 +53,9 @@ function harness(overrides: Partial<TuiState> = {}): Harness {
     onSessionDeleted: async (id) => {
       h.sessionsDeleted.push(id);
       h.sessionsLoaded = h.sessionsLoaded.filter((item) => item.id !== id);
-      return h.sessionsLoaded[0] ? { id: h.sessionsLoaded[0].id, name: h.sessionsLoaded[0].name, messages: [], history: [] } : undefined;
+      return h.sessionsLoaded[0]
+        ? { id: h.sessionsLoaded[0].id, name: h.sessionsLoaded[0].name, messages: [], history: [] }
+        : undefined;
     },
     onModelSelected: async (reference) => {
       h.modelsSelected.push(reference);
@@ -128,7 +130,13 @@ describe("OverlayHandlers", () => {
 
   it("selects a model on enter and closes the overlay", async () => {
     const h = harness();
-    h.state.overlay = { kind: "models", query: "", selectedIndex: 0, options: ["openai/a", "openai/b"], loading: false };
+    h.state.overlay = {
+      kind: "models",
+      query: "",
+      selectedIndex: 0,
+      options: ["openai/a", "openai/b"],
+      loading: false,
+    };
     h.handlers.handleModelKey("", down);
     expect(h.state.overlay).toMatchObject({ selectedIndex: 1 });
     h.handlers.handleModelKey("", enter);

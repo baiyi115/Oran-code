@@ -77,8 +77,10 @@ export function numericUsage(value: unknown): Record<string, number> {
       result.cache_write_tokens = created;
     }
   }
-  if (typeof source.cache_read_input_tokens === "number") result.cache_read_tokens = source.cache_read_input_tokens as number;
-  if (typeof source.cache_creation_input_tokens === "number") result.cache_write_tokens = source.cache_creation_input_tokens as number;
+  if (typeof source.cache_read_input_tokens === "number")
+    result.cache_read_tokens = source.cache_read_input_tokens as number;
+  if (typeof source.cache_creation_input_tokens === "number")
+    result.cache_write_tokens = source.cache_creation_input_tokens as number;
   return result;
 }
 

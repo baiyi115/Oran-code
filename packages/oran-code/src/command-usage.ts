@@ -40,10 +40,7 @@ export class CommandUsageTracker {
     this.now = options.now ?? Date.now;
   }
 
-  static async load(
-    workspace: string,
-    options: CommandUsageTrackerOptions = {},
-  ): Promise<CommandUsageTracker> {
+  static async load(workspace: string, options: CommandUsageTrackerOptions = {}): Promise<CommandUsageTracker> {
     const tracker = new CommandUsageTracker(workspace, options);
     await tracker.loadFromDisk();
     return tracker;
@@ -64,7 +61,7 @@ export class CommandUsageTracker {
     const entry = this.entries.get(normalizeCommandName(commandName));
     if (!entry) return 0;
     const ageDays = Math.max(0, at - Date.parse(entry.lastUsedAt)) / MILLISECONDS_PER_DAY;
-    const decay = Math.exp(-Math.LN2 * ageDays / this.halfLifeDays);
+    const decay = Math.exp((-Math.LN2 * ageDays) / this.halfLifeDays);
     return entry.count * Math.max(this.minimumWeight, decay);
   }
 
@@ -73,9 +70,12 @@ export class CommandUsageTracker {
     return [...this.entries.entries()]
       .map(([name, entry]) => ({ ...entry, name, score: this.score(name, at) }))
       .filter((entry) => entry.score > 0)
-      .sort((left, right) => right.score - left.score
-        || Date.parse(right.lastUsedAt) - Date.parse(left.lastUsedAt)
-        || left.name.localeCompare(right.name))
+      .sort(
+        (left, right) =>
+          right.score - left.score ||
+          Date.parse(right.lastUsedAt) - Date.parse(left.lastUsedAt) ||
+          left.name.localeCompare(right.name),
+      )
       .slice(0, Math.floor(limit));
   }
 
@@ -148,8 +148,5 @@ function positiveNumber(value: number | undefined, fallback: number): number {
 }
 
 function boundedNumber(value: number | undefined, fallback: number, minimum: number, maximum: number): number {
-  return value !== undefined && Number.isFinite(value)
-    ? Math.min(maximum, Math.max(minimum, value))
-    : fallback;
+  return value !== undefined && Number.isFinite(value) ? Math.min(maximum, Math.max(minimum, value)) : fallback;
 }
-

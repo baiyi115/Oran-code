@@ -42,19 +42,26 @@ export function registerPlanTools(registry: { register(tool: ToolDefinition): vo
       const goal = typeof call.arguments.goal === "string" ? call.arguments.goal.trim() : "";
       const rawSteps = Array.isArray(call.arguments.steps) ? call.arguments.steps : [];
       const steps: TaskPlanStep[] = rawSteps.map((s, idx) => {
-        const item = (s && typeof s === "object") ? s as Record<string, unknown> : {};
+        const item = s && typeof s === "object" ? (s as Record<string, unknown>) : {};
         const rawStatus = typeof item.status === "string" ? item.status : "pending";
-        const status = (rawStatus === "in_progress" || rawStatus === "completed" || rawStatus === "skipped") ? rawStatus : "pending";
+        const status =
+          rawStatus === "in_progress" || rawStatus === "completed" || rawStatus === "skipped" ? rawStatus : "pending";
         return {
           id: typeof item.id === "string" && item.id.trim() ? item.id.trim() : `step-${idx + 1}`,
           title: typeof item.title === "string" ? item.title.trim() : `Step ${idx + 1}`,
           status,
-          ...(typeof item.description === "string" && item.description.trim() ? { description: item.description.trim() } : {}),
+          ...(typeof item.description === "string" && item.description.trim()
+            ? { description: item.description.trim() }
+            : {}),
         };
       });
-      const currentStepIndex = typeof call.arguments.currentStepIndex === "number" && Number.isFinite(call.arguments.currentStepIndex)
-        ? Math.max(0, Math.min(call.arguments.currentStepIndex, Math.max(0, steps.length - 1)))
-        : Math.max(0, steps.findIndex((s) => s.status === "in_progress" || s.status === "pending"));
+      const currentStepIndex =
+        typeof call.arguments.currentStepIndex === "number" && Number.isFinite(call.arguments.currentStepIndex)
+          ? Math.max(0, Math.min(call.arguments.currentStepIndex, Math.max(0, steps.length - 1)))
+          : Math.max(
+              0,
+              steps.findIndex((s) => s.status === "in_progress" || s.status === "pending"),
+            );
 
       const completedCount = steps.filter((s) => s.status === "completed").length;
       return {

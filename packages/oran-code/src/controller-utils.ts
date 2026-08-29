@@ -4,7 +4,7 @@ import { readdir, readFile, stat } from "node:fs/promises";
 import { relative, resolve, sep } from "node:path";
 import { promisify } from "node:util";
 import { structuredPermissionDenial, type ApprovalDecision } from "./security.js";
-import { isMutatingToolName, isWriteToolName } from "./tools.js";
+import { isWriteToolName } from "./tools.js";
 import type { ContextManager } from "./context-manager.js";
 import type { AgentLoop } from "./loop.js";
 import type { Message, ModelResponse, ToolCall, ToolCallComplete, ToolResult } from "./types.js";
@@ -70,13 +70,12 @@ export function sleepWithSignal(ms: number, signal?: AbortSignal): Promise<void>
   if (signal?.aborted) return Promise.reject(new DOMException("operation aborted", "AbortError"));
   if (ms <= 0) return Promise.resolve();
   return new Promise((resolve, reject) => {
-    let timer: ReturnType<typeof setTimeout> | undefined;
     const onAbort = () => {
       if (timer) clearTimeout(timer);
       signal?.removeEventListener("abort", onAbort);
       reject(new DOMException("operation aborted", "AbortError"));
     };
-    timer = setTimeout(() => {
+    const timer = setTimeout(() => {
       signal?.removeEventListener("abort", onAbort);
       resolve();
     }, ms);
@@ -113,7 +112,9 @@ export function parseCompletedToolCall(raw: ToolCallComplete): ToolCall {
   try {
     argumentsValue = JSON.parse(raw.argumentsJson);
   } catch (error) {
-    throw new Error(`invalid arguments for completed tool call ${raw.index}: ${formatErrorMessage(error)}`);
+    throw new Error(`invalid arguments for completed tool call ${raw.index}: ${formatErrorMessage(error)}`, {
+      cause: error,
+    });
   }
   if (!argumentsValue || typeof argumentsValue !== "object" || Array.isArray(argumentsValue)) {
     throw new Error(`invalid arguments for completed tool call ${raw.index}: expected an object`);
@@ -127,9 +128,11 @@ export function parseCompletedToolCall(raw: ToolCallComplete): ToolCall {
 }
 
 export function sameToolCall(left: ToolCall, right: ToolCall): boolean {
-  return left.id === right.id
-    && left.name === right.name
-    && JSON.stringify(left.arguments) === JSON.stringify(right.arguments);
+  return (
+    left.id === right.id &&
+    left.name === right.name &&
+    JSON.stringify(left.arguments) === JSON.stringify(right.arguments)
+  );
 }
 
 export function tokenBudgetMessage(loop: AgentLoop, budget: number): string {
@@ -149,16 +152,11 @@ export function withRuntimeReminders(messages: readonly Message[], reminders: re
 }
 
 export function usageAnchorMessages(messages: readonly Message[], response: ModelResponse): Message[] {
-  return [
-    ...messages,
-    { role: "assistant", content: response.text, toolCalls: response.toolCalls },
-  ];
+  return [...messages, { role: "assistant", content: response.text, toolCalls: response.toolCalls }];
 }
 
 export function summarizeArguments(argumentsValue: Record<string, unknown>): Record<string, unknown> {
-  return Object.fromEntries(
-    Object.entries(argumentsValue).map(([key, value]) => [key, summarizeValue(value)]),
-  );
+  return Object.fromEntries(Object.entries(argumentsValue).map(([key, value]) => [key, summarizeValue(value)]));
 }
 
 export function formatCallArguments(argumentsValue: Record<string, unknown>): string {
@@ -187,33 +185,39 @@ export function summarizeMessageTail(messages: readonly Message[]): Array<Record
 
 export function fingerprintRequest(messages: readonly Message[]): string {
   return createHash("sha256")
-    .update(JSON.stringify(messages.map((message) => ({
-      role: message.role,
-      name: message.name,
-      toolCallId: message.toolCallId,
-      content: message.content ?? "",
-      toolCalls: message.toolCalls?.map((call) => ({
-        id: call.id,
-        name: call.name,
-        arguments: call.arguments,
-      })),
-    }))))
+    .update(
+      JSON.stringify(
+        messages.map((message) => ({
+          role: message.role,
+          name: message.name,
+          toolCallId: message.toolCallId,
+          content: message.content ?? "",
+          toolCalls: message.toolCalls?.map((call) => ({
+            id: call.id,
+            name: call.name,
+            arguments: call.arguments,
+          })),
+        })),
+      ),
+    )
     .digest("hex")
     .slice(0, 16);
 }
 
 export function fingerprintResponse(response: ModelResponse): string {
   return createHash("sha256")
-    .update(JSON.stringify({
-      text: response.text,
-      reasoning: response.reasoning ?? "",
-      toolCalls: response.toolCalls.map((call) => ({
-        id: call.id,
-        name: call.name,
-        arguments: call.arguments,
-      })),
-      finishReason: response.finishReason,
-    }))
+    .update(
+      JSON.stringify({
+        text: response.text,
+        reasoning: response.reasoning ?? "",
+        toolCalls: response.toolCalls.map((call) => ({
+          id: call.id,
+          name: call.name,
+          arguments: call.arguments,
+        })),
+        finishReason: response.finishReason,
+      }),
+    )
     .digest("hex")
     .slice(0, 16);
 }
@@ -231,7 +235,10 @@ function summarizeValue(value: unknown): unknown {
   return value;
 }
 
-export async function fileHash(workspace: string, call: ToolCall): Promise<{ path: string; hash: string | null } | undefined> {
+export async function fileHash(
+  workspace: string,
+  call: ToolCall,
+): Promise<{ path: string; hash: string | null } | undefined> {
   if (!isWriteToolName(call.name)) return undefined;
   const path = resolve(workspace, String(call.arguments.path ?? ""));
   const root = resolve(workspace);
@@ -245,23 +252,34 @@ export async function fileHash(workspace: string, call: ToolCall): Promise<{ pat
   }
 }
 
-const FINGERPRINT_IGNORED = new Set([...PROJECT_STATE_DIR_NAMES, ".git", ".venv", "venv", "node_modules", "dist", "build", "__pycache__"]);
+const FINGERPRINT_IGNORED = new Set([
+  ...PROJECT_STATE_DIR_NAMES,
+  ".git",
+  ".venv",
+  "venv",
+  "node_modules",
+  "dist",
+  "build",
+  "__pycache__",
+]);
 const WORKSPACE_FINGERPRINT_TIMEOUT_MS = 750;
 const WORKSPACE_FINGERPRINT_MAX_ENTRIES = 10_000;
 
 export function inferToolKind(name: string): "readonly" | "write" | "command" {
   if (isWriteToolName(name)) return "write";
-  if (["list_files", "read_file", "glob_files", "search_code", "git_status", "get_diff"].includes(name)) return "readonly";
+  if (["list_files", "read_file", "glob_files", "search_code", "git_status", "get_diff"].includes(name))
+    return "readonly";
   return "command";
 }
 
 export async function workspaceFingerprint(root: string): Promise<string> {
   try {
-    const result = await execFileAsync(
-      "git",
-      ["-C", root, "status", "--porcelain=v1", "--untracked-files=all"],
-      { encoding: "utf8", maxBuffer: 1024 * 1024, timeout: WORKSPACE_FINGERPRINT_TIMEOUT_MS, windowsHide: true },
-    );
+    const result = await execFileAsync("git", ["-C", root, "status", "--porcelain=v1", "--untracked-files=all"], {
+      encoding: "utf8",
+      maxBuffer: 1024 * 1024,
+      timeout: WORKSPACE_FINGERPRINT_TIMEOUT_MS,
+      windowsHide: true,
+    });
     return `git:${result.stdout.split(/\r?\n/).filter(Boolean).sort().join("\n")}`;
   } catch {
     return collectWorkspaceEntries(resolve(root));

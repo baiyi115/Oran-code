@@ -35,7 +35,7 @@ function normalizeHookConfig(value: unknown): HookConfig {
   if (!actionRaw || typeof actionRaw !== "object" || Array.isArray(actionRaw)) return invalidHookConfig();
   const action = actionRaw as Record<string, unknown>;
   const config: HookConfig = {
-    event: typeof item.event === "string" ? (item.event as HookConfig["event"]) : "" as HookConfig["event"],
+    event: typeof item.event === "string" ? (item.event as HookConfig["event"]) : ("" as HookConfig["event"]),
     action: {
       type: (typeof action.type === "string" ? action.type : "") as HookConfig["action"]["type"],
       ...(typeof action.command === "string" ? { command: action.command } : {}),
@@ -128,13 +128,18 @@ export function createHookEngineDeps(options: {
         const requestInit: Record<string, unknown> = { method: init.method };
         if (init.headers) requestInit.headers = init.headers;
         if (init.body !== undefined) requestInit.body = init.body;
-        const response = await (globalThis as unknown as {
-          fetch: (input: string, init?: Record<string, unknown>) => Promise<{
-            ok: boolean;
-            status: number;
-            text: () => Promise<string>;
-          }>;
-        }).fetch(url, requestInit);
+        const response = await (
+          globalThis as unknown as {
+            fetch: (
+              input: string,
+              init?: Record<string, unknown>,
+            ) => Promise<{
+              ok: boolean;
+              status: number;
+              text: () => Promise<string>;
+            }>;
+          }
+        ).fetch(url, requestInit);
         const body = await response.text();
         return { ok: response.ok, status: response.status, body };
       } catch (error) {
@@ -149,12 +154,15 @@ export function createHookEngineDeps(options: {
   return deps;
 }
 
-export async function createHookEngine(workspace: string, options: {
-  defaultCommandTimeoutMs: number;
-  log?: (message: string) => void;
-  subAgentExecutor?: HookSubAgentExecutor;
-  sessionMessages?: HookEngineDeps["sessionMessages"];
-}): Promise<{ engine: HookEngine; notices: HookNoticeQueue; errors: readonly HookValidationError[] }> {
+export async function createHookEngine(
+  workspace: string,
+  options: {
+    defaultCommandTimeoutMs: number;
+    log?: (message: string) => void;
+    subAgentExecutor?: HookSubAgentExecutor;
+    sessionMessages?: HookEngineDeps["sessionMessages"];
+  },
+): Promise<{ engine: HookEngine; notices: HookNoticeQueue; errors: readonly HookValidationError[] }> {
   const notices = new HookNoticeQueue();
   const depsOptions: {
     notices: HookNoticeQueue;

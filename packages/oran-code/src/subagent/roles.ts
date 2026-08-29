@@ -12,7 +12,8 @@ export const BUILTIN_AGENT_DEFINITIONS: readonly AgentDefinition[] = Object.free
   Object.freeze({
     name: "general",
     description: "General-purpose coding subagent for bounded implementation and analysis tasks.",
-    prompt: "You are a focused coding subagent. Complete only the assigned task, use tools directly, and return a concise result.",
+    prompt:
+      "You are a focused coding subagent. Complete only the assigned task, use tools directly, and return a concise result.",
     allowedTools: Object.freeze([]),
     deniedTools: Object.freeze([]),
     scope: "builtin" as const,
@@ -20,7 +21,8 @@ export const BUILTIN_AGENT_DEFINITIONS: readonly AgentDefinition[] = Object.free
   Object.freeze({
     name: "plan",
     description: "Read-only planning subagent for implementation plans and dependency analysis.",
-    prompt: "You are a planning subagent. Inspect the codebase, identify constraints, and return an actionable implementation plan without modifying files.",
+    prompt:
+      "You are a planning subagent. Inspect the codebase, identify constraints, and return an actionable implementation plan without modifying files.",
     allowedTools: Object.freeze([]),
     deniedTools: Object.freeze(["write_file", "apply_patch", "run_command"]),
     permissionMode: "plan" as const,
@@ -30,7 +32,8 @@ export const BUILTIN_AGENT_DEFINITIONS: readonly AgentDefinition[] = Object.free
   Object.freeze({
     name: "explore",
     description: "Read-only exploration subagent for locating code, behavior, and integration boundaries.",
-    prompt: "You are an exploration subagent. Search and read the codebase efficiently, do not modify files, and report concrete findings with paths.",
+    prompt:
+      "You are an exploration subagent. Search and read the codebase efficiently, do not modify files, and report concrete findings with paths.",
     allowedTools: Object.freeze([]),
     deniedTools: Object.freeze(["write_file", "apply_patch", "run_command"]),
     permissionMode: "plan" as const,
@@ -49,7 +52,10 @@ export class AgentDefinitionLoader {
   private snapshot = new Map<string, AgentDefinition>();
   private initialized = false;
 
-  constructor(readonly workspace: string, directories: Partial<AgentDefinitionDirectories> = {}) {
+  constructor(
+    readonly workspace: string,
+    directories: Partial<AgentDefinitionDirectories> = {},
+  ) {
     this.workspace = resolve(workspace);
     this.directories = {
       user: directories.user ?? resolve(userDataRoot(), "agents"),
@@ -61,7 +67,10 @@ export class AgentDefinitionLoader {
     if (this.initialized) return this.list();
     const loaded = new Map<string, AgentDefinition>();
     for (const definition of BUILTIN_AGENT_DEFINITIONS) loaded.set(definition.name, definition);
-    for (const [scope, directory] of [["user", this.directories.user], ["project", this.directories.project]] as const) {
+    for (const [scope, directory] of [
+      ["user", this.directories.user],
+      ["project", this.directories.project],
+    ] as const) {
       for (const filePath of await collectMarkdownFiles(directory)) {
         const definition = await loadAgentDefinition(filePath, scope);
         if (definition) loaded.set(definition.name, definition);
@@ -94,7 +103,10 @@ async function collectMarkdownFiles(directory: string): Promise<readonly string[
   }
 }
 
-async function loadAgentDefinition(filePath: string, scope: AgentDefinitionScope): Promise<AgentDefinition | undefined> {
+async function loadAgentDefinition(
+  filePath: string,
+  scope: AgentDefinitionScope,
+): Promise<AgentDefinition | undefined> {
   try {
     return parseAgentDefinition(await readFile(filePath, "utf8"), scope, filePath);
   } catch {
@@ -113,7 +125,10 @@ function parseAgentDefinition(raw: string, scope: AgentDefinitionScope, filePath
   if (!isRecord(metadata)) return undefined;
   const name = stringValue(metadata.name)?.toLowerCase();
   const description = stringValue(metadata.description);
-  const prompt = lines.slice(closing + 1).join("\n").trim();
+  const prompt = lines
+    .slice(closing + 1)
+    .join("\n")
+    .trim();
   if (!name || !AGENT_NAME.test(name) || !description || !prompt) return undefined;
   const allowedTools = stringArray(metadata.allowedTools ?? metadata["allowed-tools"]);
   const deniedTools = stringArray(metadata.deniedTools ?? metadata["denied-tools"]);
@@ -127,7 +142,12 @@ function parseAgentDefinition(raw: string, scope: AgentDefinitionScope, filePath
   const forceBackgroundValue = metadata.forceBackground ?? metadata["force-background"];
   if (forceBackgroundValue !== undefined && typeof forceBackgroundValue !== "boolean") return undefined;
   const isolationModeValue = metadata.isolation ?? metadata.isolationMode ?? metadata["isolation-mode"];
-  if (isolationModeValue !== undefined && isolationModeValue !== "shared-workspace" && isolationModeValue !== "worktree") return undefined;
+  if (
+    isolationModeValue !== undefined &&
+    isolationModeValue !== "shared-workspace" &&
+    isolationModeValue !== "worktree"
+  )
+    return undefined;
   const skills = optionalStringArray(metadata.skills);
   const mcpServers = optionalStringArray(metadata.mcpServers ?? metadata["mcp-servers"]);
   if (skills === null || mcpServers === null) return undefined;
@@ -180,4 +200,3 @@ function optionalStringArray(value: unknown): string[] | undefined | null {
 function optionalPositiveInteger(value: unknown): number | undefined {
   return typeof value === "number" && Number.isInteger(value) && value > 0 ? value : undefined;
 }
-

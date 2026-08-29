@@ -1,14 +1,27 @@
 import { createInterface, type CompleterResult, type Interface } from "node:readline";
 import { exec } from "node:child_process";
 import { existsSync } from "node:fs";
-import { mkdir, readFile, readdir, writeFile } from "node:fs/promises";
+import { mkdir, readFile, writeFile } from "node:fs/promises";
 import { promisify } from "node:util";
 import { dirname, resolve } from "node:path";
-import { legacyUserHistoryPath, loadConfig, loadConfigFile, resolveModelConfig, saveConfig, userConfigReadPath, userHistoryPath } from "./config.js";
-import { CommandRegistry, completeInput, formatModelReference, modelCandidates, type SlashCommand } from "./commands.js";
+import {
+  legacyUserHistoryPath,
+  loadConfig,
+  loadConfigFile,
+  resolveModelConfig,
+  saveConfig,
+  userConfigReadPath,
+  userHistoryPath,
+} from "./config.js";
+import {
+  CommandRegistry,
+  completeInput,
+  formatModelReference,
+  modelCandidates,
+  type SlashCommand,
+} from "./commands.js";
 import { createModelProvider } from "./provider.js";
 import { createRuntimeConfig } from "./runtime.js";
-import { isAbortError } from "./utils/abort-error.js";
 import { ApprovalQueue, isApprovalAnswer } from "./approval-queue.js";
 import { SessionTitleService } from "./session-title.js";
 import { MemoryExtractionScheduler } from "./memory-extraction.js";
@@ -20,32 +33,58 @@ import {
   configuredPermissionMode,
   createSessionGapReminder,
   isReusableBlankSession,
-  sessionOptionsFromStore,
-  toSessionView as toSessionViewOf,
   workModeForPermission,
 } from "./session-lifecycle.js";
-import { SessionCrudService, type SessionCrudPort } from "./session-crud.js";
+import { SessionCrudService } from "./session-crud.js";
 import { TerminalRenderer, createPromptHooks, type SessionRenderer } from "./renderer.js";
-import { PERMISSION_MODES, createTask } from "./types.js";
-import { displaySessionName, firstConversationPrompt, isAutomaticSessionName, SessionStore, truncateSessionName, type StoredSession } from "./session-store.js";
-import type { ApprovalResponse, Message, ModelConfig, ModelProvider, ModelReference, OptionalSystemPromptModules, PermissionMode, ReasoningEffort, RuntimeEvent, RuntimeEventPayloads, SessionTitleMode, Task, ToolCall, ToolDefinition, ToolResult, UserConfig, WorkMode } from "./types.js";
-import type { ConnectInput, ConnectModelOption, SessionOption, SessionView, TuiRenderCommitKind } from "./tui/types.js";
-import type { ModelProfile, ProviderOptions, ProviderProfile } from "./types.js";
+import { createTask } from "./types.js";
+import { displaySessionName, isAutomaticSessionName, SessionStore, type StoredSession } from "./session-store.js";
+import type {
+  ApprovalResponse,
+  Message,
+  ModelConfig,
+  ModelProvider,
+  ModelReference,
+  OptionalSystemPromptModules,
+  PermissionMode,
+  ReasoningEffort,
+  RuntimeEvent,
+  RuntimeEventPayloads,
+  SessionTitleMode,
+  Task,
+  ToolCall,
+  ToolDefinition,
+  ToolResult,
+  UserConfig,
+  WorkMode,
+} from "./types.js";
+import type { ConnectModelOption, TuiRenderCommitKind } from "./tui/types.js";
 import { WorkspaceFileIndex } from "./tui/composer/file-completion.js";
 import { formatErrorMessage } from "./error-format.js";
 import { registerDynamicMarkdownCommands } from "./dynamic-commands.js";
 import { CommandUsageTracker } from "./command-usage.js";
-import { assertSkillTools, registerSkillCommands, renderSkillPrompt, SkillLoader, type SkillDefinition } from "./skills.js";
+import {
+  assertSkillTools,
+  registerSkillCommands,
+  renderSkillPrompt,
+  SkillLoader,
+  type SkillDefinition,
+} from "./skills.js";
 import { MemoryManager } from "./memory-manager.js";
 import type { HookEngine, HookSubAgentExecutor } from "./hook/index.js";
-import { CLI_NAME, ensureProjectStateRoot, migrateUserDataOutOfWorkspace, PRODUCT_NAME, projectStateRoot, userTraceRoot } from "./paths.js";
+import {
+  CLI_NAME,
+  ensureProjectStateRoot,
+  migrateUserDataOutOfWorkspace,
+  PRODUCT_NAME,
+  userTraceRoot,
+} from "./paths.js";
 import type { SubagentOrigin } from "./subagent/types.js";
 import type { ContextManager } from "./context-manager.js";
 import type { TaskController } from "./controller.js";
 import type { SqliteTraceStore } from "./trace.js";
 import type { ToolRegistry } from "./tools.js";
 import type { InkTuiApp } from "./tui/ink-app.js";
-import type { MemoryExtractor } from "./memory-extractor.js";
 import type { BackgroundAgentTaskManager } from "./subagent/background.js";
 import type { AgentDefinitionLoader } from "./subagent/roles.js";
 import type { SubagentRunner } from "./subagent/runner.js";
@@ -63,7 +102,6 @@ const loadHookFacade = () => import("./hook/index.js");
 const loadContextManager = () => import("./context-manager.js");
 const loadTools = () => import("./tools.js");
 const loadTrace = () => import("./trace.js");
-const loadMemoryExtractor = () => import("./memory-extractor.js");
 const loadProjectInstructionsMod = () => import("./project-instructions.js");
 const loadSubagentBackground = () => import("./subagent/background.js");
 const loadSubagentAssembly = () => import("./subagent/assembly.js");
@@ -181,7 +219,11 @@ export class TerminalSession {
   private agentRuntimePromise: Promise<AgentRuntimeServices> | undefined;
   private agentStateRestore: Promise<void> | undefined;
 
-  constructor(options: SessionOptions, input: NodeJS.ReadableStream = process.stdin, output: NodeJS.WriteStream = process.stdout) {
+  constructor(
+    options: SessionOptions,
+    input: NodeJS.ReadableStream = process.stdin,
+    output: NodeJS.WriteStream = process.stdout,
+  ) {
     this.workspace = resolve(options.workspace);
     this.debugLogSink = createDebugLogSink(this.workspace);
     this.debugTracker = new StreamDebugTracker((message) => this.debugLogSink(message));
@@ -197,11 +239,15 @@ export class TerminalSession {
       persistTuiSession: (includeTuiSnapshot) => this.persistTuiSession(includeTuiSnapshot),
       sessionStore: this.sessionStore,
       currentSession: () => this.currentSession,
-      setCurrentSession: (session) => { this.currentSession = session; },
+      setCurrentSession: (session) => {
+        this.currentSession = session;
+      },
       sessionName: (session) => this.sessionName(session),
       model: () => this.model,
       modelWarning: () => this.modelWarning,
-      setModelWarning: (warning) => { this.modelWarning = warning; },
+      setModelWarning: (warning) => {
+        this.modelWarning = warning;
+      },
       explicitModel: () => this.explicitModel,
       modelReference: (model) => this.modelReference(model),
       interactionRunning: () => this.interactionRunning(),
@@ -210,25 +256,43 @@ export class TerminalSession {
       waitForInteraction: () => this.waitForInteraction(),
       restoreStoredSession: (stored, applyModel) => this.restoreStoredSession(stored, applyModel),
       refreshTui: () => this.refreshTui(),
-      clearFollowUps: () => { this.followUps.splice(0); },
-      clearPendingPlanExecute: () => { this.pendingPlanExecute = undefined; },
+      clearFollowUps: () => {
+        this.followUps.splice(0);
+      },
+      clearPendingPlanExecute: () => {
+        this.pendingPlanExecute = undefined;
+      },
       previousPlanPermissionMode: () => this.previousPlanPermissionMode,
-      setPreviousPlanPermissionMode: (mode) => { this.previousPlanPermissionMode = mode; },
-      bumpSessionGeneration: () => { this.sessionGeneration += 1; },
-      setConversation: (messages) => { this.conversation = messages; },
+      setPreviousPlanPermissionMode: (mode) => {
+        this.previousPlanPermissionMode = mode;
+      },
+      bumpSessionGeneration: () => {
+        this.sessionGeneration += 1;
+      },
+      setConversation: (messages) => {
+        this.conversation = messages;
+      },
       resetHookOnce: () => {
         this.hookEngine?.resetOnce();
         this.hookEngine?.drainNotices();
       },
       refreshSessionKnowledge: () => this.refreshSessionKnowledge(),
-      deleteContextManager: (sessionId) => { this.contextManagers.delete(sessionId); },
+      deleteContextManager: (sessionId) => {
+        this.contextManagers.delete(sessionId);
+      },
       ensureCurrentContextManager: () => this.currentContextManager(),
       permissionMode: () => this.permissionMode,
-      setPermissionMode: (mode) => { this.permissionMode = mode; },
+      setPermissionMode: (mode) => {
+        this.permissionMode = mode;
+      },
       workMode: () => this.workMode,
-      setWorkMode: (mode) => { this.workMode = mode; },
+      setWorkMode: (mode) => {
+        this.workMode = mode;
+      },
       reasoningEffort: () => this.reasoningEffort,
-      setReasoningEffort: (value) => { this.reasoningEffort = value; },
+      setReasoningEffort: (value) => {
+        this.reasoningEffort = value;
+      },
     });
     this.handlers = new SessionCommandHandlers(this.handlersPort());
     this.workspaceFileIndex = new WorkspaceFileIndex(this.workspace);
@@ -248,7 +312,9 @@ export class TerminalSession {
       workspace: this.workspace,
       config: () => this.config,
       conversation: () => this.conversation,
-      persistSession: () => { void this.persistTuiSession(); },
+      persistSession: () => {
+        void this.persistTuiSession();
+      },
       onError: (message) => this.renderer.error(message),
       onConnected: () => this.refreshTui(),
     });
@@ -279,7 +345,9 @@ export class TerminalSession {
       renderer: () => this.renderer,
       initializeCommandIntegrations: () => this.initializeCommandIntegrations(),
       commands: () => this.commandRegistry,
-      recordCommandUsage: (name) => { this.commandUsage?.record(name); },
+      recordCommandUsage: (name) => {
+        this.commandUsage?.record(name);
+      },
       handleSkillCommand: (name, argument) => this.handleSkillCommand(name, argument),
       submitUserPrompt: (prompt) => this.submitUserPrompt(prompt),
       interactionRunning: () => this.interactionRunning(),
@@ -289,11 +357,15 @@ export class TerminalSession {
         await this.launchTask(prompt, true, false, true);
       },
       createSession: (name) => this.crud.createSession(name),
-      handleModel: async (argument) => { await this.handlers.handleModel(argument); },
+      handleModel: async (argument) => {
+        await this.handlers.handleModel(argument);
+      },
       handleConnect: (argument) => this.handlers.handleConnect(argument),
       handleSessionCommand: (argument) => this.handlers.handleSessionCommand(argument),
       handlePermissionCommand: (argument) => this.handlers.handlePermissionCommand(argument),
-      changePermissionMode: async (mode) => { await this.handlers.changePermissionMode(mode); },
+      changePermissionMode: async (mode) => {
+        await this.handlers.changePermissionMode(mode);
+      },
       runManualCompaction: () => this.handlers.runManualCompaction(),
       clearTranscript: async () => {
         this.renderer.clearTranscript();
@@ -380,10 +452,10 @@ export class TerminalSession {
         loadSubagentTeam(),
         loadSnapshot(),
       ]);
-     const agentStateStore = new AgentStateStore(this.workspace);
-     const runtime: AgentRuntimeServices = {
-       agentDefinitionLoader: new AgentDefinitionLoader(this.workspace),
-       agentStateStore,
+      const agentStateStore = new AgentStateStore(this.workspace);
+      const runtime: AgentRuntimeServices = {
+        agentDefinitionLoader: new AgentDefinitionLoader(this.workspace),
+        agentStateStore,
         backgroundAgents: new BackgroundAgentTaskManager(
           agentStateStore,
           () => this.flushBackgroundNotifications(),
@@ -407,12 +479,13 @@ export class TerminalSession {
     if (inkReady) void inkReady.catch(() => undefined);
     await ensureProjectStateRoot(this.workspace);
     // First paint only needs history + a blank session. Heavy integrations load in the background.
-    const [history] = await Promise.all([
-      loadHistory(),
-      this.openSessionStore(),
-    ]);
-    void this.ensureAgentStateRestored().catch((error) => this.writeDebugLog(`agent state restore failed: ${String(error)}`));
-    void this.initializeCommandIntegrations().then(() => this.refreshTui()).catch((error) => this.writeDebugLog(`command integrations failed: ${String(error)}`));
+    const [history] = await Promise.all([loadHistory(), this.openSessionStore()]);
+    void this.ensureAgentStateRestored().catch((error) =>
+      this.writeDebugLog(`agent state restore failed: ${String(error)}`),
+    );
+    void this.initializeCommandIntegrations()
+      .then(() => this.refreshTui())
+      .catch((error) => this.writeDebugLog(`command integrations failed: ${String(error)}`));
     void this.openTrace().catch((error) => this.writeDebugLog(`trace open failed: ${String(error)}`));
     if (isTty) {
       try {
@@ -504,7 +577,8 @@ export class TerminalSession {
   private async submitUserPrompt(input: string): Promise<void> {
     if (this.hasPendingApprovals()) {
       if (isApprovalAnswer(input)) this.resolveApproval(input);
-      else if (input.startsWith("!")) this.renderer.error("finish or cancel the current task before running a shell command");
+      else if (input.startsWith("!"))
+        this.renderer.error("finish or cancel the current task before running a shell command");
       else this.enqueueFollowUp(input);
       return;
     }
@@ -541,7 +615,10 @@ export class TerminalSession {
         customDeniedTools: ["agent"],
         abortController,
       });
-      const job = run.then(() => undefined, () => undefined);
+      const job = run.then(
+        () => undefined,
+        () => undefined,
+      );
       this.hookSubagentJobs.add(job);
       try {
         const result = await run;
@@ -564,7 +641,13 @@ export class TerminalSession {
       const { createHookEngine } = await loadHookFacade();
       const built = await createHookEngine(this.workspace, {
         defaultCommandTimeoutMs: 60_000,
-        log: (message) => { try { this.renderer.status(message); } catch { /* ignore */ } },
+        log: (message) => {
+          try {
+            this.renderer.status(message);
+          } catch {
+            /* ignore */
+          }
+        },
         sessionMessages: () => this.conversation,
         subAgentExecutor,
       });
@@ -604,11 +687,7 @@ export class TerminalSession {
       throw error;
     }
     if (!isolated) await this.persistQueuedUserMessage(prompt);
-    await Promise.all([
-      this.ensureMcpReady(),
-      this.openTrace(),
-      this.initializeCommandIntegrations(),
-    ]);
+    await Promise.all([this.ensureMcpReady(), this.openTrace(), this.initializeCommandIntegrations()]);
     const [
       agentRuntime,
       { ToolRegistry, registerBuiltinTools },
@@ -630,12 +709,21 @@ export class TerminalSession {
     registerBuiltinTools(registry, this.workspace);
     this.registerMcpTools(registry);
     this.registerSkillSystemTools(registry);
-    if (derivedSkill) assertSkillTools(derivedSkill, registry.list().map((tool) => tool.name));
-    const selectedModel = derivedSkill?.model
-      ? resolveModelConfig(this.config, derivedSkill.model)
-      : this.model;
+    if (derivedSkill)
+      assertSkillTools(
+        derivedSkill,
+        registry.list().map((tool) => tool.name),
+      );
+    const selectedModel = derivedSkill?.model ? resolveModelConfig(this.config, derivedSkill.model) : this.model;
     const requestModel: ModelConfig = { ...selectedModel, reasoningEffort: this.reasoningEffort };
-    const runtimeConfig = createRuntimeConfig(this.workspace, requestModel, this.config, this.approveAll, this.workMode, this.permissionMode);
+    const runtimeConfig = createRuntimeConfig(
+      this.workspace,
+      requestModel,
+      this.config,
+      this.approveAll,
+      this.workMode,
+      this.permissionMode,
+    );
     runtimeConfig.skipVerify = this.skipVerify;
     const trace = this.trace;
     if (!trace) throw new Error("trace store is not initialized");
@@ -662,9 +750,8 @@ export class TerminalSession {
         baseModel: requestModel,
         providerFactory: this.providerFactory,
         resolveModel: (reference) => resolveModelConfig(this.config, reference),
-        approvalCallback: (call, level, description, requestId, origin) => (
-          this.requestApproval(call, level, description, origin, requestId)
-        ),
+        approvalCallback: (call, level, description, requestId, origin) =>
+          this.requestApproval(call, level, description, origin, requestId),
         approvalCancellationCallback: (origin) => this.cancelApprovalsForOrigin(origin),
         parentToolFilter,
         isMcpTool: (name) => this.mcp.isMcpTool(name),
@@ -678,7 +765,7 @@ export class TerminalSession {
       },
       joinStructuredForks,
       forkWaitTimeoutMs: runtimeConfig.subagent.forkWaitTimeoutMs,
-      parentConversation: () => isolated ? derivedConversation : this.conversation,
+      parentConversation: () => (isolated ? derivedConversation : this.conversation),
       resolveModel: (reference) => resolveModelConfig(this.config, reference),
     });
     const hookEngine = await this.ensureHookEngine(runner);
@@ -692,19 +779,25 @@ export class TerminalSession {
       contextManager: isolated
         ? new ContextManager({ workspace: this.workspace, conversation: derivedConversation })
         : await this.currentContextManager(),
-      approvalCallback: (call, level, description, requestId) => (
-        this.requestApproval(call, level, description, { kind: "main" }, requestId)
-      ),
+      approvalCallback: (call, level, description, requestId) =>
+        this.requestApproval(call, level, description, { kind: "main" }, requestId),
       eventCallback: (event) => this.onEvent(event),
-      ...(!isolated ? {
-        conversationCallback: (messages: readonly Message[]) => {
-          if (this.sessionGeneration !== sessionGeneration || this.taskGeneration !== taskGeneration || this.currentSession?.id !== sessionId) return;
-          // controller 的 syncConversation 传来的已是 cloneMessages 私有副本,
-          // 这里浅拷贝数组即可隔离后续 push/splice,免去每轮一次全量深拷贝。
-          this.conversation = [...messages];
-          this.scheduleTuiSessionPersist();
-        },
-      } : {}),
+      ...(!isolated
+        ? {
+            conversationCallback: (messages: readonly Message[]) => {
+              if (
+                this.sessionGeneration !== sessionGeneration ||
+                this.taskGeneration !== taskGeneration ||
+                this.currentSession?.id !== sessionId
+              )
+                return;
+              // controller 的 syncConversation 传来的已是 cloneMessages 私有副本,
+              // 这里浅拷贝数组即可隔离后续 push/splice,免去每轮一次全量深拷贝。
+              this.conversation = [...messages];
+              this.scheduleTuiSessionPersist();
+            },
+          }
+        : {}),
       stablePromptModules: this.stablePromptModules,
       runtimeReminders: () => {
         const reminders = derivedSkill
@@ -787,7 +880,13 @@ export class TerminalSession {
     }
   }
 
-  private launchTask(prompt: string, printErrors: boolean, queued = false, isolated = false, derivedSkill?: SkillDefinition): void {
+  private launchTask(
+    prompt: string,
+    printErrors: boolean,
+    queued = false,
+    isolated = false,
+    derivedSkill?: SkillDefinition,
+  ): void {
     if (queued) this.renderer.user(prompt, true);
     this.taskPromise = this.startTask(prompt, printErrors, isolated, derivedSkill)
       .catch((error) => {
@@ -820,7 +919,6 @@ export class TerminalSession {
     this.refreshTui();
   }
 
-
   private async resolvePendingPlan(input: string): Promise<boolean> {
     const pending = this.pendingPlanExecute;
     const sessionId = this.currentSession?.id ?? "session-current";
@@ -849,7 +947,14 @@ export class TerminalSession {
   }
 
   private async drainFollowUps(): Promise<void> {
-    if (this.queuePaused || this.taskRunning() || this.hasPendingApprovals() || this.pendingPlanExecute || this.quitRequested) return;
+    if (
+      this.queuePaused ||
+      this.taskRunning() ||
+      this.hasPendingApprovals() ||
+      this.pendingPlanExecute ||
+      this.quitRequested
+    )
+      return;
     const sessionId = this.currentSession?.id ?? "session-current";
     let next: FollowUpItem | undefined;
     while (this.followUps.length) {
@@ -905,10 +1010,7 @@ export class TerminalSession {
       .map((entry) => byName.get(entry.name))
       .filter((command): command is SlashCommand => command !== undefined);
     const recentNames = new Set(recent.map((command) => command.name));
-    return [
-      ...recent,
-      ...commands.filter((command) => !recentNames.has(command.name)),
-    ];
+    return [...recent, ...commands.filter((command) => !recentNames.has(command.name))];
   }
 
   private async currentContextManager(): Promise<ContextManager> {
@@ -929,18 +1031,15 @@ export class TerminalSession {
       loadProjectInstructions({ workspace: this.workspace }).catch(() => ""),
       this.memoryManager.buildSummary().catch(() => ""),
     ]);
-    const discoveredInstructions = [
-      `Current date: ${new Date().toISOString().slice(0, 10)}`,
-      projectInstructions,
-    ].filter((section) => section.trim()).join("\n\n");
-    const customInstructions = [
-      discoveredInstructions,
-      this.configuredStablePromptModules.customInstructions,
-    ].filter((section): section is string => Boolean(section?.trim())).join("\n\n---\n\n");
-    const longTermMemory = [
-      memorySummary,
-      this.configuredStablePromptModules.longTermMemory,
-    ].filter((section): section is string => Boolean(section?.trim())).join("\n\n---\n\n");
+    const discoveredInstructions = [`Current date: ${new Date().toISOString().slice(0, 10)}`, projectInstructions]
+      .filter((section) => section.trim())
+      .join("\n\n");
+    const customInstructions = [discoveredInstructions, this.configuredStablePromptModules.customInstructions]
+      .filter((section): section is string => Boolean(section?.trim()))
+      .join("\n\n---\n\n");
+    const longTermMemory = [memorySummary, this.configuredStablePromptModules.longTermMemory]
+      .filter((section): section is string => Boolean(section?.trim()))
+      .join("\n\n---\n\n");
     const {
       customInstructions: _configuredInstructions,
       longTermMemory: _configuredMemory,
@@ -970,14 +1069,14 @@ export class TerminalSession {
       conversation: [],
     };
     const stored = reusable
-      ? await this.sessionStore.update(reusable.id, {
+      ? ((await this.sessionStore.update(reusable.id, {
           name: "Current session",
           autoNamed: true,
           titleSource: "local",
           titleGenerationAttempted: false,
           ...defaults,
           ...(!this.model ? { modelReference: null } : {}),
-        }) ?? await this.sessionStore.create("Current session", defaults)
+        })) ?? (await this.sessionStore.create("Current session", defaults)))
       : await this.sessionStore.create("Current session", defaults);
     await this.restoreStoredSession(stored, !this.explicitModel);
   }
@@ -989,8 +1088,9 @@ export class TerminalSession {
     this.hookEngine?.drainNotices();
     this.currentSession = structuredClone(stored);
     this.previousPlanPermissionMode = undefined;
-    this.permissionMode = stored.permissionMode
-      ?? (stored.workMode === "plan" ? "plan" : configuredPermissionMode(this.config, this.approveAll));
+    this.permissionMode =
+      stored.permissionMode ??
+      (stored.workMode === "plan" ? "plan" : configuredPermissionMode(this.config, this.approveAll));
     this.workMode = workModeForPermission(this.permissionMode);
     this.reasoningEffort = stored.reasoningEffort ?? this.model?.reasoningEffort ?? "medium";
     this.modelWarning = undefined;
@@ -1011,8 +1111,9 @@ export class TerminalSession {
 
     await this.refreshSessionKnowledge();
     this.contextManagers.delete(stored.id);
-    this.conversation = structuredClone(stored.conversation ?? [])
-      .filter((message) => message.metadata?.promptBlock !== "session-gap-reminder");
+    this.conversation = structuredClone(stored.conversation ?? []).filter(
+      (message) => message.metadata?.promptBlock !== "session-gap-reminder",
+    );
     const gapReminder = createSessionGapReminder(stored.updatedAt);
     if (gapReminder) this.conversation.unshift(gapReminder);
     const manager = await this.currentContextManager();
@@ -1076,21 +1177,37 @@ export class TerminalSession {
       renderer: () => this.renderer,
       tui: () => this.tui,
       config: () => this.config,
-      setConfig: (config) => { this.config = config; },
+      setConfig: (config) => {
+        this.config = config;
+      },
       approveAll: () => this.approveAll,
       model: () => this.model,
-      setModel: (model) => { this.model = model; },
+      setModel: (model) => {
+        this.model = model;
+      },
       reasoningEffort: () => this.reasoningEffort,
-      setReasoningEffort: (value) => { this.reasoningEffort = value; },
+      setReasoningEffort: (value) => {
+        this.reasoningEffort = value;
+      },
       permissionMode: () => this.permissionMode,
-      setPermissionMode: (mode) => { this.permissionMode = mode; },
+      setPermissionMode: (mode) => {
+        this.permissionMode = mode;
+      },
       workMode: () => this.workMode,
-      setWorkMode: (mode) => { this.workMode = mode; },
+      setWorkMode: (mode) => {
+        this.workMode = mode;
+      },
       previousPlanPermissionMode: () => this.previousPlanPermissionMode,
-      setPreviousPlanPermissionMode: (mode) => { this.previousPlanPermissionMode = mode; },
-      clearPendingPlanExecute: () => { this.pendingPlanExecute = undefined; },
+      setPreviousPlanPermissionMode: (mode) => {
+        this.previousPlanPermissionMode = mode;
+      },
+      clearPendingPlanExecute: () => {
+        this.pendingPlanExecute = undefined;
+      },
       conversation: () => this.conversation,
-      setConversation: (messages) => { this.conversation = messages; },
+      setConversation: (messages) => {
+        this.conversation = messages;
+      },
       currentSessionId: () => this.currentSession?.id,
       sessionGeneration: () => this.sessionGeneration,
       interactionRunning: () => this.interactionRunning(),
@@ -1101,7 +1218,9 @@ export class TerminalSession {
       rememberModelPreference: (model) => this.rememberModelPreference(model),
       modelLabel: () => this.modelLabel(),
       modelWarning: () => this.modelWarning,
-      setModelWarning: (warning) => { this.modelWarning = warning; },
+      setModelWarning: (warning) => {
+        this.modelWarning = warning;
+      },
       selectSession: (id) => this.crud.selectSession(id),
       sessionStore: this.sessionStore,
       sessionName: (session) => this.sessionName(session),
@@ -1111,9 +1230,13 @@ export class TerminalSession {
       providerFactory: (model) => this.providerFactory(model),
       emitContextCompaction: (payload) => this.emitContextCompaction(payload),
       compactPromise: () => this.compactPromise,
-      setCompactPromise: (promise) => { this.compactPromise = promise; },
+      setCompactPromise: (promise) => {
+        this.compactPromise = promise;
+      },
       compactAbortController: () => this.compactAbortController,
-      setCompactAbortController: (controller) => { this.compactAbortController = controller; },
+      setCompactAbortController: (controller) => {
+        this.compactAbortController = controller;
+      },
       setPrompt: () => this.setPrompt(),
       prompt: () => this.prompt(),
     };
@@ -1131,22 +1254,34 @@ export class TerminalSession {
     const sessionId = session.id;
     const sessionGeneration = this.sessionGeneration;
     const taskGeneration = this.taskGeneration;
-    const conversation = structuredClone(this.conversation.filter((message) => message.metadata?.promptBlock !== "session-gap-reminder"));
+    const conversation = structuredClone(
+      this.conversation.filter((message) => message.metadata?.promptBlock !== "session-gap-reminder"),
+    );
     this.sessionSave = this.sessionSave.then(async () => {
       try {
-        if (this.sessionGeneration !== sessionGeneration || this.taskGeneration !== taskGeneration || this.currentSession?.id !== sessionId) return;
+        if (
+          this.sessionGeneration !== sessionGeneration ||
+          this.taskGeneration !== taskGeneration ||
+          this.currentSession?.id !== sessionId
+        )
+          return;
         const latest = this.sessionStore.find(sessionId) ?? session;
         const autoNamed = isAutomaticSessionName(latest);
         const titleSource = latest.titleSource ?? (autoNamed ? "local" : "manual");
-        const name = displaySessionName({
-          name: titleSource === "local" ? view?.name ?? latest.name : latest.name,
-          messages: view?.messages ?? latest.messages,
-          autoNamed,
-          titleSource,
-          ...(latest.archiveTitle ? { archiveTitle: latest.archiveTitle } : {}),
-        }, this.sessionTitleMode());
+        const name = displaySessionName(
+          {
+            name: titleSource === "local" ? (view?.name ?? latest.name) : latest.name,
+            messages: view?.messages ?? latest.messages,
+            autoNamed,
+            titleSource,
+            ...(latest.archiveTitle ? { archiveTitle: latest.archiveTitle } : {}),
+          },
+          this.sessionTitleMode(),
+        );
         const updated = await this.sessionStore.update(sessionId, {
-          ...(view ? { name, autoNamed, titleSource, messages: view.messages, history: view.history } : { name, autoNamed, titleSource }),
+          ...(view
+            ? { name, autoNamed, titleSource, messages: view.messages, history: view.history }
+            : { name, autoNamed, titleSource }),
           workMode: view?.workMode ?? this.workMode,
           permissionMode: view?.permissionMode ?? this.permissionMode,
           reasoningEffort: view?.reasoningEffort ?? this.reasoningEffort,
@@ -1179,15 +1314,17 @@ export class TerminalSession {
     if (event.type === "assistant_end") this.latestUsage = { ...event.usage };
     this.debugTracker.track(event);
     if (event.type === "context_compaction") {
-      this.writeDebugLog(JSON.stringify({
-        event: "context_compaction",
-        phase: event.phase,
-        reason: event.reason,
-        beforeTokens: event.beforeTokens,
-        afterTokens: event.afterTokens,
-        replacementCount: event.replacementCount,
-        message: event.message,
-      }));
+      this.writeDebugLog(
+        JSON.stringify({
+          event: "context_compaction",
+          phase: event.phase,
+          reason: event.reason,
+          beforeTokens: event.beforeTokens,
+          afterTokens: event.afterTokens,
+          replacementCount: event.replacementCount,
+          message: event.message,
+        }),
+      );
     }
     if (event.type === "plan_complete") {
       const sessionId = this.currentSession?.id ?? "session-current";
@@ -1299,7 +1436,10 @@ export class TerminalSession {
     this.registerMcpTools(registry);
     this.registerSkillSystemTools(registry);
     try {
-      assertSkillTools(skill, registry.list().map((tool) => tool.name));
+      assertSkillTools(
+        skill,
+        registry.list().map((tool) => tool.name),
+      );
     } catch (error) {
       this.renderer.error(formatErrorMessage(error));
       return;
@@ -1352,7 +1492,10 @@ export class TerminalSession {
           };
         }
         try {
-          assertSkillTools(skill, registry.list().map((tool) => tool.name));
+          assertSkillTools(
+            skill,
+            registry.list().map((tool) => tool.name),
+          );
           const prompt = renderSkillPrompt(skill);
           this.activeSkills.set(skill.name, { definition: skill, prompt });
           return { ok: true, output: prompt, summary: `activated Skill ${skill.name}` };
@@ -1380,7 +1523,8 @@ export class TerminalSession {
       invoke: async (call) => {
         const source = typeof call.arguments.source === "string" ? call.arguments.source.trim() : "";
         const name = typeof call.arguments.name === "string" ? call.arguments.name.trim() : undefined;
-        if (!source) return { ok: false, output: "", error: "Skill source is required.", summary: "skill installation failed" };
+        if (!source)
+          return { ok: false, output: "", error: "Skill source is required.", summary: "skill installation failed" };
         try {
           const installed = await this.skillLoader.install(source, name);
           await this.loadCommandRegistry();
@@ -1418,9 +1562,9 @@ export class TerminalSession {
   }
 
   private activeSkillReminders(): readonly string[] {
-    return [...this.activeSkills.values()].map(({ definition, prompt }) => (
-      this.formatActiveSkillReminder(definition.name, prompt)
-    ));
+    return [...this.activeSkills.values()].map(({ definition, prompt }) =>
+      this.formatActiveSkillReminder(definition.name, prompt),
+    );
   }
 
   private formatActiveSkillReminder(name: string, prompt: string): string {
@@ -1498,21 +1642,22 @@ export class TerminalSession {
       onSessionDeleted: (id) => this.crud.deleteSession(id),
       loadFollowUps: () => this.loadFollowUpOptions(),
       onFollowUpCancelled: (id) => this.cancelFollowUp(id),
-     loadFiles: (query) => this.loadWorkspaceFiles(query),
-     onSessionChanged: () => this.persistTuiSession(),
-     getFollowUpCount: () => this.followUps.length,
-      getBackgroundTasks: () => this.agentRuntime?.backgroundAgents.list().map((task) => ({
-        id: task.id,
-        name: task.name,
-        origin: task.origin,
-        definitionName: task.definitionName,
-        status: task.status,
-        startedAt: task.startedAt,
-        endedAt: task.endedAt,
-        error: task.error,
-      })) ?? [],
-     getSessionName: () => this.currentSession ? this.sessionName(this.currentSession) : "Current session",
-     getApprovalPolicy: () => this.permissionMode === "bypass" ? "all" : "ask",
+      loadFiles: (query) => this.loadWorkspaceFiles(query),
+      onSessionChanged: () => this.persistTuiSession(),
+      getFollowUpCount: () => this.followUps.length,
+      getBackgroundTasks: () =>
+        this.agentRuntime?.backgroundAgents.list().map((task) => ({
+          id: task.id,
+          name: task.name,
+          origin: task.origin,
+          definitionName: task.definitionName,
+          status: task.status,
+          startedAt: task.startedAt,
+          endedAt: task.endedAt,
+          error: task.error,
+        })) ?? [],
+      getSessionName: () => (this.currentSession ? this.sessionName(this.currentSession) : "Current session"),
+      getApprovalPolicy: () => (this.permissionMode === "bypass" ? "all" : "ask"),
       getWorkMode: () => this.workMode,
       getPermissionMode: () => this.permissionMode,
       onWorkModeChanged: async (mode) => {
@@ -1526,9 +1671,8 @@ export class TerminalSession {
           this.workMode = "plan";
         } else {
           if (mode !== this.workMode) this.pendingPlanExecute = undefined;
-          this.permissionMode = this.permissionMode === "plan"
-            ? this.handlers.permissionModeAfterPlan()
-            : this.permissionMode;
+          this.permissionMode =
+            this.permissionMode === "plan" ? this.handlers.permissionModeAfterPlan() : this.permissionMode;
           this.workMode = mode;
         }
         await this.persistTuiSession();
@@ -1555,11 +1699,10 @@ export class TerminalSession {
         return true;
       },
       getContextWindow: () => this.model?.contextWindow,
-      getModelReference: () => this.model
-        ? this.modelReference(this.model)
-        : this.currentSession?.modelReference,
+      getModelReference: () => (this.model ? this.modelReference(this.model) : this.currentSession?.modelReference),
       getModelWarning: () => this.modelWarning,
-      isInteractionBlocked: () => this.interactionRunning() || this.hasPendingApprovals() || this.pendingPlanExecute !== undefined,
+      isInteractionBlocked: () =>
+        this.interactionRunning() || this.hasPendingApprovals() || this.pendingPlanExecute !== undefined,
       history: this.currentSession?.history ?? history,
       ...(this.currentSession ? { initialSession: this.crud.toSessionView(this.currentSession) } : {}),
     });
@@ -1591,7 +1734,13 @@ export class TerminalSession {
     this.shellAbortController = abortController;
     const shellPromise = (async () => {
       try {
-        const result = await execAsync(command, { cwd: this.workspace, timeout: 60_000, maxBuffer: 2 * 1024 * 1024, windowsHide: true, signal: abortController.signal });
+        const result = await execAsync(command, {
+          cwd: this.workspace,
+          timeout: 60_000,
+          maxBuffer: 2 * 1024 * 1024,
+          windowsHide: true,
+          signal: abortController.signal,
+        });
         if (abortController.signal.aborted) {
           this.renderer.markdown(`$ ${command} (cancelled)`, "shell command cancelled");
         } else {
@@ -1604,7 +1753,9 @@ export class TerminalSession {
         } else {
           const item = error as { stdout?: string; stderr?: string; code?: unknown; killed?: boolean };
           const output = `${item.stdout ?? ""}${item.stderr ?? ""}`.trim();
-          this.renderer.error(`shell command failed (exit ${String(item.code ?? "unknown")})${output ? `\n${output}` : ""}`);
+          this.renderer.error(
+            `shell command failed (exit ${String(item.code ?? "unknown")})${output ? `\n${output}` : ""}`,
+          );
         }
       }
       await this.persistTuiSession();
@@ -1690,10 +1841,7 @@ export class TerminalSession {
     this.memoryExtraction.schedule(sessionId, messages, model);
   }
 
-  private complete(
-    line: string,
-    callback: (error: Error | null, result?: CompleterResult) => void,
-  ): void {
+  private complete(line: string, callback: (error: Error | null, result?: CompleterResult) => void): void {
     void loadConfig(this.workspace)
       .then((config) => callback(null, completeInput(line, modelCandidates(config.providers), this.commandSnapshot())))
       .catch((error: unknown) => {
@@ -1719,9 +1867,11 @@ export class TerminalSession {
   /** 串行化会话写操作;任务异常被吞掉,返回 undefined。 */
   private runSerialSessionWrite<T>(task: () => Promise<T>): Promise<T | undefined> {
     let value: T | undefined;
-    this.sessionSave = this.sessionSave.then(async () => {
-      value = await task();
-    }).catch(() => undefined);
+    this.sessionSave = this.sessionSave
+      .then(async () => {
+        value = await task();
+      })
+      .catch(() => undefined);
     return this.sessionSave.then(() => value);
   }
 
@@ -1770,10 +1920,7 @@ export class TerminalSession {
   private async ensureAgentStateRestored(): Promise<void> {
     this.agentStateRestore ??= (async () => {
       const runtime = await this.ensureAgentRuntime();
-      await Promise.all([
-        runtime.backgroundAgents.restore(),
-        runtime.teams.restore(),
-      ]);
+      await Promise.all([runtime.backgroundAgents.restore(), runtime.teams.restore()]);
     })();
     await this.agentStateRestore;
   }
@@ -1860,10 +2007,10 @@ function renderCommitKind(event: RuntimeEvent): TuiRenderCommitKind {
       return event.phase === "started" ? "boundary" : "normal";
     case "state":
       if (event.state === "failed" || event.state === "cancelled" || event.state === "paused") return "terminal";
-      return event.state === "planning"
-        || event.state === "executing"
-        || event.state === "verifying"
-        || event.state === "awaiting_approval"
+      return event.state === "planning" ||
+        event.state === "executing" ||
+        event.state === "verifying" ||
+        event.state === "awaiting_approval"
         ? "boundary"
         : "normal";
     default:

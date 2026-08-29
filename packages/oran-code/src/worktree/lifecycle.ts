@@ -135,7 +135,9 @@ export async function initializeWorktree(repoRoot: string, worktreePath: string)
   const warnings: string[] = [];
   await bestEffort(warnings, "copy project config", () => copyProjectConfigDirectory(repoRoot, worktreePath));
   await bestEffort(warnings, "configure hooks path", () => configureHooksPath(repoRoot, worktreePath));
-  await bestEffort(warnings, "link large dependency directories", () => linkLargeDependencyDirectories(repoRoot, worktreePath));
+  await bestEffort(warnings, "link large dependency directories", () =>
+    linkLargeDependencyDirectories(repoRoot, worktreePath),
+  );
   await bestEffort(warnings, "copy .worktreeinclude entries", () => copyWorktreeIncludeEntries(repoRoot, worktreePath));
   return warnings;
 }
@@ -339,5 +341,3 @@ async function readdirSafe(directory: string): Promise<readonly { readonly name:
 function errorMessage(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
 }
-
-

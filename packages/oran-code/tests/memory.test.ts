@@ -57,26 +57,32 @@ describe("MemoryManager", () => {
         description: "Prefer concise status updates.",
         body: "Keep progress messages compact.",
       });
-      await writeFile(join(userDirectory, "legacy.md"), [
-        "---",
-        "id: legacy-correction",
-        "description: Keep the existing public API.",
-        "metadata:",
-        "  type: correction-feedback",
-        "---",
-        "Do not rename public commands without migration support.",
-        "",
-      ].join("\n"), "utf8");
+      await writeFile(
+        join(userDirectory, "legacy.md"),
+        [
+          "---",
+          "id: legacy-correction",
+          "description: Keep the existing public API.",
+          "metadata:",
+          "  type: correction-feedback",
+          "---",
+          "Do not rename public commands without migration support.",
+          "",
+        ].join("\n"),
+        "utf8",
+      );
 
       expect(project?.scope).toBe("project");
       expect(project?.path).toMatch(/Project-Conventions\.md$/u);
       expect(preference?.scope).toBe("user");
       const notes = await manager.scan();
-      expect(notes.map((note) => [note.id, note.type, note.scope])).toEqual(expect.arrayContaining([
-        ["project-conventions", "project-knowledge", "project"],
-        ["concise-output", "user-preference", "user"],
-        ["legacy-correction", "correction-feedback", "user"],
-      ]));
+      expect(notes.map((note) => [note.id, note.type, note.scope])).toEqual(
+        expect.arrayContaining([
+          ["project-conventions", "project-knowledge", "project"],
+          ["concise-output", "user-preference", "user"],
+          ["legacy-correction", "correction-feedback", "user"],
+        ]),
+      );
 
       const index = await manager.rebuildIndex();
       const savedIndex = await readFile(manager.indexPath, "utf8");
@@ -101,14 +107,26 @@ describe("MemoryManager", () => {
     const root = await mkdtemp(join(tmpdir(), "liteagent-memory-select-"));
     const manager = new MemoryManager(root, { userDirectory: join(root, "user") });
     try {
-      await manager.writeNote({ id: "alpha", type: "project-knowledge", description: "Alpha architecture", body: "Alpha body" });
-      await manager.writeNote({ id: "beta", type: "user-preference", description: "Beta preference", body: "Beta body" });
-      const provider = new ResponseProvider(() => "```json\n{\"ids\":[\"alpha\",\"beta\",\"missing\"]}\n```");
+      await manager.writeNote({
+        id: "alpha",
+        type: "project-knowledge",
+        description: "Alpha architecture",
+        body: "Alpha body",
+      });
+      await manager.writeNote({
+        id: "beta",
+        type: "user-preference",
+        description: "Beta preference",
+        body: "Beta body",
+      });
+      const provider = new ResponseProvider(() => '```json\n{"ids":["alpha","beta","missing"]}\n```');
       const selected = await manager.findRelevant("architecture", provider, { injectedIds: ["beta"], maxResults: 2 });
       expect(selected.map((note) => note.id)).toEqual(["alpha"]);
       expect(provider.requests[0]?.[1]?.content).not.toContain("id: beta");
 
-      const failing = new ResponseProvider(() => { throw new Error("selector unavailable"); });
+      const failing = new ResponseProvider(() => {
+        throw new Error("selector unavailable");
+      });
       await expect(manager.findRelevant("architecture", failing)).resolves.toEqual([]);
     } finally {
       await rm(root, { recursive: true, force: true });
@@ -136,7 +154,9 @@ describe("MemoryExtractor", () => {
     const root = await mkdtemp(join(tmpdir(), "liteagent-memory-extract-"));
     const manager = new MemoryManager(root, { userDirectory: join(root, "user") });
     let releaseFirst: (() => void) | undefined;
-    const firstGate = new Promise<void>((resolve) => { releaseFirst = resolve; });
+    const firstGate = new Promise<void>((resolve) => {
+      releaseFirst = resolve;
+    });
     const provider = new ResponseProvider(async (messages, call) => {
       if (call === 1) await firstGate;
       const snapshot = messages[1]?.content ?? "";
@@ -155,7 +175,9 @@ describe("MemoryExtractor", () => {
       expect((await first).map((note) => note.id)).toEqual(["first-note"]);
       await extractor.waitForIdle();
       expect(provider.requests).toHaveLength(2);
-      expect((await manager.scan()).map((note) => note.id)).toEqual(expect.arrayContaining(["first-note", "latest-note"]));
+      expect((await manager.scan()).map((note) => note.id)).toEqual(
+        expect.arrayContaining(["first-note", "latest-note"]),
+      );
     } finally {
       await rm(root, { recursive: true, force: true });
     }
@@ -163,18 +185,20 @@ describe("MemoryExtractor", () => {
 
   it("drops placeholders and malformed blocks", () => {
     expect(parseExtractedMemories("NOTHING_TO_RECORD")).toEqual([]);
-    expect(parseExtractedMemories([
-      "ID: valid",
-      "TYPE: reference-material",
-      "DESCRIPTION: Useful reference",
-      "BODY:",
-      "Reference body",
-      "---",
-      "TYPE: project-knowledge",
-      "BODY:",
-      "Missing id",
-    ].join("\n"))).toEqual([
-      { id: "valid", type: "reference-material", description: "Useful reference", body: "Reference body" },
-    ]);
+    expect(
+      parseExtractedMemories(
+        [
+          "ID: valid",
+          "TYPE: reference-material",
+          "DESCRIPTION: Useful reference",
+          "BODY:",
+          "Reference body",
+          "---",
+          "TYPE: project-knowledge",
+          "BODY:",
+          "Missing id",
+        ].join("\n"),
+      ),
+    ).toEqual([{ id: "valid", type: "reference-material", description: "Useful reference", body: "Reference body" }]);
   });
 });

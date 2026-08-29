@@ -15,40 +15,41 @@ export function registerWriteTools(registry: { register(tool: ToolDefinition): v
 
   register({
     name: "write_file",
-    description: "Create or overwrite a UTF-8 text file inside the workspace. Read an existing target before overwriting it. Parent directories are created automatically.",
+    description:
+      "Create or overwrite a UTF-8 text file inside the workspace. Read an existing target before overwriting it. Parent directories are created automatically.",
     parameters: {
       type: "object",
       properties: {
         path: { type: "string", description: "Path relative to workspace root." },
         content: { type: "string", description: "Full file content to write." },
       },
-     required: ["path", "content"],
-   },
-   permissionLevel: 2,
-   kind: "write",
-   maxOutputChars: 16_000,
+      required: ["path", "content"],
+    },
+    permissionLevel: 2,
+    kind: "write",
+    maxOutputChars: 16_000,
     deferred: true,
-   invoke: async (call, context) => writeTextFile(activeRoot(context), (raw) => pathFor(context, raw), call.arguments.path, call.arguments.content),
- });
+    invoke: async (call, context) =>
+      writeTextFile(activeRoot(context), (raw) => pathFor(context, raw), call.arguments.path, call.arguments.content),
+  });
 
   register({
     name: "write_plan",
-    description:
-      `Create or overwrite a UTF-8 plan file. The path must be workspace-relative and strictly inside ${ctx.planDirectory}. This is the only write tool exposed in plan mode.`,
+    description: `Create or overwrite a UTF-8 plan file. The path must be workspace-relative and strictly inside ${ctx.planDirectory}. This is the only write tool exposed in plan mode.`,
     parameters: {
       type: "object",
       properties: {
         path: { type: "string", description: `Workspace-relative path inside ${ctx.planDirectory}.` },
         content: { type: "string", description: "Full plan content to write." },
       },
-     required: ["path", "content"],
-   },
-   permissionLevel: 2,
-   kind: "write",
-   maxOutputChars: 16_000,
+      required: ["path", "content"],
+    },
+    permissionLevel: 2,
+    kind: "write",
+    maxOutputChars: 16_000,
     deferred: true,
-   invoke: async (call, context) => writePlanFile(activeRoot(context), call.arguments.path, call.arguments.content),
- });
+    invoke: async (call, context) => writePlanFile(activeRoot(context), call.arguments.path, call.arguments.content),
+  });
 
   register({
     name: "edit_file",
@@ -60,21 +61,30 @@ export function registerWriteTools(registry: { register(tool: ToolDefinition): v
         path: { type: "string", description: "Path relative to workspace root." },
         old_string: { type: "string", description: "Exact text to find." },
         new_string: { type: "string", description: "Replacement text." },
-        replace_all: { type: "boolean", description: "Replace every match instead of requiring a unique match.", default: false },
+        replace_all: {
+          type: "boolean",
+          description: "Replace every match instead of requiring a unique match.",
+          default: false,
+        },
       },
-     required: ["path", "old_string", "new_string"],
-   },
-   permissionLevel: 2,
-   kind: "write",
-   maxOutputChars: 16_000,
+      required: ["path", "old_string", "new_string"],
+    },
+    permissionLevel: 2,
+    kind: "write",
+    maxOutputChars: 16_000,
     deferred: true,
-   invoke: async (call, context) => {
+    invoke: async (call, context) => {
       try {
         const workspace = activeRoot(context);
         const path = pathFor(context, call.arguments.path);
         const info = await stat(path);
         if (info.isDirectory()) {
-          return { ok: false, output: "", error: `path is a directory: ${displayPath(workspace, path)}`, summary: "is directory" };
+          return {
+            ok: false,
+            output: "",
+            error: `path is a directory: ${displayPath(workspace, path)}`,
+            summary: "is directory",
+          };
         }
         const oldString = String(call.arguments.old_string ?? "");
         const newString = String(call.arguments.new_string ?? "");
@@ -169,7 +179,12 @@ export function registerWriteTools(registry: { register(tool: ToolDefinition): v
         const path = pathFor(context, call.arguments.path);
         const info = await stat(path);
         if (info.isDirectory()) {
-          return { ok: false, output: "", error: `path is a directory: ${displayPath(workspace, path)}`, summary: "is directory" };
+          return {
+            ok: false,
+            output: "",
+            error: `path is a directory: ${displayPath(workspace, path)}`,
+            summary: "is directory",
+          };
         }
         const diff = String(call.arguments.diff ?? "");
         if (!diff.trim()) {
@@ -190,7 +205,11 @@ export function registerWriteTools(registry: { register(tool: ToolDefinition): v
           ok: true,
           output: `applied ${applied.hunksApplied} hunk(s) to ${displayPath(workspace, path)} (+${applied.linesAdded}/-${applied.linesRemoved})`,
           summary: `applied ${applied.hunksApplied} hunks`,
-          metadata: { hunksApplied: applied.hunksApplied, linesAdded: applied.linesAdded, linesRemoved: applied.linesRemoved },
+          metadata: {
+            hunksApplied: applied.hunksApplied,
+            linesAdded: applied.linesAdded,
+            linesRemoved: applied.linesRemoved,
+          },
         };
       } catch (error) {
         return failedResult(error, "apply_patch failed");
@@ -220,7 +239,8 @@ async function writeTextFile(
 
 async function writePlanFile(root: string, rawPath: unknown, rawContent: unknown): Promise<ToolResult> {
   try {
-    if (typeof rawPath !== "string" || !rawPath.trim()) throw new Error("write_plan path must be a non-empty workspace-relative path");
+    if (typeof rawPath !== "string" || !rawPath.trim())
+      throw new Error("write_plan path must be a non-empty workspace-relative path");
     const requestedPath = rawPath.trim();
     if (isAbsolute(requestedPath)) throw new Error("write_plan does not accept absolute paths");
 
@@ -236,7 +256,8 @@ async function writePlanFile(root: string, rawPath: unknown, rawContent: unknown
       resolvePhysicalPath(planRoot),
       resolvePhysicalPath(candidate),
     ]);
-    if (!physicalRoot || !physicalPlanRoot || !physicalCandidate) throw new Error("write_plan path could not be resolved safely");
+    if (!physicalRoot || !physicalPlanRoot || !physicalCandidate)
+      throw new Error("write_plan path could not be resolved safely");
     if (!isWithinPath(physicalRoot, physicalPlanRoot) || !isWithinPath(physicalPlanRoot, physicalCandidate)) {
       throw new Error("write_plan path escapes .oran/plans through a symbolic link");
     }

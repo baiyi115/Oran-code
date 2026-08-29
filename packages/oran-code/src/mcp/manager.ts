@@ -1,8 +1,4 @@
-import {
-  Client,
-  SSEClientTransport,
-  StreamableHTTPClientTransport,
-} from "@modelcontextprotocol/client";
+import { Client, SSEClientTransport, StreamableHTTPClientTransport } from "@modelcontextprotocol/client";
 import type { ContentBlock, Tool, Transport } from "@modelcontextprotocol/client";
 import { StdioClientTransport } from "@modelcontextprotocol/client/stdio";
 import type { McpServerConfig, ToolDefinition, ToolResult } from "../types.js";
@@ -114,7 +110,8 @@ export class McpManager {
   searchToolDefinition(): ToolDefinition {
     return {
       name: MCP_SEARCH_TOOL,
-      description: "Search inactive MCP tools by keyword. Use query select:<full-tool-name> to activate one tool and return its schema.",
+      description:
+        "Search inactive MCP tools by keyword. Use query select:<full-tool-name> to activate one tool and return its schema.",
       parameters: {
         type: "object",
         properties: {
@@ -175,10 +172,7 @@ export class McpManager {
     if (this.closed) return;
     this.closed = true;
     await this.connectPromise?.catch(() => undefined);
-    const clients = new Set([
-      ...this.pendingClients,
-      ...[...this.servers.values()].map((server) => server.client),
-    ]);
+    const clients = new Set([...this.pendingClients, ...[...this.servers.values()].map((server) => server.client)]);
     await Promise.allSettled([...clients].map((client) => client.close()));
     this.pendingClients.clear();
     this.servers.clear();
@@ -191,8 +185,11 @@ export class McpManager {
     const entries = Object.entries(this.config);
     for (let offset = 0; offset < entries.length; offset += MCP_CONNECTION_CONCURRENCY) {
       if (this.closed) break;
-      await Promise.all(entries.slice(offset, offset + MCP_CONNECTION_CONCURRENCY)
-        .map(([name, config]) => this.connectServer(name, config)));
+      await Promise.all(
+        entries
+          .slice(offset, offset + MCP_CONNECTION_CONCURRENCY)
+          .map(([name, config]) => this.connectServer(name, config)),
+      );
     }
   }
 
@@ -246,7 +243,11 @@ export class McpManager {
       }
       return {
         ok: true,
-        output: JSON.stringify({ name: tool.name, description: tool.description, parameters: tool.parameters }, null, 2),
+        output: JSON.stringify(
+          { name: tool.name, description: tool.description, parameters: tool.parameters },
+          null,
+          2,
+        ),
         summary: `activated ${tool.name}`,
       };
     }
@@ -315,13 +316,16 @@ function inheritedEnvironment(): Record<string, string> {
 }
 
 function formatContent(content: readonly ContentBlock[]): string {
-  return content.map((block) => block.type === "text" ? block.text : JSON.stringify(block)).join("\n");
+  return content.map((block) => (block.type === "text" ? block.text : JSON.stringify(block))).join("\n");
 }
 
 function searchLimit(value: unknown): number {
-  const parsed = typeof value === "number" ? value
-    : typeof value === "string" && value.trim() ? Number(value)
-      : DEFAULT_SEARCH_LIMIT;
+  const parsed =
+    typeof value === "number"
+      ? value
+      : typeof value === "string" && value.trim()
+        ? Number(value)
+        : DEFAULT_SEARCH_LIMIT;
   if (!Number.isFinite(parsed)) return DEFAULT_SEARCH_LIMIT;
   return Math.min(MAX_SEARCH_LIMIT, Math.max(1, Math.trunc(parsed)));
 }
