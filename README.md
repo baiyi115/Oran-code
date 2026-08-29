@@ -6,6 +6,8 @@ A lightweight, terminal-native AI coding agent in TypeScript, built for fast ite
 
 Oran code pairs an interactive React/Ink terminal UI with a flexible agent engine: inspect codebases, generate multi-step execution plans, edit files with instant rollback snapshots, delegate subtasks in the background, and connect to DeepSeek, Claude, GPT, Gemini, or local Ollama instances.
 
+![Oran code terminal UI](docs/tui.png)
+
 ---
 
 ## Key Highlights

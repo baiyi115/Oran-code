@@ -6,6 +6,8 @@
 
 Oran code 结合了基于 React Ink 的终端交互界面与灵活的 Agent 调度引擎：能够自主探索项目代码、生成多步骤修改计划、通过快照提供一键安全回滚、在后台并发执行子任务（Subagent），并支持接入 DeepSeek、Claude、GPT、Gemini 及本地 Ollama 等多种大模型。
 
+![Oran code 终端界面](docs/tui.png)
+
 ---
 
 ## 核心特性
