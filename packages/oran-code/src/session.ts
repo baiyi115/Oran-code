@@ -400,6 +400,11 @@ export class TerminalSession {
 
   async run(): Promise<void> {
     if (!existsSync(this.workspace)) throw new Error(`workspace does not exist: ${this.workspace}`);
+    const isTty = supportsTui(this.input, this.output);
+    // TUI 模式提前预热 ink/react 模块图(纯 CPU 的模块编译),
+    // 与状态目录迁移、历史恢复的 IO 重叠,缩短首帧时间。
+    const inkReady = isTty ? loadInkApp() : undefined;
+    if (inkReady) void inkReady.catch(() => undefined);
     await ensureProjectStateRoot(this.workspace);
     // First paint only needs history + a blank session. Heavy integrations load in the background.
     const [history] = await Promise.all([
@@ -409,10 +414,9 @@ export class TerminalSession {
     void this.ensureAgentStateRestored().catch((error) => this.writeDebugLog(`agent state restore failed: ${String(error)}`));
     void this.initializeCommandIntegrations().then(() => this.refreshTui()).catch((error) => this.writeDebugLog(`command integrations failed: ${String(error)}`));
     void this.openTrace().catch((error) => this.writeDebugLog(`trace open failed: ${String(error)}`));
-    const isTty = supportsTui(this.input, this.output);
     if (isTty) {
       try {
-        await this.runTui(history);
+        await this.runTui(history, inkReady);
       } finally {
         await this.shutdown();
       }
@@ -1446,9 +1450,12 @@ export class TerminalSession {
     });
   }
 
-  private async runTui(history: readonly string[]): Promise<void> {
+  private async runTui(
+    history: readonly string[],
+    prewarmedInk?: Promise<typeof import("./tui/ink-app.js")>,
+  ): Promise<void> {
     const isRunning = (): boolean => this.interactionRunning() || this.hasPendingApprovals();
-    const { InkTuiApp } = await loadInkApp();
+    const { InkTuiApp } = await (prewarmedInk ?? loadInkApp());
     const tui = new InkTuiApp({
       input: this.input,
       output: this.output,

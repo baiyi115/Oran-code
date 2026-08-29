@@ -3,7 +3,6 @@ import type { Stats } from "node:fs";
 import { homedir } from "node:os";
 import { basename, dirname, extname, isAbsolute, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
-import { parseDocument } from "yaml";
 import { CommandRegistry, type SlashCommand } from "./commands.js";
 import { isRecord } from "./types.js";
 import { LEGACY_USER_DATA_DIRECTORY, projectStateRoot } from "./paths.js";
@@ -142,7 +141,7 @@ export class SkillLoader {
     const normalizedExpected = expectedName === undefined ? undefined : normalizeSkillName(expectedName);
     if (expectedName !== undefined && !normalizedExpected) throw new Error(`unsafe skill name: ${expectedName}`);
     const fallbackName = sourceNameFallback(sourceLabel);
-    const parsed = parseSkillContent(content, {
+    const parsed = await parseSkillContent(content, {
       ...(normalizedExpected ? { overrideName: normalizedExpected } : {}),
       ...(fallbackName ? { fallbackName } : {}),
     });
@@ -279,7 +278,7 @@ async function loadSkill(
     if (!file) return undefined;
     const content = await readFile(filePath, "utf8");
     if (!file.isFile()) return undefined;
-    const parsed = parseSkillContent(content);
+    const parsed = await parseSkillContent(content);
     if (!parsed) return undefined;
     return { ...parsed, filePath, rootDirectory, scope, mtimeMs: file.mtimeMs };
   } catch {
@@ -332,10 +331,10 @@ function isSkillDefinition(value: unknown): value is SkillDefinition {
     && Number.isFinite(value.mtimeMs);
 }
 
-function parseSkillContent(
+async function parseSkillContent(
   raw: string,
   names: { readonly overrideName?: string; readonly fallbackName?: string } = {},
-): ParsedSkillContent | undefined {
+): Promise<ParsedSkillContent | undefined> {
   const source = raw.replace(/^\uFEFF/, "");
   const lines = source.split(/\r?\n/);
   if (lines[0] !== "---") return undefined;
@@ -343,6 +342,8 @@ function parseSkillContent(
   if (closing < 0) return undefined;
 
   try {
+    // yaml 仅在真正解析 SKILL.md 头部时加载,避免其进入交互启动的关键模块图。
+    const { parseDocument } = await import("yaml");
     const document = parseDocument(lines.slice(1, closing).join("\n"), { uniqueKeys: true });
     if (document.errors.length > 0) return undefined;
     const metadata = document.toJS() as unknown;
