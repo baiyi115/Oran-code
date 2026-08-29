@@ -1,7 +1,7 @@
 import { createInterface, type CompleterResult, type Interface } from "node:readline";
 import { exec } from "node:child_process";
 import { existsSync } from "node:fs";
-import { appendFile, mkdir, readFile, readdir, writeFile } from "node:fs/promises";
+import { mkdir, readFile, readdir, writeFile } from "node:fs/promises";
 import { promisify } from "node:util";
 import { dirname, resolve } from "node:path";
 import { legacyUserHistoryPath, loadConfig, loadConfigFile, resolveModelConfig, saveConfig, userConfigReadPath, userHistoryPath } from "./config.js";
@@ -14,12 +14,17 @@ import { SessionTitleService } from "./session-title.js";
 import { MemoryExtractionScheduler } from "./memory-extraction.js";
 import { McpSessionIntegration } from "./mcp/session-integration.js";
 import { SessionCommandRouter } from "./session-commands.js";
+import { SessionCommandHandlers, type SessionCommandHandlersPort } from "./session-command-handlers.js";
+import { StreamDebugTracker, createDebugLogSink, type DebugLogSink } from "./session-debug.js";
 import {
+  configuredPermissionMode,
   createSessionGapReminder,
   isReusableBlankSession,
   sessionOptionsFromStore,
   toSessionView as toSessionViewOf,
+  workModeForPermission,
 } from "./session-lifecycle.js";
+import { SessionCrudService, type SessionCrudPort } from "./session-crud.js";
 import { TerminalRenderer, createPromptHooks, type SessionRenderer } from "./renderer.js";
 import { PERMISSION_MODES, createTask } from "./types.js";
 import { displaySessionName, firstConversationPrompt, isAutomaticSessionName, SessionStore, truncateSessionName, type StoredSession } from "./session-store.js";
@@ -133,6 +138,8 @@ export class TerminalSession {
   private permissionMode: PermissionMode;
   private reasoningEffort: ReasoningEffort;
   private sessionStore: SessionStore;
+  private readonly crud: SessionCrudService;
+  private readonly handlers: SessionCommandHandlers;
   private readonly workspaceFileIndex: WorkspaceFileIndex;
   private currentSession: StoredSession | undefined;
   private readonly followUps: FollowUpItem[] = [];
@@ -141,7 +148,6 @@ export class TerminalSession {
   private previousPlanPermissionMode: PermissionMode | undefined;
   private queuePaused = false;
   private sessionSave: Promise<void> = Promise.resolve();
-  private debugLogTail: Promise<void> = Promise.resolve();
   private sessionPersistTimer: ReturnType<typeof setTimeout> | undefined;
   private readonly titles: SessionTitleService;
   private sessionSaveError: string | undefined;
@@ -156,7 +162,6 @@ export class TerminalSession {
   private readonly configuredStablePromptModules: OptionalSystemPromptModules;
   private readonly memoryManager: MemoryManager;
   private readonly memoryExtraction: MemoryExtractionScheduler;
-  private sessionSelection: Promise<SessionView | undefined> | undefined;
   private commandRegistry = new CommandRegistry();
   private readonly skillLoader: SkillLoader;
   private readonly activeSkills = new Map<string, ActiveSkill>();
@@ -164,8 +169,8 @@ export class TerminalSession {
   private commandUsage: CommandUsageTracker | undefined;
   private commandIntegrationPromise: Promise<void> | undefined;
   private latestUsage: Record<string, number> = {};
-  private readonly debugStreamSequences = new Map<string, number>();
-  private readonly debugStreamTurns = new Map<string, { deltaEvents: number; deltaChars: number }>();
+  private readonly debugLogSink: DebugLogSink;
+  private readonly debugTracker: StreamDebugTracker;
   private hookEngine: HookEngine | undefined;
   private hookWarningsShown = false;
   private readonly hookSubagentAbortControllers = new Set<AbortController>();
@@ -178,6 +183,8 @@ export class TerminalSession {
 
   constructor(options: SessionOptions, input: NodeJS.ReadableStream = process.stdin, output: NodeJS.WriteStream = process.stdout) {
     this.workspace = resolve(options.workspace);
+    this.debugLogSink = createDebugLogSink(this.workspace);
+    this.debugTracker = new StreamDebugTracker((message) => this.debugLogSink(message));
     this.explicitModel = options.model !== undefined;
     this.model = options.model ?? resolveRememberedModel(options.config);
     this.config = options.config;
@@ -186,6 +193,44 @@ export class TerminalSession {
     this.workMode = workModeForPermission(this.permissionMode);
     this.reasoningEffort = this.model?.reasoningEffort ?? "medium";
     this.sessionStore = new SessionStore(this.workspace);
+    this.crud = new SessionCrudService({
+      persistTuiSession: (includeTuiSnapshot) => this.persistTuiSession(includeTuiSnapshot),
+      sessionStore: this.sessionStore,
+      currentSession: () => this.currentSession,
+      setCurrentSession: (session) => { this.currentSession = session; },
+      sessionName: (session) => this.sessionName(session),
+      model: () => this.model,
+      modelWarning: () => this.modelWarning,
+      setModelWarning: (warning) => { this.modelWarning = warning; },
+      explicitModel: () => this.explicitModel,
+      modelReference: (model) => this.modelReference(model),
+      interactionRunning: () => this.interactionRunning(),
+      hasPendingApprovals: () => this.hasPendingApprovals(),
+      cancelTask: () => this.cancelTask(),
+      waitForInteraction: () => this.waitForInteraction(),
+      restoreStoredSession: (stored, applyModel) => this.restoreStoredSession(stored, applyModel),
+      refreshTui: () => this.refreshTui(),
+      clearFollowUps: () => { this.followUps.splice(0); },
+      clearPendingPlanExecute: () => { this.pendingPlanExecute = undefined; },
+      previousPlanPermissionMode: () => this.previousPlanPermissionMode,
+      setPreviousPlanPermissionMode: (mode) => { this.previousPlanPermissionMode = mode; },
+      bumpSessionGeneration: () => { this.sessionGeneration += 1; },
+      setConversation: (messages) => { this.conversation = messages; },
+      resetHookOnce: () => {
+        this.hookEngine?.resetOnce();
+        this.hookEngine?.drainNotices();
+      },
+      refreshSessionKnowledge: () => this.refreshSessionKnowledge(),
+      deleteContextManager: (sessionId) => { this.contextManagers.delete(sessionId); },
+      ensureCurrentContextManager: () => this.currentContextManager(),
+      permissionMode: () => this.permissionMode,
+      setPermissionMode: (mode) => { this.permissionMode = mode; },
+      workMode: () => this.workMode,
+      setWorkMode: (mode) => { this.workMode = mode; },
+      reasoningEffort: () => this.reasoningEffort,
+      setReasoningEffort: (value) => { this.reasoningEffort = value; },
+    });
+    this.handlers = new SessionCommandHandlers(this.handlersPort());
     this.workspaceFileIndex = new WorkspaceFileIndex(this.workspace);
     this.skipVerify = options.config.agent?.skipVerify === true;
     this.input = input;
@@ -243,20 +288,20 @@ export class TerminalSession {
         this.setPrompt();
         await this.launchTask(prompt, true, false, true);
       },
-      createSession: (name) => this.createSession(name),
-      handleModel: async (argument) => { await this.handleModel(argument); },
-      handleConnect: (argument) => this.handleConnect(argument),
-      handleSessionCommand: (argument) => this.handleSessionCommand(argument),
-      handlePermissionCommand: (argument) => this.handlePermissionCommand(argument),
-      changePermissionMode: async (mode) => { await this.changePermissionMode(mode); },
-      runManualCompaction: () => this.runManualCompaction(),
+      createSession: (name) => this.crud.createSession(name),
+      handleModel: async (argument) => { await this.handlers.handleModel(argument); },
+      handleConnect: (argument) => this.handlers.handleConnect(argument),
+      handleSessionCommand: (argument) => this.handlers.handleSessionCommand(argument),
+      handlePermissionCommand: (argument) => this.handlers.handlePermissionCommand(argument),
+      changePermissionMode: async (mode) => { await this.handlers.changePermissionMode(mode); },
+      runManualCompaction: () => this.handlers.runManualCompaction(),
       clearTranscript: async () => {
         this.renderer.clearTranscript();
         this.conversation = [];
         (await this.currentContextManager()).reset();
         await this.persistTuiSession();
       },
-      renameSession: (id, name) => this.renameSession(id, name),
+      renameSession: (id, name) => this.crud.renameSession(id, name),
       currentSessionId: () => this.currentSession?.id,
       undoLatestChanges: async () => {
         const sessionId = this.currentSession?.id;
@@ -1020,6 +1065,56 @@ export class TerminalSession {
     }
   }
 
+  /** 斜杠命令 handler 的端口:提供状态读写与副作用回调。 */
+  private handlersPort(): SessionCommandHandlersPort {
+    return {
+      workspace: this.workspace,
+      renderer: () => this.renderer,
+      tui: () => this.tui,
+      config: () => this.config,
+      setConfig: (config) => { this.config = config; },
+      approveAll: () => this.approveAll,
+      model: () => this.model,
+      setModel: (model) => { this.model = model; },
+      reasoningEffort: () => this.reasoningEffort,
+      setReasoningEffort: (value) => { this.reasoningEffort = value; },
+      permissionMode: () => this.permissionMode,
+      setPermissionMode: (mode) => { this.permissionMode = mode; },
+      workMode: () => this.workMode,
+      setWorkMode: (mode) => { this.workMode = mode; },
+      previousPlanPermissionMode: () => this.previousPlanPermissionMode,
+      setPreviousPlanPermissionMode: (mode) => { this.previousPlanPermissionMode = mode; },
+      clearPendingPlanExecute: () => { this.pendingPlanExecute = undefined; },
+      conversation: () => this.conversation,
+      setConversation: (messages) => { this.conversation = messages; },
+      currentSessionId: () => this.currentSession?.id,
+      sessionGeneration: () => this.sessionGeneration,
+      interactionRunning: () => this.interactionRunning(),
+      hasPendingApprovals: () => this.hasPendingApprovals(),
+      refreshTui: () => this.refreshTui(),
+      persistTuiSession: (includeTuiSnapshot) => this.persistTuiSession(includeTuiSnapshot),
+      currentContextManager: () => this.currentContextManager(),
+      rememberModelPreference: (model) => this.rememberModelPreference(model),
+      modelLabel: () => this.modelLabel(),
+      modelWarning: () => this.modelWarning,
+      setModelWarning: (warning) => { this.modelWarning = warning; },
+      selectSession: (id) => this.crud.selectSession(id),
+      sessionStore: this.sessionStore,
+      sessionName: (session) => this.sessionName(session),
+      ensureMcpReady: () => this.ensureMcpReady(),
+      registerMcpTools: (registry) => this.registerMcpTools(registry),
+      toolSchemasForCurrentMode: (registry) => this.toolSchemasForCurrentMode(registry),
+      providerFactory: (model) => this.providerFactory(model),
+      emitContextCompaction: (payload) => this.emitContextCompaction(payload),
+      compactPromise: () => this.compactPromise,
+      setCompactPromise: (promise) => { this.compactPromise = promise; },
+      compactAbortController: () => this.compactAbortController,
+      setCompactAbortController: (controller) => { this.compactAbortController = controller; },
+      setPrompt: () => this.setPrompt(),
+      prompt: () => this.prompt(),
+    };
+  }
+
   private async persistTuiSession(includeTuiSnapshot = true): Promise<void> {
     if (this.sessionPersistTimer) {
       clearTimeout(this.sessionPersistTimer);
@@ -1072,124 +1167,13 @@ export class TerminalSession {
     await this.sessionSave;
   }
 
-  private async loadSessionOptions(): Promise<SessionOption[]> {
-    await this.persistTuiSession();
-    return sessionOptionsFromStore(this.sessionStore.list(), this.currentSession?.id, (session) => this.sessionName(session));
-  }
-
-  private toSessionView(session: StoredSession): SessionView {
-    const active = this.currentSession?.id === session.id;
-    return toSessionViewOf(session, {
-      displayName: this.sessionName(session),
-      ...(active && this.model ? { activeModelReference: this.modelReference(this.model) } : {}),
-      ...(active && this.modelWarning ? { activeModelWarning: this.modelWarning } : {}),
-    });
-  }
-
-  private async selectSession(id: string): Promise<SessionView | undefined> {
-    if (this.sessionSelection) return this.sessionSelection;
-    let selection: Promise<SessionView | undefined>;
-    selection = this.selectSessionUnlocked(id).finally(() => {
-      if (this.sessionSelection === selection) this.sessionSelection = undefined;
-    });
-    this.sessionSelection = selection;
-    return selection;
-  }
-
-  private async selectSessionUnlocked(id: string): Promise<SessionView | undefined> {
-    if (this.interactionRunning() || this.hasPendingApprovals()) {
-      this.cancelTask();
-      await this.waitForInteraction();
-    }
-    await this.persistTuiSession();
-    const stored = await this.sessionStore.ensureConversation(id) ?? this.sessionStore.find(id);
-    if (!stored) return undefined;
-    await this.restoreStoredSession(stored, !this.explicitModel);
-    await this.persistTuiSession(false);
-    this.followUps.splice(0);
-    this.pendingPlanExecute = undefined;
-    this.previousPlanPermissionMode = undefined;
-    this.refreshTui();
-    return this.toSessionView(this.currentSession ?? stored);
-  }
-
-  private async deleteSession(id: string): Promise<SessionView | undefined> {
-    if (this.sessionSelection || this.interactionRunning() || this.hasPendingApprovals()) return undefined;
-    await this.persistTuiSession();
-    const activeId = this.currentSession?.id;
-    const removed = await this.sessionStore.remove(id);
-    if (!removed) return undefined;
-    this.contextManagers.delete(id);
-    this.followUps.splice(0);
-    this.pendingPlanExecute = undefined;
-    this.previousPlanPermissionMode = undefined;
-    if (id === activeId) {
-      const replacement = await this.sessionStore.ensureCurrent("Current session", {
-        workMode: this.workMode,
-        permissionMode: this.permissionMode,
-        reasoningEffort: this.reasoningEffort,
-        ...(this.model ? { modelReference: this.modelReference(this.model) } : {}),
-        conversation: [],
-      });
-      await this.restoreStoredSession(replacement, !this.explicitModel);
-      this.refreshTui();
-      return this.toSessionView(replacement);
-    }
-    const active = activeId ? this.sessionStore.find(activeId) : undefined;
-    if (!active) return undefined;
-    this.currentSession = active;
-    return this.toSessionView(active);
-  }
-
-  private async createSession(name?: string): Promise<SessionView | undefined> {
-    if (this.sessionSelection || this.interactionRunning() || this.hasPendingApprovals()) return undefined;
-    await this.persistTuiSession();
-    const stored = await this.sessionStore.create(name, {
-      workMode: this.workMode,
-      permissionMode: this.permissionMode,
-      reasoningEffort: this.reasoningEffort,
-      ...(this.model ? { modelReference: this.modelReference(this.model) } : {}),
-      conversation: [],
-    });
-    this.currentSession = stored;
-    this.sessionGeneration += 1;
-    this.conversation = [];
-    // 新建并挂载会话时清空 once 集合，同时清空通知队列残留。
-    this.hookEngine?.resetOnce();
-    this.hookEngine?.drainNotices();
-    await this.refreshSessionKnowledge();
-    this.contextManagers.delete(stored.id);
-    await this.currentContextManager();
-    this.modelWarning = undefined;
-    this.permissionMode = stored.permissionMode ?? (stored.workMode === "plan" ? "plan" : this.permissionMode);
-    this.workMode = workModeForPermission(this.permissionMode);
-    this.reasoningEffort = stored.reasoningEffort ?? "medium";
-    this.followUps.splice(0);
-    this.pendingPlanExecute = undefined;
-    this.previousPlanPermissionMode = undefined;
-    this.refreshTui();
-    return this.toSessionView(stored);
-  }
-
-  private async renameSession(id: string, name: string): Promise<SessionView | undefined> {
-    if (this.interactionRunning() || this.hasPendingApprovals()) return undefined;
-    await this.persistTuiSession();
-    const stored = await this.sessionStore.update(id, { name, autoNamed: false, titleSource: "manual" });
-    if (!stored) return undefined;
-    if (this.currentSession?.id === stored.id) {
-      this.currentSession = stored;
-      this.refreshTui();
-    }
-    return this.toSessionView(stored);
-  }
-
   private async loadWorkspaceFiles(query: string): Promise<string[]> {
     return this.workspaceFileIndex.search(query, 200);
   }
 
   private async onEvent(event: RuntimeEvent): Promise<void> {
     if (event.type === "assistant_end") this.latestUsage = { ...event.usage };
-    this.debugRuntimeStream(event);
+    this.debugTracker.track(event);
     if (event.type === "context_compaction") {
       this.writeDebugLog(JSON.stringify({
         event: "context_compaction",
@@ -1209,7 +1193,7 @@ export class TerminalSession {
         prompt: buildPlanExecutePrompt(event.plan),
       };
       if (this.permissionMode === "plan") {
-        this.permissionMode = this.permissionModeAfterPlan();
+        this.permissionMode = this.handlers.permissionModeAfterPlan();
         this.workMode = workModeForPermission(this.permissionMode);
         event.permissionMode = this.permissionMode;
         event.workMode = this.workMode;
@@ -1233,47 +1217,6 @@ export class TerminalSession {
       this.sessionPersistTimer = undefined;
       void this.persistTuiSession();
     }, 250);
-  }
-
-  private debugRuntimeStream(event: RuntimeEvent): void {
-    const taskSequenceKey = event.taskId;
-    const lastSequence = this.debugStreamSequences.get(taskSequenceKey);
-    const sequenceGap = lastSequence !== undefined && event.sequence !== lastSequence + 1;
-    this.debugStreamSequences.set(taskSequenceKey, event.sequence);
-    const turnKey = `${event.taskId}:${event.turnId ?? "current"}`;
-    if (event.type === "assistant_delta" || event.type === "assistant_end") {
-      if (event.type === "assistant_delta") {
-        const turn = this.debugStreamTurns.get(turnKey) ?? { deltaEvents: 0, deltaChars: 0 };
-        turn.deltaEvents += 1;
-        turn.deltaChars += event.text.length;
-        this.debugStreamTurns.set(turnKey, turn);
-      }
-      const turn = this.debugStreamTurns.get(turnKey) ?? { deltaEvents: 0, deltaChars: 0 };
-      this.writeDebugLog(JSON.stringify({
-        event: "runtime_stream",
-        type: event.type,
-        taskId: event.taskId,
-        ...(event.turnId ? { turnId: event.turnId } : {}),
-        sequence: event.sequence,
-        lastSequence,
-        sequenceGap,
-        deltaEvents: turn.deltaEvents,
-        deltaChars: turn.deltaChars,
-        ...(event.type === "assistant_end" ? {
-          finalChars: event.text.length,
-          finalCodePoints: [...event.text].length,
-        } : {}),
-      }));
-      if (event.type === "assistant_end") this.debugStreamTurns.delete(turnKey);
-    }
-    if (event.type === "completed"
-      || event.type === "cancelled"
-      || (event.type === "state" && (event.state === "failed" || event.state === "cancelled"))) {
-      this.debugStreamSequences.delete(event.taskId);
-      for (const key of [...this.debugStreamTurns.keys()]) {
-        if (key.startsWith(`${event.taskId}:`)) this.debugStreamTurns.delete(key);
-      }
-    }
   }
 
   private async flushBackgroundNotifications(): Promise<void> {
@@ -1492,229 +1435,6 @@ export class TerminalSession {
     return limit === 0 ? [] : structuredClone(this.conversation.slice(-limit));
   }
 
-  private async handlePermissionCommand(argument: string): Promise<void> {
-    const value = argument.trim().toLowerCase();
-    if (!value) {
-      this.renderer.status(`Permission mode: ${this.permissionMode}. Valid modes: ${PERMISSION_MODES.join(", ")}.`, "cyan");
-      return;
-    }
-    if (!(PERMISSION_MODES as readonly string[]).includes(value)) {
-      this.renderer.error(`invalid permission mode: ${value}; use ${PERMISSION_MODES.join(", ")}`);
-      return;
-    }
-    await this.changePermissionMode(value as PermissionMode);
-  }
-
-  private async changePermissionMode(mode: PermissionMode): Promise<boolean> {
-    if (this.interactionRunning() || this.hasPendingApprovals()) {
-      this.renderer.status("finish or cancel the current task before changing permission mode", "yellow");
-      return false;
-    }
-    if (mode === "plan" && this.permissionMode !== "plan") {
-      this.previousPlanPermissionMode = this.permissionMode;
-      this.pendingPlanExecute = undefined;
-    } else if (mode !== "plan" && this.permissionMode === "plan") {
-      this.previousPlanPermissionMode = undefined;
-    }
-    if (mode !== this.permissionMode) this.pendingPlanExecute = undefined;
-    this.permissionMode = mode;
-    this.workMode = workModeForPermission(mode);
-    this.refreshTui();
-    await this.persistTuiSession();
-    this.renderer.status(`Permission mode set to ${mode}.`, "cyan");
-    return true;
-  }
-
-  private permissionModeAfterPlan(): PermissionMode {
-    const previous = this.previousPlanPermissionMode;
-    this.previousPlanPermissionMode = undefined;
-    if (previous && previous !== "plan") return previous;
-    const configured = configuredPermissionMode(this.config, this.approveAll);
-    return configured === "plan" ? "default" : configured;
-  }
-
-  private async handleConnect(_argument = ""): Promise<void> {
-    if (this.interactionRunning() || this.hasPendingApprovals()) {
-      this.renderer.status("finish or cancel the current task before connecting a provider", "yellow");
-      return;
-    }
-    if (this.tui) await this.tui.openConnect();
-  }
-
-  private async applyConnectProvider(input: ConnectInput): Promise<boolean | void> {
-    try {
-      const configPath = userConfigReadPath();
-      const config = await loadConfigFile(configPath);
-      const providerName = input.providerName;
-      const options: Record<string, unknown> = {
-        baseURL: input.baseURL,
-        protocol: input.protocol,
-      };
-      if (input.apiKey) options.apiKey = input.apiKey;
-      const models: Record<string, ModelProfile> = {};
-      for (const model of input.models) {
-        const modelOptions: Record<string, unknown> = { reasoningEffort: input.reasoningEffort };
-        if (model.contextWindow !== undefined) modelOptions.contextWindow = model.contextWindow;
-        models[model.id] = { options: modelOptions };
-      }
-      const profile: ProviderProfile = { options: options as ProviderOptions, models };
-      config.providers = { ...config.providers, [providerName]: profile };
-      const firstSelectedModel = input.models.find((m) => m.selected) ?? input.models[0];
-      await saveConfig(config, configPath);
-      this.config = await loadConfig(this.workspace);
-      if (firstSelectedModel) {
-        await this.handleModel(`${providerName}/${firstSelectedModel.id}`);
-      }
-      return true;
-    } catch (error) {
-      this.renderer.error(formatErrorMessage(error));
-      return false;
-    }
-  }
-
-  private async handleModel(argument: string): Promise<boolean> {
-    if (this.interactionRunning() || this.hasPendingApprovals()) {
-      this.renderer.status("finish or cancel the current task before changing the model", "yellow");
-      return false;
-    }
-    if (!argument && this.tui) {
-      await this.tui.openModels();
-      return true;
-    }
-    try {
-      const fresh = await loadConfig(this.workspace);
-      const models = modelCandidates(fresh.providers);
-      if (!argument) {
-        this.renderer.status(`Available models: ${models.length ? models.join(", ") : "(none configured)"}`, "cyan");
-        this.renderer.status(`Current model: ${this.modelLabel()}.`, "cyan");
-        return true;
-      }
-      const next = resolveModelConfig(fresh, argument);
-      this.model = next;
-      this.reasoningEffort = next.reasoningEffort ?? "medium";
-      (await this.currentContextManager()).resetUsageAnchor();
-      this.modelWarning = undefined;
-      this.renderer.status(`Model set to ${formatModelReference(this.model)}.`, "cyan");
-      this.refreshTui();
-      await this.persistTuiSession();
-      await this.rememberModelPreference(next);
-      return true;
-    } catch (error) {
-      this.renderer.error(formatErrorMessage(error));
-      return false;
-    }
-  }
-
-  private async handleSessionCommand(argument = ""): Promise<void> {
-    const id = argument.trim();
-
-    if (id) {
-      const restored = await this.selectSession(id);
-      if (restored) {
-        this.tui?.restoreSessionView(restored, `Restored session ${restored.id}: ${restored.name}.`);
-        if (!this.tui) this.renderer.status(`Restored session ${restored.id}: ${restored.name}.`, "cyan");
-      }
-      else this.renderer.error(`Session not found: ${id}`);
-      return;
-    }
-    if (this.interactionRunning() || this.hasPendingApprovals()) {
-      this.renderer.status("finish or cancel the current task before switching sessions", "yellow");
-      return;
-    }
-    if (this.tui) await this.tui.openSessions();
-    else {
-      const sessions = this.sessionStore.list();
-      const output = sessions.length
-        ? `${sessions.map((session) => `${session.id} (${session.archiveMessageCount ?? session.conversation?.length ?? 0} messages) — ${this.sessionName(session)}`).join("\n")}\n\nUse /session ID to resume.`
-        : "No sessions in this workspace.";
-      this.renderer.status(output, "cyan");
-    }
-  }
-
-  private async runManualCompaction(): Promise<void> {
-    if (this.interactionRunning() || this.hasPendingApprovals()) {
-      this.renderer.status("finish or cancel the current interaction before compacting context", "yellow");
-      return;
-    }
-    if (!this.model) {
-      this.renderer.error("no model selected; use /model PROVIDER/MODEL first");
-      return;
-    }
-    if (!this.conversation.length) {
-      this.renderer.status("No conversation context to compact.", "yellow");
-      return;
-    }
-
-    await this.ensureMcpReady();
-    const sessionId = this.currentSession?.id;
-    const sessionGeneration = this.sessionGeneration;
-    const manager = await this.currentContextManager();
-    const { ToolRegistry, registerBuiltinTools } = await loadTools();
-    const registry = new ToolRegistry();
-    registerBuiltinTools(registry, this.workspace);
-    this.registerMcpTools(registry);
-    const tools = await this.toolSchemasForCurrentMode(registry);
-    const requestModel: ModelConfig = { ...this.model, reasoningEffort: this.reasoningEffort };
-    const contextWindow = manager.resolveContextWindow(requestModel);
-    const beforeTokens = manager.estimateTokens(this.conversation, tools);
-    const abortController = new AbortController();
-    this.compactAbortController = abortController;
-
-    const compactPromise = Promise.resolve().then(async (): Promise<void> => {
-      await this.emitContextCompaction({
-        phase: "started",
-        reason: "manual",
-        beforeTokens,
-        replacementCount: 0,
-      });
-      try {
-        const compacted = await manager.compact({
-          messages: this.conversation,
-          provider: this.providerFactory(requestModel),
-          tools,
-          contextWindow,
-          reason: "manual",
-          signal: abortController.signal,
-        });
-        if (abortController.signal.aborted) throw new DOMException("operation aborted", "AbortError");
-        if (this.sessionGeneration !== sessionGeneration || this.currentSession?.id !== sessionId) {
-          throw new Error("active session changed while context compaction was running");
-        }
-        this.conversation = compacted.messages;
-        await this.persistTuiSession();
-        await this.emitContextCompaction({
-          phase: "completed",
-          reason: "manual",
-          beforeTokens: compacted.beforeTokens,
-          afterTokens: compacted.afterTokens,
-          replacementCount: compacted.replacementCount,
-        });
-      } catch (error) {
-        const cancelled = abortController.signal.aborted || isAbortError(error);
-        await this.emitContextCompaction({
-          phase: "failed",
-          reason: "manual",
-          beforeTokens,
-          replacementCount: 0,
-          message: cancelled ? "Context compaction cancelled." : formatErrorMessage(error),
-        });
-      }
-    });
-
-    this.compactPromise = compactPromise;
-    this.setPrompt();
-    this.refreshTui();
-    try {
-      await compactPromise;
-    } finally {
-      if (this.compactPromise === compactPromise) this.compactPromise = undefined;
-      if (this.compactAbortController === abortController) this.compactAbortController = undefined;
-      this.setPrompt();
-      this.refreshTui();
-      this.prompt();
-    }
-  }
-
   private async emitContextCompaction(payload: RuntimeEventPayloads["context_compaction"]): Promise<void> {
     await this.onEvent({
       version: 1,
@@ -1754,7 +1474,7 @@ export class TerminalSession {
         const fresh = await loadConfig(this.workspace);
         return modelCandidates(fresh.providers);
       },
-      onModelSelected: (reference) => this.handleModel(reference),
+      onModelSelected: (reference) => this.handlers.handleModel(reference),
       loadRemoteModels: async (baseURL, apiKey, protocol) => {
         const { fetchRemoteModels } = await import("./provider.js");
         const remote = await fetchRemoteModels(baseURL, apiKey, protocol);
@@ -1764,11 +1484,11 @@ export class TerminalSession {
           return next;
         });
       },
-      onConnect: async (input) => this.applyConnectProvider(input),
-      loadSessions: () => this.loadSessionOptions(),
-      onSessionSelected: (id) => this.selectSession(id),
-      onSessionCreated: (name) => this.createSession(name),
-      onSessionDeleted: (id) => this.deleteSession(id),
+      onConnect: async (input) => this.handlers.applyConnectProvider(input),
+      loadSessions: () => this.crud.loadSessionOptions(),
+      onSessionSelected: (id) => this.crud.selectSession(id),
+      onSessionCreated: (name) => this.crud.createSession(name),
+      onSessionDeleted: (id) => this.crud.deleteSession(id),
       loadFollowUps: () => this.loadFollowUpOptions(),
       onFollowUpCancelled: (id) => this.cancelFollowUp(id),
      loadFiles: (query) => this.loadWorkspaceFiles(query),
@@ -1800,7 +1520,7 @@ export class TerminalSession {
         } else {
           if (mode !== this.workMode) this.pendingPlanExecute = undefined;
           this.permissionMode = this.permissionMode === "plan"
-            ? this.permissionModeAfterPlan()
+            ? this.handlers.permissionModeAfterPlan()
             : this.permissionMode;
           this.workMode = mode;
         }
@@ -1834,7 +1554,7 @@ export class TerminalSession {
       getModelWarning: () => this.modelWarning,
       isInteractionBlocked: () => this.interactionRunning() || this.hasPendingApprovals() || this.pendingPlanExecute !== undefined,
       history: this.currentSession?.history ?? history,
-      ...(this.currentSession ? { initialSession: this.toSessionView(this.currentSession) } : {}),
+      ...(this.currentSession ? { initialSession: this.crud.toSessionView(this.currentSession) } : {}),
     });
     this.tui = tui;
     this.renderer = tui.renderer;
@@ -2052,15 +1772,7 @@ export class TerminalSession {
   }
 
   private writeDebugLog(message: string): void {
-    const enabled = /^(1|true|yes)$/i.test(process.env.ORAN_DEBUG ?? "");
-    if (!enabled) return;
-    const path = resolve(projectStateRoot(this.workspace), "debug", "agent.jsonl");
-    this.debugLogTail = this.debugLogTail
-      .then(async () => {
-        await mkdir(dirname(path), { recursive: true });
-        await appendFile(path, `${JSON.stringify({ timestamp: new Date().toISOString(), data: message })}\n`, "utf8");
-      })
-      .catch(() => undefined);
+    this.debugLogSink(message);
   }
 
   private async closeTrace(): Promise<void> {
@@ -2152,11 +1864,6 @@ function renderCommitKind(event: RuntimeEvent): TuiRenderCommitKind {
   }
 }
 
-function configuredPermissionMode(config: UserConfig, approveAll: boolean): PermissionMode {
-  if (config.agent?.workMode === "plan") return "plan";
-  return config.agent?.permissionMode ?? (approveAll ? "bypass" : "default");
-}
-
 function resolveRememberedModel(config: UserConfig): ModelConfig | undefined {
   const reference = config.agent?.lastModel;
   if (!reference) return undefined;
@@ -2165,10 +1872,6 @@ function resolveRememberedModel(config: UserConfig): ModelConfig | undefined {
   } catch {
     return undefined;
   }
-}
-
-function workModeForPermission(mode: PermissionMode): WorkMode {
-  return mode === "plan" ? "plan" : "auto";
 }
 
 function tokenValue(usage: Readonly<Record<string, number>>, ...keys: string[]): number {
