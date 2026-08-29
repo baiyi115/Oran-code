@@ -1,7 +1,17 @@
-import type { ModelReference } from "./types.js";
+import type { ModelReference, PermissionMode, UserConfig, WorkMode } from "./types.js";
 import type { Message } from "./types.js";
 import { isAutomaticSessionName, type StoredSession } from "./session-store.js";
 import type { SessionOption, SessionView } from "./tui/types.js";
+
+/** 由配置与 approve-all 推导初始权限模式。 */
+export function configuredPermissionMode(config: UserConfig, approveAll: boolean): PermissionMode {
+  if (config.agent?.workMode === "plan") return "plan";
+  return config.agent?.permissionMode ?? (approveAll ? "bypass" : "default");
+}
+
+export function workModeForPermission(mode: PermissionMode): WorkMode {
+  return mode === "plan" ? "plan" : "auto";
+}
 
 export const SESSION_GAP_REMINDER_DAYS = 7;
 
