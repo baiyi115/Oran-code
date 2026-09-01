@@ -20,6 +20,11 @@ export interface OverlayHandlerContext {
   readonly onSessionSelected?: (id: string) => Promise<SessionView | undefined>;
   readonly onSessionDeleted?: (id: string) => Promise<SessionView | undefined>;
   readonly onModelSelected: (reference: string) => Promise<boolean | void>;
+  readonly loadProviders?: () => Promise<import("./types.js").ProviderOption[]>;
+  readonly onProviderSelected?: (name: string) => Promise<boolean | void>;
+  readonly onProviderDeleted?: (name: string) => Promise<boolean>;
+  /** 供应商列表里的新增入口:打开空白连接向导。 */
+  readonly openConnect?: () => void;
   readonly loadFollowUps?: () => Promise<import("./types.js").FollowUpOption[]> | import("./types.js").FollowUpOption[];
   readonly onFollowUpCancelled?: (id: string) => Promise<boolean> | boolean;
   invalidate(): void;
@@ -42,7 +47,7 @@ export interface OverlayHandlerContext {
  */
 export class OverlayHandlers {
   private followUpBusy = false;
-  private deletingSession = false;
+  private deletingEntry = false;
   private selectingSession = false;
 
   constructor(private readonly ctx: OverlayHandlerContext) {}
@@ -62,6 +67,105 @@ export class OverlayHandlers {
         error: formatErrorMessage(error),
       });
     }
+    this.ctx.invalidate();
+  }
+
+  /** 供应商管理列表:/connect 无参入口。行数 = 供应商数 + 1(新增入口行)。 */
+  async openProviders(): Promise<void> {
+    if (this.ctx.rejectIfBlocked("finish or cancel the current task before managing providers")) return;
+    if (!this.ctx.loadProviders) return;
+    try {
+      const options = await this.ctx.loadProviders();
+      setOverlay(this.ctx.state, { kind: "providers", selectedIndex: 0, options: [...options] });
+    } catch (error) {
+      this.ctx.state.session.status = formatErrorMessage(error);
+    }
+    this.ctx.invalidate();
+  }
+
+  handleProvidersKey(input: string, key: Key): void {
+    if (this.ctx.state.overlay.kind !== "providers") return;
+    const options = this.ctx.state.overlay.options;
+    const rowCount = options.length + 1;
+    if (key.upArrow)
+      this.ctx.state.overlay = {
+        ...this.ctx.state.overlay,
+        selectedIndex: Math.max(0, this.ctx.state.overlay.selectedIndex - 1),
+      };
+    else if (key.downArrow)
+      this.ctx.state.overlay = {
+        ...this.ctx.state.overlay,
+        selectedIndex: Math.min(rowCount - 1, this.ctx.state.overlay.selectedIndex + 1),
+      };
+    else if (key.escape) this.ctx.state.overlay = { kind: "none" };
+    else if (input === "a" || input === "A") {
+      this.ctx.openConnect?.();
+    } else if (input === "d" || input === "D" || isSessionDeleteKey(input, key)) {
+      const selected = options[this.ctx.state.overlay.selectedIndex];
+      if (selected) this.requestProviderDelete(selected);
+    } else if (isSubmitKey(input, key)) {
+      if (this.ctx.state.overlay.selectedIndex >= options.length) {
+        this.ctx.openConnect?.();
+        return;
+      }
+      const selected = options[this.ctx.state.overlay.selectedIndex];
+      if (selected && this.ctx.onProviderSelected) void this.ctx.onProviderSelected(selected.name);
+    }
+    this.ctx.invalidate();
+  }
+
+  private requestProviderDelete(selected: import("./types.js").ProviderOption): void {
+    if (this.ctx.rejectIfBlocked("finish or cancel the current task before deleting a provider")) return;
+    if (this.ctx.state.overlay.kind !== "providers" || !this.ctx.onProviderDeleted) return;
+    this.ctx.state.overlay = {
+      kind: "provider-delete-confirm",
+      providerName: selected.name,
+      selectedIndex: 1,
+      returnSelectedIndex: this.ctx.state.overlay.selectedIndex,
+      options: [...this.ctx.state.overlay.options],
+    };
+    this.ctx.invalidate();
+  }
+
+  async handleProviderDeleteConfirmKey(input: string, key: Key): Promise<void> {
+    if (this.ctx.state.overlay.kind !== "provider-delete-confirm" || this.deletingEntry) return;
+    const overlay = this.ctx.state.overlay;
+    if (key.leftArrow || key.upArrow) this.ctx.state.overlay = { ...overlay, selectedIndex: 0 };
+    else if (key.rightArrow || key.downArrow) this.ctx.state.overlay = { ...overlay, selectedIndex: 1 };
+    else if (key.escape) this.cancelProviderDeleteConfirmation();
+    else if (isSessionDeleteKey(input, key) || isSubmitKey(input, key)) {
+      if (isSessionDeleteKey(input, key) || overlay.selectedIndex === 0) {
+        this.deletingEntry = true;
+        try {
+          const deleted = await this.ctx.onProviderDeleted?.(overlay.providerName);
+          if (deleted) {
+            const options = (await this.ctx.loadProviders?.()) ?? [];
+            this.ctx.state.overlay = {
+              kind: "providers",
+              selectedIndex: Math.min(overlay.returnSelectedIndex, Math.max(0, options.length - 1)),
+              options: [...options],
+            };
+          }
+          // 失败时 handler 已给出错误信息,留在确认层由用户取消。
+        } catch (error) {
+          this.ctx.state.session.status = formatErrorMessage(error);
+          this.cancelProviderDeleteConfirmation();
+        } finally {
+          this.deletingEntry = false;
+        }
+      } else this.cancelProviderDeleteConfirmation();
+    }
+    this.ctx.invalidate();
+  }
+
+  private cancelProviderDeleteConfirmation(): void {
+    if (this.ctx.state.overlay.kind !== "provider-delete-confirm") return;
+    const overlay = this.ctx.state.overlay;
+    this.ctx.state.overlay = {
+      kind: "providers",
+      selectedIndex: overlay.returnSelectedIndex,
+      options: overlay.options,
+    };
     this.ctx.invalidate();
   }
 
@@ -231,7 +335,7 @@ export class OverlayHandlers {
 
   private requestSessionDelete(selected: SessionOption): void {
     if (this.ctx.rejectIfBlocked("finish or cancel the current task before deleting a session")) return;
-    if (this.deletingSession || this.ctx.state.overlay.kind !== "sessions") return;
+    if (this.deletingEntry || this.ctx.state.overlay.kind !== "sessions") return;
     this.ctx.state.overlay = {
       kind: "session-delete-confirm",
       sessionId: selected.id,
@@ -244,14 +348,14 @@ export class OverlayHandlers {
   }
 
   async handleSessionDeleteConfirmKey(input: string, key: Key): Promise<void> {
-    if (this.ctx.state.overlay.kind !== "session-delete-confirm" || this.deletingSession) return;
+    if (this.ctx.state.overlay.kind !== "session-delete-confirm" || this.deletingEntry) return;
     const overlay = this.ctx.state.overlay;
     if (key.leftArrow || key.upArrow) this.ctx.state.overlay = { ...overlay, selectedIndex: 0 };
     else if (key.rightArrow || key.downArrow) this.ctx.state.overlay = { ...overlay, selectedIndex: 1 };
     else if (key.escape) this.cancelSessionDeleteConfirmation();
     else if (isSessionDeleteKey(input, key) || isSubmitKey(input, key)) {
       if (isSessionDeleteKey(input, key) || overlay.selectedIndex === 0) {
-        this.deletingSession = true;
+        this.deletingEntry = true;
         try {
           const activeSessionId = this.ctx.state.session.sessionId;
           const session = await this.ctx.onSessionDeleted?.(overlay.sessionId);
@@ -281,7 +385,7 @@ export class OverlayHandlers {
             options: overlay.options,
           };
         } finally {
-          this.deletingSession = false;
+          this.deletingEntry = false;
         }
       } else this.cancelSessionDeleteConfirmation();
     }

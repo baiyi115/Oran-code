@@ -36,6 +36,9 @@ export interface TuiAppOptions {
   onSessionSelected?: (id: string) => Promise<SessionView | undefined>;
   onSessionCreated?: (name?: string) => Promise<SessionView | undefined>;
   onSessionDeleted?: (id: string) => Promise<SessionView | undefined>;
+  loadProviders?: () => Promise<ProviderOption[]>;
+  onProviderSelected?: (name: string) => Promise<boolean | void>;
+  onProviderDeleted?: (name: string) => Promise<boolean>;
   loadFollowUps?: () => Promise<FollowUpOption[]> | FollowUpOption[];
   onFollowUpCancelled?: (id: string) => Promise<boolean> | boolean;
   loadFiles?: (query: string) => Promise<string[]>;
@@ -254,22 +257,37 @@ export type OverlayState =
   | {
       kind: "connect";
       step: ConnectStep;
+      activeField: ConnectInfoField;
       providerName: string;
       baseURL: string;
       apiKey: string;
       protocol: "openai" | "anthropic" | "";
-      reasoningEffort: ReasoningEffort;
+      /** 用户手动改过 name/protocol 后,不再随 baseURL 自动推导。 */
+      nameTouched: boolean;
+      protocolTouched: boolean;
       models: ConnectModelOption[];
       selectedIndex: number;
       loading: boolean;
       error?: string | undefined;
+    }
+  | { kind: "providers"; selectedIndex: number; options: ProviderOption[] }
+  | {
+      kind: "provider-delete-confirm";
+      providerName: string;
+      selectedIndex: number;
+      returnSelectedIndex: number;
+      options: ProviderOption[];
     };
 
-export type ConnectStep = "providerName" | "baseURL" | "apiKey" | "protocol" | "reasoningEffort" | "models";
+export type ConnectStep = "info" | "models";
+
+export type ConnectInfoField = "baseURL" | "apiKey" | "protocol" | "name";
 
 export interface ConnectModelOption {
   id: string;
   contextWindow?: number;
+  /** 向导内用 E 手动指定的思考等级;缺省走默认 high(端点拒绝时运行时回退)。 */
+  reasoningEffort?: ReasoningEffort;
   selected: boolean;
 }
 
@@ -278,8 +296,26 @@ export interface ConnectInput {
   baseURL: string;
   apiKey: string;
   protocol: "openai" | "anthropic";
-  reasoningEffort: ReasoningEffort;
+  /** 向导不再统一询问,未指定时按 high 写入并在运行时按需回退。 */
+  reasoningEffort?: ReasoningEffort;
   models: ConnectModelOption[];
+}
+
+/** `/connect <provider>` 预填编辑时携带的已有配置。 */
+export interface ConnectPrefill {
+  providerName: string;
+  baseURL: string;
+  apiKey: string;
+  protocol: "openai" | "anthropic";
+  models: { id: string; reasoningEffort?: ReasoningEffort }[];
+}
+
+export interface ProviderOption {
+  name: string;
+  baseURL: string;
+  protocol: "openai" | "anthropic";
+  modelCount: number;
+  isCurrent: boolean;
 }
 
 export interface SessionOption {

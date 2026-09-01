@@ -27,10 +27,11 @@ import type {
   UserConfig,
   WorkMode,
 } from "./types.js";
-import type { ConnectInput, SessionView } from "./tui/types.js";
+import type { ConnectInput, ConnectPrefill, SessionView } from "./tui/types.js";
 import type { InkTuiApp } from "./tui/ink-app.js";
+import { resolveProviderProtocolFor } from "./provider.js";
 import { isAbortError } from "./utils/abort-error.js";
-import { PERMISSION_MODES } from "./types.js";
+import { isReasoningEffort, PERMISSION_MODES } from "./types.js";
 
 export interface SessionCommandHandlersPort {
   readonly workspace: string;
@@ -125,12 +126,68 @@ export class SessionCommandHandlers {
     return configured === "plan" ? "default" : configured;
   }
 
-  async handleConnect(_argument = ""): Promise<void> {
+  async handleConnect(argument = ""): Promise<void> {
     if (this.port.interactionRunning() || this.port.hasPendingApprovals()) {
       this.port.renderer().status("finish or cancel the current task before connecting a provider", "yellow");
       return;
     }
-    if (this.port.tui()) await this.port.tui()!.openConnect();
+    const tui = this.port.tui();
+    if (!tui) {
+      this.port.renderer().error("/connect requires the interactive TUI");
+      return;
+    }
+    const name = argument.trim();
+    if (!name) {
+      await tui.openProviders();
+      return;
+    }
+    // `/connect <provider>`:预填编辑已有 provider,走一遍向导即更新。
+    const fresh = await loadConfig(this.port.workspace);
+    const profile = fresh.providers[name];
+    if (!profile) {
+      this.port.renderer().error(`Provider not found: ${name}`);
+      return;
+    }
+    const options = profile.options;
+    const prefill: ConnectPrefill = {
+      providerName: name,
+      baseURL: options.baseUrl ?? "",
+      apiKey: options.apiKey ?? "",
+      protocol: resolveProviderProtocolFor(name, options),
+      models: Object.entries(profile.models).map(([id, item]) => ({
+        id,
+        ...(isReasoningEffort(item.options.reasoningEffort) ? { reasoningEffort: item.options.reasoningEffort } : {}),
+      })),
+    };
+    await tui.openConnect(prefill);
+  }
+
+  /** 从用户级配置删除供应商;项目级配置里的定义不在此范围,删除后会提示。 */
+  async handleProviderDelete(name: string): Promise<boolean> {
+    if (this.port.interactionRunning() || this.port.hasPendingApprovals()) {
+      this.port.renderer().status("finish or cancel the current task before deleting a provider", "yellow");
+      return false;
+    }
+    try {
+      const configPath = userConfigReadPath();
+      const config = await loadConfigFile(configPath);
+      if (!config.providers[name]) {
+        this.port.renderer().error(`Provider ${name} is not defined in the user config`);
+        return false;
+      }
+      const { [name]: _removed, ...rest } = config.providers;
+      config.providers = rest;
+      await saveConfig(config, configPath);
+      this.port.setConfig(await loadConfig(this.port.workspace));
+      const usingIt = this.port.model()?.provider === name;
+      this.port
+        .renderer()
+        .status(`Provider ${name} removed.${usingIt ? " Note: the current model still references it." : ""}`, "cyan");
+      return true;
+    } catch (error) {
+      this.port.renderer().error(formatErrorMessage(error));
+      return false;
+    }
   }
 
   async applyConnectProvider(input: ConnectInput): Promise<boolean | void> {
@@ -138,16 +195,34 @@ export class SessionCommandHandlers {
       const configPath = userConfigReadPath();
       const config = await loadConfigFile(configPath);
       const providerName = input.providerName;
+      // 重复 /connect 同名 provider 时合并而非整体覆盖:保留 provider 级与
+      // 模型级的手工配置(如 disableReasoningEffort),只刷新连接信息与模型清单。
+      const previous = config.providers[providerName];
+      const carriedOptions: Record<string, unknown> = { ...previous?.options };
+      delete carriedOptions.baseUrl;
+      delete carriedOptions.baseURL;
+      delete carriedOptions.apiKey;
+      delete carriedOptions.protocol;
       const options: Record<string, unknown> = {
+        ...carriedOptions,
         baseURL: input.baseURL,
         protocol: input.protocol,
       };
       if (input.apiKey) options.apiKey = input.apiKey;
+      const previousModels = previous?.models ?? {};
       const models: Record<string, ModelProfile> = {};
       for (const model of input.models) {
-        const modelOptions: Record<string, unknown> = { reasoningEffort: input.reasoningEffort };
+        const modelOptions: Record<string, unknown> = { ...previousModels[model.id]?.options };
+        // 向导内 E 指定的 effort 优先;其次沿用旧配置;都没有则按默认 high。
+        if (model.reasoningEffort) modelOptions.reasoningEffort = model.reasoningEffort;
+        else if (modelOptions.reasoningEffort === undefined) {
+          modelOptions.reasoningEffort = input.reasoningEffort ?? "high";
+        }
         if (model.contextWindow !== undefined) modelOptions.contextWindow = model.contextWindow;
-        models[model.id] = { options: modelOptions };
+        models[model.id] = {
+          ...(previousModels[model.id]?.name ? { name: previousModels[model.id]!.name } : {}),
+          options: modelOptions,
+        };
       }
       const profile: ProviderProfile = { options: options as ProviderOptions, models };
       config.providers = { ...config.providers, [providerName]: profile };

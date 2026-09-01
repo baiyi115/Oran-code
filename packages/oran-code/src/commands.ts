@@ -29,7 +29,7 @@ export interface SlashCommand {
 export const DEFAULT_COMMANDS: readonly SlashCommand[] = [
   { name: "/clear", description: "clear the transcript", kind: "ui", action: "clear" },
   { name: "/compact", description: "compact conversation context", kind: "ui", action: "compact" },
-  { name: "/connect", description: "add a custom model provider", kind: "ui", action: "connect" },
+  { name: "/connect", description: "manage model providers (add / edit / remove)", kind: "ui", action: "connect" },
   { name: "/exit", aliases: ["/quit"], description: "exit the session", kind: "ui", action: "exit" },
   { name: "/help", description: "show available slash commands", kind: "local" },
   { name: "/memory", description: "show loaded long-term memory", kind: "local" },

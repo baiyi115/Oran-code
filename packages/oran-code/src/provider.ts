@@ -9,6 +9,7 @@ export {
   createModelProvider,
   fetchRemoteModels,
   resolveProviderProtocol,
+  resolveProviderProtocolFor,
   ModelRequestError,
   SseIdleTimeoutError,
 } from "./provider/index.js";
