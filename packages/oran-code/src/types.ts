@@ -165,6 +165,8 @@ export interface ModelConfig {
   maxTokens: number;
   contextWindow?: number;
   reasoningEffort?: ReasoningEffort;
+  /** 该端点拒绝 reasoning_effort 参数时置位，请求体不再携带。 */
+  reasoningEffortDisabled?: boolean;
   options?: Record<string, unknown>;
 }
 
@@ -175,6 +177,7 @@ export interface ModelOptions {
   maxTokens?: number;
   contextWindow?: number;
   reasoningEffort?: ReasoningEffort;
+  disableReasoningEffort?: boolean;
   [key: string]: unknown;
 }
 

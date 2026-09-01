@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { AnthropicProvider, OpenAICompatibleProvider } from "../src/provider.js";
+import { AnthropicProvider, ModelRequestError, OpenAICompatibleProvider } from "../src/provider.js";
 import type { Message, ModelConfig } from "../src/types.js";
 
 const messages: Message[] = [{ role: "user", content: "hello" }];
@@ -96,6 +96,65 @@ describe("OpenAICompatibleProvider", () => {
     await provider.complete(messages);
 
     expect(vi.mocked(globalThis.fetch).mock.calls[0]?.[0]).toBe("https://example.test/v1/chat/completions");
+  });
+
+  it("retries once without reasoning_effort when the endpoint rejects it with 400", async () => {
+    const fetchMock = vi
+      .spyOn(globalThis, "fetch")
+      .mockResolvedValueOnce(
+        new Response('{"error":{"message":"Unrecognized request argument: reasoning_effort"}}', {
+          status: 400,
+          headers: { "content-type": "application/json" },
+        }),
+      )
+      .mockResolvedValueOnce(
+        new Response(JSON.stringify({ choices: [{ message: { content: "ok" } }] }), {
+          status: 200,
+          headers: { "content-type": "application/json" },
+        }),
+      );
+    const onReasoningUnsupported = vi.fn();
+    const provider = new OpenAICompatibleProvider(model({ reasoningEffort: "high" }));
+    provider.onReasoningUnsupported = onReasoningUnsupported;
+
+    const response = await provider.complete(messages);
+
+    expect(response.text).toBe("ok");
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+    expect(onReasoningUnsupported).toHaveBeenCalledTimes(1);
+    const firstBody = JSON.parse(String(fetchMock.mock.calls[0]?.[1]?.body)) as Record<string, unknown>;
+    const secondBody = JSON.parse(String(fetchMock.mock.calls[1]?.[1]?.body)) as Record<string, unknown>;
+    expect(firstBody.reasoning_effort).toBe("high");
+    expect(secondBody).not.toHaveProperty("reasoning_effort");
+  });
+
+  it("does not retry unrelated 400 errors", async () => {
+    const fetchMock = vi.spyOn(globalThis, "fetch").mockResolvedValue(
+      new Response('{"error":{"message":"invalid max_tokens"}}', {
+        status: 400,
+        headers: { "content-type": "application/json" },
+      }),
+    );
+    const provider = new OpenAICompatibleProvider(model({ reasoningEffort: "high" }));
+
+    await expect(provider.complete(messages)).rejects.toThrow(ModelRequestError);
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+  });
+
+  it("never sends reasoning_effort when the config marks it disabled", async () => {
+    const fetchMock = vi.spyOn(globalThis, "fetch").mockResolvedValue(
+      new Response(JSON.stringify({ choices: [{ message: { content: "ok" } }] }), {
+        status: 200,
+        headers: { "content-type": "application/json" },
+      }),
+    );
+    const provider = new OpenAICompatibleProvider(model({ reasoningEffort: "high", reasoningEffortDisabled: true }));
+
+    await provider.complete(messages);
+
+    expect(fetchMock).toHaveBeenCalledOnce();
+    const body = JSON.parse(String(fetchMock.mock.calls[0]?.[1]?.body)) as Record<string, unknown>;
+    expect(body).not.toHaveProperty("reasoning_effort");
   });
 
   it("keeps SSE tail bytes, usage, reasoning, and tool-call index order", async () => {
