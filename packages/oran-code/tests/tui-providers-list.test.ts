@@ -32,6 +32,7 @@ function harness(list: ProviderOption[] = options, deletedOk = true): Harness {
   const ctx: OverlayHandlerContext = {
     state,
     loadModels: async () => [],
+    onModelSelected: async () => {},
     // 模拟真实行为:列表反映已删除的供应商
     loadProviders: async () => list.filter((option) => !h.deleted.includes(option.name)),
     onProviderSelected: async (name) => {
@@ -62,6 +63,13 @@ function harness(list: ProviderOption[] = options, deletedOk = true): Harness {
 function overlay(h: Harness) {
   if (h.state.overlay.kind === "none") throw new Error("overlay closed");
   return h.state.overlay;
+}
+
+/** 收窄到 providers 列表 overlay,供访问 options 的用例使用。 */
+function providersOverlay(h: Harness) {
+  const view = overlay(h);
+  if (view.kind !== "providers") throw new Error(`overlay is ${view.kind}`);
+  return view;
 }
 
 describe("providers list overlay", () => {
@@ -104,8 +112,7 @@ describe("providers list overlay", () => {
     await h.handlers.handleProviderDeleteConfirmKey("", enter); // 删除确认是异步的,必须等待
     expect(h.deleted).toEqual(["alpha"]);
     // 删除成功后回到重载后的列表,只剩 beta
-    expect(overlay(h).kind).toBe("providers");
-    expect(overlay(h).options.map((option) => option.name)).toEqual(["beta"]);
+    expect(providersOverlay(h).options.map((option) => option.name)).toEqual(["beta"]);
   });
 
   it("stays on the confirm dialog when deletion fails", async () => {
