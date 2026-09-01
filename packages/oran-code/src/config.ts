@@ -516,6 +516,11 @@ export function resolveModelConfig(config: UserConfig, requested: string | undef
     throw new Error(`invalid reasoningEffort for model ${providerName}/${modelName}; use low, medium, high, or xhigh`);
   }
   const reasoningEffort: ReasoningEffort = rawReasoningEffort ?? "medium";
+  const rawDisableReasoning = modelOptions.disableReasoningEffort ?? providerOptions.disableReasoningEffort;
+  if (rawDisableReasoning !== undefined && typeof rawDisableReasoning !== "boolean") {
+    throw new Error(`invalid disableReasoningEffort for model ${providerName}/${modelName}; use true or false`);
+  }
+  const reasoningEffortDisabled = rawDisableReasoning === true;
   const options = { ...providerOptions, ...modelOptions };
   delete options.baseUrl;
   delete options.apiKey;
@@ -523,6 +528,7 @@ export function resolveModelConfig(config: UserConfig, requested: string | undef
   delete options.maxTokens;
   delete options.contextWindow;
   delete options.reasoningEffort;
+  delete options.disableReasoningEffort;
   delete options.permission;
   const headers = normalizeHeaders(options.headers);
   delete options.headers;
@@ -536,6 +542,7 @@ export function resolveModelConfig(config: UserConfig, requested: string | undef
     ...(headers !== undefined ? { headers } : {}),
     ...(contextWindow !== undefined ? { contextWindow } : {}),
     reasoningEffort,
+    ...(reasoningEffortDisabled ? { reasoningEffortDisabled: true } : {}),
     ...(Object.keys(options).length ? { options } : {}),
   };
 }

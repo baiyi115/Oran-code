@@ -14,6 +14,10 @@ import { createStreamingRequest, modelResponseChunks, numericUsage, requestOptio
 
 export class OpenAICompatibleProvider implements ModelProvider {
   private readonly endpoint: string;
+  /** 端点对 reasoning_effort 返回 400 后置位,后续请求体不再携带该参数。 */
+  private reasoningBlocked = false;
+  /** 剥参回退发生时通知上层(用于持久化结论),失败不影响请求本身。 */
+  onReasoningUnsupported?: () => void | Promise<void>;
 
   constructor(private readonly config: ModelConfig) {
     const base = config.baseUrl ?? "https://api.openai.com/v1";
@@ -27,12 +31,23 @@ export class OpenAICompatibleProvider implements ModelProvider {
     tools?: Record<string, unknown>[],
     options?: ProviderRequestOptions,
   ): Promise<ModelResponse> {
-    const response = await fetch(this.endpoint, {
-      method: "POST",
-      headers: this.headers(),
-      body: JSON.stringify(this.payload(messages, tools, false)),
-      ...(options?.signal ? { signal: options.signal } : {}),
-    });
+    const request = () =>
+      fetch(this.endpoint, {
+        method: "POST",
+        headers: this.headers(),
+        body: JSON.stringify(this.payload(messages, tools, false)),
+        ...(options?.signal ? { signal: options.signal } : {}),
+      });
+    let response = await request();
+    if (!response.ok) {
+      const detail = await boundedError(response);
+      if (response.status === 400 && this.sendsReasoningEffort() && /reasoning/i.test(detail)) {
+        await this.markReasoningUnsupported();
+        response = await request();
+      } else {
+        throw new ModelRequestError(response.status, detail);
+      }
+    }
     if (!response.ok) throw new ModelRequestError(response.status, await boundedError(response));
     const data = (await response.json()) as Record<string, unknown>;
     return parseCompletion(data, false);
@@ -45,12 +60,23 @@ export class OpenAICompatibleProvider implements ModelProvider {
   ): AsyncGenerator<ModelStreamChunk> {
     const request = createStreamingRequest(options?.signal);
     try {
-      const response = await fetch(this.endpoint, {
-        method: "POST",
-        headers: this.headers(),
-        body: JSON.stringify(this.payload(messages, tools, true)),
-        signal: request.signal,
-      });
+      const send = () =>
+        fetch(this.endpoint, {
+          method: "POST",
+          headers: this.headers(),
+          body: JSON.stringify(this.payload(messages, tools, true)),
+          signal: request.signal,
+        });
+      let response = await send();
+      if (!response.ok) {
+        const detail = await boundedError(response);
+        if (response.status === 400 && this.sendsReasoningEffort() && /reasoning/i.test(detail)) {
+          await this.markReasoningUnsupported();
+          response = await send();
+        } else {
+          throw new ModelRequestError(response.status, detail);
+        }
+      }
       if (!response.ok) throw new ModelRequestError(response.status, await boundedError(response));
       const contentType = response.headers.get("content-type") ?? "";
       if (!contentType.includes("text/event-stream") || !response.body) {
@@ -80,6 +106,19 @@ export class OpenAICompatibleProvider implements ModelProvider {
     }
   }
 
+  private sendsReasoningEffort(): boolean {
+    return (
+      !this.reasoningBlocked &&
+      this.config.reasoningEffortDisabled !== true &&
+      this.config.reasoningEffort !== undefined
+    );
+  }
+
+  private async markReasoningUnsupported(): Promise<void> {
+    this.reasoningBlocked = true;
+    await this.onReasoningUnsupported?.();
+  }
+
   private headers(): Record<string, string> {
     return {
       "content-type": "application/json",
@@ -97,7 +136,7 @@ export class OpenAICompatibleProvider implements ModelProvider {
     stream: boolean,
   ): Record<string, unknown> {
     const options = requestOptions(this.config.options);
-    if (this.config.reasoningEffort !== undefined) options.reasoning_effort = this.config.reasoningEffort;
+    if (this.sendsReasoningEffort()) options.reasoning_effort = this.config.reasoningEffort;
     if (stream) {
       const configured = options.stream_options;
       options.stream_options = {
