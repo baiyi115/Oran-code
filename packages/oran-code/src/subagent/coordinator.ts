@@ -44,7 +44,8 @@ export class SubagentCoordinator {
     const roleNames = this.options.roles.list().map((definition) => definition.name);
     return {
       name: "agent",
-      description: "Delegate a bounded task to a predefined subagent, a context Fork, or a persistent teammate.",
+      description:
+        "Delegate a bounded task to a predefined subagent, a context Fork, or a persistent teammate. Multiple agent calls in the same tool batch run concurrently; set run_in_background for long tasks whose results may arrive later as notifications.",
       parameters: {
         type: "object",
         additionalProperties: false,
