@@ -20,7 +20,7 @@ import {
   modelCandidates,
   type SlashCommand,
 } from "./commands.js";
-import { createModelProvider } from "./provider.js";
+import { createModelProvider, OpenAICompatibleProvider, resolveProviderProtocolFor } from "./provider.js";
 import { createRuntimeConfig } from "./runtime.js";
 import { ApprovalQueue, isApprovalAnswer } from "./approval-queue.js";
 import { SessionTitleService } from "./session-title.js";
@@ -304,7 +304,14 @@ export class TerminalSession {
       renderer: () => this.renderer,
       isInteractive: () => this.isReadlineActive() || Boolean(this.tui),
     });
-    this.providerFactory = options.providerFactory ?? ((model: ModelConfig) => createModelProvider(model));
+    const baseProviderFactory = options.providerFactory ?? ((model: ModelConfig) => createModelProvider(model));
+    this.providerFactory = (model: ModelConfig) => {
+      const provider = baseProviderFactory(model);
+      if (provider instanceof OpenAICompatibleProvider) {
+        provider.onReasoningUnsupported = () => this.handleReasoningUnsupported(model);
+      }
+      return provider;
+    };
     this.configuredStablePromptModules = { ...options.stablePromptModules };
     this.stablePromptModules = { ...this.configuredStablePromptModules };
     this.memoryManager = new MemoryManager(this.workspace);
@@ -1170,6 +1177,29 @@ export class TerminalSession {
     }
   }
 
+  /**
+   * 端点对 reasoning_effort 返回 400 后的持久化:写入用户配置并在内存中标记,
+   * 之后的请求不再携带该参数。尽力而为,失败不影响已完成的剥参重试。
+   */
+  private async handleReasoningUnsupported(model: ModelConfig): Promise<void> {
+    const reference = formatModelReference(model);
+    try {
+      const path = userConfigReadPath();
+      const userConfig = await loadConfigFile(path);
+      const modelProfile = userConfig.providers[model.provider]?.models[model.model];
+      if (modelProfile && modelProfile.options.disableReasoningEffort !== true) {
+        modelProfile.options = { ...modelProfile.options, disableReasoningEffort: true };
+        await saveConfig(userConfig, path);
+        this.renderer.status(`reasoning_effort rejected by ${reference}; disabled and saved to config.`, "yellow");
+      }
+    } catch {
+      return;
+    }
+    if (this.model?.provider === model.provider && this.model?.model === model.model) {
+      this.model = { ...this.model, reasoningEffortDisabled: true };
+    }
+  }
+
   /** 斜杠命令 handler 的端口:提供状态读写与副作用回调。 */
   private handlersPort(): SessionCommandHandlersPort {
     return {
@@ -1636,6 +1666,18 @@ export class TerminalSession {
         });
       },
       onConnect: async (input) => this.handlers.applyConnectProvider(input),
+      loadProviders: async () => {
+        const fresh = await loadConfig(this.workspace);
+        return Object.entries(fresh.providers).map(([name, profile]) => ({
+          name,
+          baseURL: profile.options.baseUrl ?? "",
+          protocol: resolveProviderProtocolFor(name, profile.options),
+          modelCount: Object.keys(profile.models).length,
+          isCurrent: this.model?.provider === name,
+        }));
+      },
+      onProviderSelected: (name) => this.handlers.handleConnect(name),
+      onProviderDeleted: (name) => this.handlers.handleProviderDelete(name),
       loadSessions: () => this.crud.loadSessionOptions(),
       onSessionSelected: (id) => this.crud.selectSession(id),
       onSessionCreated: (name) => this.crud.createSession(name),

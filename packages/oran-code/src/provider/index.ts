@@ -5,7 +5,7 @@ import { resolveProviderProtocol } from "./catalog.js";
 
 export { AnthropicProvider } from "./anthropic.js";
 export { OpenAICompatibleProvider } from "./openai.js";
-export { fetchRemoteModels, resolveProviderProtocol } from "./catalog.js";
+export { fetchRemoteModels, resolveProviderProtocol, resolveProviderProtocolFor } from "./catalog.js";
 export type { RemoteModel, RemoteProviderProtocol } from "./catalog.js";
 export { ModelRequestError, SseIdleTimeoutError } from "./errors.js";
 

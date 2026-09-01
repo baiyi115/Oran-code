@@ -1,8 +1,20 @@
-import type { ModelConfig } from "../types.js";
+import type { ModelConfig, ProviderOptions } from "../types.js";
 import { CLIENT_ID, CLIENT_USER_AGENT, PRODUCT_VERSION } from "../paths.js";
 import { stringOption } from "./transport.js";
 
 export type RemoteProviderProtocol = "openai" | "anthropic";
+
+/** 已配置 provider 的协议推导:供列表展示与预填编辑共用。 */
+export function resolveProviderProtocolFor(providerName: string, options: ProviderOptions): RemoteProviderProtocol {
+  return resolveProviderProtocol({
+    provider: providerName,
+    model: "",
+    temperature: 0,
+    maxTokens: 0,
+    ...(options.baseUrl !== undefined ? { baseUrl: options.baseUrl } : {}),
+    options: options as Record<string, unknown>,
+  });
+}
 
 export interface RemoteModel {
   id: string;

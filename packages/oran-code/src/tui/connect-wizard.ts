@@ -1,8 +1,8 @@
 import type { Key } from "ink";
-import { REASONING_EFFORTS } from "../types.js";
+import type { ReasoningEffort } from "../types.js";
 import { formatErrorMessage } from "../error-format.js";
 import { setOverlay } from "./state.js";
-import type { ConnectInput, ConnectModelOption, ConnectStep, TuiState } from "./types.js";
+import type { ConnectInfoField, ConnectInput, ConnectModelOption, ConnectPrefill, TuiState } from "./types.js";
 import { dimHorizontalRule } from "./theme.js";
 import { highlightSelection } from "./overlay/select-list.js";
 import { truncateVisible } from "./text-width.js";
@@ -20,26 +20,37 @@ export interface ConnectWizardDeps {
   rejectIfBlocked(message: string): boolean;
 }
 
+const INFO_FIELDS: readonly ConnectInfoField[] = ["baseURL", "apiKey", "protocol", "name"];
+
 /**
- * 「添加模型提供商」六步向导:providerName → baseURL → apiKey → protocol →
- * reasoningEffort → models。状态完全存放在 state.overlay 的 connect 变体,
- * 从 InkTuiApp 提取,行为保持不变。
+ * 「添加/编辑模型提供商」两屏向导:info 表单(baseURL/apiKey/protocol/name 同屏,
+ * protocol 与 name 从 baseURL 自动推导) → models 多选。思考等级不在此询问,
+ * 统一按 high 写入,端点拒绝时由 provider 层剥参回退。状态完全存放在
+ * state.overlay 的 connect 变体。
  */
 export class ConnectWizard {
   constructor(private readonly deps: ConnectWizardDeps) {}
 
-  open(): void {
+  open(prefill?: ConnectPrefill): void {
     if (this.deps.rejectIfBlocked("finish or cancel the current task before connecting a provider")) return;
     if (!this.deps.onConnect || !this.deps.loadRemoteModels) return;
     setOverlay(this.deps.state, {
       kind: "connect",
-      step: "providerName",
-      providerName: "",
-      baseURL: "",
-      apiKey: "",
-      protocol: "",
-      reasoningEffort: "medium",
-      models: [],
+      step: "info",
+      activeField: "baseURL",
+      providerName: prefill?.providerName ?? "",
+      baseURL: prefill?.baseURL ?? "",
+      apiKey: prefill?.apiKey ?? "",
+      protocol: prefill?.protocol ?? "",
+      nameTouched: Boolean(prefill),
+      protocolTouched: Boolean(prefill),
+      models: prefill
+        ? prefill.models.map((model) => ({
+            id: model.id,
+            selected: true,
+            ...(model.reasoningEffort ? { reasoningEffort: model.reasoningEffort } : {}),
+          }))
+        : [],
       selectedIndex: 0,
       loading: false,
     });
@@ -56,12 +67,6 @@ export class ConnectWizard {
       return;
     }
 
-    if (overlay.step !== "models" && key.tab) {
-      this.advanceStep(input);
-      this.deps.invalidate();
-      return;
-    }
-
     if (overlay.step === "models") {
       // Ctrl+S or Tab finishes the wizard from the models step.
       if ((key.ctrl && input === "s") || key.tab) {
@@ -74,96 +79,90 @@ export class ConnectWizard {
       return;
     }
 
-    // List-selection steps (protocol / reasoningEffort): arrow keys move,
-    // Enter/Tab confirms and advances. They must not fall through to the
-    // free-text editor below, otherwise arrow keys get swallowed.
-    if (overlay.step === "protocol" || overlay.step === "reasoningEffort") {
-      this.handleListStepKey(input, key);
-      this.deps.invalidate();
+    this.handleInfoKey(input, key);
+    this.deps.invalidate();
+  }
+
+  private handleInfoKey(input: string, key: Key): void {
+    if (this.deps.state.overlay.kind !== "connect") return;
+    const overlay = this.deps.state.overlay;
+
+    // 左右键在 info 屏任意字段下都切换协议(文本字段不支持光标移动,无冲突)。
+    if (key.leftArrow || key.rightArrow) {
+      overlay.protocol = overlay.protocol === "anthropic" ? "openai" : "anthropic";
+      overlay.protocolTouched = true;
       return;
     }
 
-    // Free-text steps (providerName / baseURL / apiKey): edit in place, Enter advances.
-    if (key.backspace || key.delete) {
-      this.deleteFieldChar(overlay.step, key.delete);
-      this.deps.invalidate();
+    // Tab / 上下键在四个字段间移动光标。
+    if (key.tab || key.upArrow || key.downArrow) {
+      const offset = key.upArrow ? -1 : 1;
+      const index = INFO_FIELDS.indexOf(overlay.activeField);
+      overlay.activeField = INFO_FIELDS[(index + offset + INFO_FIELDS.length) % INFO_FIELDS.length] ?? "baseURL";
       return;
     }
+
+    if (key.backspace || key.delete) {
+      this.deleteActiveChar(overlay.activeField);
+      if (overlay.activeField === "name") overlay.nameTouched = true;
+      return;
+    }
+
     if (isSubmitKey(input, key)) {
-      this.advanceStep(input);
-      this.deps.invalidate();
+      this.advanceToModels();
       return;
     }
     if (input && !key.ctrl && !key.meta && input !== "\t") {
-      this.appendFieldChar(overlay.step, input);
-      this.deps.invalidate();
+      this.appendActiveChar(overlay.activeField, input);
     }
   }
 
-  private deleteFieldChar(step: ConnectStep, _isDelete: boolean): void {
+  private deleteActiveChar(field: ConnectInfoField): void {
     if (this.deps.state.overlay.kind !== "connect") return;
     const overlay = this.deps.state.overlay;
     const trim = (value: string) => (value.length ? value.slice(0, -1) : value);
-    if (step === "providerName") overlay.providerName = trim(overlay.providerName);
-    else if (step === "baseURL") overlay.baseURL = trim(overlay.baseURL);
-    else if (step === "apiKey") overlay.apiKey = trim(overlay.apiKey);
+    if (field === "baseURL") overlay.baseURL = trim(overlay.baseURL);
+    else if (field === "apiKey") overlay.apiKey = trim(overlay.apiKey);
+    else if (field === "name") overlay.providerName = trim(overlay.providerName);
   }
 
-  private appendFieldChar(step: ConnectStep, input: string): void {
+  private appendActiveChar(field: ConnectInfoField, input: string): void {
     if (this.deps.state.overlay.kind !== "connect") return;
     const overlay = this.deps.state.overlay;
     if (input === "\r" || input === "\n") return;
-    if (step === "providerName") overlay.providerName += input;
-    else if (step === "baseURL") overlay.baseURL += input;
-    else if (step === "apiKey") overlay.apiKey += input;
+    if (field === "baseURL") {
+      overlay.baseURL += input;
+      this.autoDeriveFromBaseURL();
+    } else if (field === "apiKey") overlay.apiKey += input;
+    else if (field === "name") {
+      overlay.providerName += input;
+      overlay.nameTouched = true;
+    }
   }
 
-  private advanceStep(_input: string): void {
+  /** baseURL 变化时自动推导 protocol 与 name,用户手动改过(预填编辑)则跳过。 */
+  private autoDeriveFromBaseURL(): void {
     if (this.deps.state.overlay.kind !== "connect") return;
     const overlay = this.deps.state.overlay;
-    switch (overlay.step) {
-      case "providerName": {
-        const name = overlay.providerName.trim() || safeHostName(overlay.baseURL, "provider");
-        overlay.providerName = name;
-        overlay.step = "baseURL";
-        break;
-      }
-      case "baseURL": {
-        if (!overlay.baseURL.trim()) return;
-        // Pre-select protocol from URL hint when empty.
-        if (!overlay.protocol) {
-          const hint = overlay.baseURL.toLowerCase();
-          if (hint.includes("anthropic") || hint.includes("claude")) overlay.protocol = "anthropic";
-          else overlay.protocol = "openai";
-        }
-        overlay.step = "apiKey";
-        break;
-      }
-      case "apiKey": {
-        overlay.step = "protocol";
-        overlay.selectedIndex = overlay.protocol === "anthropic" ? 1 : 0;
-        break;
-      }
-      case "protocol": {
-        const choices: ("openai" | "anthropic")[] = ["openai", "anthropic"];
-        overlay.protocol = choices[overlay.selectedIndex] ?? "openai";
-        overlay.step = "reasoningEffort";
-        overlay.selectedIndex = REASONING_EFFORTS.indexOf(overlay.reasoningEffort);
-        if (overlay.selectedIndex < 0) overlay.selectedIndex = 1;
-        break;
-      }
-      case "reasoningEffort": {
-        overlay.reasoningEffort = REASONING_EFFORTS[overlay.selectedIndex] ?? "medium";
-        overlay.step = "models";
-        overlay.selectedIndex = 0;
-        void this.fetchModels();
-        break;
-      }
-      case "models": {
-        void this.confirm();
-        break;
-      }
+    const hint = overlay.baseURL.toLowerCase();
+    if (!overlay.nameTouched) overlay.providerName = safeHostName(overlay.baseURL);
+    if (!overlay.protocolTouched) {
+      overlay.protocol = hint.includes("anthropic") || hint.includes("claude") ? "anthropic" : "openai";
     }
+  }
+
+  private advanceToModels(): void {
+    if (this.deps.state.overlay.kind !== "connect") return;
+    const overlay = this.deps.state.overlay;
+    if (!overlay.baseURL.trim()) {
+      overlay.error = "base URL is required";
+      return;
+    }
+    if (!overlay.providerName.trim()) overlay.providerName = safeHostName(overlay.baseURL);
+    overlay.step = "models";
+    overlay.error = undefined;
+    overlay.selectedIndex = 0;
+    void this.fetchModels();
   }
 
   private async fetchModels(): Promise<void> {
@@ -179,8 +178,10 @@ export class ConnectWizard {
       if (this.deps.state.overlay.kind !== "connect") return;
       const existing = new Map(this.deps.state.overlay.models.map((model) => [model.id, model]));
       this.deps.state.overlay.models = remote.map((model): ConnectModelOption => {
-        const next: ConnectModelOption = { id: model.id, selected: existing.get(model.id)?.selected ?? false };
+        const prior = existing.get(model.id);
+        const next: ConnectModelOption = { id: model.id, selected: prior?.selected ?? false };
         if (model.contextWindow !== undefined) next.contextWindow = model.contextWindow;
+        if (prior?.reasoningEffort) next.reasoningEffort = prior.reasoningEffort;
         return next;
       });
       this.deps.state.overlay.selectedIndex = 0;
@@ -209,6 +210,18 @@ export class ConnectWizard {
       void this.fetchModels();
       return;
     }
+    if (input === "e" || input === "E") {
+      const selected = options[overlay.selectedIndex];
+      if (selected) {
+        // 未指定(默认 high) → low → medium → high → xhigh → 回到未指定。
+        const sequence: (ReasoningEffort | undefined)[] = [undefined, "low", "medium", "high", "xhigh"];
+        const at = sequence.indexOf(selected.reasoningEffort);
+        const next = sequence[(at + 1) % sequence.length];
+        if (next) selected.reasoningEffort = next;
+        else delete selected.reasoningEffort;
+      }
+      return;
+    }
     if (input === "d" || input === "D") {
       const selected = options[overlay.selectedIndex];
       if (selected) {
@@ -222,23 +235,6 @@ export class ConnectWizard {
       if (selected) {
         selected.selected = !selected.selected;
       }
-    }
-  }
-
-  private handleListStepKey(input: string, key: Key): void {
-    if (this.deps.state.overlay.kind !== "connect") return;
-    const overlay = this.deps.state.overlay;
-    const choices: readonly string[] = overlay.step === "protocol" ? ["openai", "anthropic"] : REASONING_EFFORTS;
-    if (key.upArrow) {
-      overlay.selectedIndex = Math.max(0, overlay.selectedIndex - 1);
-      return;
-    }
-    if (key.downArrow) {
-      overlay.selectedIndex = Math.min(Math.max(0, choices.length - 1), overlay.selectedIndex + 1);
-      return;
-    }
-    if (isSubmitKey(input, key)) {
-      this.advanceStep(input);
     }
   }
 
@@ -257,7 +253,6 @@ export class ConnectWizard {
       baseURL: overlay.baseURL.trim(),
       apiKey: overlay.apiKey.trim(),
       protocol,
-      reasoningEffort: overlay.reasoningEffort,
       models: selected,
     };
     try {
@@ -295,90 +290,50 @@ export function renderConnectLines(
     return protocol === "anthropic" ? "Anthropic Messages" : "OpenAI Chat Completions";
   }
   const lines: string[] = [];
-  switch (overlay.step) {
-    case "providerName":
-      lines.push(
-        "Add provider — name",
-        dimHorizontalRule(width),
-        `  ${overlay.providerName || "(e.g. openai)"}`,
-        "Enter/Tab Next   Esc Close",
-      );
-      break;
-    case "baseURL":
-      lines.push(
-        `Provider: ${overlay.providerName}`,
-        dimHorizontalRule(width),
-        "Base URL",
-        `  ${overlay.baseURL || "(e.g. https://api.openai.com/v1 or https://api.anthropic.com)}"}`,
-        "Enter/Tab Next   Esc Close",
-      );
-      break;
-    case "apiKey":
-      lines.push(
-        `Provider: ${overlay.providerName} — ${overlay.baseURL}`,
-        dimHorizontalRule(width),
-        "API key (optional)",
-        `  ${overlay.apiKey ? "*".repeat(Math.min(40, overlay.apiKey.length)) : "(leave blank to skip)"}`,
-        "Enter/Tab Next   Esc Close",
-      );
-      break;
-    case "protocol": {
-      const choices: ("openai" | "anthropic")[] = ["openai", "anthropic"];
-      lines.push(
-        `Provider: ${overlay.providerName}`,
-        dimHorizontalRule(width),
-        "Protocol",
-        "Enter/Tab Confirm   Esc Close",
-        "",
-      );
-      choices.forEach((choice, index) => {
-        lines.push(highlightSelection(`  ${protocolLabel(choice)}`, index === overlay.selectedIndex));
-      });
-      break;
-    }
-    case "reasoningEffort": {
-      lines.push(
-        `Provider: ${overlay.providerName} (${protocolLabel(overlay.protocol || "openai")})`,
-        dimHorizontalRule(width),
-        "Reasoning effort",
-        "Enter/Tab Confirm   Esc Close",
-        "",
-      );
-      REASONING_EFFORTS.forEach((effort, index) => {
-        lines.push(highlightSelection(`  ${effort}`, index === overlay.selectedIndex));
-      });
-      break;
-    }
-    case "models": {
-      lines.push(
-        `Provider: ${overlay.providerName} (${protocolLabel(overlay.protocol || "openai")}) — effort ${overlay.reasoningEffort}`,
-        dimHorizontalRule(width),
-      );
-      lines.push("F Fetch all   D Delete   Enter Toggle select   Ctrl+S/Tab Save   Esc Close");
-      lines.push("");
-      if (overlay.loading) {
-        lines.push("  fetching models...");
-      } else if (overlay.error) {
-        lines.push(`  error: ${truncateVisible(overlay.error, Math.max(1, width - 2))}`);
-        lines.push("  press F to retry");
-      } else if (overlay.models.length === 0) {
-        lines.push("  (no models yet — press F to fetch)");
-      } else {
-        overlay.models.forEach((model, index) => {
-          const mark = model.selected ? "✓" : " ";
-          const ctx = model.contextWindow ? `  [ctx ${model.contextWindow}]` : "";
-          lines.push(
-            highlightSelection(
-              `${mark} ${truncateVisible(model.id, Math.max(1, width - 4))}${ctx}`,
-              index === overlay.selectedIndex,
-            ),
-          );
-        });
-      }
-      const selectedCount = overlay.models.filter((model) => model.selected).length;
-      if (selectedCount > 0) lines.push("", `${selectedCount} selected — Ctrl+S/Tab to save`);
-      break;
-    }
+  if (overlay.step === "info") {
+    const cursor = (field: ConnectInfoField) => (overlay.activeField === field ? "▸" : " ");
+    const auto = (touched: boolean) => (touched ? "" : "  (auto)");
+    lines.push("Add provider", dimHorizontalRule(width));
+    lines.push(`${cursor("baseURL")} Base URL   ${overlay.baseURL || "(e.g. https://api.openai.com/v1)"}`);
+    lines.push(
+      `${cursor("apiKey")} API key    ${overlay.apiKey ? "*".repeat(Math.min(40, overlay.apiKey.length)) : "(optional)"}`,
+    );
+    lines.push(
+      `${cursor("protocol")} Protocol   ${overlay.protocol ? protocolLabel(overlay.protocol) : "(auto)"}${auto(overlay.protocolTouched)}`,
+    );
+    lines.push(`${cursor("name")} Name       ${overlay.providerName || "(auto)"}${auto(overlay.nameTouched)}`);
+    lines.push("", "Tab/↑↓ switch field   ←→ switch protocol   Enter next   Esc close");
+    if (overlay.error) lines.push("", `error: ${truncateVisible(overlay.error, Math.max(1, width - 2))}`);
+    return lines;
   }
+  lines.push(
+    `Provider: ${overlay.providerName} (${protocolLabel(overlay.protocol || "openai")})`,
+    dimHorizontalRule(width),
+  );
+  lines.push("选择模型");
+  lines.push("F Fetch all   E Effort   D Delete   Enter Toggle select   Ctrl+S/Tab Save   Esc Close");
+  lines.push("");
+  if (overlay.loading) {
+    lines.push("  fetching models...");
+  } else if (overlay.error) {
+    lines.push(`  error: ${truncateVisible(overlay.error, Math.max(1, width - 2))}`);
+    lines.push("  press F to retry");
+  } else if (overlay.models.length === 0) {
+    lines.push("  (no models yet — press F to fetch)");
+  } else {
+    overlay.models.forEach((model, index) => {
+      const mark = model.selected ? "✓" : " ";
+      const effort = `  [effort ${model.reasoningEffort ?? "high"}]`;
+      const ctx = model.contextWindow ? `  [ctx ${model.contextWindow}]` : "";
+      lines.push(
+        highlightSelection(
+          `${mark} ${truncateVisible(model.id, Math.max(1, width - 4))}${effort}${ctx}`,
+          index === overlay.selectedIndex,
+        ),
+      );
+    });
+  }
+  const selectedCount = overlay.models.filter((model) => model.selected).length;
+  if (selectedCount > 0) lines.push("", `${selectedCount} selected — Ctrl+S/Tab to save`);
   return lines;
 }

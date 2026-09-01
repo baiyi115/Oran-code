@@ -16,7 +16,7 @@ import type {
   TuiState,
   TranscriptMessage,
 } from "./types.js";
-import type { ConnectInput } from "./types.js";
+import type { ConnectInput, ConnectPrefill } from "./types.js";
 import { appendSystemMessage } from "./message-reducer.js";
 import { nextMessageNumber } from "./state.js";
 import {
@@ -138,6 +138,12 @@ export class InkTuiApp {
       ...(options.loadSessions ? { loadSessions: () => options.loadSessions!() } : {}),
       ...(options.onSessionSelected ? { onSessionSelected: (id: string) => options.onSessionSelected!(id) } : {}),
       ...(options.onSessionDeleted ? { onSessionDeleted: (id: string) => options.onSessionDeleted!(id) } : {}),
+      ...(options.loadProviders ? { loadProviders: () => options.loadProviders!() } : {}),
+      ...(options.onProviderSelected
+        ? { onProviderSelected: (name: string) => options.onProviderSelected!(name) }
+        : {}),
+      ...(options.onProviderDeleted ? { onProviderDeleted: (name: string) => options.onProviderDeleted!(name) } : {}),
+      openConnect: () => this.connectWizard.open(),
       onModelSelected: (reference) => options.onModelSelected(reference),
       ...(options.loadFollowUps ? { loadFollowUps: () => options.loadFollowUps!() } : {}),
       ...(options.onFollowUpCancelled ? { onFollowUpCancelled: (id: string) => options.onFollowUpCancelled!(id) } : {}),
@@ -330,6 +336,14 @@ export class InkTuiApp {
       this.overlayHandlers.handleSessionKey(input, key);
       return;
     }
+    if (this.state.overlay.kind === "providers") {
+      this.overlayHandlers.handleProvidersKey(input, key);
+      return;
+    }
+    if (this.state.overlay.kind === "provider-delete-confirm") {
+      void this.overlayHandlers.handleProviderDeleteConfirmKey(input, key);
+      return;
+    }
     if (this.state.overlay.kind === "session-delete-confirm") {
       void this.overlayHandlers.handleSessionDeleteConfirmKey(input, key);
       return;
@@ -372,8 +386,12 @@ export class InkTuiApp {
     this.handleComposerKey(input, key);
   }
 
-  async openConnect(): Promise<void> {
-    this.connectWizard.open();
+  async openConnect(prefill?: ConnectPrefill): Promise<void> {
+    this.connectWizard.open(prefill);
+  }
+
+  async openProviders(): Promise<void> {
+    await this.overlayHandlers.openProviders();
   }
 
   async openModels(): Promise<void> {
@@ -1056,6 +1074,11 @@ function errorMessage(error: unknown): string {
   return formatErrorMessage(error);
 }
 
+/** ink 的 color prop 在 exactOptionalPropertyTypes 下不接受显式 undefined;单色主题时按需省略。 */
+function colorProps(color: string | undefined): { color: string } | Record<string, never> {
+  return color !== undefined ? { color } : {};
+}
+
 function InkRoot({ app, revision }: { app: InkTuiApp; revision: number }): React.JSX.Element {
   void revision;
   const [spinnerTick, setSpinnerTick] = useState(0);
@@ -1221,12 +1244,12 @@ function InkRoot({ app, revision }: { app: InkTuiApp; revision: number }): React
         flexShrink={0}
         marginTop={visibleTranscriptLines.length > 0 || overlayLines.length > 0 ? 0 : 1}
       >
-        {scrollStatusLine ? <Text color={COLORS.accentDim}>{scrollStatusLine}</Text> : null}
-        {workingLine ? <Text color={COLORS.activity}>{workingLine}</Text> : null}
-        {summaryLine ? <Text color={COLORS.success}>{summaryLine}</Text> : null}
+        {scrollStatusLine ? <Text {...colorProps(COLORS.accentDim)}>{scrollStatusLine}</Text> : null}
+        {workingLine ? <Text {...colorProps(COLORS.activity)}>{workingLine}</Text> : null}
+        {summaryLine ? <Text {...colorProps(COLORS.success)}>{summaryLine}</Text> : null}
         <Text dimColor>{horizontalRule(width)}</Text>
         <Text>
-          <Text color={COLORS.accent} bold>
+          <Text {...colorProps(COLORS.accent)} bold>
             {composerPrefix(state.overlay.kind).trimEnd()}
           </Text>
           <Text>
@@ -1240,7 +1263,7 @@ function InkRoot({ app, revision }: { app: InkTuiApp; revision: number }): React
         <Text dimColor>{horizontalRule(width)}</Text>
         {footer.map((line, index) =>
           index === 0 ? (
-            <Text key={`footer-${index}`} color={COLORS.accentDim}>
+            <Text key={`footer-${index}`} {...colorProps(COLORS.accentDim)}>
               {line}
             </Text>
           ) : (

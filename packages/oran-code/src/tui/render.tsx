@@ -4,6 +4,7 @@ import { commandCandidates } from "./command-palette.js";
 import { modelSelectorLines } from "./model-selector.js";
 import { approvalDialogLines } from "./approval-dialog.js";
 import { currentSessionLine, sessionOptionLabel } from "./session-list.js";
+import { providerDeleteConfirmLines, providersListLines } from "./providers-list.js";
 import { ANSI, dimHorizontalRule } from "./theme.js";
 import { highlightSelection } from "./overlay/select-list.js";
 import { abbreviatePath, graphemes, truncateVisible, visibleWidth } from "./text-width.js";
@@ -102,6 +103,10 @@ export function renderOverlayLines(state: TuiState, commandLines: string[], widt
         highlightSelection("  Cancel", overlay.selectedIndex === 1),
       ];
     }
+    case "providers":
+      return providersListLines(state.overlay.options, state.overlay.selectedIndex, width);
+    case "provider-delete-confirm":
+      return providerDeleteConfirmLines(state.overlay.providerName, state.overlay.selectedIndex, width);
     case "follow-ups": {
       const overlay = state.overlay;
       return [
