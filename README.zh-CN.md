@@ -32,7 +32,7 @@ Oran code 结合了基于 React Ink 的终端交互界面与灵活的 Agent 调�
 ```bash
 # 克隆仓库并安装依赖
 git clone https://github.com/baiyi115/Oran-code.git
-cd "oran-code"
+cd "Oran-code"
 pnpm install
 
 # 以开发模式启动
@@ -43,7 +43,15 @@ pnpm build
 pnpm start
 ```
 
-首次启动后，输入 `/connect` 可通过交互式向导配置模型 Provider 与 API Key。
+首次启动后，输入 `/connect` 即可交互式添加模型 Provider 与 API Key；之后随时可再次运行 `/connect` 管理供应商（编辑配置或刷新模型列表）。
+
+如需使用独立的 `oran` 命令，构建完成后链接一次即可：
+
+```bash
+pnpm build
+cd packages/oran-code
+npm link
+```
 
 ---
 
@@ -57,7 +65,7 @@ oran
 oran run "修复 src/index.ts 中的类型错误"
 
 # 指定模型或工作区目录
-oran --model deepseek/deepseek-chat --workspace ./my-project
+oran --model deepseek/deepseek-v4-flash --workspace ./my-project
 
 # 查看当前工作区支持的工具与权限
 oran inspect
@@ -79,18 +87,19 @@ oran tasks
 
 ### 常用命令 (Slash Commands)
 
-| 命令            | 功能说明                                 |
-| :-------------- | :--------------------------------------- |
-| `/connect`      | 启动交互式向导配置模型提供商与 API Key   |
-| `/model`        | 打开模型选择器快速切换模型               |
-| `/plan`         | 切换至 Plan 规划模式（只读安全探索）     |
-| `/undo`         | 一键回滚 Agent 最近一次修改的文件批次    |
-| `/session [id]` | 查看或恢复历史会话                       |
-| `/new`          | 开启一个全新的对话会话                   |
-| `/status`       | 显示当前 Token 用量、权限模式与 MCP 状态 |
-| `/compact`      | 手动触发上下文智能压缩以节省 Token       |
-| `/clear`        | 清理终端屏幕记录                         |
-| `/exit`         | 退出程序                                 |
+| 命令            | 功能说明                                  |
+| :-------------- | :---------------------------------------- |
+| `/connect`      | 管理模型供应商：查看、新增、编辑、删除    |
+| `/model`        | 打开模型选择器快速切换模型                |
+| `/plan`         | 切换至 Plan 规划模式（只读安全探索）      |
+| `/undo`         | 一键回滚 Agent 最近一次修改的文件批次     |
+| `/session [id]` | 查看或恢复历史会话                        |
+| `/new`          | 开启一个全新的对话会话                    |
+| `/status`       | 显示当前 Token 用量、权限模式与 MCP 状态  |
+| `/tasks`        | 查看后台子智能体任务（别名 `/subagents`） |
+| `/compact`      | 手动触发上下文智能压缩以节省 Token        |
+| `/clear`        | 清理终端屏幕记录                          |
+| `/exit`         | 退出程序                                  |
 
 ---
 
@@ -100,26 +109,28 @@ Oran code 将全局用户配置存储于 `~/.oran/`，将项目工作区状态�
 
 ### 全局配置 (`~/.oran/config.json`)
 
-用于配置模型 Provider、API Key 及默认模型：
+编写这份配置最简单的方式是 `/connect` 命令——它会自动生成下面的条目。Provider 以名称为键，每个 Provider 包含连接 `options` 与模型映射：
 
 ```json
 {
-  "providers": [
-    {
-      "id": "deepseek",
-      "name": "DeepSeek",
-      "protocol": "openai-compatible",
-      "baseURL": "https://api.deepseek.com/v1",
-      "apiKey": "sk-...",
-      "models": [
-        { "id": "deepseek-chat", "name": "DeepSeek V3", "contextWindow": 64000 },
-        { "id": "deepseek-reasoner", "name": "DeepSeek R1", "contextWindow": 64000 }
-      ]
+  "providers": {
+    "deepseek": {
+      "options": {
+        "baseURL": "https://api.deepseek.com/v1",
+        "protocol": "openai",
+        "apiKey": "sk-..."
+      },
+      "models": {
+        "deepseek-v4-flash": { "options": { "reasoningEffort": "high", "context_window": 128000 } }
+      }
     }
-  ],
-  "defaultModel": "deepseek/deepseek-chat"
+  },
+  "agent": { "lastModel": "deepseek/deepseek-v4-flash" }
 }
 ```
+
+- `protocol` 取值 `"openai"`（OpenAI 兼容 Chat Completions）或 `"anthropic"`（Anthropic Messages）。若端点不支持 `reasoning_effort` 参数，Oran 会自动剥离后重试一次，并通过 `disableReasoningEffort` 按模型记住该结论。
+- `agent.lastModel` 记录通过 `/model` 或 `/connect` 选择的模型；单次运行可用 `--model provider/model` 覆盖。
 
 ### 项目工作区结构 (`.oran/` & `AGENTS.md`)
 
@@ -128,6 +139,26 @@ Oran code 将全局用户配置存储于 `~/.oran/`，将项目工作区状态�
 - `.oran/sessions/`：会话历史记录与执行日志。
 - `~/.oran/memory/<workspace-hash>/`：Agent 自动整理的 Markdown 笔记，沉淀项目知识与长期记忆（与会话、trace 一致，存储在工作区之外的用户目录）。
 - `.oran/skills/`：项目专属自定义技能（`SKILL.md`）。
+
+### 自定义子智能体 (`agents/*.md`)
+
+子智能体通过带 YAML frontmatter 的 Markdown 文件定义，frontmatter 之后的正文即为子智能体的提示词。内置三个角色：`general`（有边界的实现任务）、`plan`（只读规划）、`explore`（只读探索）。自定义定义放在：
+
+- `~/.oran/agents/*.md`：所有工作区可用。
+- `.oran/agents/*.md`：项目专属，同名时覆盖用户级定义。
+
+```markdown
+---
+name: reviewer
+description: 审查近期改动的正确性与风格。
+allowedTools: [list_files, read_file, glob_files, search_code]
+permissionMode: plan
+---
+
+你是代码审查子智能体。检查最近的改动并给出具体结论。
+```
+
+支持的 frontmatter 键：`name`、`description`、`allowedTools`、`deniedTools`、`model`（provider/model 覆盖）、`maxSteps`、`permissionMode`、`forceBackground`，以及 `isolation`（`shared-workspace` 或 `worktree`，后者使用独立的一次性 Git worktree）。
 
 ---
 

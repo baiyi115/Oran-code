@@ -31,7 +31,7 @@ Oran code pairs an interactive React/Ink terminal UI with a flexible agent engin
 
 ```bash
 git clone https://github.com/baiyi115/Oran-code.git
-cd "oran-code"
+cd "Oran-code"
 pnpm install
 ```
 
@@ -46,7 +46,15 @@ pnpm build
 pnpm start
 ```
 
-On first launch, type `/connect` to set up your model provider and API key interactively.
+On first launch, type `/connect` to add a model provider and API key interactively. Re-run `/connect` any time to manage providers (edit settings or refresh their model lists).
+
+To use the standalone `oran` command, link the built CLI once:
+
+```bash
+pnpm build
+cd packages/oran-code
+npm link
+```
 
 ---
 
@@ -60,7 +68,7 @@ oran
 oran run "Fix the type error in src/index.ts"
 
 # Choose a specific model or workspace
-oran --model deepseek/deepseek-chat --workspace ./my-project
+oran --model deepseek/deepseek-v4-flash --workspace ./my-project
 
 # Inspect active workspace tools and permissions
 oran inspect
@@ -84,13 +92,14 @@ oran tasks
 
 | Command         | Description                                                  |
 | :-------------- | :----------------------------------------------------------- |
-| `/connect`      | Interactive wizard to configure model providers & API keys   |
+| `/connect`      | Manage model providers: list, add, edit, or remove them      |
 | `/model`        | Open model picker overlay to switch active model             |
 | `/plan`         | Switch to read-only Plan mode for safe workspace exploration |
 | `/undo`         | Immediately revert the most recent batch of file changes     |
 | `/session [id]` | Switch between active sessions or resume past sessions       |
 | `/new`          | Start a clean conversation session                           |
 | `/status`       | View token usage, active permissions, and MCP connections    |
+| `/tasks`        | List background subagent tasks (alias `/subagents`)          |
 | `/compact`      | Trigger manual context compaction to save tokens             |
 | `/clear`        | Clear terminal transcript output                             |
 | `/exit`         | Exit session                                                 |
@@ -103,26 +112,28 @@ Oran code stores global settings in `~/.oran/` and workspace-specific state in `
 
 ### Global Config (`~/.oran/config.json`)
 
-Configure your providers and default model:
+The easiest way to write this file is the `/connect` command — it generates the entries below for you. Providers are keyed by name; each has connection `options` and a map of models:
 
 ```json
 {
-  "providers": [
-    {
-      "id": "deepseek",
-      "name": "DeepSeek",
-      "protocol": "openai-compatible",
-      "baseURL": "https://api.deepseek.com/v1",
-      "apiKey": "sk-...",
-      "models": [
-        { "id": "deepseek-chat", "name": "DeepSeek V3", "contextWindow": 64000 },
-        { "id": "deepseek-reasoner", "name": "DeepSeek R1", "contextWindow": 64000 }
-      ]
+  "providers": {
+    "deepseek": {
+      "options": {
+        "baseURL": "https://api.deepseek.com/v1",
+        "protocol": "openai",
+        "apiKey": "sk-..."
+      },
+      "models": {
+        "deepseek-v4-flash": { "options": { "reasoningEffort": "high", "context_window": 128000 } }
+      }
     }
-  ],
-  "defaultModel": "deepseek/deepseek-chat"
+  },
+  "agent": { "lastModel": "deepseek/deepseek-v4-flash" }
 }
 ```
+
+- `protocol` is `"openai"` (OpenAI-compatible Chat Completions) or `"anthropic"` (Anthropic Messages). Endpoints that reject the `reasoning_effort` parameter are handled automatically: Oran retries without it once and remembers per model via `disableReasoningEffort`.
+- `agent.lastModel` remembers the model picked via `/model` or `/connect`; pass `--model provider/model` to override it for one run.
 
 ### Workspace Structure (`.oran/` & `AGENTS.md`)
 
@@ -131,6 +142,26 @@ Configure your providers and default model:
 - `.oran/sessions/`: Persisted session history and logs.
 - `~/.oran/memory/<workspace-hash>/`: Markdown notes curated by the agent for long-term project knowledge (stored next to sessions and traces, outside the workspace).
 - `.oran/skills/`: Project-local custom skills (`SKILL.md`).
+
+### Custom Subagents (`agents/*.md`)
+
+Subagents are Markdown files with YAML frontmatter; the body below the frontmatter is the subagent's prompt. Three built-in roles ship by default: `general` (bounded implementation tasks), `plan` (read-only planning), and `explore` (read-only exploration). Add your own at:
+
+- `~/.oran/agents/*.md`: available in every workspace.
+- `.oran/agents/*.md`: project-specific, overrides a user-level definition of the same name.
+
+```markdown
+---
+name: reviewer
+description: Review recent changes for correctness and style.
+allowedTools: [list_files, read_file, glob_files, search_code]
+permissionMode: plan
+---
+
+You are a code review subagent. Inspect recent changes and report concrete findings.
+```
+
+Supported frontmatter keys: `name`, `description`, `allowedTools`, `deniedTools`, `model` (provider/model override), `maxSteps`, `permissionMode`, `forceBackground`, and `isolation` (`shared-workspace` or `worktree` for a disposable Git worktree).
 
 ---
 
