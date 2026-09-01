@@ -1,43 +1,30 @@
-__pycache__/
-*.py[cod]
-*.egg-info/
-.venv/
-.pytest_cache/
-.mypy_cache/
-.ruff_cache/
+# dependencies
 node_modules/
 packages/*/node_modules/
 .pnpm-store/
 
+# build output
 dist/
-build/
 packages/*/dist/
 *.tsbuildinfo
-.vite/
 
-htmlcov/
-.coverage
-coverage.xml
+# test & coverage output
 coverage/
 
+# env files
 .env
 .env.*
 !.env.example
 
+# runtime data
 .oran/
-.litecode/
-.liteagent/
-liteagent.db
-*.db
-*.sqlite
-*.sqlite3
-
-tmp/
-temp/
-*.tmp
-*.temp
 *.log
-.zcode/
 
+# local agent/editor state
+tmp/
+.zcode/
+.claude/settings.local.json
+
+# evals
 evals/workspaces/
 evals/results/
