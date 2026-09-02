@@ -9,6 +9,7 @@ import type { SnapshotStorePort } from "../src/snapshot.js";
 import type { PermissionPolicy } from "../src/security.js";
 import type { TraceStore } from "../src/trace.js";
 import { ToolRegistry } from "../src/tools.js";
+import { BATCH_TOOL_NAME } from "../src/tools/batch-tools.js";
 import type {
   HookEventPortContext,
   RuntimeConfig,
@@ -103,6 +104,7 @@ function makeHarness(
     recordUnknownTool: vi.fn(),
     shouldStopForUnknownTools: vi.fn(() => options.shouldStopForUnknownTools ?? false),
     recordResult: vi.fn(),
+    canRecordToolCall: vi.fn(() => true),
   } as unknown as AgentLoop;
 
   const config: RuntimeConfig = {
@@ -493,5 +495,206 @@ describe("ToolBatchExecutor file change tracking", () => {
       expect.any(String),
       expect.any(String),
     );
+  });
+});
+
+function makeBatchCall(steps: unknown[], onFailure?: "abort" | "continue"): ToolCall {
+  const args: Record<string, unknown> = { steps };
+  if (onFailure) args.on_failure = onFailure;
+  return call("batch_tools", args);
+}
+
+/** 生产环境 batch_tools 由 registerBuiltinTools 必注册;测试 harness 里显式补上同形态桩。 */
+function batchToolStub(): ToolDefinition {
+  return { ...makeTool(BATCH_TOOL_NAME, "command"), permissionLevel: 0, system: true };
+}
+
+describe("ToolBatchExecutor batch_tools scripts", () => {
+  it("runs steps in order, substitutes $ref outputs, and folds results into one message", async () => {
+    const workspace = await makeWorkspace();
+    const seen: unknown[] = [];
+    const { executor, events, loopStub } = makeHarness(workspace, {
+      tools: [
+        batchToolStub(),
+        makeTool("produce", "readonly", async () => ({ ok: true, output: '{"path":"src/a.ts"}' })),
+        makeTool("consume", "readonly", async (invokeCall) => {
+          seen.push(invokeCall.arguments);
+          return { ok: true, output: "consumed" };
+        }),
+      ],
+    });
+    const task = createTask(workspace, "script happy path");
+    const messages = runMessages();
+
+    const summary = await executor.runTools(
+      task,
+      messages,
+      [
+        makeBatchCall([
+          { id: "s1", tool: "produce", arguments: {} },
+          { id: "s2", tool: "consume", arguments: { target: { $ref: "s1" }, note: "got-${s1}" } },
+        ]),
+      ],
+      loopStub,
+    );
+
+    expect(summary).toEqual({ workspaceMutated: false, readonlyOnly: false });
+    expect(seen).toEqual([{ target: { path: "src/a.ts" }, note: 'got-{"path":"src/a.ts"}' }]);
+
+    // 折叠成一条 tool 消息,保持 assistant/toolCalls 配对不变式。
+    expect(messages).toHaveLength(1);
+    expect(messages[0]!.name).toBe("batch_tools");
+    expect(messages[0]!.content).toContain("executed 2/2 step(s)");
+    expect(messages[0]!.content).toContain("=== step s1 [produce] ok");
+    expect(messages[0]!.content).toContain("=== step s2 [consume] ok");
+
+    const starts = events.filter((event) => event.type === "tool_start");
+    expect(starts.map((event) => (event.payload as { call: ToolCall }).call.name)).toEqual([
+      "batch_tools",
+      "produce",
+      "consume",
+    ]);
+    const results = events.filter((event) => event.type === "tool_result");
+    expect(results.map((event) => (event.payload as { call: ToolCall }).call.name)).toEqual([
+      "produce",
+      "consume",
+      "batch_tools",
+    ]);
+    // 脚本调用 + 两个步骤都计入循环历史。
+    expect(loopStub.record).toHaveBeenCalledTimes(3);
+  });
+
+  it("aborts at the first failed step by default and skips the remaining steps", async () => {
+    const workspace = await makeWorkspace();
+    const consume = vi.fn(async () => ({ ok: true, output: "never" }));
+    const { executor, loopStub } = makeHarness(workspace, {
+      tools: [
+        batchToolStub(),
+        makeTool("fail", "readonly", async () => ({ ok: false, output: "", error: "boom" })),
+        makeTool("after", "readonly", consume),
+      ],
+    });
+    const task = createTask(workspace, "script abort");
+    const messages = runMessages();
+
+    await executor.runTools(task, messages, [makeBatchCall([
+      { id: "s1", tool: "fail", arguments: {} },
+      { id: "s2", tool: "after", arguments: {} },
+    ])], loopStub);
+
+    expect(consume).not.toHaveBeenCalled();
+    expect(messages[0]!.content).toContain('aborted at "s1" (on_failure=abort)');
+    expect(messages[0]!.content).toContain("Remaining 1 step(s) skipped.");
+    expect(messages[0]!.content).toContain("error: boom");
+  });
+
+  it("keeps executing remaining steps under the continue policy", async () => {
+    const workspace = await makeWorkspace();
+    const after = vi.fn(async () => ({ ok: true, output: "recovered" }));
+    const { executor, loopStub } = makeHarness(workspace, {
+      tools: [
+        batchToolStub(),
+        makeTool("fail", "readonly", async () => ({ ok: false, output: "", error: "boom" })),
+        makeTool("after", "readonly", after),
+      ],
+    });
+    const task = createTask(workspace, "script continue");
+    const messages = runMessages();
+
+    const summary = await executor.runTools(
+      task,
+      messages,
+      [makeBatchCall([
+        { id: "s1", tool: "fail", arguments: {} },
+        { id: "s2", tool: "after", arguments: {} },
+      ], "continue")],
+      loopStub,
+    );
+
+    expect(after).toHaveBeenCalledTimes(1);
+    expect(summary.workspaceMutated).toBe(false);
+    expect(messages[0]!.content).toContain("executed 2/2 step(s), 1 failed");
+    expect(messages[0]!.content).not.toContain("aborted");
+  });
+
+  it("records unknown step tools and reports them in the aggregate", async () => {
+    const workspace = await makeWorkspace();
+    const { executor, loopStub } = makeHarness(workspace, { tools: [batchToolStub()] });
+    const task = createTask(workspace, "script unknown tool");
+    const messages = runMessages();
+
+    await executor.runTools(task, messages, [makeBatchCall([
+      { id: "s1", tool: "does_not_exist", arguments: {} },
+    ])], loopStub);
+
+    expect(loopStub.recordUnknownTool).toHaveBeenCalledTimes(1);
+    expect(messages[0]!.content).toContain("unknown tool: does_not_exist");
+    expect(messages[0]!.content).toContain("aborted at \"s1\"");
+  });
+
+  it("enforces plan mode per step: readonly steps run, write steps are denied", async () => {
+    const workspace = await makeWorkspace();
+    const scribe = vi.fn(async () => ({ ok: true, output: "written" }));
+    const { executor, loopStub } = makeHarness(workspace, {
+      workMode: "plan",
+      tools: [
+        batchToolStub(),
+        makeTool("probe", "readonly", async () => ({ ok: true, output: "inspected" })),
+        makeTool("scribe", "write", scribe),
+      ],
+    });
+    const task = createTask(workspace, "script plan mode");
+    const messages = runMessages();
+
+    await executor.runTools(task, messages, [makeBatchCall([
+      { id: "s1", tool: "probe", arguments: {} },
+      { id: "s2", tool: "scribe", arguments: {} },
+    ])], loopStub);
+
+    expect(scribe).not.toHaveBeenCalled();
+    expect(messages[0]!.content).toContain("=== step s1 [probe] ok");
+    expect(messages[0]!.content).toContain("plan mode only allows readonly tools and write_plan");
+  });
+
+  it("blocks a step when before_tool_call hook intercepts it", async () => {
+    const workspace = await makeWorkspace();
+    const guarded = vi.fn(async () => ({ ok: true, output: "ran" }));
+    const { executor, loopStub } = makeHarness(workspace, {
+      tools: [batchToolStub(), makeTool("guarded", "write", guarded)],
+      checkBeforeToolHook: async (_task, hookCall) =>
+        hookCall.name === "guarded"
+          ? { ok: false, output: "", error: "blocked by policy", summary: "hook blocked" }
+          : undefined,
+    });
+    const task = createTask(workspace, "script hook block");
+    const messages = runMessages();
+
+    await executor.runTools(task, messages, [makeBatchCall([
+      { id: "s1", tool: "guarded", arguments: {} },
+    ])], loopStub);
+
+    expect(guarded).not.toHaveBeenCalled();
+    expect(messages[0]!.content).toContain("error: blocked by policy");
+  });
+
+  it("rejects an invalid script without executing any step", async () => {
+    const workspace = await makeWorkspace();
+    const probe = vi.fn(async () => ({ ok: true, output: "ran" }));
+    const { executor, events, loopStub } = makeHarness(workspace, {
+      tools: [batchToolStub(), makeTool("probe", "readonly", probe)],
+    });
+    const task = createTask(workspace, "script invalid");
+    const messages = runMessages();
+
+    await executor.runTools(task, messages, [makeBatchCall([
+      { tool: "probe", arguments: {} },
+    ])], loopStub);
+
+    expect(probe).not.toHaveBeenCalled();
+    expect(loopStub.record).not.toHaveBeenCalled();
+    expect(messages[0]!.name).toBe("batch_tools");
+    expect(messages[0]!.content).toContain("steps[0].id");
+    const resultEvent = events.find((event) => event.type === "tool_result");
+    expect((resultEvent!.payload as { result: ToolResult }).result.error).toContain("steps[0].id");
   });
 });
