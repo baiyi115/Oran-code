@@ -85,7 +85,7 @@ export interface ShellCommandNode {
   executable: string;
   args: string[];
   hasSubshell: boolean;
-  redirects: Array<{ type: ">" | ">>" | "<"; target: string }>;
+  redirects: Array<{ type: ">" | ">>" | "<"; target: string; fdDup?: boolean }>;
 }
 
 export interface ShellPipelineNode {
@@ -114,7 +114,7 @@ export function parseShellCommand(input: string): ShellCompoundNode {
     type Token =
       | { type: "word"; value: string; hasSubshell: boolean }
       | { type: "op"; value: "&&" | "||" | "|" | ";" }
-      | { type: "redirect"; op: ">" | ">>" | "<"; target?: string };
+      | { type: "redirect"; op: ">" | ">>" | "<"; fdDup?: boolean; target?: string };
 
     const tokens: Token[] = [];
 
@@ -149,6 +149,19 @@ export function parseShellCommand(input: string): ShellCompoundNode {
       if (char === ";") {
         tokens.push({ type: "op", value: ";" });
         index += 1;
+        continue;
+      }
+      // 单个 & 是后台分隔符,与分号同义;否则 "git log & git status" 会被并进
+      // 同一条命令的参数里,结构判断随之失真。
+      if (char === "&") {
+        tokens.push({ type: "op", value: ";" });
+        index += 1;
+        continue;
+      }
+      // "2>&1" 是 fd 复制而非文件写入:记为 fdDup,后续只读判定据此放行。
+      if (char === ">" && text[index + 1] === "&") {
+        tokens.push({ type: "redirect", op: ">", fdDup: true });
+        index += 2;
         continue;
       }
       if (char === ">" && text[index + 1] === ">") {
@@ -248,15 +261,15 @@ export function parseShellCommand(input: string): ShellCompoundNode {
       const tok = tokens[i]!;
       if (tok.type === "word") {
         currentCommandWords.push({ value: tok.value, hasSubshell: tok.hasSubshell });
-      } else if (tok.type === "redirect") {
-        let target = "";
-        const nextTok = tokens[i + 1];
-        if (nextTok && nextTok.type === "word") {
-          target = nextTok.value;
-          i++;
-        }
-        currentRedirects.push({ type: tok.op, target });
-      } else if (tok.type === "op") {
+        } else if (tok.type === "redirect") {
+          let target = "";
+          const nextTok = tokens[i + 1];
+          if (nextTok && nextTok.type === "word") {
+            target = nextTok.value;
+            i++;
+          }
+          currentRedirects.push({ type: tok.op, target, ...(tok.fdDup ? { fdDup: true } : {}) });
+        } else if (tok.type === "op") {
         if (tok.value === "|") {
           flushCommand();
         } else {
@@ -356,6 +369,108 @@ function isSafeCommandNode(cmd: ShellCommandNode): boolean {
   return false;
 }
 
+/** 无条件只读的可执行文件:只产出 stdout,不写文件系统、不进入交互模式。 */
+const READ_ONLY_EXECUTABLES: ReadonlySet<string> = new Set([
+  "pwd",
+  "ls",
+  "dir",
+  "cd",
+  "echo",
+  "cat",
+  "type",
+  "head",
+  "tail",
+  "wc",
+  "tree",
+  "stat",
+  "file",
+  "du",
+  "df",
+  "which",
+  "where",
+  "whoami",
+  "hostname",
+  "date",
+  "grep",
+  "rg",
+  "findstr",
+]);
+
+const GIT_READ_ONLY_SUBCOMMANDS: ReadonlySet<string> = new Set([
+  "status",
+  "log",
+  "diff",
+  "show",
+  "rev-parse",
+  "ls-files",
+  "shortlog",
+  "describe",
+  "blame",
+  "cat-file",
+  "diff-tree",
+  "ls-tree",
+  "count-objects",
+  "fsck",
+  "verify-pack",
+]);
+
+const NULL_DEVICE_TARGETS: ReadonlySet<string> = new Set(["/dev/null", "nul"]);
+
+/**
+ * AST 级只读判定:整条命令的每个管道段都必须命中只读白名单,fd 复制
+ * (2>&1)与丢弃到空设备(>/dev/null)放行,其余重定向一律视为写操作。
+ * 判定失败只会回落到正常审批,不会放大权限。
+ */
+export function isReadOnlyShellCommand(ast: ShellCompoundNode): boolean {
+  if (ast.hasParseError || ast.hasSubshell || ast.pipelines.length === 0) return false;
+  return ast.pipelines.every((entry) => entry.pipeline.commands.every(isReadOnlyCommandNode));
+}
+
+function isReadOnlyCommandNode(cmd: ShellCommandNode): boolean {
+  if (cmd.hasSubshell) return false;
+  if (!cmd.redirects.every(isReadOnlyRedirect)) return false;
+  const exec = cmd.executable.toLowerCase().replace(/\.exe$/, "");
+  if (exec === "git") return isReadOnlyGitCommand(cmd);
+  if (exec === "find") {
+    return !cmd.args.some((arg) => /^-(?:delete|exec|execdir|ok|okdir|fprint)/.test(arg));
+  }
+  return READ_ONLY_EXECUTABLES.has(exec);
+}
+
+function isReadOnlyRedirect(redirect: ShellCommandNode["redirects"][number]): boolean {
+  if (redirect.type !== ">") return false;
+  if (redirect.fdDup) return /^\d+$/.test(redirect.target);
+  return NULL_DEVICE_TARGETS.has(redirect.target.trim().toLowerCase());
+}
+
+function isReadOnlyGitCommand(cmd: ShellCommandNode): boolean {
+  const sub = (cmd.args[0] ?? "").toLowerCase();
+  const rest = cmd.args.slice(1);
+  const full = `git ${cmd.args.join(" ")}`;
+  if (full.includes("--output") || full.includes("--ext-diff") || full.includes("--textconv")) return false;
+  if (GIT_READ_ONLY_SUBCOMMANDS.has(sub)) return true;
+
+  // 条件放行的子命令:仅在确证只读的调用形态下放行,其余回落审批。
+  if (sub === "branch") {
+    const hasMutation = cmd.args.some((arg) =>
+      /^(?:-[dDmMfFcC]|--(?:delete|move|rename|force|copy|edit|set-upstream|unset-upstream))/.test(arg),
+    );
+    if (hasMutation) return false;
+    // `git branch <name>` 会创建分支:仅放行无参或带显式列表旗标的形态。
+    if (rest.length === 0) return true;
+    return rest.some((arg) => /^(?:-l|--list|-a|-r|-v|-vv|--all|--remotes)$/.test(arg));
+  }
+  if (sub === "remote") return rest.length === 0 || rest.every((arg) => arg === "-v" || arg === "--verbose");
+  if (sub === "config") {
+    return rest.length > 0 && (rest[0] === "--list" || rest[0] === "-l" || (rest[0] ?? "").startsWith("--get"));
+  }
+  if (sub === "stash") return rest.length === 0 || rest[0] === "list" || rest[0] === "show";
+  if (sub === "worktree") return rest.length === 0 || rest[0] === "list";
+  if (sub === "reflog") return rest.length === 0 || rest[0] === "show" || rest[0] === "list";
+  if (sub === "tag") return rest.every((arg) => arg.startsWith("-"));
+  return false;
+}
+
 export class PermissionPolicy {
   private readonly taskAllows = new Set<string>();
   private readonly registeredKinds = new Map<string, ToolKind>();
@@ -398,8 +513,8 @@ export class PermissionPolicy {
       if (astCheck.dangerousReason) {
         return decision("deny", `blocked dangerous command: ${astCheck.dangerousReason}`, "dangerous-command", level);
       }
-      if (isSafeCommand(command)) {
-        return decision("allow", "recognized read-only command without shell metacharacters", "safe-command", level);
+      if (isSafeCommand(command) || isReadOnlyShellCommand(ast)) {
+        return decision("allow", "recognized read-only command", "safe-command", level);
       }
     }
 
@@ -507,13 +622,16 @@ function isSafeCommand(command: string): boolean {
   );
   if (!prefix) return false;
   if (/\bgit\b[\s\S]*(?:--output(?:=|\s|$)|--ext-diff\b|--textconv\b)/i.test(normalized)) return false;
-  if (
-    prefix === "git branch" &&
-    /(?:^|\s)(?:-[^-\s]*[dDmMfF]|--(?:delete|move|rename|force|copy|edit|set-upstream|unset-upstream))(?:=|\s|$)/i.test(
-      normalized,
-    )
-  )
-    return false;
+  if (prefix === "git branch") {
+    // `git branch <name>` 会创建分支:除变异旗标外,还必须是无参或带显式列表旗标。
+    const rest = normalized.slice(prefix.length).trim();
+    const hasMutationFlag =
+      /(?:^|\s)(?:-[^-\s]*[dDmMfF]|--(?:delete|move|rename|force|copy|edit|set-upstream|unset-upstream))(?:=|\s|$)/i.test(
+        normalized,
+      );
+    const hasListFlag = /(?:^|\s)(?:-vv|-v|-l|--list|-a|--all|-r|--remotes)(?:=|\s|$)/.test(rest);
+    if (hasMutationFlag || (rest && !hasListFlag)) return false;
+  }
   return true;
 }
 
