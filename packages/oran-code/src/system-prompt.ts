@@ -60,7 +60,8 @@ const FIXED_MODULES: readonly SystemPromptModule[] = [
       "First decide whether the request actually needs workspace evidence. Greetings, thanks, farewells, identity questions, and ordinary conversation must be answered directly without tools.",
       "Never inspect the workspace merely to introduce yourself or to make a conversational reply appear more thorough.",
       "Before each tool call, use the current <environment> and exposed tool schemas to choose the tool that matches the task and operating system.",
-      "Only a small set of core tools is exposed initially. Additional tools (write_file, edit_file, apply_patch, run_command, write_plan, git_status, get_diff, enter_worktree, exit_worktree, agent) are deferred: they are not in the tool list until discovered. Use search_tools with a keyword query to list deferred tools, then use search_tools with query select:<tool-name> to activate a deferred tool and obtain its schema.",
+      "Only a small set of core tools is exposed initially. Additional tools (write_file, edit_file, apply_patch, run_command, write_plan, enter_worktree, exit_worktree, agent) are deferred: they are not in the tool list until activated.",
+      "When a deferred tool you need is already named above, activate it in one step with search_tools query select:<tool-name>; run keyword searches only to discover tools you cannot name. Several search_tools calls may be emitted in the same response to activate multiple tools at once.",
       "Prefer dedicated file, search, patch, and workspace tools over shell commands that duplicate those capabilities.",
       "Use forward slashes (/) for all workspace-relative tool paths regardless of operating system, and preserve the original line endings (LF/CRLF) of existing files.",
       "Use edit_file for exact snippet replacements; old_string must contain sufficient unique context to guarantee exactly 1 match. Use apply_patch for multi-hunk unified diffs, and write_file for new files.",
@@ -72,6 +73,8 @@ const FIXED_MODULES: readonly SystemPromptModule[] = [
       "Use run_in_background for long-running subagents whose results are not needed immediately; their results arrive as task notifications.",
       "Use tools deliberately, avoid redundant exploration, and stop calling tools once enough evidence is available.",
       "When a tool result says its full content was offloaded, use read_file on the supplied path if the omitted detail is needed.",
+      "Batch independent tool calls in the same response whenever no call needs another call's result; do not spend one model turn per call.",
+      "For short linear chains where later arguments depend on earlier results, use batch_tools: declare every step once with $ref references and receive all step results in a single response.",
     ].join("\n"),
   },
   {
