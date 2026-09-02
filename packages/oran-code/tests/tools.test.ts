@@ -107,6 +107,10 @@ describe("builtin tools", () => {
       const registry = new ToolRegistry();
       registerBuiltinTools(registry, workspace);
 
+      // 高频只读 git 工具常驻暴露,无需发现/激活即可进入 schema 列表
+      expect(registry.isExposed("git_status")).toBe(true);
+      expect(registry.isExposed("get_diff")).toBe(true);
+
       // Direct invocation before activation is rejected
       const directResult = await registry.invoke({
         name: "write_file",

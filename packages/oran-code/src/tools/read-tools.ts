@@ -300,8 +300,8 @@ export function registerReadTools(registry: { register(tool: ToolDefinition): vo
       parameters: { type: "object", properties: {} },
       permissionLevel: 0,
       kind: "readonly",
+      // 高频只读工具常驻暴露:延迟发现省下的两个 schema 换不来一整轮模型往返。
       maxOutputChars: 16_000,
-      deferred: true,
       invoke: async (_call, context) => {
         try {
           const result = await execFileAsync(command, ["-C", activeRoot(context), ...args], { encoding: "utf8" });
