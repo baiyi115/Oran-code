@@ -5,6 +5,7 @@ import { resolveWorkspacePath } from "./fs-helpers.js";
 import { registerReadTools } from "./read-tools.js";
 import { registerWriteTools } from "./write-tools.js";
 import { registerCommandTools } from "./command-tools.js";
+import { registerBatchTools } from "./batch-tools.js";
 import { registerPlanTools } from "./plan-tools.js";
 import { registerSearchTools } from "./search-tools.js";
 import type { ToolFactoryContext } from "./registry.js";
@@ -22,6 +23,7 @@ export function registerBuiltinTools(registry: ToolRegistry, workspace: string):
 
   registerReadTools(registry, ctx);
   registerPlanTools(registry);
+  registerBatchTools(registry);
   registerWriteTools(registry, ctx);
   registerCommandTools(registry, ctx);
   registerSearchTools(registry);

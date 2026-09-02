@@ -22,6 +22,15 @@ import type { AgentLoop } from "../loop.js";
 import { toolCallSignature } from "../loop.js";
 import type { ToolRegistry } from "../tools.js";
 import { isMutatingToolName, isPlanModeTool } from "../tools.js";
+import {
+  BATCH_TOOL_NAME,
+  formatBatchScriptResult,
+  parseBatchScript,
+  substituteStepArguments,
+  type BatchScriptSpec,
+  type BatchStepOutcome,
+  type BatchStepSpec,
+} from "../tools/batch-tools.js";
 import { formatErrorMessage } from "../error-format.js";
 import { isAbortError } from "../utils/abort-error.js";
 import {
@@ -161,6 +170,14 @@ export class ToolBatchExecutor {
           await this.recordTool(task, messages, call, index, result, 0, { executed: false });
           this.ports.logger(`Tool ${call.name}: unknown tool`);
           if (loop.shouldStopForUnknownTools()) return { workspaceMutated, readonlyOnly };
+          continue;
+        }
+
+        // batch_tools 脚本:由执行器特判解释,每个步骤走完整的单调用管线,
+        // 结果折叠成一条聚合 tool 消息,不再逐调用产生模型轮次。
+        if (batch.length === 1 && batch[0]!.call.name === BATCH_TOOL_NAME) {
+          const { index, call } = batch[0]!;
+          workspaceMutated ||= await this.runBatchScript(task, messages, call, index, loop);
           continue;
         }
 
@@ -334,6 +351,181 @@ export class ToolBatchExecutor {
         if (this.deferredRecords === deferredRecords) this.deferredRecords = undefined;
       }
     }
+  }
+
+  /**
+   * 解释执行 batch_tools 调用:步骤按序执行,前序输出供后续参数引用;失败
+   * 按脚本的 on_failure 策略处理。取消时抛出中断,由上层 reconcile 统一补
+   * 齐消息配对。返回值指示脚本是否改动了工作区。
+   */
+  private async runBatchScript(
+    task: Task,
+    messages: Message[],
+    call: ToolCall,
+    index: number,
+    loop: AgentLoop,
+  ): Promise<boolean> {
+    let script: BatchScriptSpec;
+    try {
+      script = parseBatchScript(call.arguments);
+    } catch (error) {
+      await this.recordTool(task, messages, call, index, {
+        ok: false,
+        output: "",
+        error: error instanceof Error ? error.message : String(error),
+        summary: "invalid batch_tools script",
+      }, 0, { executed: false });
+      return false;
+    }
+    if (!loop.canRecordToolCall()) {
+      await this.recordTool(task, messages, call, index, {
+        ok: false,
+        output: "",
+        error: "tool call budget exhausted before batch_tools could run",
+        summary: "budget exhausted",
+      }, 0, { executed: false });
+      return false;
+    }
+    loop.record(call);
+    // 脚本自身的开始标记行:步骤行之前给出 batch_tools 调用,聚合结果在最后闭合。
+    await this.ports.emit("tool_start", {
+      call,
+      index,
+      permissionLevel: this.ports.registry.get(BATCH_TOOL_NAME).permissionLevel,
+    });
+    const startedAt = Date.now();
+    const stepOutputs = new Map<string, string>();
+    const outcomes: BatchStepOutcome[] = [];
+    let workspaceMutated = false;
+    let abortedAt: string | undefined;
+    for (const [stepIndex, step] of script.steps.entries()) {
+      this.ports.throwIfCancelled();
+      const execution = await this.executeBatchStep(task, messages, step, stepIndex, loop, stepOutputs);
+      workspaceMutated ||= execution.mutated;
+      outcomes.push(execution.outcome);
+      if (!execution.outcome.ok) {
+        if (execution.cancelled) this.ports.throwIfCancelled();
+        if (script.onFailure === "abort") {
+          abortedAt = step.id;
+          break;
+        }
+      }
+    }
+    const durationMs = Date.now() - startedAt;
+    const result = formatBatchScriptResult({
+      steps: outcomes,
+      total: script.steps.length,
+      onFailure: script.onFailure,
+      durationMs,
+      ...(abortedAt !== undefined ? { abortedAt } : {}),
+    });
+    await this.recordTool(task, messages, call, index, result, durationMs);
+    return workspaceMutated;
+  }
+
+  /**
+   * 脚本单步执行:镜像单调用批处理的准备与执行语义(hook、可见性、计划模式、
+   * 授权、只读缓存、文件指纹),但结果不写入消息流——步骤输出仅进入聚合结
+   * 果,由 batch_tools 的单条 tool 消息回传,保持 assistant/toolCalls 配对。
+   */
+  private async executeBatchStep(
+    task: Task,
+    messages: Message[],
+    step: BatchStepSpec,
+    index: number,
+    loop: AgentLoop,
+    stepOutputs: Map<string, string>,
+  ): Promise<{ outcome: BatchStepOutcome; mutated: boolean; cancelled: boolean }> {
+    const tool = this.ports.registry.has(step.tool) ? this.ports.registry.get(step.tool) : undefined;
+    const kind = tool ? (tool.kind ?? inferToolKind(step.tool)) : "command";
+    const call: ToolCall = {
+      name: step.tool,
+      // 校验后的脚本参数本身是对象;替换只发生在值内部,结构保持 Record。
+      arguments: substituteStepArguments(step.arguments, (id) => stepOutputs.get(id)) as Record<string, unknown>,
+      createdAt: new Date().toISOString(),
+    };
+    ensureCallId(call, this.ports.contextManager);
+    await this.ports.emit("tool_start", { call, index, permissionLevel: tool?.permissionLevel ?? 4 });
+    const complete = async (
+      result: ToolResult,
+      duration: number,
+      mutated = false,
+      cancelled = false,
+    ): Promise<{ outcome: BatchStepOutcome; mutated: boolean; cancelled: boolean }> => {
+      stepOutputs.set(step.id, result.output || "");
+      const outcome: BatchStepOutcome = {
+        id: step.id,
+        tool: step.tool,
+        ok: result.ok,
+        ...(duration > 0 ? { durationMs: duration } : {}),
+        ...(result.error ? { error: result.error } : {}),
+        ...(result.output ? { output: result.output } : {}),
+        ...(!result.ok || !result.output ? (result.summary ? { summary: result.summary } : {}) : {}),
+      };
+      await this.recordToolNow(task, messages, call, index, result, duration, true, { scriptStep: true });
+      return { outcome, mutated, cancelled };
+    };
+    const hookBlock = await this.ports.checkBeforeToolHook(task, call);
+    if (hookBlock) return complete(hookBlock, 0);
+    if (!tool) {
+      loop.recordUnknownTool(call);
+      return complete({ ok: false, output: "", error: `unknown tool: ${call.name}`, summary: "unknown tool" }, 0);
+    }
+    if (!this.ports.isToolVisible(tool)) return complete(toolUnavailableResult(call), 0);
+    if (this.ports.config.workMode === "plan" && !isPlanModeTool(tool)) {
+      return complete(planModeDeniedResult(call), 0);
+    }
+    const denied = tool.system
+      ? undefined
+      : await this.authorizeTool(task, call, tool.permissionLevel, kind, tool.description);
+    if (denied) return complete(denied, 0);
+    const cacheKey = kind === "readonly" && tool.cacheable !== false ? toolCallSignature(call) : undefined;
+    if (cacheKey && this.ports.readonlyCache.has(cacheKey)) {
+      const cached = this.ports.readonlyCache.get(cacheKey)!;
+      loop.record(call);
+      return complete({ ...cached, metadata: { ...cached.metadata, cached: true } }, 0);
+    }
+    if (!loop.canRecordToolCall()) {
+      return complete({ ok: false, output: "", error: "tool call budget exhausted", summary: "budget exhausted" }, 0);
+    }
+    loop.record(call);
+    const started = Date.now();
+    const beforeWorkspace = this.isPotentiallyMutating(call)
+      ? await workspaceFingerprint(task.workspace)
+      : undefined;
+    const before = await fileHash(task.workspace, call);
+    let result: ToolResult;
+    try {
+      const executionContext = this.ports.getAbortSignal()
+        ? { workspace: task.workspace, signal: this.ports.getAbortSignal()! }
+        : { workspace: task.workspace };
+      result = await this.ports.registry.invoke(call, executionContext);
+    } catch (error) {
+      if (isAbortError(error) || this.ports.getAbortSignal()?.aborted) {
+        result = { ok: false, output: "", error: "tool cancelled", summary: "cancelled", metadata: { cancelled: true } };
+      } else {
+        result = { ok: false, output: "", error: error instanceof Error ? error.message : String(error) };
+      }
+    }
+    const duration = Date.now() - started;
+    const after = await fileHash(task.workspace, call);
+    const afterWorkspace =
+      beforeWorkspace === undefined ? undefined : await workspaceFingerprint(task.workspace);
+    const mutated =
+      beforeWorkspace !== undefined && afterWorkspace !== undefined && beforeWorkspace !== afterWorkspace;
+    if (before && after && before.hash !== after.hash) {
+      this.ports.trace.appendFileChange(task.id, before.path, before.hash, after.hash);
+    }
+    if (result.ok && kind === "readonly" && tool.cacheable !== false && cacheKey) {
+      this.ports.readonlyCache.set(cacheKey, {
+        ...result,
+        durationMs: duration,
+        metadata: { ...result.metadata, cached: false },
+      });
+    }
+    if (result.ok && this.isPotentiallyMutating(call)) this.ports.readonlyCache.clear();
+    if (result.ok && call.name === "read_file") await this.ports.trackSuccessfulFileRead(task.workspace, call);
+    return complete({ ...result, durationMs: duration }, duration, mutated, result.metadata?.cancelled === true);
   }
 
   async reconcileToolCalls(
@@ -534,6 +726,7 @@ export class ToolBatchExecutor {
     result: ToolResult,
     duration: number,
     executed: boolean,
+    options: { scriptStep?: boolean } = {},
   ): Promise<void> {
     const output = result.output || result.error || "";
     this.ports.getLoop()?.recordResult(call, result);
@@ -584,13 +777,15 @@ export class ToolBatchExecutor {
         filePath: extractToolFilePath(call),
       });
     }
-    messages.push({
-      role: "tool",
-      content: output || "(empty result)",
-      toolCallId: call.id ?? `call_${call.name}`,
-      name: call.name,
-    });
-    this.ports.syncConversation(messages);
+    if (!options.scriptStep) {
+      messages.push({
+        role: "tool",
+        content: output || "(empty result)",
+        toolCallId: call.id ?? `call_${call.name}`,
+        name: call.name,
+      });
+      this.ports.syncConversation(messages);
+    }
     this.ports.appendDiagnosticStep("tool_result", {
       step: this.ports.getTurnSequence(),
       index,
@@ -599,8 +794,9 @@ export class ToolBatchExecutor {
       arguments: summarizeArguments(call.arguments),
       ok: result.ok,
       outputBytes: Buffer.byteLength(output, "utf8"),
-      resultAppended: true,
+      resultAppended: !options.scriptStep,
       executed,
+      scriptStep: options.scriptStep === true,
       metadata: result.metadata,
     });
     this.ports.debugLogger(
