@@ -11,7 +11,7 @@ import { CLIENT_ID, CLIENT_USER_AGENT, PRODUCT_VERSION } from "../paths.js";
 import { ModelRequestError, boundedError, retryAfterMsFromResponse, streamErrorMessage } from "./errors.js";
 import { parseSseJson, readSseEvents } from "./sse.js";
 import { createStreamingRequest, modelResponseChunks, numericUsage, requestOptions } from "./transport.js";
-import { appendTailReminder } from "./common.js";
+import { appendTailReminder, completeRequestSignal } from "./common.js";
 
 export class OpenAICompatibleProvider implements ModelProvider {
   private readonly endpoint: string;
@@ -50,12 +50,13 @@ export class OpenAICompatibleProvider implements ModelProvider {
     tools?: Record<string, unknown>[],
     options?: ProviderRequestOptions,
   ): Promise<ModelResponse> {
+    const signal = completeRequestSignal(options);
     const request = () =>
       fetch(this.endpoint, {
         method: "POST",
         headers: this.headers(),
         body: JSON.stringify(this.payload(messages, tools, false)),
-        ...(options?.signal ? { signal: options.signal } : {}),
+        ...(signal ? { signal } : {}),
       });
     const response = await this.postWithReasoningFallback(request);
     const data = (await response.json()) as Record<string, unknown>;

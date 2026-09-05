@@ -10,7 +10,7 @@ import type {
 import { CLIENT_ID, CLIENT_USER_AGENT, PRODUCT_VERSION } from "../paths.js";
 import { ModelRequestError, boundedError, retryAfterMsFromResponse, streamErrorMessage } from "./errors.js";
 import { parseSseJson, readSseEvents } from "./sse.js";
-import { appendTailReminder } from "./common.js";
+import { appendTailReminder, completeRequestSignal } from "./common.js";
 import {
   createStreamingRequest,
   modelResponseChunks,
@@ -37,11 +37,12 @@ export class AnthropicProvider implements ModelProvider {
     tools?: Record<string, unknown>[],
     options?: ProviderRequestOptions,
   ): Promise<ModelResponse> {
+    const signal = completeRequestSignal(options);
     const response = await fetch(this.endpoint, {
       method: "POST",
       headers: this.headers(),
       body: JSON.stringify(this.payload(messages, tools, false)),
-      ...(options?.signal ? { signal: options.signal } : {}),
+      ...(signal ? { signal } : {}),
     });
     if (!response.ok)
       throw new ModelRequestError(response.status, await boundedError(response), retryAfterMsFromResponse(response));
