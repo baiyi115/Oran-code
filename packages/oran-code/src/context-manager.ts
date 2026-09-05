@@ -9,6 +9,7 @@ import { cloneMessages } from "./message-utils.js";
 export type ContextCompactionReason = "auto" | "manual" | "emergency";
 
 const MAX_OFFLOAD_FAILURES = 3;
+const SUMMARY_REJECTED_RESPONSE_CHARS = 2_000;
 
 export const CONTEXT_LIMITS = Object.freeze({
   singleToolResultBytes: 50_000,
@@ -25,6 +26,8 @@ export const CONTEXT_LIMITS = Object.freeze({
   automaticFailureLimit: 3,
   summaryDirectDrops: 3,
   summaryDropFraction: 0.2,
+  /** 单轮压缩内摘要请求的最大尝试次数:失败响应会作为纠错反馈追加后重试。 */
+  summaryAttempts: 3,
   charactersPerToken: 3.5,
   /** CJK 字符按 1 token/字 保守估算(常见中文 tokenizer 为 1~1.5 字/token)。 */
   cjkTokensPerCharacter: 1.0,
@@ -32,6 +35,7 @@ export const CONTEXT_LIMITS = Object.freeze({
   previewLines: 20,
 });
 
+const SUMMARY_ATTEMPTS = CONTEXT_LIMITS.summaryAttempts;
 const PROCESS_SESSION_ID = `${Math.floor(Date.now() / 1_000)}-${randomBytes(4).toString("hex")}`;
 const PROCESS_CLAIMED_TOOL_CALL_IDS = new Set<string>();
 let processNextToolCallId = 0;
@@ -519,7 +523,11 @@ export class ContextManager {
     let groups = groupConversation(messages);
     let droppedGroups = 0;
     let dropRound = 0;
-    while (groups.length) {
+    // 兼容端点(如 Gemini 系)经常漏 <summary> 标签或只回一句空话;直接把
+    // 压缩失败抛回主循环会让会话每轮都在"压缩失败"里耗尽 token 预算,
+    // 所以带纠错反馈重试若干次,仍失败才向上抛。
+    let rejected: { text: string; reason: string } | undefined;
+    for (let attempt = 0; groups.length; attempt += 1) {
       const coveredMessages = groups.flatMap((group) => cloneMessages(group));
       const request = buildSummaryRequest(coveredMessages);
       if (estimatedRequestTokens(request, []) >= inputLimit) {
@@ -529,16 +537,34 @@ export class ContextManager {
         dropRound += 1;
         continue;
       }
+      if (rejected) {
+        request.push(
+          { role: "assistant", content: truncateResponse(rejected.text) },
+          {
+            role: "user",
+            content: [
+              "Your previous summarization response was rejected:",
+              rejected.reason,
+              "Re-emit the complete response. It must contain a non-empty <summary> block with all nine required sections; do not repeat the mistake.",
+            ].join("\n"),
+          },
+        );
+      }
       try {
         const response = await provider.complete(request, undefined, signal ? { signal } : undefined);
         const summary = extractSummary(response.text, coveredMessages);
         return { summary, coveredMessages, droppedGroups };
       } catch (error) {
-        if (!isPromptTooLongError(error)) throw error;
-        const dropped = dropOldestGroups(groups, dropRound);
-        groups = dropped.groups;
-        droppedGroups += dropped.count;
-        dropRound += 1;
+        if (isPromptTooLongError(error)) {
+          const dropped = dropOldestGroups(groups, dropRound);
+          groups = dropped.groups;
+          droppedGroups += dropped.count;
+          dropRound += 1;
+          rejected = undefined;
+          continue;
+        }
+        if (isAbortError(error) || attempt >= SUMMARY_ATTEMPTS - 1) throw error;
+        rejected = { text: responseText(error), reason: errorMessageText(error) };
       }
     }
     throw new Error("context compaction failed because no conversation group fits the summary request");
@@ -882,14 +908,22 @@ function extractSummary(text: string, coveredMessages: readonly Message[]): stri
   const summaryMatch = /<summary>\s*([\s\S]*?)\s*<\/summary>/i.exec(text);
   let summaryText = summaryMatch?.[1]?.trim();
   if (!summaryText) {
+    // 闭合标签缺失时取 <summary> 之后到结尾的内容;模型常把 "</summary>"
+    // 截断或整个忘掉,只有开标签的响应仍然可用。
+    const openMatch = /<summary>\s*([\s\S]*)$/i.exec(text);
+    summaryText = openMatch?.[1]?.replace(/<\/summary[^>]*>?\s*$/i, "").trim();
+  }
+  if (!summaryText) {
     summaryText = recoverSummaryWithoutTags(text);
   }
   if (!summaryText) {
-    throw new Error("context compaction response did not contain a non-empty <summary> block");
+    throw summaryRejected(text, "context compaction response did not contain a non-empty <summary> block");
   }
+  summaryText = stripCodeFence(summaryText);
   // 大段对话被压成一句空话等于静默丢上下文,宁可让压缩失败走重试/告警。
   if (coveredMessages.length >= 10 && summaryText.length < 150) {
-    throw new Error(
+    throw summaryRejected(
+      text,
       `context compaction summary is implausibly short (${summaryText.length} chars for ${coveredMessages.length} messages); refusing to discard the covered conversation`,
     );
   }
@@ -960,13 +994,44 @@ function extractSummary(text: string, coveredMessages: readonly Message[]): stri
 function recoverSummaryWithoutTags(text: string): string | undefined {
   const rawText = text.trim();
   if (!rawText) return undefined;
-  const heading = /(?:^|\n)#{1,6}\s*(?:\d+\.\s*)?Main Requests\b[^\n]*/i.exec(rawText);
+  // 标题形态放宽:模型可能不写 "#" 前缀或把标题放进代码栅栏。
+  const heading = /(?:^|\n)\s*(?:#{1,6}\s*)?(?:\d+\.\s*)?Main Requests\b[^\n]*/i.exec(rawText);
   if (!heading || heading.index === undefined) return undefined;
   // If the model wrapped the draft in <analysis> after the heading, stop there.
   const analysis = /<analysis>/i.exec(rawText);
   const end = analysis && analysis.index > heading.index ? analysis.index : rawText.length;
-  const recovered = rawText.slice(heading.index, end).trim();
+  const recovered = stripCodeFence(rawText.slice(heading.index, end).trim());
   return recovered || undefined;
+}
+
+function stripCodeFence(value: string): string {
+  return value
+    .replace(/^```[^\n]*\n?/, "")
+    .replace(/\n?```\s*$/, "")
+    .trim();
+}
+
+function truncateResponse(text: string): string {
+  return text.length > SUMMARY_REJECTED_RESPONSE_CHARS
+    ? `${text.slice(0, SUMMARY_REJECTED_RESPONSE_CHARS)}\n...[truncated]`
+    : text;
+}
+
+/** 摘要被拒:错误对象附带原始响应,重试时作为纠错反馈回传给模型。 */
+function summaryRejected(text: string, message: string): Error {
+  const error: Error & { responseText?: string } = new Error(message);
+  error.responseText = text;
+  return error;
+}
+
+function responseText(error: unknown): string {
+  return typeof (error as { responseText?: unknown })?.responseText === "string"
+    ? (error as { responseText: string }).responseText
+    : "";
+}
+
+function errorMessageText(error: unknown): string {
+  return error instanceof Error ? error.message : String(error);
 }
 
 function formatRecentFile(file: RecentFile): string {
