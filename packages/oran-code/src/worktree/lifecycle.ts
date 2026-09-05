@@ -126,6 +126,8 @@ export async function sweepOrphanWorktrees(
       const slug = branch.slice("refs/heads/worktree-".length);
       if (!slug || protectedSlugs.has(slug)) return;
       if (!sameWorktreePath(currentPath, worktreeDirectory(repoRoot, slug))) return;
+      // Never force-remove a worktree that contains user changes or commits.
+      if (await hasChanges(currentPath, "HEAD")) return;
       const cleaned = await cleanupWorktree(repoRoot, currentPath, worktreeBranch(slug));
       if (cleaned.ok) removed.push(slug);
     };

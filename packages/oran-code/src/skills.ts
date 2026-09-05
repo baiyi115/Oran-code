@@ -428,11 +428,24 @@ async function readSkillSource(source: string, workspace: string): Promise<strin
       throw new Error(`failed to fetch skill ${source}: ${errorMessage(error)}`, { cause: error });
     }
     if (!response.ok) throw new Error(`failed to fetch skill ${source}: HTTP ${response.status}`);
-    const text = await response.text();
-    if (text.length > MAX_SKILL_SOURCE_BYTES) {
+    const declaredLength = Number(response.headers.get("content-length"));
+    if (Number.isFinite(declaredLength) && declaredLength > MAX_SKILL_SOURCE_BYTES) {
       throw new Error(`skill source too large (>${MAX_SKILL_SOURCE_BYTES} bytes): ${source}`);
     }
-    return text;
+    if (!response.body) throw new Error(`skill response has no body: ${source}`);
+    const reader = response.body.getReader();
+    const chunks: Uint8Array[] = [];
+    let total = 0;
+    try {
+      while (true) {
+        const { done, value } = await reader.read();
+        if (done) break;
+        total += value.byteLength;
+        if (total > MAX_SKILL_SOURCE_BYTES) throw new Error(`skill source too large (>${MAX_SKILL_SOURCE_BYTES} bytes): ${source}`);
+        chunks.push(value);
+      }
+    } finally { reader.releaseLock(); }
+    return new TextDecoder().decode(Buffer.concat(chunks.map((chunk) => Buffer.from(chunk))));
   }
 
   const localPath = isAbsolute(source) ? resolve(source) : resolve(workspace, source);

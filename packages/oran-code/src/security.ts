@@ -531,7 +531,7 @@ function isReadOnlyGitCommand(cmd: ShellCommandNode): boolean {
   if (sub === "config") {
     return rest.length > 0 && (rest[0] === "--list" || rest[0] === "-l" || (rest[0] ?? "").startsWith("--get"));
   }
-  if (sub === "stash") return rest.length === 0 || rest[0] === "list" || rest[0] === "show";
+  if (sub === "stash") return rest[0] === "list" || rest[0] === "show";
   if (sub === "worktree") return rest.length === 0 || rest[0] === "list";
   if (sub === "reflog") return rest.length === 0 || rest[0] === "show" || rest[0] === "list";
   if (sub === "tag") return rest.every((arg) => arg.startsWith("-"));
