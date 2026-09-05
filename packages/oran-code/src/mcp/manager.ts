@@ -9,6 +9,7 @@ const DEFAULT_SEARCH_LIMIT = 20;
 const MAX_SEARCH_LIMIT = 100;
 const MAX_TOOL_OUTPUT = 32_000;
 const MCP_CONNECTION_CONCURRENCY = 3;
+const MCP_CONNECT_TIMEOUT_MS = 20_000;
 
 export interface McpToolInfo {
   readonly name: string;
@@ -64,8 +65,13 @@ export class McpManager {
 
   connect(): Promise<void> {
     if (this.connectPromise) return this.connectPromise;
-    this.connectPromise = this.connectAll();
-    return this.connectPromise;
+    const attempt = this.connectAll();
+    this.connectPromise = attempt;
+    // 全部 server 都失败时允许后续重试,否则本次会话永远无法再连接。
+    void attempt.then(() => {
+      if (this.connectPromise === attempt && this.servers.size === 0) this.connectPromise = undefined;
+    });
+    return attempt;
   }
 
   async whenReady(): Promise<void> {
@@ -200,8 +206,9 @@ export class McpManager {
       const transport = createTransport(config, this.workspace);
       client = new Client({ name: "oran-code", version: "0.1.0" });
       this.pendingClients.add(client);
-      await client.connect(transport);
-      const listed = await client.listTools();
+      // 挂起的 stdio/HTTP server 不能无限占用启动流程:握手与工具列表都限时。
+      await withTimeout(client.connect(transport), MCP_CONNECT_TIMEOUT_MS, `${name}: connect timed out`);
+      const listed = await withTimeout(client.listTools(), MCP_CONNECT_TIMEOUT_MS, `${name}: listTools timed out`);
       const instructions = client.getInstructions()?.trim();
       const server: ConnectedMcpServer = {
         name,
@@ -212,6 +219,13 @@ export class McpManager {
       };
       this.pendingClients.delete(client);
       this.servers.set(name, server);
+      // stdio 子进程或远端连接崩溃后,失效的 client/工具必须立即下线,
+      // 否则调用只会打到死连接上。
+      transport.onclose = () => {
+        if (this.closed) return;
+        if (this.servers.get(name) === server) this.removeServer(name);
+        this.connectionFailures.push({ name, error: "connection closed" });
+      };
       for (const remote of listed.tools) {
         const fullName = `${MCP_TOOL_PREFIX}${sanitizeName(name)}__${sanitizeName(remote.name)}`;
         // 消毒后的名字可能碰撞(`a.b` 与 `a_b` 同名);静默覆盖会让调用打到
@@ -234,6 +248,15 @@ export class McpManager {
       if (client) this.pendingClients.delete(client);
       this.connectionFailures.push({ name, error: errorMessage(error) });
       await client?.close().catch(() => undefined);
+    }
+  }
+
+  private removeServer(name: string): void {
+    const server = this.servers.get(name);
+    if (!server) return;
+    this.servers.delete(name);
+    for (const [toolName, tool] of this.tools) {
+      if (tool.server === name) this.tools.delete(toolName);
     }
   }
 
@@ -304,6 +327,19 @@ function createTransport(config: McpServerConfig, workspace: string): Transport 
 
 function sanitizeName(value: string): string {
   return value.replace(/[^A-Za-z0-9_-]/g, "_");
+}
+
+async function withTimeout<T>(promise: Promise<T>, timeoutMs: number, message: string): Promise<T> {
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  const expired = new Promise<never>((_resolve, reject) => {
+    timer = setTimeout(() => reject(new Error(message)), timeoutMs);
+  });
+  timer?.unref?.();
+  try {
+    return await Promise.race([promise, expired]);
+  } finally {
+    if (timer) clearTimeout(timer);
+  }
 }
 
 function expandValues(values: Record<string, string> | undefined): Record<string, string> {
