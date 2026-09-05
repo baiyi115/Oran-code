@@ -1,12 +1,8 @@
 import { loadConfig, resolveModelConfig } from "./config.js";
-import {
-  firstConversationPrompt,
-  isAutomaticSessionName,
-  truncateSessionName,
-  type SessionStore,
-  type StoredSession,
-} from "./session-store.js";
-import type { ModelConfig, ModelProvider, SessionTitleMode, UserConfig } from "./types.js";
+import { firstConversationPrompt, isAutomaticSessionName, truncateSessionName } from "./session-naming.js";
+import type { SessionTitleMode } from "./types.js";
+import type { SessionStore, StoredSession } from "./session-store.js";
+import type { ModelConfig, ModelProvider, UserConfig } from "./types.js";
 
 export interface SessionTitleServiceDependencies {
   readonly workspace: string;

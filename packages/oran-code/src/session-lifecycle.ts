@@ -1,6 +1,8 @@
 import type { ModelReference, PermissionMode, UserConfig, WorkMode } from "./types.js";
 import type { Message } from "./types.js";
-import { isAutomaticSessionName, type StoredSession } from "./session-store.js";
+import type { StoredSession } from "./session-store.js";
+import { isAutomaticSessionName } from "./session-naming.js";
+
 import type { SessionOption, SessionView } from "./tui/types.js";
 
 /** 由配置与 approve-all 推导初始权限模式。 */

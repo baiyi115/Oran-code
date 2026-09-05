@@ -89,7 +89,6 @@ export function errorSignature(result: ToolResult | undefined): string | undefin
 
 export class AgentLoop {
   readonly config: LoopConfig;
-  steps = 0;
   turns = 0;
   tokensUsed = 0;
   inputTokens = 0;
@@ -163,7 +162,6 @@ export class AgentLoop {
 
   record(call: ToolCall): void {
     if (!this.canRecordToolCall()) throw new Error("tool call budget exhausted");
-    this.steps += 1;
     this.toolCalls.push(call);
     this.consecutiveUnknownTools = 0;
   }
@@ -261,9 +259,6 @@ export class AgentLoop {
     return undefined;
   }
 
-  hasNoProgress(): boolean {
-    return this.noProgressDiagnostic() !== undefined;
-  }
 
   private currentRepeatedErrorRun(threshold: number, stage: NoProgressStage): NoProgressDiagnostic | undefined {
     const last = this.executionHistory[this.executionHistory.length - 1];

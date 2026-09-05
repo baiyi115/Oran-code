@@ -39,7 +39,8 @@ import { SessionCrudService } from "./session-crud.js";
 import { workspaceFingerprint } from "./controller-utils.js";
 import { TerminalRenderer, createPromptHooks, type SessionRenderer } from "./renderer.js";
 import { createTask } from "./types.js";
-import { displaySessionName, isAutomaticSessionName, SessionStore, type StoredSession } from "./session-store.js";
+import { SessionStore, type StoredSession } from "./session-store.js";
+import { displaySessionName, isAutomaticSessionName } from "./session-naming.js";
 import type {
   ApprovalResponse,
   Message,
@@ -405,10 +406,7 @@ export class TerminalSession {
         };
       },
       toolCountForCurrentMode: async () => {
-        const { ToolRegistry, registerBuiltinTools } = await loadTools();
-        const registry = new ToolRegistry();
-        registerBuiltinTools(registry, this.workspace);
-        this.registerMcpTools(registry);
+        const registry = await this.buildToolRegistry();
         return (await this.toolSchemasForCurrentMode(registry)).length;
       },
       usageSummary: () => {
@@ -700,7 +698,6 @@ export class TerminalSession {
     await Promise.all([this.ensureMcpReady(), this.openTrace(), this.initializeCommandIntegrations()]);
     const [
       agentRuntime,
-      { ToolRegistry, registerBuiltinTools },
       { assembleSubagentStack, joinStructuredForkSummaries, disposeStructuredScope },
       { backgroundTaskNotification },
       { TaskController },
@@ -708,17 +705,13 @@ export class TerminalSession {
       { createHookEngine },
     ] = await Promise.all([
       this.ensureAgentRuntime(),
-      loadTools(),
       loadSubagentAssembly(),
       loadSubagentBackground(),
       loadController(),
       loadContextManager(),
       loadHookFacade(),
     ]);
-    const registry = new ToolRegistry();
-    registerBuiltinTools(registry, this.workspace);
-    this.registerMcpTools(registry);
-    this.registerSkillSystemTools(registry);
+    const registry = await this.buildToolRegistry({ skillTools: true });
     if (derivedSkill)
       assertSkillTools(
         derivedSkill,
@@ -1145,13 +1138,7 @@ export class TerminalSession {
 
   private async compactRestoredConversation(manager: ContextManager): Promise<void> {
     if (!this.model || !this.conversation.length) return;
-    const { ToolRegistry, registerBuiltinTools } = await loadTools();
-    const registry = new ToolRegistry();
-    registerBuiltinTools(registry, this.workspace);
-    if (this.mcp.started) {
-      await this.ensureMcpReady();
-      this.registerMcpTools(registry);
-    }
+    const registry = await this.buildToolRegistry({ mcp: "if-started" });
     const tools = await this.toolSchemasForCurrentMode(registry);
     const requestModel: ModelConfig = { ...this.model, reasoningEffort: this.reasoningEffort };
     const contextWindow = manager.resolveContextWindow(requestModel);
@@ -1478,11 +1465,7 @@ export class TerminalSession {
     }
 
     await this.ensureMcpReady();
-    const { ToolRegistry, registerBuiltinTools } = await loadTools();
-    const registry = new ToolRegistry();
-    registerBuiltinTools(registry, this.workspace);
-    this.registerMcpTools(registry);
-    this.registerSkillSystemTools(registry);
+    const registry = await this.buildToolRegistry({ skillTools: true });
     try {
       assertSkillTools(
         skill,
@@ -1586,6 +1569,22 @@ export class TerminalSession {
         }
       },
     });
+  }
+
+  /** 统一的注册表构建:builtin 常驻,MCP/Skill 系统工具按需。 */
+  private async buildToolRegistry(
+    options: { skillTools?: boolean; mcp?: "always" | "if-started" | "never" } = {},
+  ): Promise<ToolRegistry> {
+    const { ToolRegistry, registerBuiltinTools } = await loadTools();
+    const registry = new ToolRegistry();
+    registerBuiltinTools(registry, this.workspace);
+    const mcp = options.mcp ?? "always";
+    if (mcp === "always" || (mcp === "if-started" && this.mcp.started)) {
+      if (mcp === "if-started") await this.ensureMcpReady();
+      this.registerMcpTools(registry);
+    }
+    if (options.skillTools) this.registerSkillSystemTools(registry);
+    return registry;
   }
 
   private registerMcpTools(registry: ToolRegistry): void {

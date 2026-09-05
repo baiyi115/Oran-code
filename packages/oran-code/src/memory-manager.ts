@@ -2,7 +2,6 @@ import { randomUUID } from "node:crypto";
 import { createRequire } from "node:module";
 import { basename, dirname, relative, resolve, sep } from "node:path";
 import { mkdir, readFile, readdir, rename, stat, unlink, writeFile } from "node:fs/promises";
-import type { ModelProvider } from "./types.js";
 import { isRecord } from "./types.js";
 import { compatibleUserDataPath, projectHash, userMemoryRoot, USER_DATA_DIRECTORY } from "./paths.js";
 
@@ -44,28 +43,13 @@ export interface MemoryManagerOptions {
   readonly projectDirectory?: string;
   readonly maxIndexLines?: number;
   readonly maxIndexBytes?: number;
-  readonly maxCandidates?: number;
-  readonly maxRelevant?: number;
 }
-export interface FindRelevantOptions {
-  readonly injectedIds?: Iterable<string>;
-  readonly maxCandidates?: number;
-  readonly maxResults?: number;
-}
-
 export const DEFAULT_MEMORY_INDEX_LINES = 200;
 export const DEFAULT_MEMORY_INDEX_BYTES = 25 * 1024;
-export const DEFAULT_MEMORY_CANDIDATES = 80;
-export const DEFAULT_RELEVANT_MEMORIES = 5;
 export const MEMORY_INDEX_FILE = "index.md";
 
 const SUMMARY_PREFIX =
   "Long-term memory summaries are listed below.\nUse a file-reading tool to inspect a note only when its full body is needed.";
-const SELECTOR_SYSTEM_PROMPT = [
-  "Select only memories that are directly useful for the current request.",
-  'Return strict JSON with exactly this shape: {"ids":["memory-id"]}.',
-  'Use only IDs present in the candidate list. Return {"ids":[]} when none are relevant.',
-].join("\n");
 
 export class MemoryManager {
   readonly workspace: string;
@@ -74,8 +58,6 @@ export class MemoryManager {
   readonly indexPath: string;
   private readonly maxIndexLines: number;
   private readonly maxIndexBytes: number;
-  private readonly maxCandidates: number;
-  private readonly maxRelevant: number;
 
   constructor(workspace: string, options: MemoryManagerOptions = {}) {
     this.workspace = resolve(workspace);
@@ -84,8 +66,6 @@ export class MemoryManager {
     this.indexPath = resolve(this.projectDirectory, MEMORY_INDEX_FILE);
     this.maxIndexLines = positiveInteger(options.maxIndexLines, DEFAULT_MEMORY_INDEX_LINES);
     this.maxIndexBytes = positiveInteger(options.maxIndexBytes, DEFAULT_MEMORY_INDEX_BYTES);
-    this.maxCandidates = positiveInteger(options.maxCandidates, DEFAULT_MEMORY_CANDIDATES);
-    this.maxRelevant = positiveInteger(options.maxRelevant, DEFAULT_RELEVANT_MEMORIES);
   }
 
   async scan(): Promise<MemoryNote[]> {
@@ -133,51 +113,6 @@ export class MemoryManager {
       scope,
       modifiedAt: fileStat.mtime.toISOString(),
     };
-  }
-
-  async findRelevant(query: string, provider: ModelProvider, options: FindRelevantOptions = {}): Promise<MemoryNote[]> {
-    try {
-      if (!query.trim()) return [];
-      const injected = new Set(options.injectedIds ?? []);
-      const maxCandidates = positiveInteger(options.maxCandidates, this.maxCandidates);
-      const maxResults = positiveInteger(options.maxResults, this.maxRelevant);
-      const candidates = (await this.scan())
-        .filter((note) => !injected.has(note.id))
-        .sort((left, right) => right.modifiedAt.localeCompare(left.modifiedAt))
-        .slice(0, maxCandidates);
-      if (!candidates.length) return [];
-      const response = await provider.complete([
-        { role: "system", content: SELECTOR_SYSTEM_PROMPT },
-        {
-          role: "user",
-          content: [
-            `Query:\n${query.trim()}`,
-            "Candidates:",
-            ...candidates.map((note) =>
-              [
-                `- id: ${note.id}`,
-                `  scope: ${note.scope}`,
-                `  type: ${note.type}`,
-                `  path: ${this.displayPath(note)}`,
-                `  modified: ${note.modifiedAt}`,
-                `  description: ${note.description}`,
-              ].join("\n"),
-            ),
-          ].join("\n"),
-        },
-      ]);
-      const selected = parseSelectedIds(response.text);
-      const byId = new Map(candidates.map((note) => [note.id, note]));
-      const result: MemoryNote[] = [];
-      for (const id of selected) {
-        const note = byId.get(id);
-        if (note && !result.some((item) => item.id === id)) result.push(note);
-        if (result.length >= maxResults) break;
-      }
-      return result;
-    } catch {
-      return [];
-    }
   }
 
   private async scanDirectory(directory: string, scope: MemoryScope): Promise<MemoryNote[]> {
@@ -345,25 +280,6 @@ function boundLines(lines: readonly string[], maxLines: number, maxBytes: number
   return accepted.join("\n");
 }
 
-function parseSelectedIds(value: string): string[] {
-  const normalized = value
-    .trim()
-    .replace(/^```(?:json)?\s*/iu, "")
-    .replace(/\s*```$/u, "");
-  const objectStart = normalized.indexOf("{");
-  const arrayStart = normalized.indexOf("[");
-  const start = objectStart < 0 ? arrayStart : arrayStart < 0 ? objectStart : Math.min(objectStart, arrayStart);
-  if (start < 0) return [];
-  try {
-    const parsed = JSON.parse(normalized.slice(start)) as unknown;
-    const values = Array.isArray(parsed) ? parsed : isRecord(parsed) && Array.isArray(parsed.ids) ? parsed.ids : [];
-    return values
-      .filter((item): item is string => typeof item === "string" && Boolean(item.trim()))
-      .map((item) => item.trim());
-  } catch {
-    return [];
-  }
-}
 
 function compareById(left: MemoryNote, right: MemoryNote): number {
   return left.id.localeCompare(right.id) || left.path.localeCompare(right.path);

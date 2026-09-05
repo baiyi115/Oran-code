@@ -9,17 +9,13 @@ import type { ContextManager } from "./context-manager.js";
 import type { AgentLoop } from "./loop.js";
 import type { Message, ModelResponse, ToolCall, ToolCallComplete, ToolResult } from "./types.js";
 import { formatErrorMessage } from "./error-format.js";
+import { PLAN_COMPLETE_MARKERS } from "./message-utils.js";
 import { systemReminderMessage } from "./system-prompt.js";
 import { PROJECT_STATE_DIR_NAMES } from "./paths.js";
 
 const execFileAsync = promisify(execFile);
 
-export const PLAN_COMPLETE_MARKERS = [
-  "PLAN_COMPLETE",
-  "<<PLAN_COMPLETE>>",
-  "<plan_complete>",
-  "</plan_complete>",
-] as const;
+export { PLAN_COMPLETE_MARKERS } from "./message-utils.js";
 
 export function permissionDeniedResult(call: ToolCall, decision: ApprovalDecision): ToolResult {
   return {
