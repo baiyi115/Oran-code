@@ -422,8 +422,19 @@ async function readSkillSource(source: string, workspace: string): Promise<strin
     }
     let response: Response;
     try {
-      // 无上限的响应体会把任意远端内容整个读进内存。
-      response = await fetch(source, { signal: AbortSignal.timeout(30_000), redirect: "follow" });
+      // 无上限的响应体会把任意远端内容整个读进内存;redirect 手动跟随,
+      // 防止 https 源经 302 降级到 http 绕过明文拒绝。
+      response = await fetch(source, { signal: AbortSignal.timeout(30_000), redirect: "manual" });
+      for (let redirects = 0; response.status >= 300 && response.status < 400; redirects += 1) {
+        if (redirects >= 5) throw new Error("too many redirects");
+        const location = response.headers.get("location");
+        if (!location) break;
+        const next = new URL(location, source).toString();
+        if (next.toLowerCase().startsWith("http://")) {
+          throw new Error(`refusing to follow redirect to insecure http: ${next}`);
+        }
+        response = await fetch(next, { signal: AbortSignal.timeout(30_000), redirect: "manual" });
+      }
     } catch (error) {
       throw new Error(`failed to fetch skill ${source}: ${errorMessage(error)}`, { cause: error });
     }
