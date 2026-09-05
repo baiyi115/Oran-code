@@ -1,5 +1,5 @@
 import { existsSync } from "node:fs";
-import { copyFile, mkdir, readFile, writeFile } from "node:fs/promises";
+import { chmod, copyFile, mkdir, readFile, writeFile } from "node:fs/promises";
 import { homedir } from "node:os";
 import { dirname, resolve } from "node:path";
 import {
@@ -438,6 +438,8 @@ export async function saveConfig(config: UserConfig, path = userConfigPath()): P
   await mkdir(dirname(path), { recursive: true });
   const payload = JSON.stringify(toFileShape(config), null, 2) + "\n";
   await writeFile(path, payload, "utf8");
+  // 配置文件含 API key 等明文凭据;mode 只在创建时生效,已存在的文件单独 chmod。
+  if (process.platform !== "win32") await chmod(path, 0o600).catch(() => undefined);
 }
 
 function toFileShape(config: UserConfig): Record<string, unknown> {
