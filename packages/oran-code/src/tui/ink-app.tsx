@@ -1171,10 +1171,7 @@ function InkRoot({ app, revision }: { app: InkTuiApp; revision: number }): React
   const overlayLines = fitOverlayLines(renderOverlayLines(state, commandLines, width), overlayCapacity);
   // Keep the mutable frame below the terminal height so Ink never enters its
   // clearTerminal paint path. The completed form is emitted to Static in full.
-  const viewportLines = Math.max(
-    1,
-    rows - baseChromeLines - (overlayLines.length > 0 ? overlayLines.length + 1 : 0),
-  );
+  const viewportLines = Math.max(1, rows - baseChromeLines - (overlayLines.length > 0 ? overlayLines.length + 1 : 0));
   app.syncViewportScroll(transcriptLines, viewportLines);
   const maximumStart = Math.max(0, transcriptLines.length - viewportLines);
   const viewportStart = Math.max(0, maximumStart - Math.min(maximumStart, state.transcriptScroll.offsetFromBottom));

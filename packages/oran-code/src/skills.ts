@@ -452,10 +452,13 @@ async function readSkillSource(source: string, workspace: string): Promise<strin
         const { done, value } = await reader.read();
         if (done) break;
         total += value.byteLength;
-        if (total > MAX_SKILL_SOURCE_BYTES) throw new Error(`skill source too large (>${MAX_SKILL_SOURCE_BYTES} bytes): ${source}`);
+        if (total > MAX_SKILL_SOURCE_BYTES)
+          throw new Error(`skill source too large (>${MAX_SKILL_SOURCE_BYTES} bytes): ${source}`);
         chunks.push(value);
       }
-    } finally { reader.releaseLock(); }
+    } finally {
+      reader.releaseLock();
+    }
     return new TextDecoder().decode(Buffer.concat(chunks.map((chunk) => Buffer.from(chunk))));
   }
 

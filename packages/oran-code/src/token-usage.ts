@@ -18,7 +18,9 @@ export function normalizeTokenUsage(usage: Record<string, number>): TokenUsage {
   // OpenAI 系字段(prompt/completion)的 cached_tokens 是 prompt_tokens 的子集,
   // 不得再加进 total;Anthropic 系的 cache_read 与 input_tokens 互斥,正常累加。
   const isOpenAiShape = usage.prompt_tokens !== undefined || usage.completion_tokens !== undefined;
-  const totalTokens = reportedTotal ?? inputTokens + outputTokens + (isOpenAiShape ? cacheWriteTokens : cacheReadTokens + cacheWriteTokens);
+  const totalTokens =
+    reportedTotal ??
+    inputTokens + outputTokens + (isOpenAiShape ? cacheWriteTokens : cacheReadTokens + cacheWriteTokens);
 
   return {
     inputTokens,

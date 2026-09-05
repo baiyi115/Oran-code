@@ -40,7 +40,12 @@ describe("parseBatchScript", () => {
 
   it("rejects duplicate ids, missing fields, and recursive batch_tools", () => {
     expect(() =>
-      parseBatchScript({ steps: [{ id: "s1", tool: "a" }, { id: "s1", tool: "b" }] }),
+      parseBatchScript({
+        steps: [
+          { id: "s1", tool: "a" },
+          { id: "s1", tool: "b" },
+        ],
+      }),
     ).toThrow('duplicate step id "s1"');
     expect(() => parseBatchScript({ steps: [{ tool: "a" }] })).toThrow(".id");
     expect(() => parseBatchScript({ steps: [{ id: "s1" }] })).toThrow(".tool");
@@ -49,13 +54,23 @@ describe("parseBatchScript", () => {
 
   it("rejects forward, self, and unknown references", () => {
     expect(() =>
-      parseBatchScript({ steps: [{ id: "s1", tool: "a", arguments: { x: { $ref: "s2" } } }, { id: "s2", tool: "b" }] }),
+      parseBatchScript({
+        steps: [
+          { id: "s1", tool: "a", arguments: { x: { $ref: "s2" } } },
+          { id: "s2", tool: "b" },
+        ],
+      }),
     ).toThrow('references "s2"');
+    expect(() => parseBatchScript({ steps: [{ id: "s1", tool: "a", arguments: { x: "${s1}" } }] })).toThrow(
+      'references "s1"',
+    );
     expect(() =>
-      parseBatchScript({ steps: [{ id: "s1", tool: "a", arguments: { x: "${s1}" } }] }),
-    ).toThrow('references "s1"');
-    expect(() =>
-      parseBatchScript({ steps: [{ id: "s1", tool: "a" }, { id: "s2", tool: "b", arguments: { x: "${nope}" } }] }),
+      parseBatchScript({
+        steps: [
+          { id: "s1", tool: "a" },
+          { id: "s2", tool: "b", arguments: { x: "${nope}" } },
+        ],
+      }),
     ).toThrow('references "nope"');
   });
 
@@ -95,10 +110,7 @@ describe("substituteStepArguments", () => {
   });
 
   it("interpolates refs inside strings and supports the .output suffix", () => {
-    const resolved = substituteStepArguments(
-      { a: "x-${text}-y", b: "${json.output}" },
-      (id) => outputs.get(id),
-    );
+    const resolved = substituteStepArguments({ a: "x-${text}-y", b: "${json.output}" }, (id) => outputs.get(id));
     expect(resolved).toEqual({ a: "x-plain output-y", b: '{"path":"src/a.ts","line":3}' });
   });
 

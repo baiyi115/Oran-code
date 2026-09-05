@@ -134,7 +134,19 @@ export class BackgroundAgentTaskManager {
       this.schedulePersist();
       this.notifyChange();
       this.drainQueue();
-      settle({ taskId: task.id, name: task.name, origin: task.origin, status: "timed_out", output: "", error: task.error, usage: task.usage, startedAt: task.startedAt, endedAt: task.endedAt, conversation: [], workspace: "" });
+      settle({
+        taskId: task.id,
+        name: task.name,
+        origin: task.origin,
+        status: "timed_out",
+        output: "",
+        error: task.error,
+        usage: task.usage,
+        startedAt: task.startedAt,
+        endedAt: task.endedAt,
+        conversation: [],
+        workspace: "",
+      });
     }, this.maxDurationMs);
     deadline.unref?.();
 

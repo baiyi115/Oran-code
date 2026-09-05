@@ -4,10 +4,7 @@
  * 运行时提醒统一合并到对话末尾的 user 消息上,避免逐轮变化的提醒文本
  * 就地改写历史消息而击穿稳定前缀缓存。没有 user 消息时追加一条。
  */
-export function appendTailReminder(
-  conversation: Array<Record<string, unknown>>,
-  reminderText: string,
-): void {
+export function appendTailReminder(conversation: Array<Record<string, unknown>>, reminderText: string): void {
   if (!reminderText) return;
   const last = conversation[conversation.length - 1];
   if (last && last.role === "user") {

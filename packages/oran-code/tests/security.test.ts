@@ -118,18 +118,24 @@ describe("PermissionPolicy", () => {
         "command",
       ),
     ).toMatchObject({ verdict: "allow", source: "safe-command" });
+    expect(await policy.decide(call("run_command", { command: "git diff | wc -l" }), 1, "command")).toMatchObject({
+      verdict: "allow",
+      source: "safe-command",
+    });
     expect(
-      await policy.decide(call("run_command", { command: "git diff | wc -l" }), 1, "command"),
+      await policy.decide(
+        call("run_command", { command: 'git log --grep="fix && retry | timeout" --oneline' }),
+        1,
+        "command",
+      ),
     ).toMatchObject({ verdict: "allow", source: "safe-command" });
     expect(
-      await policy.decide(call("run_command", { command: 'git log --grep="fix && retry | timeout" --oneline' }), 1, "command"),
+      await policy.decide(call("run_command", { command: "ls -la && cat README.md" }), 1, "command"),
     ).toMatchObject({ verdict: "allow", source: "safe-command" });
-    expect(await policy.decide(call("run_command", { command: "ls -la && cat README.md" }), 1, "command")).toMatchObject(
-      { verdict: "allow", source: "safe-command" },
-    );
-    expect(
-      await policy.decide(call("run_command", { command: "echo hi > /dev/null" }), 1, "command"),
-    ).toMatchObject({ verdict: "allow", source: "safe-command" });
+    expect(await policy.decide(call("run_command", { command: "echo hi > /dev/null" }), 1, "command")).toMatchObject({
+      verdict: "allow",
+      source: "safe-command",
+    });
   });
 
   it.each([
@@ -154,7 +160,13 @@ describe("PermissionPolicy", () => {
   it("auto-approves conditional read-only git forms", async () => {
     const root = await makeWorkspace();
     const policy = new PermissionPolicy(permissionConfig(root));
-    for (const command of ["git remote -v", "git config --get user.name", "git tag -l", "git stash list", "cd src && git status"]) {
+    for (const command of [
+      "git remote -v",
+      "git config --get user.name",
+      "git tag -l",
+      "git stash list",
+      "cd src && git status",
+    ]) {
       expect(await policy.decide(call("run_command", { command }), 1, "command")).toMatchObject({
         verdict: "allow",
         source: "safe-command",
@@ -165,7 +177,7 @@ describe("PermissionPolicy", () => {
   it.each([
     ["git push --force", "deny"],
     ["git reset --hard HEAD", "deny"],
-    ["git \"reset\" --hard HEAD", "deny"],
+    ['git "reset" --hard HEAD', "deny"],
     ["git push origin +main:main", "deny"],
     ["git push --force-with-lease=main:abc origin main", "deny"],
     ["sudo rm -rf /", "deny"],
@@ -189,8 +201,9 @@ describe("PermissionPolicy", () => {
       verdict: "allow",
       source: "safe-command",
     });
-    expect(await policy.decide(call("run_command", { command: "git -c diff.x.command=calc diff" }), 1, "command"))
-      .toMatchObject({ verdict: "ask" });
+    expect(
+      await policy.decide(call("run_command", { command: "git -c diff.x.command=calc diff" }), 1, "command"),
+    ).toMatchObject({ verdict: "ask" });
     expect(isReadOnlyShellCommand(parseShellCommand("rg foo --pre bar"))).toBe(false);
     expect(isReadOnlyShellCommand(parseShellCommand("rg foo src"))).toBe(true);
   });
@@ -221,13 +234,15 @@ describe("PermissionPolicy", () => {
     });
     execFileSync("git", ["config", "diff.bin.command", "echo"], { cwd: root });
     const policyAfterDriver = new PermissionPolicy(permissionConfig(root));
-    expect(
-      await policyAfterDriver.decide(call("run_command", { command: "git diff" }), 1, "command"),
-    ).toMatchObject({
+    expect(await policyAfterDriver.decide(call("run_command", { command: "git diff" }), 1, "command")).toMatchObject({
       verdict: "ask",
     });
     expect(
-      await policyAfterDriver.decide(call("run_command", { command: "git diff --no-textconv --no-ext-diff" }), 1, "command"),
+      await policyAfterDriver.decide(
+        call("run_command", { command: "git diff --no-textconv --no-ext-diff" }),
+        1,
+        "command",
+      ),
     ).toMatchObject({ verdict: "allow", source: "safe-command" });
   });
 

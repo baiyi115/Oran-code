@@ -177,7 +177,10 @@ export function reduceRuntimeEvent(state: TuiState, event: RuntimeEvent): void {
       // Assistant stream already rendered the plan body. Strip protocol markers
       // from the last assistant row and avoid a second plan block.
       const cleaned = redactSecretText(event.plan).trim();
-      const lastAssistant = findLast(state.transcript, (message) => message.kind === "assistant" && message.taskId === event.taskId);
+      const lastAssistant = findLast(
+        state.transcript,
+        (message) => message.kind === "assistant" && message.taskId === event.taskId,
+      );
       if (lastAssistant && lastAssistant.kind === "assistant") {
         lastAssistant.text = cleaned || stripPlanCompleteMarkers(lastAssistant.text);
         lastAssistant.streaming = false;
@@ -468,7 +471,10 @@ function findAssistantByTurnId(
 
 function hasCompletedAssistant(state: TuiState, turnId?: string, taskId?: string): boolean {
   if (turnId) return Boolean(findAssistantByTurnId(state, turnId, taskId));
-  return findLast(state.transcript, (entry) => entry.kind === "assistant" && entry.taskId === taskId && !entry.streaming) !== undefined;
+  return (
+    findLast(state.transcript, (entry) => entry.kind === "assistant" && entry.taskId === taskId && !entry.streaming) !==
+    undefined
+  );
 }
 
 function finishAssistant(state: TuiState): void {

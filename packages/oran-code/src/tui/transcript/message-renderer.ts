@@ -186,7 +186,11 @@ function renderVerification(message: VerificationMessage, width: number): string
     const outputLines = result.output.trim().split(/\r?\n/).filter(Boolean);
     if (outputLines.length) {
       const summary = outputLines[0] + (outputLines.length > 1 ? " …" : "");
-      lines.push(...wrapDisplayText(summary, Math.max(1, contentWidth - 2)).map((line) => `${indent}${ANSI.gray}│ ${line}${ANSI.reset}`));
+      lines.push(
+        ...wrapDisplayText(summary, Math.max(1, contentWidth - 2)).map(
+          (line) => `${indent}${ANSI.gray}│ ${line}${ANSI.reset}`,
+        ),
+      );
     }
   }
   return lines;

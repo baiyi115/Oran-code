@@ -259,7 +259,6 @@ export class AgentLoop {
     return undefined;
   }
 
-
   private currentRepeatedErrorRun(threshold: number, stage: NoProgressStage): NoProgressDiagnostic | undefined {
     const last = this.executionHistory[this.executionHistory.length - 1];
     if (!last || !last.errorSig) return undefined;

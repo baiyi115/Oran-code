@@ -280,7 +280,6 @@ function boundLines(lines: readonly string[], maxLines: number, maxBytes: number
   return accepted.join("\n");
 }
 
-
 function compareById(left: MemoryNote, right: MemoryNote): number {
   return left.id.localeCompare(right.id) || left.path.localeCompare(right.path);
 }

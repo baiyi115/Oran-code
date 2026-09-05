@@ -116,7 +116,8 @@ export function registerReadTools(registry: { register(tool: ToolDefinition): vo
         const numbered = slice.map((line, index) => {
           const lineNo = String(startIndex + index + 1).padStart(width, " ");
           // 超长单行(如压缩过的 JS)截断,避免一行撑爆整个输出预算。
-          const text = line.length > MAX_READ_LINE_CHARS ? `${line.slice(0, MAX_READ_LINE_CHARS)}...[line truncated]` : line;
+          const text =
+            line.length > MAX_READ_LINE_CHARS ? `${line.slice(0, MAX_READ_LINE_CHARS)}...[line truncated]` : line;
           return `${lineNo}|${text}`;
         });
         const remaining = lines.length - (startIndex + slice.length);
