@@ -237,6 +237,7 @@ function toAnthropicMessages(messages: Message[]): {
   const system: Record<string, unknown>[] = [];
   const conversation: Record<string, unknown>[] = [];
   const tailReminders: string[] = [];
+  const userMessageIndices: number[] = [];
   let pendingToolResults: Record<string, unknown>[] = [];
 
   const flushToolResults = (): void => {
@@ -274,6 +275,7 @@ function toAnthropicMessages(messages: Message[]): {
     }
     flushToolResults();
     if (message.role === "user") {
+      userMessageIndices.push(conversation.length);
       conversation.push({ role: "user", content: message.content ?? "" });
       continue;
     }
@@ -296,6 +298,16 @@ function toAnthropicMessages(messages: Message[]): {
   }
   flushToolResults();
   if (tailReminders.length) appendTailReminder(conversation, tailReminders.join("\n\n"));
+  // 长会话在倒数第二个 user 消息处加一个稳定断点:末尾断点每轮都会失效,
+  // 这个断点让上一轮之前的前缀始终可复用。Anthropic 全请求最多 4 个
+  // cache_control:system 块 + tools 1 个 + 稳定断点 + 末尾断点,超出即不加。
+  const existingBreakpoints = system.filter((block) => block.cache_control).length + 1;
+  if (userMessageIndices.length >= 2 && conversation.length > 12 && existingBreakpoints + 2 <= 4) {
+    const anchor = conversation[userMessageIndices[userMessageIndices.length - 2]!];
+    if (anchor && typeof anchor.content === "string" && anchor.content) {
+      anchor.content = [{ type: "text", text: anchor.content, cache_control: { type: "ephemeral" } }];
+    }
+  }
   if (conversation.length) {
     const last = conversation[conversation.length - 1]!;
     if (Array.isArray(last.content) && last.content.length) {

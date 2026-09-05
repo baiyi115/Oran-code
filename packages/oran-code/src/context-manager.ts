@@ -475,7 +475,11 @@ export class ContextManager {
       };
       const recoveryMessage: Message = {
         role: "system",
-        content: this.buildRecoveryMessage(options.tools),
+        content: this.buildRecoveryMessage(options.tools, {
+          coveredMessages: summarized.coveredMessages.length,
+          totalMessages: history.length,
+          droppedGroups: summarized.droppedGroups,
+        }),
         metadata: { promptBlock: "context-recovery", contextManaged: true },
       };
       const recent = selectRecentRawMessages(summarized.coveredMessages);
@@ -540,15 +544,28 @@ export class ContextManager {
     throw new Error("context compaction failed because no conversation group fits the summary request");
   }
 
-  private buildRecoveryMessage(tools: readonly Record<string, unknown>[]): string {
+  private buildRecoveryMessage(
+    tools: readonly Record<string, unknown>[],
+    coverage?: { coveredMessages: number; totalMessages: number; droppedGroups: number },
+  ): string {
     const snapshots = [...this.recentFiles.values()]
       .sort((left, right) => right.readAt.localeCompare(left.readAt))
       .slice(0, CONTEXT_LIMITS.recentFileCount)
       .map(formatRecentFile)
       .join("\n\n");
     const toolSchema = tools.length ? JSON.stringify(tools, null, 2) : "[]";
+    const coverageBlock = coverage
+      ? [
+          "<summary-coverage>",
+          `The summary covers ${coverage.coveredMessages} of ${coverage.totalMessages} conversation message(s)` +
+            (coverage.droppedGroups ? `; ${coverage.droppedGroups} oldest group(s) were dropped entirely` : "") +
+            ". Newer turns appear verbatim below.",
+          "</summary-coverage>",
+        ]
+      : [];
     return [
       "<context-recovery>",
+      ...coverageBlock,
       "<recent-files>",
       snapshots || "(no successful file reads recorded)",
       "</recent-files>",
@@ -869,6 +886,12 @@ function extractSummary(text: string, coveredMessages: readonly Message[]): stri
   }
   if (!summaryText) {
     throw new Error("context compaction response did not contain a non-empty <summary> block");
+  }
+  // 大段对话被压成一句空话等于静默丢上下文,宁可让压缩失败走重试/告警。
+  if (coveredMessages.length >= 10 && summaryText.length < 150) {
+    throw new Error(
+      `context compaction summary is implausibly short (${summaryText.length} chars for ${coveredMessages.length} messages); refusing to discard the covered conversation`,
+    );
   }
 
   const sectionNames = [
