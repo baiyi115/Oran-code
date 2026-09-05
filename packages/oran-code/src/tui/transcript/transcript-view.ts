@@ -276,14 +276,16 @@ function messageSignature(message: TranscriptMessage): string {
     case "thought":
       return `thought:${message.streaming ? 1 : 0}:${message.expanded ? 1 : 0}:${message.durationMs ?? ""}`;
     case "tool":
+      // 输出全文拼进签名会在每次重绘(120ms)时拷贝巨量字符串;状态/摘要
+      // 与长度足以覆盖所有真实变更(它们总是伴随状态转换发生)。
       return [
         "tool",
         message.status,
         message.expanded ? "1" : "0",
         message.durationMs ?? "",
         message.summary ?? "",
-        message.output ?? "",
-        message.error ?? "",
+        message.output?.length ?? 0,
+        message.error?.length ?? 0,
       ].join(":");
     case "verification":
       return `verification:${JSON.stringify(message.results)}`;

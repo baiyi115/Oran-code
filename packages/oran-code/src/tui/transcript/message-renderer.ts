@@ -1,4 +1,5 @@
 import type { TranscriptMessage, VerificationMessage } from "../types.js";
+import { formatDuration } from "../../formatting.js";
 import { renderMarkdown, type MarkdownRenderer } from "./markdown-renderer.js";
 import { renderToolMessage } from "./tool-message.js";
 import { stripTerminalMarkup, wrapDisplayText } from "../text-width.js";
@@ -188,6 +189,3 @@ function renderVerification(message: VerificationMessage, width: number): string
   return lines;
 }
 
-function formatDuration(value: number): string {
-  return value >= 1000 ? `${(value / 1000).toFixed(1)}s` : `${Math.max(0, Math.round(value))}ms`;
-}

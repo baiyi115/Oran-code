@@ -95,7 +95,12 @@ export function reduceRuntimeEvent(state: TuiState, event: RuntimeEvent): void {
       clearRetryErrorNotice(state);
       state.waitingForFirstChunk = false;
       const assistant = ensureAssistant(state, event.turnId, event.taskId);
-      assistant.text = stripPlanCompleteMarkers(assistant.text + redactSecretText(event.text));
+      // 追加即可:end 事件会整体剥离 plan 标记;对全文反复剥离是 O(n²)。
+      // 标记出现时才做一次全文剥离,保证跨 delta 边界的标记也能清掉。
+      assistant.text += redactSecretText(event.text);
+      if (assistant.text.includes("PLAN_COMPLETE")) {
+        assistant.text = stripPlanCompleteMarkers(assistant.text);
+      }
       assistant.streaming = true;
       state.streaming = true;
       state.session.currentStep = event.step;
@@ -172,9 +177,7 @@ export function reduceRuntimeEvent(state: TuiState, event: RuntimeEvent): void {
       // Assistant stream already rendered the plan body. Strip protocol markers
       // from the last assistant row and avoid a second plan block.
       const cleaned = redactSecretText(event.plan).trim();
-      const lastAssistant = [...state.transcript]
-        .reverse()
-        .find((message) => message.kind === "assistant" && message.taskId === event.taskId);
+      const lastAssistant = findLast(state.transcript, (message) => message.kind === "assistant" && message.taskId === event.taskId);
       if (lastAssistant && lastAssistant.kind === "assistant") {
         lastAssistant.text = cleaned || stripPlanCompleteMarkers(lastAssistant.text);
         lastAssistant.streaming = false;
@@ -456,17 +459,16 @@ function findAssistantByTurnId(
   turnId: string,
   taskId?: string,
 ): Extract<TuiState["transcript"][number], { kind: "assistant" }> | undefined {
-  const message = [...state.transcript]
-    .reverse()
-    .find((entry) => entry.kind === "assistant" && entry.turnId === turnId && entry.taskId === taskId);
+  const message = findLast(
+    state.transcript,
+    (entry) => entry.kind === "assistant" && entry.turnId === turnId && entry.taskId === taskId,
+  );
   return message?.kind === "assistant" ? message : undefined;
 }
 
 function hasCompletedAssistant(state: TuiState, turnId?: string, taskId?: string): boolean {
   if (turnId) return Boolean(findAssistantByTurnId(state, turnId, taskId));
-  return [...state.transcript]
-    .reverse()
-    .some((entry) => entry.kind === "assistant" && entry.taskId === taskId && !entry.streaming);
+  return findLast(state.transcript, (entry) => entry.kind === "assistant" && entry.taskId === taskId && !entry.streaming) !== undefined;
 }
 
 function finishAssistant(state: TuiState): void {
@@ -623,4 +625,13 @@ function redactVerification(result: VerificationResult): VerificationResult {
 
 function toolCallKey(call: ToolCall): string {
   return call.id ?? `${call.name}:${call.createdAt}`;
+}
+
+/** 倒序查找但不复制整个转写数组(reverse() 会分配等长副本)。 */
+function findLast<T>(items: readonly T[], predicate: (item: T) => boolean): T | undefined {
+  for (let index = items.length - 1; index >= 0; index -= 1) {
+    const item = items[index]!;
+    if (predicate(item)) return item;
+  }
+  return undefined;
 }

@@ -1,0 +1,20 @@
+/** 渲染层共享的纯格式化工具:普通终端与 TUI 两条路径共用,避免行为漂移。 */
+
+export function redactSecretText(value: string): string {
+  return value
+    .replace(/\bsk-[A-Za-z0-9_-]{8,}\b/g, "sk-[redacted]")
+    .replace(/((?:api[_-]?key|token|secret|password)\s*[=:]\s*)[^\s,&]+/gi, "$1[redacted]");
+}
+
+export function formatDuration(value: number): string {
+  return value >= 1000 ? `${(value / 1000).toFixed(1)}s` : `${Math.max(0, Math.round(value))}ms`;
+}
+
+/** 按 UTF-16 长度截断并标注;普通终端路径使用。 */
+export function truncateText(value: string, limit: number): string {
+  return value.length <= limit ? value : `${value.slice(0, limit)}\n...[truncated]`;
+}
+
+export function formatRate(value: number): string {
+  return value < 10 ? value.toFixed(1) : String(Math.round(value));
+}

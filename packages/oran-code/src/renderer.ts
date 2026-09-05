@@ -3,6 +3,7 @@ import type { Writable } from "node:stream";
 import type { ApprovalResponse, RuntimeEvent, ToolCall, ToolResult, VerificationResult } from "./types.js";
 import { subagentOriginLabel, type SubagentOrigin } from "./subagent/types.js";
 import { stripPlanCompleteMarkers } from "./message-utils.js";
+import { formatDuration, formatRate, redactSecretText, truncateText } from "./formatting.js";
 
 export interface PromptOutputHooks {
   before: () => void;
@@ -95,6 +96,8 @@ export class TerminalRenderer implements SessionRenderer {
   assistantDelta(text: string): void {
     if (!text) return;
     if (!this.assistantOpen) this.assistantStart("", "turn");
+    // 与 TUI 路径一致:普通终端同样对模型输出做密钥脱敏。
+    text = redactSecretText(text);
     this.assistantText += text;
     // Buffer incomplete lines so raw markdown fragments ("####文字...") never
     // stream into the terminal one character at a time. A line is flushed as
@@ -161,9 +164,9 @@ export class TerminalRenderer implements SessionRenderer {
     const marker = result.ok ? "ok" : "failed";
     const style: Style = result.ok ? "green" : "red";
     const duration = result.durationMs === undefined ? "" : ` (${result.durationMs}ms)`;
-    const summary = result.summary ?? result.error ?? marker;
+    const summary = redactSecretText(result.summary ?? result.error ?? marker);
     const output = result.output?.trim();
-    const detail = output ? `\n     | ${truncate(output, 1600)}` : "";
+    const detail = output ? `\n     | ${truncateText(output, 1600)}` : "";
     this.block(`     ${paint(marker, style, this.colorEnabled)}: ${summary}${duration}${detail}\n`);
     void call;
   }
@@ -172,7 +175,7 @@ export class TerminalRenderer implements SessionRenderer {
     const lines = results.map((result) => {
       const style: Style = result.passed ? "green" : "red";
       const output = result.output.trim();
-      return `  ${paint("verify", style, this.colorEnabled)} ${result.command} exit=${result.exitCode} (${result.durationMs}ms)${output ? `\n  | ${truncate(output, 600)}` : ""}`;
+      return `  ${paint("verify", style, this.colorEnabled)} ${result.command} exit=${result.exitCode} (${result.durationMs}ms)${output ? `\n  | ${truncateText(output, 600)}` : ""}`;
     });
     if (lines.length) this.block(`${lines.join("\n")}\n`);
   }
@@ -188,7 +191,7 @@ export class TerminalRenderer implements SessionRenderer {
     this.block(
       `${paint("Approval required", "yellow", this.colorEnabled)}: ${call.name} (L${level})\n` +
         `Source: ${subagentOriginLabel(origin)}\n` +
-        `${description}\n${truncate(args, 1200)}\n` +
+        `${description}\n${truncateText(args, 1200)}\n` +
         "Reply y to allow once, a to always allow this exact tool request, or n to reject.\n",
     );
   }
@@ -361,15 +364,11 @@ export class TerminalRenderer implements SessionRenderer {
 }
 
 function formatElapsed(value: number): string {
-  if (value < 1000) return `${Math.max(0, Math.round(value))}ms`;
-  if (value < 60_000) return `${(value / 1000).toFixed(1)}s`;
+  if (value < 1000) return formatDuration(value);
+  if (value < 60_000) return formatDuration(value);
   const minutes = Math.floor(value / 60_000);
   const seconds = Math.round((value % 60_000) / 1000);
   return `${minutes}m ${seconds}s`;
-}
-
-function formatRate(value: number): string {
-  return value < 10 ? value.toFixed(1) : String(Math.round(value));
 }
 
 export function createPromptHooks(output: NodeJS.WriteStream, redraw: () => void): PromptOutputHooks {
@@ -399,8 +398,4 @@ function paint(value: string, style: Style, enabled: boolean): string {
     boldRed: "1;31",
   };
   return `\u001b[${codes[style]}m${value}\u001b[0m`;
-}
-
-function truncate(value: string, limit: number): string {
-  return value.length <= limit ? value : `${value.slice(0, limit)}\n...[truncated]`;
 }
