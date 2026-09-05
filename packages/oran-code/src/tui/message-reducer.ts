@@ -36,7 +36,14 @@ export function reduceRuntimeEvent(state: TuiState, event: RuntimeEvent): void {
   }
   const sequenceKey = `${event.taskId}:${event.sequence}`;
   if (state.processedSequences.has(sequenceKey)) return;
-  if (event.sequence < state.lastSequence) return;
+  if (event.sequence < state.lastSequence) {
+    // 迟到的真实工具结果仍应落到转写行上,否则异步完成的结果会被整条丢弃。
+    if (event.type === "tool_result") {
+      updateToolResult(state, event.call, event.result, event.taskId);
+      state.processedSequences.add(sequenceKey);
+    }
+    return;
+  }
   state.processedSequences.add(sequenceKey);
   state.lastSequence = event.sequence;
   switch (event.type) {
@@ -382,7 +389,9 @@ function updateToolResult(state: TuiState, call: ToolCall, result: ToolResult, t
   }
   const target = getToolMessage(state, callId, taskId);
   if (!target) return;
-  if (target.status !== "running") return;
+  // 行已被 force-finish(如新任务取消)时,迟到的真实成功结果仍允许把
+  // cancelled 升级为 success;其余终态不回退。
+  if (target.status !== "running" && !(target.status === "cancelled" && result.ok)) return;
   target.status = result.ok
     ? "success"
     : isCancelled(result)

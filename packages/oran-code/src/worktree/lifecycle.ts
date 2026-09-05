@@ -101,6 +101,52 @@ export async function cleanupWorktree(repoRoot: string, worktreePath: string, br
   return { ok: steps.every((step) => step.ok), steps };
 }
 
+/**
+ * 启动清扫:回收崩溃遗留的孤儿 worktree。只清理本仓库 `.oran/worktrees/` 下
+ * 已注册且分支为 `worktree-<slug>`、且 slug 不在保护名单中的条目;任何失败
+ * 都只跳过,不抛错。
+ */
+export async function sweepOrphanWorktrees(
+  workspace: string,
+  protectedSlugs: ReadonlySet<string>,
+): Promise<readonly string[]> {
+  const removed: string[] = [];
+  try {
+    const repoRoot = await resolveRepoRoot(workspace);
+    const result = await execFileAsync("git", ["-C", repoRoot, "worktree", "list", "--porcelain"], {
+      encoding: "utf8",
+      windowsHide: true,
+    });
+    let currentPath: string | undefined;
+    let currentBranch: string | undefined;
+    const flush = async (): Promise<void> => {
+      if (currentPath === undefined) return;
+      const branch = currentBranch ?? "";
+      if (!branch.startsWith("refs/heads/worktree-")) return;
+      const slug = branch.slice("refs/heads/worktree-".length);
+      if (!slug || protectedSlugs.has(slug)) return;
+      if (!sameWorktreePath(currentPath, worktreeDirectory(repoRoot, slug))) return;
+      const cleaned = await cleanupWorktree(repoRoot, currentPath, worktreeBranch(slug));
+      if (cleaned.ok) removed.push(slug);
+    };
+    for (const rawLine of result.stdout.split(/\r?\n/)) {
+      const line = rawLine.trim();
+      if (!line) {
+        await flush();
+        currentPath = undefined;
+        currentBranch = undefined;
+        continue;
+      }
+      if (line.startsWith("worktree ")) currentPath = line.slice("worktree ".length).trim();
+      else if (line.startsWith("branch ")) currentBranch = line.slice("branch ".length).trim();
+    }
+    await flush();
+  } catch {
+    // 清扫是 best-effort:仓库不可用或 git 失败时静默跳过。
+  }
+  return removed;
+}
+
 /** F5：变更检测——fail-closed。 */
 export async function hasChanges(worktreePath: string, baseline: string): Promise<boolean> {
   try {

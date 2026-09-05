@@ -196,11 +196,15 @@ function findMatch(lines: readonly string[], probe: readonly string[], declared:
     if (matchesAt(lines, probe, position, (a, b) => a === b)) return position;
   }
 
-  // Pass 2: Exact match across entire file.
+  // Pass 2: Exact match across entire file. 多个匹配时取最接近声明位置的,
+  // 而不是盲取首个——重复上下文(空行、括号)会让首个匹配落在错误位置。
   const totalHi = lines.length - probe.length;
+  const exactMatches: number[] = [];
   for (let position = 0; position <= totalHi; position += 1) {
-    if (matchesAt(lines, probe, position, (a, b) => a === b)) return position;
+    if (matchesAt(lines, probe, position, (a, b) => a === b)) exactMatches.push(position);
   }
+  const exact = closestToDeclared(exactMatches, declared);
+  if (exact !== undefined) return exact;
 
   // Pass 3: Trailing-whitespace-tolerant match in local window.
   for (let position = lo; position <= hi; position += 1) {
@@ -208,9 +212,12 @@ function findMatch(lines: readonly string[], probe: readonly string[], declared:
   }
 
   // Pass 4: Trailing-whitespace-tolerant match across entire file.
+  const fuzzyMatches: number[] = [];
   for (let position = 0; position <= totalHi; position += 1) {
-    if (matchesAt(lines, probe, position, (a, b) => a.trimEnd() === b.trimEnd())) return position;
+    if (matchesAt(lines, probe, position, (a, b) => a.trimEnd() === b.trimEnd())) fuzzyMatches.push(position);
   }
+  const fuzzy = closestToDeclared(fuzzyMatches, declared);
+  if (fuzzy !== undefined) return fuzzy;
 
   // Pass 5: Full trim (indentation-tolerant) match across file if unique or closest to declared.
   const trimMatches: number[] = [];
@@ -220,11 +227,16 @@ function findMatch(lines: readonly string[], probe: readonly string[], declared:
     }
   }
   if (trimMatches.length === 1) return trimMatches[0];
-  if (trimMatches.length > 1) {
-    trimMatches.sort((a, b) => Math.abs(a - declared) - Math.abs(b - declared));
-    return trimMatches[0];
+  return closestToDeclared(trimMatches, declared);
+}
+
+function closestToDeclared(matches: readonly number[], declared: number): number | undefined {
+  if (!matches.length) return undefined;
+  let best = matches[0]!;
+  for (const candidate of matches) {
+    if (Math.abs(candidate - declared) < Math.abs(best - declared)) best = candidate;
   }
-  return undefined;
+  return best;
 }
 
 function matchesAt(

@@ -105,7 +105,7 @@ export interface HookEngineDeps {
   ) => Promise<{ ok: boolean; stdout: string }>;
   fetch: (
     url: string,
-    init: { method: string; headers?: Record<string, string>; body?: string },
+    init: { method: string; headers?: Record<string, string>; body?: string; signal?: AbortSignal },
   ) => Promise<{ ok: boolean; status: number; body: string }>;
   subAgentExecutor?: HookSubAgentExecutor;
   log?: (message: string) => void;
