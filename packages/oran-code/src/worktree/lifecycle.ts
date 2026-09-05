@@ -127,7 +127,15 @@ export async function sweepOrphanWorktrees(
       if (!slug || protectedSlugs.has(slug)) return;
       if (!sameWorktreePath(currentPath, worktreeDirectory(repoRoot, slug))) return;
       // Never force-remove a worktree that contains user changes or commits.
-      if (await hasChanges(currentPath, "HEAD")) return;
+      const currentHead = await readHead(currentPath);
+      if (!currentHead || (await hasChanges(currentPath, currentHead))) return;
+      try {
+        await execFileAsync("git", ["-C", repoRoot, "merge-base", "--is-ancestor", currentHead, "HEAD"], {
+          windowsHide: true,
+        });
+      } catch {
+        return;
+      }
       const cleaned = await cleanupWorktree(repoRoot, currentPath, worktreeBranch(slug));
       if (cleaned.ok) removed.push(slug);
     };

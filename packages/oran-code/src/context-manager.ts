@@ -1030,7 +1030,7 @@ function recoverSummaryWithoutTags(text: string): string | undefined {
     .replace(/<analysis>[\s\S]*?<\/analysis>/gi, "")
     .replace(/<analysis>[\s\S]*/i, "")
     .trim();
-  if (!withoutAnalysis || withoutAnalysis === rawText) return undefined;
+  if (!withoutAnalysis) return undefined;
   const structuralLines = withoutAnalysis.match(/(?:^|\n)\s*(?:#{1,6}\s*\S|\d{1,2}\s*[.、)]\s*\S)/g);
   if (!structuralLines || structuralLines.length < 2) return undefined;
   return stripCodeFence(withoutAnalysis) || undefined;

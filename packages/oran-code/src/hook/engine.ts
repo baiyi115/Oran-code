@@ -32,6 +32,7 @@ export class HookEngine {
   private readonly rules: CompiledRule[] = [];
   private readonly validationErrors: HookValidationError[] = [];
   private readonly onceFired = new Set<string>();
+  private readonly onceInFlight = new Map<string, symbol>();
   private readonly deps: HookEngineDeps;
   private readonly defaultCommandTimeoutMs: number;
 
@@ -99,6 +100,7 @@ export class HookEngine {
 
   resetOnce(): void {
     this.onceFired.clear();
+    this.onceInFlight.clear();
   }
 
   // ---- Internals ----
@@ -106,7 +108,7 @@ export class HookEngine {
   private *matchingRules(ctx: HookEventContext): Iterable<CompiledRule> {
     for (const rule of this.rules) {
       if (rule.config.event !== ctx.event) continue;
-      if (rule.config.once && this.onceFired.has(rule.onceKey)) continue;
+      if (rule.config.once && (this.onceFired.has(rule.onceKey) || this.onceInFlight.has(rule.onceKey))) continue;
       if (!evaluateCondition(rule.condition, ctx)) continue;
       // once 在动作成功执行后才消费(runRule 内),失败不烧掉唯一一次机会。
       yield rule;
@@ -122,9 +124,16 @@ export class HookEngine {
       void this.runAsync(rule, ctx, intercept);
       return { output: "", ok: true, intercept: false };
     }
-    const result = await executeAction(rule.config.action, ctx, this.deps, this.defaultCommandTimeoutMs, intercept);
-    if (rule.config.once && result.ok) this.onceFired.add(rule.onceKey);
-    return this.applyErrorPolicy(rule, result);
+    const claim = rule.config.once ? Symbol(rule.onceKey) : undefined;
+    if (claim) this.onceInFlight.set(rule.onceKey, claim);
+    try {
+      const result = await executeAction(rule.config.action, ctx, this.deps, this.defaultCommandTimeoutMs, intercept);
+      if (rule.config.once && result.ok && this.onceInFlight.get(rule.onceKey) === claim)
+        this.onceFired.add(rule.onceKey);
+      return this.applyErrorPolicy(rule, result);
+    } finally {
+      if (claim && this.onceInFlight.get(rule.onceKey) === claim) this.onceInFlight.delete(rule.onceKey);
+    }
   }
 
   private async runAsync(rule: CompiledRule, ctx: HookEventContext, intercept: boolean): Promise<void> {

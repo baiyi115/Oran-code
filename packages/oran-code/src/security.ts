@@ -55,7 +55,38 @@ function commandDanger(cmd: ShellCommandNode): string | undefined {
   const exec = cmd.executable.toLowerCase().replace(/\.(exe|cmd|bat|com|ps1)$/, "");
   const args = cmd.args;
   if (exec === "sudo" || exec === "doas") {
-    const inner = args.findIndex((arg) => !arg.startsWith("-"));
+    const valueOptions = new Set([
+      "-u",
+      "--user",
+      "-g",
+      "--group",
+      "-h",
+      "--host",
+      "-p",
+      "--prompt",
+      "-R",
+      "--chroot",
+      "-C",
+      "--chdir",
+    ]);
+    let inner = -1;
+    for (let i = 0; i < args.length; i += 1) {
+      const arg = args[i]!;
+      if (arg === "--") {
+        inner = i + 1;
+        break;
+      }
+      if (valueOptions.has(arg)) {
+        i += 1;
+        continue;
+      }
+      if (/^--(?:user|group|host|prompt|chroot|chdir)=/.test(arg)) continue;
+      if (/^-[ughpRC][^\s]*/.test(arg)) continue;
+      if (!arg.startsWith("-")) {
+        inner = i;
+        break;
+      }
+    }
     if (inner < 0) return undefined;
     return commandDanger({ ...cmd, executable: args[inner]!, args: args.slice(inner + 1) });
   }
@@ -666,6 +697,10 @@ export class PermissionPolicy {
       }
     }
 
+    if (this.config.mode === "readonly" && kind !== "readonly") {
+      return modeDecision(this.config.mode, kind, level);
+    }
+
     if (this.taskAllows.has(ruleKey(call, kind))) {
       return decision("allow", "allowed for the current task", "session-rule", level);
     }
@@ -793,7 +828,7 @@ function extractRuleContent(call: ToolCall, kind: ToolKind): string {
   if (kind === "command") {
     // run_command 用命令文本本身;其余 command 类工具(MCP、batch_tools 等)
     // 没有天然的规则内容,退回空串会让"永久允许"写下匹配一切调用的空规则。
-    if (canonicalTool(call.name) !== "run_command") return globSafeArguments(call.arguments);
+    if (canonicalTool(call.name) !== "run_command") return globSafeArguments(call.arguments, "text");
     return typeof call.arguments.command === "string" ? call.arguments.command.trim() : "";
   }
   if (["glob_files", "search_code"].includes(canonicalTool(call.name))) {
@@ -809,10 +844,11 @@ function extractRuleContent(call: ToolCall, kind: ToolKind): string {
   return "";
 }
 
-function globSafeArguments(value: unknown): string {
+function globSafeArguments(value: unknown, mode: "path" | "text" = "path"): string {
   // JSON 里的 / 与 \ 会截断 glob 的单段匹配,先转义,保证 `tool(*)` 这类
   // 用户规则在转义后的内容上仍然成立。
-  return stableArguments(value).replace(/\\/g, "\\\\").replace(/\//g, "\\/");
+  const encoded = stableArguments(value);
+  return mode === "text" ? encoded : encoded.replace(/\\/g, "\\\\").replace(/\//g, "\\/");
 }
 
 function exactPattern(call: ToolCall, kind: ToolKind): string {
