@@ -178,7 +178,8 @@ export class ToolBatchExecutor {
         // 结果折叠成一条聚合 tool 消息,不再逐调用产生模型轮次。
         if (batch.length === 1 && batch[0]!.call.name === BATCH_TOOL_NAME) {
           const { index, call } = batch[0]!;
-          workspaceMutated ||= await this.runBatchScript(task, messages, call, index, loop);
+          const batchMutated = await this.runBatchScript(task, messages, call, index, loop);
+          workspaceMutated ||= batchMutated;
           continue;
         }
 
@@ -422,13 +423,16 @@ export class ToolBatchExecutor {
       }
     }
     const durationMs = Date.now() - startedAt;
-    const result = formatBatchScriptResult({
+    const formatted = formatBatchScriptResult({
       steps: outcomes,
       total: script.steps.length,
       onFailure: script.onFailure,
       durationMs,
       ...(abortedAt !== undefined ? { abortedAt } : {}),
     });
+    const result: ToolResult = formatted.output.length <= 16_000
+      ? formatted
+      : { ...formatted, output: `${formatted.output.slice(0, 11_200)}\n...[truncated]...\n${formatted.output.slice(-4_000)}` };
     await this.recordTool(task, messages, call, index, result, durationMs);
     return workspaceMutated;
   }

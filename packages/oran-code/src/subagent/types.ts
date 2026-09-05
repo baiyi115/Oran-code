@@ -93,7 +93,7 @@ export interface SubagentRunResult {
   readonly taskId: string;
   readonly name: string;
   readonly origin: SubagentOrigin;
-  readonly status: Exclude<StructuredSubagentStatus, "queued" | "running" | "timed_out">;
+  readonly status: Exclude<StructuredSubagentStatus, "queued" | "running">;
   readonly output: string;
   readonly error?: string;
   readonly usage: Readonly<Record<string, number>>;

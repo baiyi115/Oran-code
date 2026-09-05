@@ -119,6 +119,12 @@ export class BackgroundAgentTaskManager {
     });
 
     // 卡死的子任务会永久占用并发槽;超时中止并标记 timed_out。
+    let settled = false;
+    const settle = (result: SubagentRunResult): void => {
+      if (settled) return;
+      settled = true;
+      settle(result);
+    };
     const deadline = setTimeout(() => {
       if (task.status !== "running") return;
       task.status = "timed_out";
@@ -128,6 +134,7 @@ export class BackgroundAgentTaskManager {
       this.schedulePersist();
       this.notifyChange();
       this.drainQueue();
+      settle({ taskId: task.id, name: task.name, origin: task.origin, status: "timed_out", output: "", error: task.error, usage: task.usage, startedAt: task.startedAt, endedAt: task.endedAt, conversation: [], workspace: "" });
     }, this.maxDurationMs);
     deadline.unref?.();
 
@@ -139,7 +146,7 @@ export class BackgroundAgentTaskManager {
         this.notifyChange();
         this.drainQueue();
         await this.onTerminal?.();
-        resolvePromise(result);
+        settle(result);
       })
       .catch((error) => {
         clearTimeout(deadline);
@@ -160,7 +167,7 @@ export class BackgroundAgentTaskManager {
         void this.persist();
         this.notifyChange();
         this.drainQueue();
-        resolvePromise(errorResult);
+        settle(errorResult);
       });
   }
 
