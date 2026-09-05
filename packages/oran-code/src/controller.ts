@@ -308,6 +308,8 @@ export class TaskController {
       if (task.planState && task.planState.steps.length > 0) {
         reminders.push(taskPlanReminder(task.planState));
       }
+      const contextUsageNotice = this.contextManager.contextUsageReminder(this.config.model, messages);
+      if (contextUsageNotice) reminders.push(contextUsageNotice);
       if (noProgressWarning) {
         const { call, repeatCount, limit, reason, stage, detail } = noProgressWarning;
         if (reason === "repeated_error") {

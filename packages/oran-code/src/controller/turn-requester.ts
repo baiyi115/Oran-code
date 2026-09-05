@@ -538,6 +538,7 @@ export class TurnRequester {
             attempt,
             message: formatErrorMessage(error),
             ...(finishReason !== undefined ? { finishReason } : {}),
+            usage: { ...usage },
           },
           turnId,
         );

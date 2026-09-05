@@ -366,6 +366,8 @@ export interface RuntimeEventPayloads {
     attempt: number;
     message: string;
     finishReason?: string;
+    /** 中止前已收到的部分用量,供调用方入账。 */
+    usage?: Record<string, number>;
   };
   plan: { plan: string; streamed?: boolean; complete?: boolean };
   plan_complete: { plan: string; autoExecute: boolean; permissionMode?: PermissionMode; workMode?: WorkMode };
