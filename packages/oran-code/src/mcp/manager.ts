@@ -221,7 +221,7 @@ export class McpManager {
       this.servers.set(name, server);
       // stdio 子进程或远端连接崩溃后,失效的 client/工具必须立即下线,
       // 否则调用只会打到死连接上。
-      transport.onclose = () => {
+      client.onclose = () => {
         if (this.closed) return;
         if (this.servers.get(name) === server) this.removeServer(name);
         this.connectionFailures.push({ name, error: "connection closed" });

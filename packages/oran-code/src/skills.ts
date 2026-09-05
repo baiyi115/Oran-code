@@ -423,6 +423,7 @@ async function readSkillSource(source: string, workspace: string): Promise<strin
       throw new Error(`refusing to fetch skill over insecure http: ${source}`);
     }
     let response: Response;
+    let currentUrl = source;
     try {
       // 无上限的响应体会把任意远端内容整个读进内存;redirect 手动跟随,
       // 防止 https 源经 302 降级到 http 绕过明文拒绝。
@@ -431,11 +432,12 @@ async function readSkillSource(source: string, workspace: string): Promise<strin
         if (redirects >= 5) throw new Error("too many redirects");
         const location = response.headers.get("location");
         if (!location) break;
-        const next = new URL(location, source).toString();
+        const next = new URL(location, currentUrl).toString();
         if (next.toLowerCase().startsWith("http://")) {
           throw new Error(`refusing to follow redirect to insecure http: ${next}`);
         }
-        response = await fetch(next, { signal: AbortSignal.timeout(30_000), redirect: "manual" });
+        currentUrl = next;
+        response = await fetch(currentUrl, { signal: AbortSignal.timeout(30_000), redirect: "manual" });
       }
     } catch (error) {
       throw new Error(`failed to fetch skill ${source}: ${errorMessage(error)}`, { cause: error });
@@ -495,11 +497,10 @@ function writeSkillName(raw: string, name: string): string {
   const closing = lines.findIndex((line, index) => index > 0 && line === "---");
   if (lines[0] !== "---" || closing < 0) return raw;
   const existing = lines.findIndex((line, index) => index > 0 && index < closing && /^name\s*:/.test(line));
-  if (existing >= 0) lines[existing] = `name: ${name}`;
-  else lines.splice(1, 0, `name: ${name}`);
+  if (existing >= 0) lines[existing] = "name: " + name;
+  else lines.splice(1, 0, "name: " + name);
   return lines.join("\n");
 }
-
 function strictString(value: unknown): string | undefined {
   if (typeof value !== "string") return undefined;
   const trimmed = value.trim();

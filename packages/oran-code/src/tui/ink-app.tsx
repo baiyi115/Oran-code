@@ -110,8 +110,9 @@ export class InkTuiApp {
   private renderRevision = 0;
   private committedRenderRevision = 0;
   private staticTranscriptGeneration = 0;
-  /** Highest transcript prefix already handed to Ink Static. */
-  private committedStaticTranscriptCount = 0;
+  /** Preserve append-only Static items by message ID within one generation. */
+  private committedStaticTranscriptItems: StaticTranscriptItem[] = [];
+  private readonly committedStaticTranscriptIds = new Set<string>();
   private readonly renderWaiters: Array<{ revision: number; resolve: () => void }> = [];
   private lastTranscriptRenderLines: ReturnType<TranscriptView["linesWithAnchors"]> = [];
 
@@ -180,11 +181,7 @@ export class InkTuiApp {
     }
     const layout = {
       redraw: (_state: TuiState) => this.invalidate(),
-      resetStatic: () => {
-        this.staticTranscriptGeneration += 1;
-        this.committedStaticTranscriptCount = 0;
-        this.resetTranscriptViewport();
-      },
+      resetStatic: () => this.resetStaticTranscript(),
     };
     this.renderer = new TuiTranscriptRenderer(layout, this.state);
     this.renderer.setApprovalHandler((call, level, description, origin) =>
@@ -581,8 +578,7 @@ export class InkTuiApp {
     };
     this.state.session.followUpCount = this.options.getFollowUpCount?.() ?? 0;
     this.state.overlay = { kind: "none" };
-    this.staticTranscriptGeneration += 1;
-    this.resetTranscriptViewport();
+    this.resetStaticTranscript();
     this.invalidate();
     this.refreshContext();
   }
@@ -931,13 +927,7 @@ export class InkTuiApp {
   } {
     const lines = this.transcript.linesWithAnchors(this.state, Math.max(12, width), liveTick);
     const candidateStaticCount = staticTranscriptCount(this.state.transcript);
-    // Static is append-only. Never move its boundary backwards when a late
-    // event temporarily makes an earlier message mutable; doing so can cause
-    // the same lines to be emitted by both Static and the live frame.
-    this.committedStaticTranscriptCount = Math.max(this.committedStaticTranscriptCount, candidateStaticCount);
-    const staticCount = Math.min(this.committedStaticTranscriptCount, this.state.transcript.length);
-    const staticMessages = this.state.transcript.slice(0, staticCount);
-    const staticIds = new Set(staticMessages.map((message) => message.id));
+    const staticMessages = this.state.transcript.slice(0, candidateStaticCount);
     const groupedLines = new Map<string, string[]>();
 
     for (const line of lines) {
@@ -946,12 +936,17 @@ export class InkTuiApp {
       groupedLines.set(line.messageId, messageLines);
     }
 
+    const newItems: StaticTranscriptItem[] = [];
+    for (const message of staticMessages) {
+      if (this.committedStaticTranscriptIds.has(message.id)) continue;
+      this.committedStaticTranscriptIds.add(message.id);
+      const messageLines = groupedLines.get(message.id);
+      if (messageLines?.length) newItems.push({ id: message.id, text: messageLines.join("\n") });
+    }
+    if (newItems.length) this.committedStaticTranscriptItems = [...this.committedStaticTranscriptItems, ...newItems];
     return {
-      staticItems: staticMessages.flatMap((message) => {
-        const messageLines = groupedLines.get(message.id);
-        return messageLines?.length ? [{ id: message.id, text: messageLines.join("\n") }] : [];
-      }),
-      liveLines: lines.filter((line) => !staticIds.has(line.messageId)),
+      staticItems: this.committedStaticTranscriptItems,
+      liveLines: lines.filter((line) => !this.committedStaticTranscriptIds.has(line.messageId)),
     };
   }
 
@@ -1006,6 +1001,13 @@ export class InkTuiApp {
     );
     const line = this.lastTranscriptRenderLines[Math.min(top, this.lastTranscriptRenderLines.length - 1)];
     this.state.transcriptScroll.anchor = line ? { messageId: line.messageId, lineOffset: line.lineOffset } : undefined;
+  }
+
+  private resetStaticTranscript(): void {
+    this.staticTranscriptGeneration += 1;
+    this.committedStaticTranscriptItems = [];
+    this.committedStaticTranscriptIds.clear();
+    this.resetTranscriptViewport();
   }
 
   private resetTranscriptViewport(): void {

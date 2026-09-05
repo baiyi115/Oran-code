@@ -73,13 +73,13 @@ export function parseSseJson(event: string): Record<string, unknown> | undefined
   let parsed: unknown;
   try {
     parsed = JSON.parse(data);
-  } catch {
-    // 单条畸形事件(代理损坏、截断)跳过即可;抛出去会丢弃整个流并触发
-    // 全量重放重计费。
-    return undefined;
+  } catch (error) {
+    throw new Error(`malformed SSE data payload: ${error instanceof Error ? error.message : String(error)}`, {
+      cause: error,
+    });
   }
   if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
-    return undefined;
+    throw new Error("SSE data payload must be a JSON object");
   }
   return parsed as Record<string, unknown>;
 }

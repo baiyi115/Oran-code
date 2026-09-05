@@ -209,9 +209,10 @@ export class ToolBatchExecutor {
             prepared.push({ index, call, skip: planModeDeniedResult(call) });
             continue;
           }
-          const denied = tool.system
-            ? undefined
-            : await this.authorizeTool(task, call, tool.permissionLevel, kind, tool.description);
+          const denied =
+            tool.system && (kind === "readonly" || this.ports.config.permissions.mode !== "readonly")
+              ? undefined
+              : await this.authorizeTool(task, call, tool.permissionLevel, kind, tool.description);
           if (denied) {
             prepared.push({ index, call, skip: denied });
             continue;
@@ -490,8 +491,9 @@ export class ToolBatchExecutor {
       mutated = false,
       cancelled = false,
       executed = true,
+      rawOutput = result.output,
     ): Promise<{ outcome: BatchStepOutcome; mutated: boolean; cancelled: boolean }> => {
-      stepOutputs.set(step.id, result.output || "");
+      stepOutputs.set(step.id, rawOutput || "");
       const outcome: BatchStepOutcome = {
         id: step.id,
         tool: step.tool,
@@ -520,9 +522,10 @@ export class ToolBatchExecutor {
     if (this.ports.config.workMode === "plan" && !isPlanModeTool(tool)) {
       return complete(planModeDeniedResult(call), 0, false, false, false);
     }
-    const denied = tool.system
-      ? undefined
-      : await this.authorizeTool(task, call, tool.permissionLevel, kind, tool.description);
+    const denied =
+      tool.system && (kind === "readonly" || this.ports.config.permissions.mode !== "readonly")
+        ? undefined
+        : await this.authorizeTool(task, call, tool.permissionLevel, kind, tool.description);
     if (denied) return complete(denied, 0, false, false, false);
     const cacheKey = kind === "readonly" && tool.cacheable !== false ? toolCallSignature(call) : undefined;
     if (cacheKey && this.ports.readonlyCache.has(cacheKey)) {
@@ -569,6 +572,7 @@ export class ToolBatchExecutor {
       beforeWorkspace !== undefined &&
       afterWorkspace !== undefined &&
       beforeWorkspace.fingerprint !== afterWorkspace.fingerprint;
+    const rawOutput = result.output;
     if (mutated && beforeWorkspace && afterWorkspace) {
       result = withWorkspaceChangesReceipt(result, beforeWorkspace.entries, afterWorkspace.entries);
     }
@@ -584,7 +588,14 @@ export class ToolBatchExecutor {
     }
     if (result.ok && this.isPotentiallyMutating(call)) this.ports.readonlyCache.clear();
     if (result.ok && call.name === "read_file") await this.ports.trackSuccessfulFileRead(task.workspace, call);
-    return complete({ ...result, durationMs: duration }, duration, mutated, result.metadata?.cancelled === true);
+    return complete(
+      { ...result, durationMs: duration },
+      duration,
+      mutated,
+      result.metadata?.cancelled === true,
+      true,
+      rawOutput,
+    );
   }
 
   async reconcileToolCalls(

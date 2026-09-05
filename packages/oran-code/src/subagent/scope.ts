@@ -46,7 +46,7 @@ export class StructuredSubagentScope {
       name: options.description,
       origin: options.origin,
       startedAt: new Date().toISOString(),
-      status: "running",
+      status: "queued",
       usage: {},
       abortController,
       promise,
@@ -73,6 +73,7 @@ export class StructuredSubagentScope {
     reject: (error: unknown) => void;
   }): void {
     const { options, task, resolve, reject } = entry;
+    task.status = "running";
     Promise.resolve()
       .then(() =>
         this.runner.run({
@@ -100,8 +101,10 @@ export class StructuredSubagentScope {
   }
 
   private drainQueue(): void {
-    const next = this.queue.shift();
-    if (next) this.launch(next);
+    while (this.runningCount() < this.maxConcurrent && this.queue.length) {
+      const next = this.queue.shift();
+      if (next) this.launch(next);
+    }
   }
 
   list(): readonly StructuredSubagentTask[] {
@@ -110,7 +113,7 @@ export class StructuredSubagentScope {
 
   async waitForChildren(timeoutMs = this.forkWaitTimeoutMs): Promise<readonly StructuredSubagentTask[]> {
     assertTimeout(timeoutMs);
-    const running = this.list().filter((task) => task.status === "running");
+    const running = this.list().filter((task) => task.status === "running" || task.status === "queued");
     if (!running.length) return this.list();
     let timeout: ReturnType<typeof setTimeout> | undefined;
     const expired = new Promise<"timeout">((resolve) => {
