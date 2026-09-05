@@ -2,13 +2,13 @@ import { randomUUID } from "node:crypto";
 
 export type MessageRole = "system" | "user" | "assistant" | "tool";
 export type WorkMode = "plan" | "auto";
-export type PermissionMode = "default" | "accept-edits" | "plan" | "bypass";
+export type PermissionMode = "readonly" | "default" | "accept-edits" | "plan" | "bypass";
 export type ReasoningEffort = "low" | "medium" | "high" | "xhigh";
 export type ToolKind = "readonly" | "write" | "command";
 export type SessionTitleMode = "first-message" | "local" | "model";
 
 export const REASONING_EFFORTS: readonly ReasoningEffort[] = ["low", "medium", "high", "xhigh"];
-export const PERMISSION_MODES: readonly PermissionMode[] = ["default", "accept-edits", "plan", "bypass"];
+export const PERMISSION_MODES: readonly PermissionMode[] = ["readonly", "default", "accept-edits", "plan", "bypass"];
 
 export function isPermissionMode(value: unknown): value is PermissionMode {
   return typeof value === "string" && (PERMISSION_MODES as readonly string[]).includes(value);
