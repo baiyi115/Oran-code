@@ -1,3 +1,4 @@
+import { execFile } from "node:child_process";
 import { mkdir, readFile, rename, writeFile } from "node:fs/promises";
 import { dirname } from "node:path";
 import { parse, stringify } from "yaml";
@@ -31,32 +32,76 @@ interface PermissionRule {
   match: "exact" | "glob";
 }
 
-const DANGEROUS_COMMANDS: readonly { readonly label: string; readonly pattern: RegExp }[] = [
-  {
-    label: "recursive forced deletion of a root or home directory",
-    pattern:
-      /(?:^|[\s;&|])rm\b(?=[^\r\n]*(?:--recursive\b|-[^\s-]*r[^\s-]*\b))(?=[^\r\n]*(?:--force\b|-[^\s-]*f[^\s-]*\b))[^\r\n]*\s+(?:--\s+)?(?:\/(?:\s|$)|~(?:\/|\s|$)|\$HOME(?:\/|\s|$))/i,
-  },
-  {
-    label: "recursive forced deletion through PowerShell",
-    pattern:
-      /\b(?:remove-item|ri)\b[^\r\n]*(?:-recurse[^\r\n]*-force|-force[^\r\n]*-recurse)[^\r\n]*(?:[A-Z]:\\(?:\s|$)|\\\\|\$HOME|~)/i,
-  },
-  { label: "filesystem formatting", pattern: /(?:^|[\s;&|])(?:mkfs(?:\.[\w-]+)?|format(?:\.com)?)\b/i },
-  { label: "raw write to a block device", pattern: /(?:^|[\s;&|])dd\b[^\r\n]*\bof=(?:\/dev\/|\\\\\.\\PhysicalDrive)/i },
-  {
-    label: "recursive permission change on the filesystem root",
-    pattern: /(?:^|[\s;&|])chmod\s+-R\s+(?:777|a\+rwx)\s+\//i,
-  },
-  { label: "shell fork bomb", pattern: /:\s*\(\s*\)\s*\{\s*:\s*\|\s*:\s*&\s*\}\s*;\s*:/ },
-  {
-    label: "remote script piped to a shell",
-    pattern: /\b(?:curl|wget)\b[^\r\n|]*\|\s*(?:sudo\s+)?(?:sh|bash|zsh|pwsh|powershell)\b/i,
-  },
-  { label: "forced git push", pattern: /\bgit\s+push\b[^\r\n]*(?:--force(?:-with-lease)?|-f(?:\s|$))/i },
-  { label: "hard git reset", pattern: /\bgit\s+reset\b[^\r\n]*--hard\b/i },
-  { label: "destructive git clean", pattern: /\bgit\s+clean\b[^\r\n]*(?:--force\b|-[a-z]*f[a-z]*\b)/i },
-];
+// 危险命令判定基于分词后的 AST(引号已被剥除、按命令逐条检查),
+// 避免 `git "reset" --hard` 这类引号绕过和 `+refspec` 强推漏网。
+const FORK_BOMB_PATTERN = /:\s*\(\s*\)\s*\{\s*:\s*\|\s*:\s*&\s*\}\s*;\s*:/;
+const WINDOWS_VARIABLE_EXPANSION = /%[^%\s]*%/;
+
+const RECURSIVE_FLAG = /^(?:--recursive|-[\w]*r[\w]*)$/i;
+const FORCE_FLAG = /^(?:--force|-[\w]*f[\w]*)$/i;
+const ROOT_TARGET = /^(?:\/|~|\$HOME)\/?$/i;
+
+function astDangerousReason(ast: ShellCompoundNode): string | undefined {
+  for (const entry of ast.pipelines) {
+    for (const cmd of entry.pipeline.commands) {
+      const reason = commandDanger(cmd);
+      if (reason) return reason;
+    }
+  }
+  return undefined;
+}
+
+function commandDanger(cmd: ShellCommandNode): string | undefined {
+  const exec = cmd.executable.toLowerCase().replace(/\.(exe|cmd|bat|com|ps1)$/, "");
+  const args = cmd.args;
+  if (exec === "sudo" || exec === "doas") {
+    const inner = args.findIndex((arg) => !arg.startsWith("-"));
+    if (inner < 0) return undefined;
+    return commandDanger({ ...cmd, executable: args[inner]!, args: args.slice(inner + 1) });
+  }
+  if (exec === "rm") {
+    if (
+      args.some((arg) => RECURSIVE_FLAG.test(arg)) &&
+      args.some((arg) => FORCE_FLAG.test(arg)) &&
+      args.some((arg) => ROOT_TARGET.test(arg))
+    ) {
+      return "recursive forced deletion of a root or home directory";
+    }
+    return undefined;
+  }
+  if (exec === "remove-item" || exec === "ri") {
+    if (
+      args.some((arg) => /^-recurse$/i.test(arg)) &&
+      args.some((arg) => /^-force$/i.test(arg)) &&
+      args.some((arg) => /^[a-z]:\\?$|^\\\\$|^(?:\$HOME|~)\/?$/i.test(arg))
+    ) {
+      return "recursive forced deletion through PowerShell";
+    }
+    return undefined;
+  }
+  if (/^(?:mkfs(?:\.[\w-]+)?|format(?:\.com)?)$/.test(exec)) return "filesystem formatting";
+  if (exec === "dd" && args.some((arg) => /^of=\/dev\/|^of=\\\\\.\\PhysicalDrive/i.test(arg))) {
+    return "raw write to a block device";
+  }
+  if (
+    exec === "chmod" &&
+    args.some((arg) => RECURSIVE_FLAG.test(arg)) &&
+    args.some((arg) => /^(?:777|a\+rwx)$/i.test(arg)) &&
+    args.some((arg) => ROOT_TARGET.test(arg))
+  ) {
+    return "recursive permission change on the filesystem root";
+  }
+  if (exec === "git") {
+    const sub = (args[0] ?? "").toLowerCase();
+    const rest = args.slice(1);
+    if (sub === "push" && rest.some((arg) => arg === "-f" || arg.startsWith("--force") || arg.startsWith("+"))) {
+      return "forced git push";
+    }
+    if (sub === "reset" && rest.includes("--hard")) return "hard git reset";
+    if (sub === "clean" && rest.some((arg) => FORCE_FLAG.test(arg))) return "destructive git clean";
+  }
+  return undefined;
+}
 
 const SHELL_META = /[\r\n><|;&`]|\$\(/;
 const SAFE_COMMAND_PREFIXES = [
@@ -416,6 +461,21 @@ const GIT_READ_ONLY_SUBCOMMANDS: ReadonlySet<string> = new Set([
 
 const NULL_DEVICE_TARGETS: ReadonlySet<string> = new Set(["/dev/null", "nul"]);
 
+/** 这些 git 子命令会输出补丁并应用仓库配置的 textconv/ext-diff 驱动。 */
+const PATCH_CAPABLE_GIT_SUBCOMMANDS: ReadonlySet<string> = new Set(["diff", "log", "show"]);
+
+/** `-c diff.<name>.command=...` 会在命令行上现场注册外部 diff 驱动。 */
+const INLINE_DIFF_DRIVER_ARG = /^diff\.[\w.-]+\.(?:command|textconv)(?:=|$)/i;
+
+function gitInlineDiffDriverConfig(args: readonly string[]): boolean {
+  for (let index = 0; index < args.length; index += 1) {
+    const arg = args[index] ?? "";
+    if (INLINE_DIFF_DRIVER_ARG.test(arg)) return true;
+    if ((arg === "-c" || arg === "--config") && /^diff\./i.test(args[index + 1] ?? "")) return true;
+  }
+  return false;
+}
+
 /**
  * AST 级只读判定:整条命令的每个管道段都必须命中只读白名单,fd 复制
  * (2>&1)与丢弃到空设备(>/dev/null)放行,其余重定向一律视为写操作。
@@ -431,10 +491,17 @@ function isReadOnlyCommandNode(cmd: ShellCommandNode): boolean {
   if (!cmd.redirects.every(isReadOnlyRedirect)) return false;
   const exec = cmd.executable.toLowerCase().replace(/\.exe$/, "");
   if (exec === "git") return isReadOnlyGitCommand(cmd);
+  if (exec === "rg") return isReadOnlyRipgrepCommand(cmd);
   if (exec === "find") {
     return !cmd.args.some((arg) => /^-(?:delete|exec|execdir|ok|okdir|fprint)/.test(arg));
   }
   return READ_ONLY_EXECUTABLES.has(exec);
+}
+
+function isReadOnlyRipgrepCommand(cmd: ShellCommandNode): boolean {
+  // `rg --pre <cmd>` 会对每个被搜文件执行任意程序,与 find 的 -exec 同类,
+  // 连同 `--pre=x` 与 `--pre-glob` 取值形式一起拒绝。
+  return !cmd.args.some((arg) => /^--pre(?:-glob)?(?:=|$)/.test(arg));
 }
 
 function isReadOnlyRedirect(redirect: ShellCommandNode["redirects"][number]): boolean {
@@ -482,6 +549,61 @@ export class PermissionPolicy {
     for (const tool of tools) this.registeredKinds.set(canonicalTool(tool.name), tool.kind ?? inferToolKind(tool.name));
   }
 
+  private diffDriverCache: { workspace: string; checkedAt: number; hasDrivers: boolean } | undefined;
+
+  /**
+   * 只读白名单的最后一道守卫:Windows 上 %VAR% 会在解析前展开(可能注入
+   * 元字符),git 的补丁类子命令会应用仓库配置的 textconv/ext-diff 外部
+   * 驱动。命中任一情形就不自动放行,回落正常审批。
+   */
+  private async canAutoAllowShellCommand(command: string, ast: ShellCompoundNode): Promise<boolean> {
+    if (process.platform === "win32" && WINDOWS_VARIABLE_EXPANSION.test(command)) return false;
+    let needsDriverCheck = false;
+    for (const entry of ast.pipelines) {
+      for (const cmd of entry.pipeline.commands) {
+        if (cmd.executable.toLowerCase().replace(/\.exe$/, "") !== "git") continue;
+        if (gitInlineDiffDriverConfig(cmd.args)) return false;
+        const rest = cmd.args.slice(1);
+        const optedOut = rest.includes("--no-textconv") && rest.includes("--no-ext-diff");
+        if (!optedOut && PATCH_CAPABLE_GIT_SUBCOMMANDS.has((cmd.args[0] ?? "").toLowerCase())) {
+          needsDriverCheck = true;
+        }
+      }
+    }
+    if (needsDriverCheck && (await this.repoDefinesDiffDrivers())) return false;
+    return true;
+  }
+
+  private async repoDefinesDiffDrivers(): Promise<boolean> {
+    const cached = this.diffDriverCache;
+    const now = Date.now();
+    if (cached && cached.workspace === this.config.workspace && now - cached.checkedAt < 60_000) {
+      return cached.hasDrivers;
+    }
+    let hasDrivers: boolean;
+    try {
+      // 只查仓库本地配置:系统/全局作用域的驱动(如 Git for Windows 自带的
+      // astextplain)不受攻击者控制,纳入检查会让所有 git diff 退回审批。
+      const stdout = await new Promise<string>((resolve, reject) => {
+        execFile(
+          "git",
+          ["config", "--local", "--get-regexp", "^diff\\..*\\.(command|textconv)$"],
+          { cwd: this.config.workspace, timeout: 2000 },
+          (error, stdout) => {
+            // 退出码 1 表示无匹配,属于正常情况。
+            if (error && (error as { code?: number }).code !== 1) reject(error);
+            else resolve(stdout);
+          },
+        );
+      });
+      hasDrivers = stdout.trim().length > 0;
+    } catch {
+      hasDrivers = false;
+    }
+    this.diffDriverCache = { workspace: this.config.workspace, checkedAt: now, hasDrivers };
+    return hasDrivers;
+  }
+
   async decide(call: ToolCall, level: number, kind: ToolKind = inferToolKind(call.name)): Promise<ApprovalDecision> {
     const path = kind === "command" ? undefined : extractPath(call);
     const resolvedPath = path === undefined ? undefined : await resolvePhysicalPath(path, this.config.workspace);
@@ -504,17 +626,20 @@ export class PermissionPolicy {
 
     if (kind === "command") {
       const command = extractRuleContent(call, kind);
-      const dangerous = DANGEROUS_COMMANDS.find((item) => item.pattern.test(command));
-      if (dangerous) {
-        return decision("deny", `blocked dangerous command: ${dangerous.label}`, "dangerous-command", level);
+      if (FORK_BOMB_PATTERN.test(command)) {
+        return decision("deny", "blocked dangerous command: shell fork bomb", "dangerous-command", level);
       }
       const ast = parseShellCommand(command);
       const astCheck = inspectShellAst(ast);
-      if (astCheck.dangerousReason) {
-        return decision("deny", `blocked dangerous command: ${astCheck.dangerousReason}`, "dangerous-command", level);
+      const dangerousReason = astCheck.dangerousReason ?? astDangerousReason(ast);
+      if (dangerousReason) {
+        return decision("deny", `blocked dangerous command: ${dangerousReason}`, "dangerous-command", level);
       }
       if (isSafeCommand(command) || isReadOnlyShellCommand(ast)) {
-        return decision("allow", "recognized read-only command", "safe-command", level);
+        const allowed = await this.canAutoAllowShellCommand(command, ast);
+        if (allowed) {
+          return decision("allow", "recognized read-only command", "safe-command", level);
+        }
       }
     }
 
@@ -651,7 +776,12 @@ function extractPath(call: ToolCall): string | undefined {
 }
 
 function extractRuleContent(call: ToolCall, kind: ToolKind): string {
-  if (kind === "command") return typeof call.arguments.command === "string" ? call.arguments.command.trim() : "";
+  if (kind === "command") {
+    // run_command 用命令文本本身;其余 command 类工具(MCP、batch_tools 等)
+    // 没有天然的规则内容,退回空串会让"永久允许"写下匹配一切调用的空规则。
+    if (canonicalTool(call.name) !== "run_command") return globSafeArguments(call.arguments);
+    return typeof call.arguments.command === "string" ? call.arguments.command.trim() : "";
+  }
   if (["glob_files", "search_code"].includes(canonicalTool(call.name))) {
     const pattern = call.arguments.pattern;
     return typeof pattern === "string" ? pattern.trim() : "";
@@ -663,6 +793,12 @@ function extractRuleContent(call: ToolCall, kind: ToolKind): string {
     if (typeof value === "string") return value.trim();
   }
   return "";
+}
+
+function globSafeArguments(value: unknown): string {
+  // JSON 里的 / 与 \ 会截断 glob 的单段匹配,先转义,保证 `tool(*)` 这类
+  // 用户规则在转义后的内容上仍然成立。
+  return stableArguments(value).replace(/\\/g, "\\\\").replace(/\//g, "\\/");
 }
 
 function exactPattern(call: ToolCall, kind: ToolKind): string {

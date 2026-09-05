@@ -1547,7 +1547,6 @@ export class TerminalSession {
         required: ["source"],
       },
       permissionLevel: 3,
-      system: true,
       kind: "write",
       maxOutputChars: 8_000,
       invoke: async (call) => {

@@ -214,6 +214,12 @@ export class McpManager {
       this.servers.set(name, server);
       for (const remote of listed.tools) {
         const fullName = `${MCP_TOOL_PREFIX}${sanitizeName(name)}__${sanitizeName(remote.name)}`;
+        // 消毒后的名字可能碰撞(`a.b` 与 `a_b` 同名);静默覆盖会让调用打到
+        // 错误的远端工具,这里宁可跳过并记录失败。
+        if (this.tools.has(fullName)) {
+          this.connectionFailures.push({ name, error: `duplicate tool name after sanitization: ${fullName}` });
+          continue;
+        }
         this.tools.set(fullName, {
           name: fullName,
           server: name,
