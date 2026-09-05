@@ -2,7 +2,7 @@ import type { TranscriptMessage, VerificationMessage } from "../types.js";
 import { formatDuration } from "../../formatting.js";
 import { renderMarkdown, type MarkdownRenderer } from "./markdown-renderer.js";
 import { renderToolMessage } from "./tool-message.js";
-import { stripTerminalMarkup, wrapDisplayText } from "../text-width.js";
+import { stripTerminalMarkup, visibleWidth, wrapDisplayText } from "../text-width.js";
 import { ANSI } from "../theme.js";
 import { spinnerFrame } from "../status-indicator.js";
 
@@ -171,19 +171,22 @@ function styleThoughtLabel(value: string): string {
 
 function renderVerification(message: VerificationMessage, width: number): string[] {
   const lines = [`${ANSI.toolBold}Check${ANSI.reset}`];
+  const indent = "  ";
+  const contentWidth = Math.max(1, width - indent.length);
   for (const result of message.results) {
     const status = result.passed ? "passed" : "failed";
     const statusColor = result.passed ? ANSI.greenBold : ANSI.redBold;
-    lines.push(
-      ...wrapDisplayText(
-        `  ${ANSI.tool}${result.command}${ANSI.reset} ${statusColor}${status}${ANSI.reset}${ANSI.gray} · ${formatDuration(result.durationMs)}${ANSI.reset}`,
-        width,
-      ),
-    );
-    if (result.output.trim()) {
-      lines.push(
-        ...wrapDisplayText(`  ${ANSI.gray}│ ${result.output.trim().split(/\r?\n/)[0] ?? ""}${ANSI.reset}`, width),
-      );
+    const command = stripTerminalMarkup(result.command);
+    const suffix = ` ${statusColor}${status}${ANSI.reset}${ANSI.gray} · ${formatDuration(result.durationMs)}${ANSI.reset}`;
+    const suffixWidth = visibleWidth(stripTerminalMarkup(suffix));
+    const commandLines = wrapDisplayText(command, Math.max(1, contentWidth - suffixWidth));
+    commandLines.forEach((line, index) => {
+      lines.push(`${indent}${index === 0 ? `${ANSI.tool}${line}${ANSI.reset}${suffix}` : line}`);
+    });
+    const outputLines = result.output.trim().split(/\r?\n/).filter(Boolean);
+    if (outputLines.length) {
+      const summary = outputLines[0] + (outputLines.length > 1 ? " …" : "");
+      lines.push(...wrapDisplayText(summary, Math.max(1, contentWidth - 2)).map((line) => `${indent}${ANSI.gray}│ ${line}${ANSI.reset}`));
     }
   }
   return lines;
