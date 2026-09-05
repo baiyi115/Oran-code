@@ -110,6 +110,8 @@ export class InkTuiApp {
   private renderRevision = 0;
   private committedRenderRevision = 0;
   private staticTranscriptGeneration = 0;
+  /** Highest transcript prefix already handed to Ink Static. */
+  private committedStaticTranscriptCount = 0;
   private readonly renderWaiters: Array<{ revision: number; resolve: () => void }> = [];
   private lastTranscriptRenderLines: ReturnType<TranscriptView["linesWithAnchors"]> = [];
 
@@ -180,6 +182,7 @@ export class InkTuiApp {
       redraw: (_state: TuiState) => this.invalidate(),
       resetStatic: () => {
         this.staticTranscriptGeneration += 1;
+        this.committedStaticTranscriptCount = 0;
         this.resetTranscriptViewport();
       },
     };
@@ -927,7 +930,12 @@ export class InkTuiApp {
     liveLines: ReturnType<TranscriptView["linesWithAnchors"]>;
   } {
     const lines = this.transcript.linesWithAnchors(this.state, Math.max(12, width), liveTick);
-    const staticCount = staticTranscriptCount(this.state.transcript);
+    const candidateStaticCount = staticTranscriptCount(this.state.transcript);
+    // Static is append-only. Never move its boundary backwards when a late
+    // event temporarily makes an earlier message mutable; doing so can cause
+    // the same lines to be emitted by both Static and the live frame.
+    this.committedStaticTranscriptCount = Math.max(this.committedStaticTranscriptCount, candidateStaticCount);
+    const staticCount = Math.min(this.committedStaticTranscriptCount, this.state.transcript.length);
     const staticMessages = this.state.transcript.slice(0, staticCount);
     const staticIds = new Set(staticMessages.map((message) => message.id));
     const groupedLines = new Map<string, string[]>();
