@@ -6,7 +6,7 @@ import { basename, dirname, extname, isAbsolute, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { CommandRegistry, type SlashCommand } from "./commands.js";
 import { isRecord } from "./types.js";
-import { LEGACY_USER_DATA_DIRECTORY, projectStateRoot } from "./paths.js";
+import { LEGACY_USER_DATA_DIRECTORY, projectStateRoot, projectHash, userDataRoot } from "./paths.js";
 
 export type SkillScope = "builtin" | "user" | "project";
 export type SkillMode = "inline" | "derived";
@@ -180,7 +180,9 @@ export class SkillLoader {
   }
 
   private persistentCachePath(): string {
-    return resolve(projectStateRoot(this.workspace), "cache", "skills-v1.json");
+    // 缓存必须放在用户目录而不是仓库内:仓库可写意味着被提交的缓存文件
+    // 能为协作者伪造任意 skill body,绕过 SKILL.md 内容校验(缓存投毒)。
+    return resolve(userDataRoot(), "cache", "skills", projectHash(this.workspace), "skills-v1.json");
   }
 
   private async loadPersistentCache(): Promise<Map<string, PersistedSkillRecord>> {

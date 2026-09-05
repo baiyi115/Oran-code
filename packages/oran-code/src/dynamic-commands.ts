@@ -94,7 +94,8 @@ export function renderDynamicCommand(body: string, argument: string): string {
   ARGUMENT_PLACEHOLDER.lastIndex = 0;
   if (ARGUMENT_PLACEHOLDER.test(normalizedBody)) {
     ARGUMENT_PLACEHOLDER.lastIndex = 0;
-    return normalizedBody.replace(ARGUMENT_PLACEHOLDER, normalizedArgument);
+    // 用函数形式替换,避免参数里的 $&/$' 等被当成替换模式展开。
+    return normalizedBody.replace(ARGUMENT_PLACEHOLDER, () => normalizedArgument);
   }
   if (!normalizedArgument) return normalizedBody;
   if (!normalizedBody) return normalizedArgument;
