@@ -134,6 +134,10 @@ export class SubagentRunner {
             if (event.text.trim()) assistantText.push(event.text.trim());
             addUsage(usage, event.usage);
           }
+          if (event.type === "assistant_abort") {
+            // 取消前的部分用量也要入账,与主循环口径一致。
+            addUsage(usage, event.usage ?? {});
+          }
           await this.emitEvent({
             taskId,
             name,

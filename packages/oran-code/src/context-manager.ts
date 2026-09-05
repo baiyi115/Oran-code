@@ -124,6 +124,27 @@ export class ContextManager {
     return resolveContextWindow(model);
   }
 
+  /** 预算提醒档位:只在跨档时提醒一次,压缩后清零。 */
+  private usageNoticeLevel = 0;
+
+  /**
+   * 上下文用量可视性:模型对剩余额度无感知,接近压缩阈值时注入提醒,
+   * 让它主动收尾而不是被动触发压缩。
+   */
+  contextUsageReminder(model: ModelConfig, messages: readonly Message[]): string | undefined {
+    const window = this.resolveContextWindow(model);
+    if (window <= 0) return undefined;
+    const estimate = this.estimateTokens(messages, []);
+    const ratio = estimate / window;
+    const level = ratio >= 0.8 ? 2 : ratio >= 0.6 ? 1 : 0;
+    if (level === 0 || level <= this.usageNoticeLevel) return undefined;
+    this.usageNoticeLevel = level;
+    const percent = Math.min(99, Math.round(ratio * 100));
+    return level === 2
+      ? `Context usage is ~${percent}% of the model context window (est. ${estimate.toLocaleString("en-US")} of ${window.toLocaleString("en-US")} tokens). Finish the task or run /compact now; auto-compaction will trigger soon and older detail will be lost.`
+      : `Context usage is ~${percent}% of the model context window (est. ${estimate.toLocaleString("en-US")} of ${window.toLocaleString("en-US")} tokens). Avoid redundant exploration and start converging on the final result.`;
+  }
+
   isPromptTooLongError(error: unknown): boolean {
     return isPromptTooLongError(error);
   }
@@ -151,6 +172,7 @@ export class ContextManager {
     this.recentFiles.clear();
     this.usageAnchor = undefined;
     this.estimateMemo = undefined;
+    this.usageNoticeLevel = 0;
     this.automaticFailures = 0;
   }
 
