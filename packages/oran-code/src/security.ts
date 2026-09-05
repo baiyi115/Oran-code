@@ -739,9 +739,14 @@ function decision(
 
 function modeDecision(mode: PermissionMode, kind: ToolKind, level: number): ApprovalDecision {
   const allow = kind === "readonly" || mode === "bypass" || (mode === "accept-edits" && kind === "write");
+  const deny = mode === "readonly" && kind !== "readonly";
   return decision(
-    allow ? "allow" : "ask",
-    allow ? `${mode} mode allows ${kind} tools` : `${mode} mode requires approval for ${kind} tools`,
+    deny ? "deny" : allow ? "allow" : "ask",
+    deny
+      ? `readonly mode blocks ${kind} tools`
+      : allow
+        ? `${mode} mode allows ${kind} tools`
+        : `${mode} mode requires approval for ${kind} tools`,
     "permission-mode",
     level,
   );
