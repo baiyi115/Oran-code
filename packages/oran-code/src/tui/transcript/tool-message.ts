@@ -1,4 +1,5 @@
 import type { ToolMessage } from "../types.js";
+import { formatDuration } from "../../formatting.js";
 import { renderDiff } from "./diff-renderer.js";
 import { truncateVisible, wrapDisplayText } from "../text-width.js";
 import { ANSI } from "../theme.js";
@@ -111,6 +112,3 @@ function shouldShowSuccessSummary(detail: string): boolean {
   return text !== "ok";
 }
 
-function formatDuration(value: number): string {
-  return value >= 1000 ? `${(value / 1000).toFixed(1)}s` : `${Math.max(0, Math.round(value))}ms`;
-}

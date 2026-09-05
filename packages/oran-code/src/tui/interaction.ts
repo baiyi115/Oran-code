@@ -49,6 +49,8 @@ export function navigateHistory(
   return { value: history[nextIndex] ?? currentValue, index: nextIndex, draft };
 }
 
+import { redactSecretText } from "../formatting.js";
+
 export function redactSecrets(value: unknown): unknown {
   if (Array.isArray(value)) return value.map(redactSecrets);
   if (!value || typeof value !== "object") {
@@ -62,8 +64,4 @@ export function redactSecrets(value: unknown): unknown {
   );
 }
 
-export function redactSecretText(value: string): string {
-  return value
-    .replace(/\bsk-[A-Za-z0-9_-]{8,}\b/g, "sk-[redacted]")
-    .replace(/((?:api[_-]?key|token|secret|password)\s*[=:]\s*)[^\s,&]+/gi, "$1[redacted]");
-}
+export { redactSecretText } from "../formatting.js";

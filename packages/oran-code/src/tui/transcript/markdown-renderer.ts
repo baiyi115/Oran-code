@@ -99,6 +99,11 @@ export class MarkdownRenderer {
   }
 
   private scanStableLines(value: string): void {
+    // 空白行才天然构成块边界;长段落会一直留在 tail 里被逐 delta 全量重解析。
+    // 超过阈值后提前提交,只保留最后几行等待回流,视觉影响可忽略。
+    const COMMIT_THRESHOLD_CHARS = 8_000;
+    const HOLD_BACK_LINES = 3;
+    const holdBack: number[] = [];
     while (this.scanOffset < value.length) {
       const newline = value.indexOf("\n", this.scanOffset);
       if (newline < 0) return;
@@ -110,10 +115,28 @@ export class MarkdownRenderer {
           // block so it appears once closed instead of waiting for the next
           // blank line.
           this.stableEnd = newline + 1;
+          holdBack.length = 0;
         }
       } else {
         this.scanFence = parseFenceOpen(line);
-        if (!this.scanFence && !line.trim()) this.stableEnd = newline + 1;
+        if (this.scanFence) {
+          holdBack.length = 0;
+        } else if (!line.trim()) {
+          this.stableEnd = newline + 1;
+          holdBack.length = 0;
+        } else {
+          holdBack.push(newline + 1);
+          if (holdBack.length > HOLD_BACK_LINES) holdBack.shift();
+          const commitTo = holdBack[0];
+          if (
+            commitTo !== undefined &&
+            commitTo > this.stableEnd &&
+            value.length - this.stableEnd > COMMIT_THRESHOLD_CHARS
+          ) {
+            this.stableEnd = commitTo;
+            holdBack.length = 0;
+          }
+        }
       }
       this.scanOffset = newline + 1;
     }
@@ -132,7 +155,7 @@ export function renderMarkdown(value: string, width: number, options: MarkdownRe
 function renderMarkdownInternal(value: string, safeWidth: number, options: MarkdownRenderOptions): string[] {
   const lines: string[] = [];
   let fence: FenceState | undefined;
-  const sourceLines = value.split("\n");
+  const sourceLines = splitCollapsedBlocks(value);
 
   for (let index = 0; index < sourceLines.length; index += 1) {
     const raw = sourceLines[index] ?? "";
@@ -271,6 +294,40 @@ function parseHeading(value: string): Heading | undefined {
     level: match[1]?.length ?? 1,
     body: match[2] ?? "",
   };
+}
+
+/**
+ * 块级语法(标题/列表)只在行首生效;模型常把标题或列表项挤进段落行,
+ * 在围栏外按句子终止符把它们拆到独立行。表格行不拆,风险过高。
+ */
+const INLINE_BLOCK_SPLIT =
+  /(?<=[。！？!?"”』」)\]])\s+(?=#{1,6}(?:\s|[\u4E00-\u9FFF])|[-*+]\s|\d+[.)]\s)/g;
+
+function splitCollapsedBlocks(value: string): string[] {
+  const out: string[] = [];
+  let fence: FenceState | undefined;
+  for (const raw of value.split("\n")) {
+    const line = raw.trimEnd();
+    if (fence) {
+      if (isFenceClose(line, fence)) fence = undefined;
+      out.push(raw);
+      continue;
+    }
+    const open = parseFenceOpen(line);
+    if (open) {
+      fence = open;
+      out.push(raw);
+      continue;
+    }
+    if (!line.trim() || line.includes("|")) {
+      out.push(raw);
+      continue;
+    }
+    const parts = line.split(INLINE_BLOCK_SPLIT);
+    if (parts.length > 1) out.push(...parts.map((part) => part.trim()));
+    else out.push(raw);
+  }
+  return out;
 }
 
 function normalizeMarkdown(value: string): string {

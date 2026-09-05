@@ -92,6 +92,7 @@ const FIXED_MODULES: readonly SystemPromptModule[] = [
     priority: 400,
     content: [
       "Use readable Markdown with structure proportional to the task.",
+      "Block-level Markdown (headings, lists, tables, code fences) must each start on its own line, never inline after a sentence.",
       "Do not dump raw internal errors or hidden reasoning; explain the actionable failure and its impact.",
     ].join("\n"),
   },

@@ -76,12 +76,19 @@ export function graphemeIndexAtOffset(value: string, offset: number): number {
 
 export function truncateVisible(value: string, width: number): string {
   const safeWidth = Math.max(1, Math.floor(width));
-  if (visibleWidth(value) <= safeWidth) return value;
+  const symbols = graphemes(stripTerminalMarkup(value));
+  let total = 0;
+  for (const symbol of symbols) total += graphemeWidth(symbol);
+  if (total <= safeWidth) return value;
   if (safeWidth === 1) return "…";
+  // 单遍累计宽度;逐符号重测整个前缀是 O(n²)。
+  let used = 0;
   let result = "";
-  for (const symbol of graphemes(value)) {
-    if (visibleWidth(`${result}${symbol}…`) > safeWidth) break;
+  for (const symbol of symbols) {
+    const symbolWidth = graphemeWidth(symbol);
+    if (used + symbolWidth + 1 > safeWidth) break;
     result += symbol;
+    used += symbolWidth;
   }
   return `${result}…`;
 }
@@ -121,17 +128,36 @@ export function wrapDisplayText(value: string, width: number): string[] {
       if (!line) return [""];
       const output: string[] = [];
       let remaining = line;
-      while (visibleWidth(remaining) > safeWidth) {
-        const chunk = sliceByDisplayWidth(remaining, 0, safeWidth);
-        let splitAt = chunk.length;
-        const whitespace = chunk.lastIndexOf(" ");
-        if (whitespace > 0) splitAt = whitespace;
-        const piece = remaining.slice(0, splitAt).trimEnd();
-        output.push(piece || chunk);
-        remaining = remaining.slice(splitAt).trimStart();
-        if (!splitAt) remaining = remaining.slice(chunk.length);
+      while (true) {
+        // 每行只做一次分词;对剩余串反复全量测量是 O(n²)。
+        const symbols = graphemes(remaining);
+        let total = 0;
+        for (const symbol of symbols) total += graphemeWidth(symbol);
+        if (total <= safeWidth) {
+          output.push(remaining);
+          break;
+        }
+        let used = 0;
+        let end = 0;
+        let lastSpace = -1;
+        for (let index = 0; index < symbols.length; index += 1) {
+          const symbol = symbols[index]!;
+          const symbolWidth = graphemeWidth(symbol);
+          if (used + symbolWidth > safeWidth) break;
+          used += symbolWidth;
+          end = index + 1;
+          if (symbol === " ") lastSpace = index;
+        }
+        if (!end) {
+          output.push(symbols.slice(0, 1).join(""));
+          remaining = symbols.slice(1).join("");
+          continue;
+        }
+        const splitAt = lastSpace > 0 ? lastSpace : end;
+        const piece = symbols.slice(0, splitAt).join("").trimEnd() || symbols.slice(0, end).join("");
+        output.push(piece);
+        remaining = symbols.slice(splitAt).join("").trimStart();
       }
-      output.push(remaining);
       return output;
     });
 }
@@ -139,6 +165,9 @@ export function wrapDisplayText(value: string, width: number): string[] {
 function isCombining(code: number): boolean {
   return (
     (code >= 0x300 && code <= 0x36f) ||
+    (code >= 0x591 && code <= 0x5bd) ||
+    (code >= 0x610 && code <= 0x61a) ||
+    (code >= 0x64b && code <= 0x652) ||
     (code >= 0x1ab0 && code <= 0x1aff) ||
     (code >= 0x1dc0 && code <= 0x1dff) ||
     (code >= 0x20d0 && code <= 0x20ff) ||
@@ -167,7 +196,8 @@ function isWide(code: number): boolean {
       (code >= 0xfe30 && code <= 0xfe6f) ||
       (code >= 0xff00 && code <= 0xff60) ||
       (code >= 0xffe0 && code <= 0xffe6) ||
-      (code >= 0x1f300 && code <= 0x1faff))
+      (code >= 0x1f000 && code <= 0x1faff) ||
+      (code >= 0x20000 && code <= 0x3fffd))
   );
 }
 
