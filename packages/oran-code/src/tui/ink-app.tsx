@@ -1112,9 +1112,11 @@ function InkRoot({ app, revision }: { app: InkTuiApp; revision: number }): React
   }, [app, stdout]);
   useInput((input, key) => app.handleKey(input, key));
 
-  const width = Math.max(20, (terminalSize.columns || stdout.columns || 80) - 2);
+  const terminalWidth = Math.max(20, terminalSize.columns || stdout.columns || 80);
   const rows = Math.max(1, terminalSize.rows || stdout.rows || 24);
-  // frame `width` already reserves edge slack; composer text sits after the 2-col prompt.
+  // All TUI regions share one content width. The outer frame reserves one cell
+  // on each side; composer text additionally reserves the two-cell prompt.
+  const width = terminalWidth - 2;
   const editorWidth = Math.max(1, width - 2);
   const editorLines = visualLines(state.composer, editorWidth);
   const cursor = cursorVisualPosition(state.composer, editorWidth);
@@ -1133,18 +1135,20 @@ function InkRoot({ app, revision }: { app: InkTuiApp; revision: number }): React
     state.transcript.length === 0 && state.overlay.kind === "none" ? oranWelcomeLines(state, width) : [];
   const showScrollStatus = state.transcriptScroll.offsetFromBottom > 0;
   const summaryLine = summary;
+  // Count the actual chrome rows rendered below the transcript. Keeping this
+  // derived from the rendered pieces prevents long composers/footers from
+  // stealing rows from the transcript or pushing the prompt off-screen.
   const baseChromeLines =
-    4 +
-    welcomeLines.length +
-    1 + // extra breathing room above the composer
-    Math.max(0, footer.length - 1) +
-    (editorLines.length > 1 ? editorLines.length - 1 : 0) +
+    (showScrollStatus ? 1 : 0) +
     (workingLine ? 1 : 0) +
     (summaryLine ? 1 : 0) +
-    (showScrollStatus ? 1 : 0);
-  // Reserve one row for the live tail and one for the overlay's bottom margin.
-  // Candidate lists are windowed so a short terminal never pushes the composer away.
-  const overlayCapacity = Math.max(1, rows - baseChromeLines - 2);
+    1 + // upper rule
+    Math.max(1, editorLines.length) +
+    1 + // lower rule
+    footer.length;
+  // Reserve one row for the overlay margin. Candidate lists are windowed so a
+  // short terminal never pushes the composer away.
+  const overlayCapacity = Math.max(1, rows - baseChromeLines - 1);
   const commandItemCapacity = Math.max(1, Math.min(7, overlayCapacity - 2));
   const commandLines =
     state.overlay.kind === "commands"
@@ -1161,7 +1165,7 @@ function InkRoot({ app, revision }: { app: InkTuiApp; revision: number }): React
   // clearTerminal paint path. The completed form is emitted to Static in full.
   const viewportLines = Math.max(
     1,
-    rows - baseChromeLines - (overlayLines.length > 0 ? overlayLines.length + 1 : 0) - 1,
+    rows - baseChromeLines - (overlayLines.length > 0 ? overlayLines.length + 1 : 0),
   );
   app.syncViewportScroll(transcriptLines, viewportLines);
   const maximumStart = Math.max(0, transcriptLines.length - viewportLines);
