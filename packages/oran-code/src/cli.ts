@@ -236,9 +236,13 @@ async function printConfigFile(path: string, showSecrets: boolean, primaryPath?:
   console.log(JSON.stringify(showSecrets ? parsed : maskSecrets(parsed), null, 2));
 }
 
+const SECRET_KEY_PATTERN = /api[_-]?key|token|secret|password|authorization|credential/i;
+
 function maskSecrets(value: unknown, key?: string): unknown {
-  if (key === "api_key" || key === "apiKey") {
-    if (typeof value !== "string") return value;
+  // 除 apiKey 外,mcpServers.*.env / headers 等任意命中敏感键名的字符串值
+  // 一并掩码,避免凭据经 `oran config get` 进入终端或日志。
+  if (key && SECRET_KEY_PATTERN.test(key)) {
+    if (typeof value !== "string") return "***";
     return value.length > 6 ? `${value.slice(0, 3)}...${value.slice(-3)}` : "***";
   }
   if (Array.isArray(value)) return value.map((item) => maskSecrets(item));

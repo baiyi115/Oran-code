@@ -378,15 +378,18 @@ export class SessionStore {
     for (const name of names) {
       if (extname(name).toLowerCase() !== ".jsonl") continue;
       const path = resolve(this.directory, name);
+      const id = name.slice(0, -6);
       try {
         if ((await stat(path)).mtimeMs >= cutoff) continue;
+        // 另一个实例可能仍持有该会话(心跳未过期),宁可留着下次再清。
+        if (await this.hasFreshLock(id)) continue;
         await unlink(path);
-        const id = name.slice(0, -6);
         try {
           await unlink(this.statePath(id));
         } catch {
           /* legacy sessions may not have a sidecar */
         }
+        await unlink(this.lockPath(id)).catch(() => undefined);
         this.sessions = this.sessions.filter((item) => item.id !== id);
         this.mtimes.delete(id);
         removed += 1;
@@ -459,12 +462,41 @@ export class SessionStore {
     timestamp: string,
   ): Promise<number> {
     const archiveSize = (await stat(archivePath)).size;
+    await this.touchSessionLock(session.id);
     const snapshotSession = { ...session, archiveSize };
     // Sidecar failure is recoverable and must not fail an authoritative archive write.
     await replaceTextFile(statePath, `${JSON.stringify(stateSnapshotRecord(snapshotSession, timestamp))}\n`).catch(
       () => undefined,
     );
     return archiveSize;
+  }
+
+  private lockPath(id: string): string {
+    return resolve(this.directory, `${id}.lock`);
+  }
+
+  /** 活跃实例心跳:cleanExpired 据此跳过仍被其他进程使用的会话。 */
+  private async touchSessionLock(id: string): Promise<void> {
+    try {
+      const lock = this.lockPath(id);
+      const info = await stat(lock).catch(() => undefined);
+      if (info && Date.now() - info.mtimeMs < 60_000) return;
+      await writeFile(lock, String(process.pid), "utf8");
+    } catch {
+      // 心跳失败不影响持久化主路径。
+    }
+  }
+
+  private async hasFreshLock(id: string): Promise<boolean> {
+    try {
+      const info = await stat(this.lockPath(id));
+      if (Date.now() - info.mtimeMs >= 120_000) return false;
+      // 本进程自己写的锁不代表其他实例还在用;cleanExpired 会同步清掉本地状态。
+      const owner = Number.parseInt((await readFile(this.lockPath(id), "utf8")).trim(), 10);
+      return Number.isFinite(owner) && owner !== process.pid;
+    } catch {
+      return false;
+    }
   }
 
   private async refreshMtime(id: string): Promise<void> {
