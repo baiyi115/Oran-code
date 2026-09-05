@@ -714,7 +714,13 @@ function isPromptTooLongError(error: unknown): boolean {
     }
   };
   visit(error, 0);
-  return /(prompt(?:[_\s-]+is)?[_\s-]+too[_\s-]+long|context[_\s-]?length[_\s-]?exceeded|maximum context length|context window.{0,50}(?:exceed|too (?:large|long)|limit)|too many (?:input )?tokens|input.{0,30}too long|request too large.{0,30}token)/i.test(
+  const status = (error as { status?: unknown } | undefined)?.status;
+  const statusCode = (error as { statusCode?: unknown } | undefined)?.statusCode;
+  if (status === 413 || statusCode === 413) return true;
+  // 覆盖主流 provider 的溢出措辞:OpenAI "maximum context length"、
+  // Anthropic "prompt is too long"、Gemini 系 "input token count ... exceeds
+  // the maximum number of tokens" 等;413 状态码单独判定如上。
+  return /(prompt(?:[_\s-]+is)?[_\s-]+too[_\s-]+long|context[_\s-]?length[_\s-]?exceeded|maximum context length|context window.{0,50}(?:exceed|too (?:large|long)|limit)|too many (?:input )?tokens|input.{0,30}too long|input token count.{0,80}exceed|exceeds the maximum (?:number of )?tokens|request too large.{0,30}token)/i.test(
     fragments.join(" "),
   );
 }
@@ -885,6 +891,7 @@ function estimatedRequestTokens(messages: readonly Message[], tools: readonly Re
 }
 
 const CJK_CHARACTER_PATTERN = /[\u2E80-\u9FFF\uF900-\uFAFF\uFF00-\uFFEF]/g;
+const HAS_CJK_PATTERN = /[\u2E80-\u9FFF\uF900-\uFAFF]/;
 
 function dropOldestGroups(groups: readonly Message[][], dropRound: number): { groups: Message[][]; count: number } {
   if (!groups.length) return { groups: [], count: 0 };
@@ -921,7 +928,9 @@ function extractSummary(text: string, coveredMessages: readonly Message[]): stri
   }
   summaryText = stripCodeFence(summaryText);
   // 大段对话被压成一句空话等于静默丢上下文,宁可让压缩失败走重试/告警。
-  if (coveredMessages.length >= 10 && summaryText.length < 150) {
+  // CJK 摘要信息密度更高,同等内容字符数显著少于英文,阈值相应放宽。
+  const shortThreshold = HAS_CJK_PATTERN.test(summaryText) ? 80 : 150;
+  if (coveredMessages.length >= 10 && summaryText.length < shortThreshold) {
     throw summaryRejected(
       text,
       `context compaction summary is implausibly short (${summaryText.length} chars for ${coveredMessages.length} messages); refusing to discard the covered conversation`,
@@ -943,12 +952,22 @@ function extractSummary(text: string, coveredMessages: readonly Message[]): stri
   // Section matching with graceful degradation: if a section heading is missing,
   // inject a placeholder heading rather than discarding the entire compaction.
   // The model may produce slight heading variations; we recover what we can.
+  // 匹配优先级:英文标题精确匹配 → 序号匹配(1. / 1、 / 1)),标题文本
+  // 允许是任意语言——摘要契约不能依赖模型输出英文小节名。
   const headings = sectionNames.map((name, index) => {
-    const pattern = new RegExp(`^#{1,6}\\s*(?:${index + 1}\\.\\s*)?${escapeRegExp(name)}\\s*$`, "im");
-    const match = pattern.exec(summaryText);
+    const number = index + 1;
+    const patterns = [
+      new RegExp(`^#{1,6}\\s*(?:${number}\\.\\s*)?${escapeRegExp(name)}\\s*$`, "im"),
+      new RegExp(`^#{1,6}\\s*${number}\\s*[.、)]\\s*\\S.*$`, "im"),
+    ];
+    let match: RegExpExecArray | null | undefined;
+    for (const pattern of patterns) {
+      match = pattern.exec(summaryText);
+      if (match) break;
+    }
     if (!match || match.index === undefined) {
       return {
-        heading: `### ${index + 1}. ${name}`,
+        heading: `### ${number}. ${name}`,
         index: summaryText.length,
         end: summaryText.length,
         injected: true as const,
