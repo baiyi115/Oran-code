@@ -179,7 +179,7 @@ export class TerminalSession {
   private workMode: WorkMode;
   private permissionMode: PermissionMode;
   private reasoningEffort: ReasoningEffort;
-  private sessionStore: SessionStore;
+  private readonly sessionStore: SessionStore;
   private readonly crud: SessionCrudService;
   private readonly handlers: SessionCommandHandlers;
   private readonly workspaceFileIndex: WorkspaceFileIndex;
@@ -1067,7 +1067,8 @@ export class TerminalSession {
   }
 
   private async openSessionStore(): Promise<void> {
-    this.sessionStore = new SessionStore(this.workspace);
+    // CRUD, title generation, and command handlers retain this same store.
+    // Open it in place so those services see the loaded sessions as well.
     await this.sessionStore.open();
     await this.sessionStore.cleanExpired(SESSION_EXPIRY_DAYS).catch(() => 0);
     // Cold start always opens a blank conversation. Previous chats remain available
