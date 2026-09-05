@@ -465,6 +465,7 @@ export class ToolBatchExecutor {
       duration: number,
       mutated = false,
       cancelled = false,
+      executed = true,
     ): Promise<{ outcome: BatchStepOutcome; mutated: boolean; cancelled: boolean }> => {
       stepOutputs.set(step.id, result.output || "");
       const outcome: BatchStepOutcome = {
@@ -476,31 +477,31 @@ export class ToolBatchExecutor {
         ...(result.output ? { output: result.output } : {}),
         ...(!result.ok || !result.output ? (result.summary ? { summary: result.summary } : {}) : {}),
       };
-      await this.recordToolNow(task, messages, call, index, result, duration, true, { scriptStep: true });
+      await this.recordToolNow(task, messages, call, index, result, duration, executed, { scriptStep: true });
       return { outcome, mutated, cancelled };
     };
     const hookBlock = await this.ports.checkBeforeToolHook(task, call);
-    if (hookBlock) return complete(hookBlock, 0);
+    if (hookBlock) return complete(hookBlock, 0, false, false, false);
     if (!tool) {
       loop.recordUnknownTool(call);
-      return complete({ ok: false, output: "", error: `unknown tool: ${call.name}`, summary: "unknown tool" }, 0);
+      return complete({ ok: false, output: "", error: `unknown tool: ${call.name}`, summary: "unknown tool" }, 0, false, false, false);
     }
-    if (!this.ports.isToolVisible(tool)) return complete(toolUnavailableResult(call), 0);
+    if (!this.ports.isToolVisible(tool)) return complete(toolUnavailableResult(call), 0, false, false, false);
     if (this.ports.config.workMode === "plan" && !isPlanModeTool(tool)) {
-      return complete(planModeDeniedResult(call), 0);
+      return complete(planModeDeniedResult(call), 0, false, false, false);
     }
     const denied = tool.system
       ? undefined
       : await this.authorizeTool(task, call, tool.permissionLevel, kind, tool.description);
-    if (denied) return complete(denied, 0);
+    if (denied) return complete(denied, 0, false, false, false);
     const cacheKey = kind === "readonly" && tool.cacheable !== false ? toolCallSignature(call) : undefined;
     if (cacheKey && this.ports.readonlyCache.has(cacheKey)) {
       const cached = this.ports.readonlyCache.get(cacheKey)!;
       loop.record(call);
-      return complete({ ...cached, metadata: { ...cached.metadata, cached: true } }, 0);
+      return complete({ ...cached, metadata: { ...cached.metadata, cached: true } }, 0, false, false, false);
     }
     if (!loop.canRecordToolCall()) {
-      return complete({ ok: false, output: "", error: "tool call budget exhausted", summary: "budget exhausted" }, 0);
+      return complete({ ok: false, output: "", error: "tool call budget exhausted", summary: "budget exhausted" }, 0, false, false, false);
     }
     loop.record(call);
     const started = Date.now();
