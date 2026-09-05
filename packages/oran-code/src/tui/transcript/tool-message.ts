@@ -39,7 +39,6 @@ export function renderToolMessage(message: ToolMessage, width: number, liveTick 
     detail && (message.status !== "success" || shouldShowSuccessSummary(detail))
       ? ` ${ANSI.gray}\u00b7 ${truncateVisible(detail.replace(/\s+/g, " ").trim(), 80)}${ANSI.reset}`
       : "";
-  const heading = `${indicatorColor}${indicator}${ANSI.reset} ${call}${status}${duration}${summary}`;
   const headingPrefix = `${indicatorColor}${indicator}${ANSI.reset} `;
   const headingBody = `${call}${status}${duration}${summary}`;
   const headingWidth = Math.max(1, width - visibleWidth(headingPrefix));
