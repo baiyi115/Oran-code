@@ -16,15 +16,17 @@ export class BackgroundAgentTaskManager {
   private readonly tasks = new Map<string, BackgroundAgentTask>();
   private readonly queue: QueuedTask[] = [];
   private readonly maxConcurrent: number;
+  private readonly maxDurationMs: number;
   private nextId = 1;
 
   constructor(
     private readonly stateStore?: AgentStateStore,
     private readonly onTerminal?: () => void | Promise<void>,
     private readonly onChange?: () => void,
-    options?: { readonly maxConcurrent?: number },
+    options?: { readonly maxConcurrent?: number; readonly maxDurationMs?: number },
   ) {
     this.maxConcurrent = Math.max(1, options?.maxConcurrent ?? 4);
+    this.maxDurationMs = Math.max(60_000, options?.maxDurationMs ?? 30 * 60_000);
   }
 
   private notifyChange(): void {
@@ -116,8 +118,22 @@ export class BackgroundAgentTaskManager {
       },
     });
 
+    // 卡死的子任务会永久占用并发槽;超时中止并标记 timed_out。
+    const deadline = setTimeout(() => {
+      if (task.status !== "running") return;
+      task.status = "timed_out";
+      task.endedAt = new Date().toISOString();
+      task.error = `task exceeded max duration (${Math.round(this.maxDurationMs / 1000)}s)`;
+      task.abortController?.abort();
+      this.schedulePersist();
+      this.notifyChange();
+      this.drainQueue();
+    }, this.maxDurationMs);
+    deadline.unref?.();
+
     void runPromise
       .then(async (result) => {
+        clearTimeout(deadline);
         this.finish(task, result);
         await this.persist();
         this.notifyChange();
@@ -126,6 +142,7 @@ export class BackgroundAgentTaskManager {
         resolvePromise(result);
       })
       .catch((error) => {
+        clearTimeout(deadline);
         const errorResult: SubagentRunResult = {
           taskId: task.id,
           name: task.name,
@@ -317,8 +334,15 @@ export class BackgroundAgentTaskManager {
   }
 }
 
+const NOTIFICATION_OUTPUT_LIMIT = 16_000;
+
 export function backgroundTaskNotification(task: BackgroundAgentTask): string {
-  const output = task.output ?? task.error ?? "No result was produced.";
+  const raw = task.output ?? task.error ?? "No result was produced.";
+  // 子任务输出可能非常大,原样注入会挤占父会话上下文;详情用 task_detail 查看。
+  const output =
+    raw.length > NOTIFICATION_OUTPUT_LIMIT
+      ? `${raw.slice(0, NOTIFICATION_OUTPUT_LIMIT)}\n...[truncated ${raw.length - NOTIFICATION_OUTPUT_LIMIT} chars]`
+      : raw;
   return [
     "<task-notification>",
     `Task ${task.id} (name="${escapeAttribute(task.name)}"): ${task.status}`,

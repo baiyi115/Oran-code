@@ -407,14 +407,26 @@ function merge(base: UserConfig, override: UserConfig): UserConfig {
 
 export async function loadConfig(workspace?: string): Promise<UserConfig> {
   await ensureUserConfig();
-  let config = await readConfig(userConfigPath());
+  let config = await readConfigTolerant(userConfigPath());
   if (workspace) {
     for (const legacyPath of legacyProjectConfigPaths(workspace)) {
-      config = merge(config, await readConfig(legacyPath));
+      config = merge(config, await readConfigTolerant(legacyPath));
     }
-    config = merge(config, await readConfig(projectConfigPath(workspace)));
+    config = merge(config, await readConfigTolerant(projectConfigPath(workspace)));
   }
   return config;
+}
+
+/** 单个配置文件损坏不应导致无法启动:降级为默认值并给出可操作的警告。 */
+async function readConfigTolerant(path: string): Promise<UserConfig> {
+  try {
+    return await readConfig(path);
+  } catch (error) {
+    if (isMissingFile(error)) return { ...defaultConfig };
+    const detail = error instanceof Error ? error.message : String(error);
+    console.error(`warning: ${detail}; falling back to defaults. Fix or remove the file to dismiss this warning.`);
+    return { ...defaultConfig };
+  }
 }
 
 /** Load one config file without merging it with the user or project config. */

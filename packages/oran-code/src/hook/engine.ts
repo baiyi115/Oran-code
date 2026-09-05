@@ -108,7 +108,7 @@ export class HookEngine {
       if (rule.config.event !== ctx.event) continue;
       if (rule.config.once && this.onceFired.has(rule.onceKey)) continue;
       if (!evaluateCondition(rule.condition, ctx)) continue;
-      if (rule.config.once) this.onceFired.add(rule.onceKey);
+      // once 在动作成功执行后才消费(runRule 内),失败不烧掉唯一一次机会。
       yield rule;
     }
   }
@@ -123,12 +123,14 @@ export class HookEngine {
       return { output: "", ok: true, intercept: false };
     }
     const result = await executeAction(rule.config.action, ctx, this.deps, this.defaultCommandTimeoutMs, intercept);
+    if (rule.config.once && result.ok) this.onceFired.add(rule.onceKey);
     return this.applyErrorPolicy(rule, result);
   }
 
   private async runAsync(rule: CompiledRule, ctx: HookEventContext, intercept: boolean): Promise<void> {
     try {
       const result = await executeAction(rule.config.action, ctx, this.deps, this.defaultCommandTimeoutMs, intercept);
+      if (rule.config.once && result.ok) this.onceFired.add(rule.onceKey);
       const applied = this.applyErrorPolicy(rule, result);
       if (!applied) return;
       if (applied.output) {

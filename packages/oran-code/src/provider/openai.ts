@@ -8,7 +8,7 @@ import type {
   ToolCall,
 } from "../types.js";
 import { CLIENT_ID, CLIENT_USER_AGENT, PRODUCT_VERSION } from "../paths.js";
-import { ModelRequestError, boundedError, streamErrorMessage } from "./errors.js";
+import { ModelRequestError, boundedError, retryAfterMsFromResponse, streamErrorMessage } from "./errors.js";
 import { parseSseJson, readSseEvents } from "./sse.js";
 import { createStreamingRequest, modelResponseChunks, numericUsage, requestOptions } from "./transport.js";
 
@@ -48,7 +48,7 @@ export class OpenAICompatibleProvider implements ModelProvider {
         throw new ModelRequestError(response.status, detail);
       }
     }
-    if (!response.ok) throw new ModelRequestError(response.status, await boundedError(response));
+    if (!response.ok) throw new ModelRequestError(response.status, await boundedError(response), retryAfterMsFromResponse(response));
     const data = (await response.json()) as Record<string, unknown>;
     return parseCompletion(data, false);
   }
@@ -77,7 +77,7 @@ export class OpenAICompatibleProvider implements ModelProvider {
           throw new ModelRequestError(response.status, detail);
         }
       }
-      if (!response.ok) throw new ModelRequestError(response.status, await boundedError(response));
+      if (!response.ok) throw new ModelRequestError(response.status, await boundedError(response), retryAfterMsFromResponse(response));
       const contentType = response.headers.get("content-type") ?? "";
       if (!contentType.includes("text/event-stream") || !response.body) {
         yield* modelResponseChunks(parseCompletion((await response.json()) as Record<string, unknown>, false));

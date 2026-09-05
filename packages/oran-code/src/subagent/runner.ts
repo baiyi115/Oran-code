@@ -73,7 +73,9 @@ export class SubagentRunner {
     const usage: Record<string, number> = {};
     const assistantText: string[] = [];
     const baseConversation = options.parentConversation ?? options.conversation ?? [];
-    let conversation = structuredClone([...baseConversation]);
+    // 消息对象入列后不可变,浅拷贝数组即可隔离 push/splice;对大上下文做
+    // 深克隆对并行 fork 是纯粹的 CPU/GC 浪费。
+    let conversation = [...baseConversation];
     let controller: TaskController | undefined;
     let executionWorkspace = this.deps.workspace;
     let worktreeLease = options.worktreeLease;
@@ -143,7 +145,7 @@ export class SubagentRunner {
           });
         },
         conversationCallback: (messages) => {
-          conversation = structuredClone([...messages]);
+          conversation = [...messages];
         },
         hookUserPrompt: options.prompt,
       });

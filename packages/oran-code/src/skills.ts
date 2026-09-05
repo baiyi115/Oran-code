@@ -1,4 +1,5 @@
 import { mkdir, readFile, readdir, stat, writeFile } from "node:fs/promises";
+import { existsSync } from "node:fs";
 import type { Stats } from "node:fs";
 import { homedir } from "node:os";
 import { basename, dirname, extname, isAbsolute, resolve } from "node:path";
@@ -41,6 +42,7 @@ const SKILL_MODES = new Set<SkillMode>(["inline", "derived"]);
 const CONTEXT_LEVELS = new Set<SkillContextLevel>(["none", "recent", "long"]);
 const SKILL_SCOPES = new Set<SkillScope>(["builtin", "user", "project"]);
 const SKILL_CACHE_VERSION = 1;
+const MAX_SKILL_SOURCE_BYTES = 1_000_000;
 
 interface PersistedSkillRecord {
   readonly skill: SkillDefinition;
@@ -164,6 +166,9 @@ export class SkillLoader {
     const destinationDirectory = resolve(this.directories.project, parsed.name);
     const destination = resolve(destinationDirectory, "SKILL.md");
     if (dirname(destination) !== destinationDirectory) throw new Error(`unsafe skill name: ${parsed.name}`);
+    if (existsSync(destination)) {
+      throw new Error(`skill already exists: ${parsed.name}; remove it first or pass a different name`);
+    }
     await mkdir(destinationDirectory, { recursive: true });
     await writeFile(destination, installedContent, "utf8");
     await this.scan();
@@ -412,14 +417,22 @@ async function parseSkillContent(
 
 async function readSkillSource(source: string, workspace: string): Promise<string> {
   if (/^https?:\/\//i.test(source)) {
+    if (source.toLowerCase().startsWith("http://")) {
+      throw new Error(`refusing to fetch skill over insecure http: ${source}`);
+    }
     let response: Response;
     try {
-      response = await fetch(source);
+      // 无上限的响应体会把任意远端内容整个读进内存。
+      response = await fetch(source, { signal: AbortSignal.timeout(30_000), redirect: "follow" });
     } catch (error) {
       throw new Error(`failed to fetch skill ${source}: ${errorMessage(error)}`, { cause: error });
     }
     if (!response.ok) throw new Error(`failed to fetch skill ${source}: HTTP ${response.status}`);
-    return response.text();
+    const text = await response.text();
+    if (text.length > MAX_SKILL_SOURCE_BYTES) {
+      throw new Error(`skill source too large (>${MAX_SKILL_SOURCE_BYTES} bytes): ${source}`);
+    }
+    return text;
   }
 
   const localPath = isAbsolute(source) ? resolve(source) : resolve(workspace, source);

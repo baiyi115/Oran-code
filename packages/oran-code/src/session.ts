@@ -72,6 +72,7 @@ import {
   type SkillDefinition,
 } from "./skills.js";
 import { MemoryManager } from "./memory-manager.js";
+import { sweepOrphanWorktrees } from "./worktree/lifecycle.js";
 import type { HookEngine, HookSubAgentExecutor } from "./hook/index.js";
 import {
   CLI_NAME,
@@ -1979,8 +1980,24 @@ export class TerminalSession {
     this.agentStateRestore ??= (async () => {
       const runtime = await this.ensureAgentRuntime();
       await Promise.all([runtime.backgroundAgents.restore(), runtime.teams.restore()]);
+      await this.sweepOrphanWorktrees();
     })();
     await this.agentStateRestore;
+  }
+
+  /** 回收崩溃遗留且无任务租约引用的 worktree(best-effort)。 */
+  private async sweepOrphanWorktrees(): Promise<void> {
+    const runtime = this.agentRuntime;
+    if (!runtime) return;
+    const protectedSlugs = new Set<string>();
+    for (const task of runtime.backgroundAgents.list()) {
+      if (task.worktreeLease) protectedSlugs.add(task.worktreeLease.slug);
+    }
+    for (const team of runtime.teams.list()) {
+      for (const lease of team.worktreeLeases) protectedSlugs.add(lease.slug);
+    }
+    const removed = await sweepOrphanWorktrees(this.workspace, protectedSlugs).catch(() => [] as readonly string[]);
+    for (const slug of removed) this.renderer.status(`Reclaimed orphan worktree: ${slug}`, "cyan");
   }
 
   private writeDebugLog(message: string): void {

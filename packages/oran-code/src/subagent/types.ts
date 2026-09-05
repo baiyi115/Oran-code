@@ -165,6 +165,7 @@ export interface TeamMemberSnapshot {
 export interface TeamSnapshot {
   readonly name: string;
   readonly members: readonly TeamMemberSnapshot[];
+  readonly worktreeLeases: readonly SubagentWorktreeLease[];
 }
 
 export interface TeamMessageResult {

@@ -133,6 +133,9 @@ export class TeamManager {
   list(): readonly TeamSnapshot[] {
     return [...this.teams.values()].map((team) => ({
       name: team.name,
+      worktreeLeases: [...team.members.values()]
+        .map((member) => member.worktreeLease)
+        .filter((lease): lease is SubagentWorktreeLease => lease !== undefined),
       members: [...team.members.values()].map((member) => ({
         name: member.name,
         status: member.status,

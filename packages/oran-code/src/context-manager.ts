@@ -8,6 +8,8 @@ import { cloneMessages } from "./message-utils.js";
 
 export type ContextCompactionReason = "auto" | "manual" | "emergency";
 
+const MAX_OFFLOAD_FAILURES = 3;
+
 export const CONTEXT_LIMITS = Object.freeze({
   singleToolResultBytes: 50_000,
   toolRoundBytes: 200_000,
@@ -100,6 +102,7 @@ export class ContextManager {
   private readonly stateDirectory: string;
   private readonly seenIds = new Set<string>();
   private readonly replacements = new Map<string, string>();
+  private readonly offloadFailures = new Map<string, number>();
   private readonly recentFiles = new Map<string, RecentFile>();
   private readonly archivedUserOccurrences = new Set<string>();
   private usageAnchor: UsageAnchor | undefined;
@@ -144,6 +147,7 @@ export class ContextManager {
   reset(): void {
     this.seenIds.clear();
     this.replacements.clear();
+    this.offloadFailures.clear();
     this.recentFiles.clear();
     this.usageAnchor = undefined;
     this.estimateMemo = undefined;
@@ -257,6 +261,7 @@ export class ContextManager {
       }
       let end = start + 1;
       while (end < copy.length && copy[end]?.role === "tool") end += 1;
+      const isHistoricalRound = end < copy.length;
 
       const candidatesById = new Map<string, ToolCandidate>();
       let retainedBytes = 0;
@@ -277,7 +282,9 @@ export class ContextManager {
           }
           continue;
         }
-        if (this.seenIds.has(id)) {
+        if (this.seenIds.has(id) && (!isHistoricalRound || bytes <= CONTEXT_LIMITS.historicalToolResultBytes)) {
+          // seen id 免于重复 offload;但历史轮的超限内容不受豁免,否则历史轮
+          // 会随轮次推移永久超出预算。
           retainedBytes += bytes;
           continue;
         }
@@ -291,7 +298,6 @@ export class ContextManager {
         }
       }
 
-      const isHistoricalRound = end < copy.length;
       const maxSingleBytes = isHistoricalRound
         ? CONTEXT_LIMITS.historicalToolResultBytes
         : CONTEXT_LIMITS.singleToolResultBytes;
@@ -301,13 +307,18 @@ export class ContextManager {
         (left, right) => right.bytes - left.bytes || left.indices[0]! - right.indices[0]!,
       );
       const attempted = new Set<string>();
+      const canAttempt = (candidate: ToolCandidate): boolean =>
+        (this.offloadFailures.get(candidate.id) ?? 0) < MAX_OFFLOAD_FAILURES;
       const replace = async (candidate: ToolCandidate): Promise<void> => {
         attempted.add(candidate.id);
         const replacement = await this.persistToolResult(candidate);
         if (replacement === undefined) {
+          // 磁盘写入失败的内容每轮重试毫无意义:记录失败次数,超过上限后放行。
+          this.offloadFailures.set(candidate.id, (this.offloadFailures.get(candidate.id) ?? 0) + 1);
           failedCount += 1;
           return;
         }
+        this.offloadFailures.delete(candidate.id);
         for (const index of candidate.indices) copy[index]!.content = replacement;
         retainedBytes -= candidate.totalBytes;
         replacementCount += candidate.indices.length;
@@ -317,11 +328,11 @@ export class ContextManager {
       };
 
       for (const candidate of candidates) {
-        if (candidate.bytes > maxSingleBytes) await replace(candidate);
+        if (candidate.bytes > maxSingleBytes && canAttempt(candidate)) await replace(candidate);
       }
       for (const candidate of candidates) {
         if (retainedBytes <= maxRoundBytes) break;
-        if (!attempted.has(candidate.id)) await replace(candidate);
+        if (!attempted.has(candidate.id) && canAttempt(candidate)) await replace(candidate);
       }
       for (const candidate of candidates) {
         if (!attempted.has(candidate.id)) this.seenIds.add(candidate.id);
@@ -737,7 +748,18 @@ function selectRecentRawMessages(messages: readonly Message[]): Message[] {
   while (start > 0 && (tokens < CONTEXT_LIMITS.recentRawTokens || count < CONTEXT_LIMITS.recentRawMessages)) {
     start -= 1;
     const unit = units[start]!;
-    tokens += estimatedRequestTokens(unit, []);
+    const unitTokens = estimatedRequestTokens(unit, []);
+    // 单个超大 unit(如带 50KB 工具输出)不该把整个 recent 预算吃光:
+    // 在已保有至少一个单位且满足最小消息数时,丢弃这个超大单位。
+    if (
+      start < units.length - 1 &&
+      count >= CONTEXT_LIMITS.recentRawMessages &&
+      tokens + unitTokens > CONTEXT_LIMITS.recentRawTokens
+    ) {
+      start += 1;
+      break;
+    }
+    tokens += unitTokens;
     count += unit.length;
   }
   return cloneMessages(units.slice(start).flat());

@@ -278,7 +278,13 @@ export class TurnRequester {
     for (let attempt = 0; attempt <= this.ports.config.loop.maxRetries; attempt += 1) {
       this.ports.throwIfCancelled();
       try {
-        return await this.streamResponse(messages, loop, step, source, attempt, tools);
+        const response = await this.streamResponse(messages, loop, step, source, attempt, tools);
+        // 空响应(部分兼容端点会瞬时出现)按可重试错误处理,参与退避循环,
+        // 而不是直接让整个任务失败。
+        if (!response.text.trim() && !response.toolCalls.length) {
+          throw new Error("model returned an empty response");
+        }
+        return response;
       } catch (error) {
         if (isAbortError(error) || this.ports.getAbortSignal()?.aborted) throw error;
         if (this.ports.contextManager.isPromptTooLongError(error)) throw error;
@@ -306,7 +312,11 @@ export class TurnRequester {
           nextAttempt: attempt + 1,
           message,
         });
-        const delayMs = modelRetryDelayMs(attempt);
+        const delayMs = modelRetryDelayMs(
+          attempt,
+          Math.random,
+          error instanceof ModelRequestError ? error.retryAfterMs : undefined,
+        );
         this.ports.debugLogger(
           JSON.stringify({
             event: "model_retry",
@@ -514,6 +524,8 @@ export class TurnRequester {
         );
       }
       const aborted = isAbortError(error) || this.ports.getAbortSignal()?.aborted;
+      // 流中途失败前已经收到的用量也要入账,否则 token 预算会系统性低估。
+      loop.recordUsage(usage);
       // A non-cancellation model error is reported by the outer `error` event.
       // Emitting assistant_abort as well makes the TUI show the same failure
       // twice: once as a bracketed assistant suffix and once as an Error block.
@@ -533,7 +545,6 @@ export class TurnRequester {
       if (aborted && (textParts.length || completedToolCalls.size || reasoningParts.length)) {
         // Preserve partial assistant output so conversation history stays usable after cancel.
         // Tool execution is only safe after the full provider response completed.
-        loop.recordUsage(usage);
         return {
           text: textParts.join(""),
           ...(reasoningParts.length ? { reasoning: reasoningParts.join("") } : {}),

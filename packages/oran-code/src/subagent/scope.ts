@@ -8,28 +8,39 @@ import type {
 } from "./types.js";
 
 export const DEFAULT_FORK_WAIT_TIMEOUT_MS = 600_000;
+const DEFAULT_FORK_CONCURRENCY = 4;
 
 export class StructuredSubagentScope {
   private readonly tasks = new Map<string, StructuredSubagentTask>();
+  private readonly queue: Array<{
+    options: SubagentRunOptions;
+    task: StructuredSubagentTask;
+    resolve: (result: SubagentRunResult) => void;
+    reject: (error: unknown) => void;
+  }> = [];
+  private readonly maxConcurrent: number;
 
   constructor(
     private readonly runner: SubagentRunner,
     readonly forkWaitTimeoutMs = DEFAULT_FORK_WAIT_TIMEOUT_MS,
+    maxConcurrent = DEFAULT_FORK_CONCURRENCY,
   ) {
     assertTimeout(forkWaitTimeoutMs);
+    this.maxConcurrent = Math.max(1, maxConcurrent);
   }
 
   start(options: SubagentRunOptions): StructuredSubagentTask | UnsupportedSubagentOperation {
     if (options.continueAfterParentExit) return unsupportedContinueAfterParentExit();
     const id = options.taskId ?? `fork-${randomUUID()}`;
     const abortController = options.abortController ?? new AbortController();
-    const promise = Promise.resolve().then(() =>
-      this.runner.run({
-        ...options,
-        taskId: id,
-        abortController,
-      }),
-    );
+    // fork 与后台任务同样受并发上限约束:一批 N 个 agent 调用不应同时打满
+    // N 个模型请求,超出的排队等待。
+    let resolve!: (result: SubagentRunResult) => void;
+    let reject!: (error: unknown) => void;
+    const promise = new Promise<SubagentRunResult>((res, rej) => {
+      resolve = res;
+      reject = rej;
+    });
     const task: StructuredSubagentTask = {
       id,
       name: options.description,
@@ -41,8 +52,56 @@ export class StructuredSubagentScope {
       promise,
     };
     this.tasks.set(id, task);
-    void promise.then((result) => this.finish(task, result));
+    const entry = { options, task, resolve, reject };
+    if (this.runningCount() <= this.maxConcurrent) this.launch(entry);
+    else this.queue.push(entry);
     return task;
+  }
+
+  private runningCount(): number {
+    let count = 0;
+    for (const task of this.tasks.values()) {
+      if (task.status === "running") count += 1;
+    }
+    return count;
+  }
+
+  private launch(entry: {
+    options: SubagentRunOptions;
+    task: StructuredSubagentTask;
+    resolve: (result: SubagentRunResult) => void;
+    reject: (error: unknown) => void;
+  }): void {
+    const { options, task, resolve, reject } = entry;
+    Promise.resolve()
+      .then(() =>
+        this.runner.run({
+          ...options,
+          taskId: task.id,
+          abortController: task.abortController,
+        }),
+      )
+      .then(
+        (result) => {
+          this.finish(task, result);
+          this.drainQueue();
+          resolve(result);
+        },
+        (error) => {
+          if (task.status !== "timed_out") {
+            task.status = "failed";
+            task.endedAt = new Date().toISOString();
+            task.error = error instanceof Error ? error.message : String(error);
+          }
+          this.drainQueue();
+          reject(error);
+        },
+      );
+  }
+
+  private drainQueue(): void {
+    const next = this.queue.shift();
+    if (next) this.launch(next);
   }
 
   list(): readonly StructuredSubagentTask[] {
@@ -92,6 +151,13 @@ export class StructuredSubagentScope {
   }
 
   cancelAll(): void {
+    // 排队中的 fork 还没有真实 promise,必须在这里落定,否则等待方会永久挂起。
+    for (const entry of [...this.queue]) {
+      entry.task.status = "cancelled";
+      entry.task.endedAt = new Date().toISOString();
+      entry.reject(new Error("fork cancelled while queued"));
+    }
+    this.queue.length = 0;
     for (const task of this.tasks.values()) {
       if (task.status === "running") task.abortController.abort();
     }

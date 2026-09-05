@@ -57,8 +57,12 @@ export function isRetryableModelStatus(status: number): boolean {
 const RETRY_BACKOFF_BASE_MS = 500;
 const RETRY_BACKOFF_MAX_MS = 8_000;
 
-/** Exponential retry delay with a small jitter so concurrent clients do not retry in lockstep. */
-export function modelRetryDelayMs(attempt: number, random = Math.random): number {
+/** Exponential retry delay with a small jitter so concurrent clients do not retry in lockstep.
+ *  服务端给出 Retry-After 时优先遵循(封顶 120s)。 */
+export function modelRetryDelayMs(attempt: number, random = Math.random, retryAfterMs?: number): number {
+  if (retryAfterMs !== undefined && retryAfterMs > 0) {
+    return Math.min(120_000, retryAfterMs) + Math.floor(Math.max(0, Math.min(1, random())) * 250);
+  }
   const exponent = Math.max(0, Math.trunc(attempt));
   const base = Math.min(RETRY_BACKOFF_BASE_MS * 2 ** exponent, RETRY_BACKOFF_MAX_MS);
   return base + Math.floor(Math.max(0, Math.min(1, random())) * 250);

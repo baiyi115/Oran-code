@@ -70,9 +70,16 @@ export function parseSseJson(event: string): Record<string, unknown> | undefined
   if (!dataLines.length) return undefined;
   const data = dataLines.join("\n");
   if (!data.trim() || data.trim() === "[DONE]") return undefined;
-  const parsed: unknown = JSON.parse(data);
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(data);
+  } catch {
+    // 单条畸形事件(代理损坏、截断)跳过即可;抛出去会丢弃整个流并触发
+    // 全量重放重计费。
+    return undefined;
+  }
   if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
-    throw new Error("invalid SSE JSON payload: expected an object");
+    return undefined;
   }
   return parsed as Record<string, unknown>;
 }

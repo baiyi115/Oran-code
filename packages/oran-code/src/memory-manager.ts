@@ -310,14 +310,25 @@ async function listMarkdownFiles(directory: string): Promise<string[]> {
 async function atomicWrite(path: string, content: string): Promise<void> {
   const temporary = resolve(dirname(path), `.${basename(path)}.${randomUUID()}.tmp`);
   await writeFile(temporary, content, "utf8");
+  // Windows 上目标文件可能被杀软/索引器短暂占用:先重试 rename,最后才考虑
+  // 删除目标再重试——顺序反了会在第二次 rename 也失败时丢掉原文件。
   try {
     await rename(temporary, path);
   } catch {
-    await unlink(path).catch(() => undefined);
-    await rename(temporary, path);
+    await sleep(100);
+    try {
+      await rename(temporary, path);
+    } catch {
+      await unlink(path).catch(() => undefined);
+      await rename(temporary, path);
+    }
   } finally {
     await unlink(temporary).catch(() => undefined);
   }
+}
+
+function sleep(ms: number): Promise<void> {
+  return new Promise((resolveTimer) => setTimeout(resolveTimer, ms));
 }
 
 function boundLines(lines: readonly string[], maxLines: number, maxBytes: number): string {

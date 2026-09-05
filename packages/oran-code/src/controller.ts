@@ -435,11 +435,13 @@ export class TaskController {
           });
           const preExecutionNoProgress = loop.noProgressDiagnosticForNextCalls(nonReadonlyCalls);
           if (preExecutionNoProgress) {
-            this.recordNoProgressBlock(task, response.toolCalls, preExecutionNoProgress);
+            // 只伪造被阻止的写入/命令调用;同批的只读调用并没有被阻止,留给
+            // 修复路径补齐配对,避免转写出现与事实不符的 "blocked" 结果。
+            this.recordNoProgressBlock(task, nonReadonlyCalls, preExecutionNoProgress);
             await this.toolExecutor.reconcileToolCalls(
               task,
               messages,
-              response.toolCalls,
+              nonReadonlyCalls,
               "repeated tool execution blocked before execution",
               false,
             );

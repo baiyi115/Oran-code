@@ -23,7 +23,7 @@ export async function executeAction(
       case "prompt":
         return executePrompt(action, intercept);
       case "http":
-        return await executeHttp(action, ctx, deps, intercept);
+        return await executeHttp(action, ctx, deps, defaultTimeoutMs, intercept);
       case "subagent":
         return await executeSubAgent(action, ctx, deps, intercept);
       default:
@@ -60,6 +60,7 @@ async function executeHttp(
   action: HookAction,
   ctx: HookEventContext,
   deps: HookEngineDeps,
+  defaultTimeoutMs: number,
   intercept: boolean,
 ): Promise<HookResult> {
   const url = action.url?.trim();
@@ -78,7 +79,15 @@ async function executeHttp(
   };
   const body = JSON.stringify(bodyContext);
   const headers: Record<string, string> = { "content-type": "application/json", ...(action.headers ?? {}) };
-  const { ok, status, body: responseBody } = await deps.fetch(url, { method, headers, body });
+  // 不带超时的 fetch 会永久阻塞 agent 循环(端点挂起不响应);超时由 deps.fetch
+  // 以 { ok:false, status:0 } 形式返回。
+  const timeoutMs = action.timeoutMs ?? defaultTimeoutMs;
+  const { ok, status, body: responseBody } = await deps.fetch(url, {
+    method,
+    headers,
+    body,
+    signal: AbortSignal.timeout(timeoutMs),
+  });
   const output = status >= 200 && status < 300 ? responseBody : `HTTP ${status}: ${responseBody}`;
   return { output, ok: ok && status >= 200 && status < 300, intercept };
 }

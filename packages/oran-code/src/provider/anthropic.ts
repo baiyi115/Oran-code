@@ -8,7 +8,7 @@ import type {
   ToolCall,
 } from "../types.js";
 import { CLIENT_ID, CLIENT_USER_AGENT, PRODUCT_VERSION } from "../paths.js";
-import { ModelRequestError, boundedError, streamErrorMessage } from "./errors.js";
+import { ModelRequestError, boundedError, retryAfterMsFromResponse, streamErrorMessage } from "./errors.js";
 import { parseSseJson, readSseEvents } from "./sse.js";
 import {
   createStreamingRequest,
@@ -42,7 +42,7 @@ export class AnthropicProvider implements ModelProvider {
       body: JSON.stringify(this.payload(messages, tools, false)),
       ...(options?.signal ? { signal: options.signal } : {}),
     });
-    if (!response.ok) throw new ModelRequestError(response.status, await boundedError(response));
+    if (!response.ok) throw new ModelRequestError(response.status, await boundedError(response), retryAfterMsFromResponse(response));
     const data = (await response.json()) as Record<string, unknown>;
     return parseAnthropicMessage(data, false);
   }
@@ -60,7 +60,7 @@ export class AnthropicProvider implements ModelProvider {
         body: JSON.stringify(this.payload(messages, tools, true)),
         signal: request.signal,
       });
-      if (!response.ok) throw new ModelRequestError(response.status, await boundedError(response));
+      if (!response.ok) throw new ModelRequestError(response.status, await boundedError(response), retryAfterMsFromResponse(response));
       const contentType = response.headers.get("content-type") ?? "";
       if (!contentType.includes("text/event-stream") || !response.body) {
         yield* modelResponseChunks(parseAnthropicMessage((await response.json()) as Record<string, unknown>, false));
@@ -264,7 +264,8 @@ function toAnthropicMessages(messages: Message[]): {
     if (message.role === "tool") {
       pendingToolResults.push({
         type: "tool_result",
-        tool_use_id: message.toolCallId ?? `tool_${pendingToolResults.length}`,
+        // 与 assistant 侧 tool_use 的 id fallback 保持同一方案,否则配不上对会 400。
+        tool_use_id: message.toolCallId ?? `call_${message.name ?? "unknown"}`,
         content: message.content ?? "",
         is_error: false,
       });
@@ -286,10 +287,10 @@ function toAnthropicMessages(messages: Message[]): {
           input: call.arguments ?? {},
         });
       }
-      conversation.push({
-        role: "assistant",
-        content: content.length ? content : [{ type: "text", text: message.content ?? "" }],
-      });
+      // 空内容且无 toolCalls 的 assistant 消息会被 API 以空 text block 拒绝(400
+      // 且不可重试),直接跳过。
+      if (!content.length) continue;
+      conversation.push({ role: "assistant", content });
     }
   }
   flushToolResults();

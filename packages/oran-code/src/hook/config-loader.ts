@@ -126,6 +126,7 @@ export function createHookEngineDeps(options: {
     fetch: async (url, init) => {
       try {
         const requestInit: Record<string, unknown> = { method: init.method };
+        if (init.signal) requestInit.signal = init.signal;
         if (init.headers) requestInit.headers = init.headers;
         if (init.body !== undefined) requestInit.body = init.body;
         const response = await (
