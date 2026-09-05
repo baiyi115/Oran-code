@@ -10,6 +10,7 @@ import { displayPath, errorMessage, failedResult, intArg } from "./fs-helpers.js
 const execFileAsync = promisify(execFile);
 
 const DEFAULT_READ_LIMIT = 200;
+const MAX_READ_LINE_CHARS = 2_000;
 const DEFAULT_GLOB_LIMIT = 200;
 const DEFAULT_SEARCH_LIMIT = 200;
 /** 灾难性回溯需要长输入;超长行只匹配前缀。 */
@@ -114,7 +115,9 @@ export function registerReadTools(registry: { register(tool: ToolDefinition): vo
         const width = String(startIndex + slice.length).length;
         const numbered = slice.map((line, index) => {
           const lineNo = String(startIndex + index + 1).padStart(width, " ");
-          return `${lineNo}|${line}`;
+          // 超长单行(如压缩过的 JS)截断,避免一行撑爆整个输出预算。
+          const text = line.length > MAX_READ_LINE_CHARS ? `${line.slice(0, MAX_READ_LINE_CHARS)}...[line truncated]` : line;
+          return `${lineNo}|${text}`;
         });
         const remaining = lines.length - (startIndex + slice.length);
         if (remaining > 0) numbered.push(`...[${remaining} more lines]`);

@@ -404,7 +404,8 @@ export class TaskController {
             const planText = extractPlanText(response.text) || response.text.trim();
             const last = messages[messages.length - 1];
             if (last?.role === "assistant") {
-              last.content = planText;
+              // 以替换代替就地改写:克隆缓存按对象身份生效,改写会使其失真。
+              messages[messages.length - 1] = { ...last, content: planText };
               this.syncConversation(messages);
             }
             task.plan = planText;
@@ -614,11 +615,22 @@ export class TaskController {
     return this.trace.appendStep(taskId, kind, payload);
   }
 
+  /** 消息入列后视为不可变;按对象身份缓存深克隆,同步只对新消息付费。 */
+  private readonly conversationClones = new WeakMap<Message, Message>();
+
+  private cachedClone(message: Message): Message {
+    let cached = this.conversationClones.get(message);
+    if (!cached) {
+      cached = cloneMessages([message])[0]!;
+      this.conversationClones.set(message, cached);
+    }
+    return cached;
+  }
+
   private syncConversation(messages: readonly Message[]): void {
-    this.conversation = cloneMessages(
-      messages.filter((message) => message.role !== "system" || message.metadata?.contextManaged === true),
-    );
-    this.conversationCallback(cloneMessages(this.conversation));
+    const filtered = messages.filter((message) => message.role !== "system" || message.metadata?.contextManaged === true);
+    this.conversation = filtered.map((message) => this.cachedClone(message));
+    this.conversationCallback([...this.conversation]);
   }
 
   private async trackSuccessfulFileRead(workspace: string, call: ToolCall): Promise<void> {

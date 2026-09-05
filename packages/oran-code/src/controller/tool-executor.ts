@@ -257,6 +257,10 @@ export class ToolBatchExecutor {
           }
         }
         const results = new Map<number, { call: ToolCall; result: ToolResult; duration: number; mutated: boolean }>();
+        // 指纹按批取前后各一次;逐调用前后各跑一次 git status 在大仓库上代价过高。
+        const batchBefore = executable.some((item) => this.isPotentiallyMutating(item.call))
+          ? await workspaceFingerprint(task.workspace)
+          : undefined;
         for (let offset = 0; offset < executable.length; offset += concurrency) {
           this.ports.throwIfCancelled();
           const slice = executable.slice(offset, offset + concurrency);
@@ -274,9 +278,6 @@ export class ToolBatchExecutor {
                   arguments: summarizeArguments(item.call.arguments),
                 }),
               );
-              const beforeWorkspace = this.isPotentiallyMutating(item.call)
-                ? await workspaceFingerprint(task.workspace)
-                : undefined;
               const before = await fileHash(task.workspace, item.call);
               let result: ToolResult;
               try {
@@ -299,10 +300,6 @@ export class ToolBatchExecutor {
               }
               const duration = Date.now() - started;
               const after = await fileHash(task.workspace, item.call);
-              const afterWorkspace =
-                beforeWorkspace === undefined ? undefined : await workspaceFingerprint(task.workspace);
-              const mutated =
-                beforeWorkspace !== undefined && afterWorkspace !== undefined && beforeWorkspace !== afterWorkspace;
               if (before && after && before.hash !== after.hash) {
                 this.ports.trace.appendFileChange(task.id, before.path, before.hash, after.hash);
               }
@@ -320,9 +317,15 @@ export class ToolBatchExecutor {
                   metadata: { ...executedResult.metadata, cached: false },
                 });
               }
-              results.set(item.index, { call: item.call, result: executedResult, duration, mutated });
+              results.set(item.index, { call: item.call, result: executedResult, duration, mutated: false });
             }),
           );
+        }
+        const batchAfter = batchBefore === undefined ? undefined : await workspaceFingerprint(task.workspace);
+        if (batchBefore !== undefined && batchAfter !== undefined && batchBefore !== batchAfter) {
+          for (const entry of results.values()) {
+            if (this.isPotentiallyMutating(entry.call)) entry.mutated = true;
+          }
         }
 
         // Write back in original model order (skipped + executed).

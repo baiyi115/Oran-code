@@ -1,5 +1,5 @@
 import { execFile } from "node:child_process";
-import { mkdir, readFile, rename, writeFile } from "node:fs/promises";
+import { mkdir, readFile, rename, stat, writeFile } from "node:fs/promises";
 import { dirname } from "node:path";
 import { parse, stringify } from "yaml";
 import type { PermissionConfig, PermissionMode, ToolCall, ToolKind } from "./types.js";
@@ -541,6 +541,7 @@ function isReadOnlyGitCommand(cmd: ShellCommandNode): boolean {
 export class PermissionPolicy {
   private readonly taskAllows = new Set<string>();
   private readonly registeredKinds = new Map<string, ToolKind>();
+  private resolvedRoots: { key: string; roots: (string | undefined)[] } | undefined;
 
   constructor(private readonly config: PermissionConfig) {}
 
@@ -644,9 +645,17 @@ export class PermissionPolicy {
     }
 
     if (kind !== "command" && resolvedPath !== undefined) {
-      const roots = await Promise.all(
-        this.config.allowedRoots.map((root) => resolvePhysicalPath(root, this.config.workspace)),
-      );
+      // allowedRoots 在会话内基本不变,按内容键记忆化物理解析,免去每次调用的 lstat 链。
+      const rootsKey = this.config.allowedRoots.join("\u0000");
+      if (this.resolvedRoots?.key !== rootsKey) {
+        this.resolvedRoots = {
+          key: rootsKey,
+          roots: await Promise.all(
+            this.config.allowedRoots.map((root) => resolvePhysicalPath(root, this.config.workspace)),
+          ),
+        };
+      }
+      const roots = this.resolvedRoots.roots;
       if (!roots.some((root) => root !== undefined && isWithinPath(root, resolvedPath))) {
         return decision(
           "deny",
@@ -822,9 +831,18 @@ function formatRule(rule: PermissionRule): string {
   return `${rule.tool}(${rule.pattern})`;
 }
 
+const rulesCache = new Map<string, { mtimeMs: number; size: number; rules: PermissionRule[] }>();
+
 async function loadRules(path: string): Promise<PermissionRule[]> {
   try {
-    return normalizeRules(parse(await readFile(path, "utf8")));
+    const text = await readFile(path, "utf8");
+    const stats = await stat(path).catch(() => undefined);
+    const cached = stats ? rulesCache.get(path) : undefined;
+    if (cached && stats && cached.mtimeMs === stats.mtimeMs && cached.size === stats.size) return cached.rules;
+    const rules = normalizeRules(parse(text));
+    if (stats) rulesCache.set(path, { mtimeMs: stats.mtimeMs, size: stats.size, rules });
+    else rulesCache.delete(path);
+    return rules;
   } catch (error) {
     // ENOENT is expected when no permission file exists; other errors (YAML
     // syntax, invalid structure) are surfaced so users can fix the file.
