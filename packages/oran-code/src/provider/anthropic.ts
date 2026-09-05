@@ -10,6 +10,7 @@ import type {
 import { CLIENT_ID, CLIENT_USER_AGENT, PRODUCT_VERSION } from "../paths.js";
 import { ModelRequestError, boundedError, retryAfterMsFromResponse, streamErrorMessage } from "./errors.js";
 import { parseSseJson, readSseEvents } from "./sse.js";
+import { appendTailReminder } from "./common.js";
 import {
   createStreamingRequest,
   modelResponseChunks,
@@ -294,19 +295,7 @@ function toAnthropicMessages(messages: Message[]): {
     }
   }
   flushToolResults();
-  if (tailReminders.length) {
-    const reminderText = tailReminders.join("\n\n");
-    const last = conversation[conversation.length - 1];
-    if (last && last.role === "user") {
-      if (typeof last.content === "string") {
-        last.content = `${last.content}\n\n${reminderText}`;
-      } else if (Array.isArray(last.content)) {
-        last.content.push({ type: "text", text: reminderText });
-      }
-    } else {
-      conversation.push({ role: "user", content: reminderText });
-    }
-  }
+  if (tailReminders.length) appendTailReminder(conversation, tailReminders.join("\n\n"));
   if (conversation.length) {
     const last = conversation[conversation.length - 1]!;
     if (Array.isArray(last.content) && last.content.length) {

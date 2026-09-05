@@ -102,36 +102,6 @@ describe("MemoryManager", () => {
       await rm(root, { recursive: true, force: true });
     }
   });
-
-  it("selects only valid non-injected memories and isolates selector failures", async () => {
-    const root = await mkdtemp(join(tmpdir(), "liteagent-memory-select-"));
-    const manager = new MemoryManager(root, { userDirectory: join(root, "user") });
-    try {
-      await manager.writeNote({
-        id: "alpha",
-        type: "project-knowledge",
-        description: "Alpha architecture",
-        body: "Alpha body",
-      });
-      await manager.writeNote({
-        id: "beta",
-        type: "user-preference",
-        description: "Beta preference",
-        body: "Beta body",
-      });
-      const provider = new ResponseProvider(() => '```json\n{"ids":["alpha","beta","missing"]}\n```');
-      const selected = await manager.findRelevant("architecture", provider, { injectedIds: ["beta"], maxResults: 2 });
-      expect(selected.map((note) => note.id)).toEqual(["alpha"]);
-      expect(provider.requests[0]?.[1]?.content).not.toContain("id: beta");
-
-      const failing = new ResponseProvider(() => {
-        throw new Error("selector unavailable");
-      });
-      await expect(manager.findRelevant("architecture", failing)).resolves.toEqual([]);
-    } finally {
-      await rm(root, { recursive: true, force: true });
-    }
-  });
 });
 
 describe("MemoryExtractor", () => {

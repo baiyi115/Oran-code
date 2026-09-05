@@ -3,7 +3,14 @@ import { existsSync } from "node:fs";
 import { appendFile, mkdir, readFile, readdir, rename, stat, unlink, utimes, writeFile } from "node:fs/promises";
 import { dirname, extname, resolve } from "node:path";
 import type { TranscriptMessage } from "./tui/types.js";
-import type { Message, ModelReference, SessionTitleMode, TaskPlanState } from "./types.js";
+import {
+  archivePrompt,
+  DEFAULT_SESSION_NAMES,
+  firstConversationPrompt,
+  truncateSessionName,
+} from "./session-naming.js";
+import { comparablePath } from "./utils/path-containment.js";
+import type { Message, ModelReference, TaskPlanState } from "./types.js";
 import {
   isPermissionMode,
   isReasoningEffort,
@@ -39,6 +46,8 @@ export interface StoredSession {
 type StoredSessionState = Omit<StoredSession, "conversation">;
 export interface SessionStateRecord {
   type: "state";
+  /** 归档记录 schema 版本;读取侧对缺省(旧文件)按 v1 处理。 */
+  version?: 1;
   timestamp: string;
   session: StoredSessionState;
 }
@@ -80,7 +89,6 @@ export type SessionJsonlRecord =
   | SessionResetRecord
   | SessionTaskPlanRecord;
 
-const DEFAULT_SESSION_NAMES = new Set(["Current session", "New session"]);
 export type StoredSessionPatch = Partial<
   Pick<
     StoredSession,
@@ -786,6 +794,7 @@ function stateRecord(session: StoredSession, timestamp: string): SessionStateRec
   const state = storedSessionState(session);
   return {
     type: "state",
+    version: 1,
     timestamp,
     // The append-only archive only needs a lightweight metadata checkpoint.
     // The latest full TUI transcript is overwritten in the sidecar instead.
@@ -930,9 +939,9 @@ function isSafeSessionId(id: string): boolean {
   return /^[A-Za-z0-9._-]+$/.test(id) && id !== "." && id !== "..";
 }
 function normalizeWorkspace(workspace: string): string {
-  return resolve(workspace)
-    .replace(/[\\/]+$/, "")
-    .toLowerCase();
+  // posix 路径区分大小写,只有 win32 才折叠;统一小写会让两个仅大小写
+  // 不同的工作区在 Linux 上互相串会话。
+  return comparablePath(resolve(workspace).replace(/[\\/]+$/, ""));
 }
 function isStoredSession(value: unknown): value is StoredSession {
   return (
@@ -1085,51 +1094,4 @@ function firstArchiveTitle(records: readonly SessionJsonlRecord[]): string | und
     }
   }
   return undefined;
-}
-function archivePrompt(value: string): string | undefined {
-  const normalized = normalizeSessionPrompt(extractConversationPrompt(value));
-  return normalized ? truncateSessionName(normalized, 48) : undefined;
-}
-
-/** Keep persisted semantic/manual names, otherwise derive a stable local title. */
-export function displaySessionName(
-  session: Pick<StoredSession, "name" | "autoNamed" | "titleSource" | "messages" | "archiveTitle">,
-  mode: SessionTitleMode = "local",
-): string {
-  if (!isAutomaticSessionName(session)) return session.name;
-  if (session.titleSource === "model") return session.name;
-  if (session.archiveTitle) return session.archiveTitle;
-  const prompts = session.messages
-    .filter((message) => message.kind === "user")
-    .map((message) => normalizeSessionPrompt(message.text))
-    .filter(Boolean);
-  const prompt = mode === "first-message" ? prompts[0] : (prompts.find((value) => !isGreeting(value)) ?? prompts[0]);
-  return prompt ? truncateSessionName(prompt, 48) : session.name;
-}
-export function isAutomaticSessionName(session: Pick<StoredSession, "name" | "autoNamed">): boolean {
-  return session.autoNamed ?? DEFAULT_SESSION_NAMES.has(session.name);
-}
-export function firstConversationPrompt(messages: readonly Message[]): string | undefined {
-  const prompts = messages
-    .filter((message) => message.role === "user" && typeof message.content === "string")
-    .map((message) => normalizeSessionPrompt(extractConversationPrompt(message.content ?? "")))
-    .filter(Boolean);
-  return prompts.find((value) => !isGreeting(value)) ?? prompts[0];
-}
-function extractConversationPrompt(value: string): string {
-  const marker = "\n\nUser message:\n";
-  const index = value.lastIndexOf(marker);
-  return index >= 0 ? value.slice(index + marker.length) : value;
-}
-function normalizeSessionPrompt(value: string): string {
-  return value.replace(/\s+/g, " ").trim();
-}
-function isGreeting(value: string): boolean {
-  return /^(?:hi|hello|hey|你好|您好|嗨|在吗)[!！,.，。?？\s]*$/i.test(value);
-}
-export function truncateSessionName(value: string, maximumCharacters: number): string {
-  const characters = Array.from(value);
-  return characters.length <= maximumCharacters
-    ? value
-    : `${characters.slice(0, Math.max(1, maximumCharacters - 1)).join("")}…`;
 }

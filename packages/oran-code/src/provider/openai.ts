@@ -11,6 +11,7 @@ import { CLIENT_ID, CLIENT_USER_AGENT, PRODUCT_VERSION } from "../paths.js";
 import { ModelRequestError, boundedError, retryAfterMsFromResponse, streamErrorMessage } from "./errors.js";
 import { parseSseJson, readSseEvents } from "./sse.js";
 import { createStreamingRequest, modelResponseChunks, numericUsage, requestOptions } from "./transport.js";
+import { appendTailReminder } from "./common.js";
 
 export class OpenAICompatibleProvider implements ModelProvider {
   private readonly endpoint: string;
@@ -26,6 +27,24 @@ export class OpenAICompatibleProvider implements ModelProvider {
       : `${base.replace(/\/$/, "")}/chat/completions`;
   }
 
+  /** 发出请求;400+reasoning 的剥参回退只做一次,其余错误原样抛出。 */
+  private async postWithReasoningFallback(send: () => Promise<Response>): Promise<Response> {
+    let response = await send();
+    if (!response.ok) {
+      const detail = await boundedError(response);
+      if (response.status === 400 && this.sendsReasoningEffort() && /reasoning/i.test(detail)) {
+        await this.markReasoningUnsupported();
+        response = await send();
+      } else {
+        throw new ModelRequestError(response.status, detail, retryAfterMsFromResponse(response));
+      }
+    }
+    if (!response.ok) {
+      throw new ModelRequestError(response.status, await boundedError(response), retryAfterMsFromResponse(response));
+    }
+    return response;
+  }
+
   async complete(
     messages: Message[],
     tools?: Record<string, unknown>[],
@@ -38,17 +57,7 @@ export class OpenAICompatibleProvider implements ModelProvider {
         body: JSON.stringify(this.payload(messages, tools, false)),
         ...(options?.signal ? { signal: options.signal } : {}),
       });
-    let response = await request();
-    if (!response.ok) {
-      const detail = await boundedError(response);
-      if (response.status === 400 && this.sendsReasoningEffort() && /reasoning/i.test(detail)) {
-        await this.markReasoningUnsupported();
-        response = await request();
-      } else {
-        throw new ModelRequestError(response.status, detail);
-      }
-    }
-    if (!response.ok) throw new ModelRequestError(response.status, await boundedError(response), retryAfterMsFromResponse(response));
+    const response = await this.postWithReasoningFallback(request);
     const data = (await response.json()) as Record<string, unknown>;
     return parseCompletion(data, false);
   }
@@ -67,17 +76,7 @@ export class OpenAICompatibleProvider implements ModelProvider {
           body: JSON.stringify(this.payload(messages, tools, true)),
           signal: request.signal,
         });
-      let response = await send();
-      if (!response.ok) {
-        const detail = await boundedError(response);
-        if (response.status === 400 && this.sendsReasoningEffort() && /reasoning/i.test(detail)) {
-          await this.markReasoningUnsupported();
-          response = await send();
-        } else {
-          throw new ModelRequestError(response.status, detail);
-        }
-      }
-      if (!response.ok) throw new ModelRequestError(response.status, await boundedError(response), retryAfterMsFromResponse(response));
+      const response = await this.postWithReasoningFallback(send);
       const contentType = response.headers.get("content-type") ?? "";
       if (!contentType.includes("text/event-stream") || !response.body) {
         yield* modelResponseChunks(parseCompletion((await response.json()) as Record<string, unknown>, false));
@@ -235,15 +234,7 @@ function toOpenAiMessages(messages: readonly Message[]): Record<string, unknown>
     }
     result.push(toApiMessage(message));
   }
-  if (tailReminders.length) {
-    const reminderText = tailReminders.join("\n\n");
-    const last = result[result.length - 1];
-    if (last && last.role === "user" && typeof last.content === "string") {
-      last.content = `${last.content}\n\n${reminderText}`;
-    } else {
-      result.push({ role: "user", content: reminderText });
-    }
-  }
+  if (tailReminders.length) appendTailReminder(result, tailReminders.join("\n\n"));
   return result;
 }
 
