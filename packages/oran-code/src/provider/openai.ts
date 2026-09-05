@@ -96,13 +96,12 @@ export class OpenAICompatibleProvider implements ModelProvider {
       if (!state.emittedCalls && state.calls.size) {
         yield* openAiToolCallChunks(state);
       }
-      // 兼容实现可能始终不发 finish_reason;工具调用已补发,这里按内容合成
-      // 收尾事件,而不是把已经流出的增量整条作废。
-      yield {
-        type: "response_complete",
-        streamed: true,
-        finishReason: state.finishReason ?? (state.emittedCalls || state.calls.size ? "tool_calls" : "stop"),
-      };
+      // 缺 finish_reason 视为异常流(有测试锁定该契约),上游按失败处理,
+      // 而不是为缺失的收尾事件合成一个默认值。
+      if (state.finishReason === undefined) {
+        throw new Error("OpenAI-compatible stream ended without a finish_reason");
+      }
+      yield { type: "response_complete", streamed: true, finishReason: state.finishReason };
     } finally {
       request.dispose();
     }

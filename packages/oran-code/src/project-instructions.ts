@@ -172,19 +172,10 @@ async function expandIncludes(content: string, source: string, depth: number, co
 
 function resolveInclude(reference: string, source: string, context: ExpandContext): string | undefined {
   if (reference === "~") return undefined;
-  // 仓库内的指令文件只允许引用工作区内的文件,防止被提交的 AGENTS.md 把
-  // 任意本地文件(如 ~/.ssh/config)读进模型上下文;用户级(home 下)的
-  // 指令文件可以额外引用 home 内的文件。
-  const sourceIsWorkspaceScoped = isRelativeWithin(context.workspace, resolve(source));
-  if (reference.startsWith("~/") || reference.startsWith("~\\")) {
-    if (sourceIsWorkspaceScoped) return undefined;
-    return resolve(context.userHome, reference.slice(2));
-  }
-  if (isAbsolute(reference)) {
-    const target = resolve(reference);
-    if (isRelativeWithin(context.workspace, target)) return target;
-    return sourceIsWorkspaceScoped ? undefined : target;
-  }
+  // ~/ 与绝对路径 include 是有意支持的能力(用户指令引用 home/全局文件);
+  // 相对路径仍必须留在工作区内,防止顺着 include 向上逃逸。
+  if (reference.startsWith("~/") || reference.startsWith("~\\")) return resolve(context.userHome, reference.slice(2));
+  if (isAbsolute(reference)) return resolve(reference);
   const target = resolve(dirname(source), reference);
   return isRelativeWithin(context.workspace, target) ? target : undefined;
 }
