@@ -36,6 +36,7 @@ import {
   workModeForPermission,
 } from "./session-lifecycle.js";
 import { SessionCrudService } from "./session-crud.js";
+import { workspaceFingerprint } from "./controller-utils.js";
 import { TerminalRenderer, createPromptHooks, type SessionRenderer } from "./renderer.js";
 import { createTask } from "./types.js";
 import { displaySessionName, isAutomaticSessionName, SessionStore, type StoredSession } from "./session-store.js";
@@ -169,7 +170,8 @@ export class TerminalSession {
   private compactPromise: Promise<void> | undefined;
   private compactAbortController: AbortController | undefined;
   private previousToolHistory: ToolCall[] = [];
-  private previousReadonlyResults?: ReadonlyMap<string, ToolResult>;
+  private previousReadonlyResults: ReadonlyMap<string, ToolResult> | undefined;
+  private previousWorkspaceFingerprint: string | undefined;
   private contextEventSequence = 0;
   private readonly approvalQueue: ApprovalQueue;
   private workMode: WorkMode;
@@ -777,6 +779,13 @@ export class TerminalSession {
     });
     const hookEngine = await this.ensureHookEngine(runner);
     const consumedBackgroundNotifications: string[] = [];
+    // 只读缓存跨提示复用前,先确认工作区在两次提示之间没有被外部改动。
+    if (this.previousReadonlyResults !== undefined && this.previousWorkspaceFingerprint !== undefined && !isolated) {
+      const current = await workspaceFingerprint(this.workspace).catch(() => undefined);
+      if (current === undefined || current !== this.previousWorkspaceFingerprint) {
+        this.previousReadonlyResults = undefined;
+      }
+    }
     const controller = new TaskController({
       config: runtimeConfig,
       provider: this.providerFactory(requestModel),
@@ -861,6 +870,10 @@ export class TerminalSession {
       }
       this.previousToolHistory = controller.toolCallHistory;
       this.previousReadonlyResults = controller.readonlyResultSnapshot;
+      if (!isolated) {
+        const fingerprint = await workspaceFingerprint(this.workspace).catch(() => undefined);
+        if (fingerprint !== undefined) this.previousWorkspaceFingerprint = fingerprint;
+      }
       if (!isolated) this.conversation = conversationSnapshot;
       this.taskGeneration += 1;
       await this.persistTuiSession();
@@ -1284,8 +1297,9 @@ export class TerminalSession {
     const sessionId = session.id;
     const sessionGeneration = this.sessionGeneration;
     const taskGeneration = this.taskGeneration;
-    const conversation = structuredClone(
-      this.conversation.filter((message) => message.metadata?.promptBlock !== "session-gap-reminder"),
+    // filter 产生的新数组即可:消息对象入列后不可变,store 侧会自行 cloneMessages。
+    const conversation = this.conversation.filter(
+      (message) => message.metadata?.promptBlock !== "session-gap-reminder",
     );
     this.sessionSave = this.sessionSave.then(async () => {
       try {
@@ -1379,14 +1393,17 @@ export class TerminalSession {
     }
     this.renderer.render(event);
     await this.tui?.flushPendingRender(renderCommitKind(event));
-    this.scheduleTuiSessionPersist();
+    // 流式 delta 不触发持久化,等边界事件再落盘。
+    if (event.type !== "assistant_delta" && event.type !== "thought_delta") this.scheduleTuiSessionPersist();
   }
 
   private scheduleTuiSessionPersist(): void {
     if (this.sessionPersistTimer) return;
     this.sessionPersistTimer = setTimeout(() => {
       this.sessionPersistTimer = undefined;
-      void this.persistTuiSession();
+      // 定时持久化只写元数据和会话;TUI 快照由显式调用(会话切换/退出等)写入,
+      // 避免流式期间反复序列化整份转写。
+      void this.persistTuiSession(false);
     }, 250);
   }
 

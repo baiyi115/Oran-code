@@ -300,7 +300,14 @@ export class SessionStore {
       const prompt = firstConversationPrompt(after);
       if (prompt) next.archiveTitle = truncateSessionName(prompt, 48);
     }
-    next.archiveSize = await this.persistRecordsAndState(id, [...changes, stateRecord(next, now)], next, now);
+    // 纯元数据更新不追加 state 记录:state 记录一多,下次打开就会触发全量
+    // 归档重写;元数据以 sidecar 为准即可。
+    next.archiveSize = await this.persistRecordsAndState(
+      id,
+      changes.length ? [...changes, stateRecord(next, now)] : [],
+      next,
+      now,
+    );
     this.sessions[this.sessions.indexOf(existing)] = next;
     if (patch.conversation !== undefined) this.loadedConversations.add(id);
     await this.refreshMtime(id);

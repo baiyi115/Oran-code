@@ -84,6 +84,18 @@ export class ToolRegistry {
         summary: "not activated",
       };
     }
-    return tool.invoke(call, context);
+    const result = await tool.invoke(call, context);
+    // 中央执行 maxOutputChars:工具各自声明,但个别路径(如超长单行文件)
+    // 可能漏截,这里兜底,避免超大输出挤爆上下文。
+    const limit = tool.maxOutputChars;
+    if (limit !== undefined && result.output && result.output.length > limit) {
+      const head = result.output.slice(0, Math.floor(limit * 0.7));
+      const tail = result.output.slice(-Math.floor(limit * 0.25));
+      return {
+        ...result,
+        output: `${head}\n...[truncated ${result.output.length - limit} chars]...\n${tail}`,
+      };
+    }
+    return result;
   }
 }

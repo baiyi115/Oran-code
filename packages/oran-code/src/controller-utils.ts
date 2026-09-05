@@ -9,7 +9,6 @@ import type { ContextManager } from "./context-manager.js";
 import type { AgentLoop } from "./loop.js";
 import type { Message, ModelResponse, ToolCall, ToolCallComplete, ToolResult } from "./types.js";
 import { formatErrorMessage } from "./error-format.js";
-import { cloneMessages } from "./message-utils.js";
 import { systemReminderMessage } from "./system-prompt.js";
 import { PROJECT_STATE_DIR_NAMES } from "./paths.js";
 
@@ -144,7 +143,8 @@ export function tokenBudgetMessage(loop: AgentLoop, budget: number): string {
 }
 
 export function withRuntimeReminders(messages: readonly Message[], reminders: readonly string[]): Message[] {
-  const copy = cloneMessages(messages);
+  // 浅拷贝即可:消息对象入列后不可变,这里只追加 reminder,不改写元素。
+  const copy = [...messages];
   // 运行时提醒追加到请求末尾（而非插在对话之前）：每轮变化的提醒文本不再击穿
   // 稳定前缀 [system + 对话] 的字节一致性，DeepSeek/OpenAI 前缀缓存可覆盖整段对话。
   if (reminders.length) copy.push(systemReminderMessage(reminders));

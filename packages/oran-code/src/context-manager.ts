@@ -146,6 +146,7 @@ export class ContextManager {
     this.replacements.clear();
     this.recentFiles.clear();
     this.usageAnchor = undefined;
+    this.estimateMemo = undefined;
     this.automaticFailures = 0;
   }
 
@@ -161,12 +162,33 @@ export class ContextManager {
   ): void {
     const tokens = usageTotal(usage);
     if (tokens === undefined) return;
-    this.usageAnchor = { tokens, contextEstimate: estimatedRequestTokens(messages, tools) };
+    this.usageAnchor = { tokens, contextEstimate: this.rawEstimate(messages, tools) };
+  }
+
+  /**
+   * 同一轮里多个调用点会对同一批消息反复估算;串行化全量 JSON 的成本,
+   * 这里按元素对象身份(消息入列后不可变)记忆化最近一次原始估算。
+   */
+  private estimateMemo: { messages: readonly Message[]; tools: unknown; tokens: number } | undefined;
+
+  private rawEstimate(messages: readonly Message[], tools: readonly Record<string, unknown>[]): number {
+    const memo = this.estimateMemo;
+    if (
+      memo &&
+      memo.tools === tools &&
+      memo.messages.length === messages.length &&
+      memo.messages.every((message, index) => message === messages[index])
+    ) {
+      return memo.tokens;
+    }
+    const tokens = estimatedRequestTokens(messages, tools);
+    this.estimateMemo = { messages, tools, tokens };
+    return tokens;
   }
 
   estimateTokens(messages: readonly Message[], tools: readonly Record<string, unknown>[] = []): number {
-    if (!this.usageAnchor) return estimatedRequestTokens(messages, tools);
-    const delta = estimatedRequestTokens(messages, tools) - this.usageAnchor.contextEstimate;
+    if (!this.usageAnchor) return this.rawEstimate(messages, tools);
+    const delta = this.rawEstimate(messages, tools) - this.usageAnchor.contextEstimate;
     return Math.max(0, Math.ceil(this.usageAnchor.tokens + delta));
   }
 
