@@ -15,7 +15,10 @@ export function normalizeTokenUsage(usage: Record<string, number>): TokenUsage {
   const inputTokens = reportedInput ?? (reportedTotal === undefined ? 0 : Math.max(0, reportedTotal - outputTokens));
   // 与 context-manager 的 usageTotal 口径一致:无显式 total 时把缓存读写
   // 也计入,否则开了 prompt cache 后 token budget 会系统性低估。
-  const totalTokens = reportedTotal ?? inputTokens + outputTokens + cacheReadTokens + cacheWriteTokens;
+  // OpenAI 系字段(prompt/completion)的 cached_tokens 是 prompt_tokens 的子集,
+  // 不得再加进 total;Anthropic 系的 cache_read 与 input_tokens 互斥,正常累加。
+  const isOpenAiShape = usage.prompt_tokens !== undefined || usage.completion_tokens !== undefined;
+  const totalTokens = reportedTotal ?? inputTokens + outputTokens + (isOpenAiShape ? cacheWriteTokens : cacheReadTokens + cacheWriteTokens);
 
   return {
     inputTokens,

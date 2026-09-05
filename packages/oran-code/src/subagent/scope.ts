@@ -53,7 +53,7 @@ export class StructuredSubagentScope {
     };
     this.tasks.set(id, task);
     const entry = { options, task, resolve, reject };
-    if (this.runningCount() <= this.maxConcurrent) this.launch(entry);
+    if (this.runningCount() < this.maxConcurrent) this.launch(entry);
     else this.queue.push(entry);
     return task;
   }

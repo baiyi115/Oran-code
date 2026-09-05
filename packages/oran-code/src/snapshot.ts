@@ -118,6 +118,12 @@ export class SnapshotStore implements SnapshotStorePort {
     }
     if (!manifest) return { ok: false, output: "No undoable Agent file change snapshot exists in this session." };
     if (!manifest.postTree) return { ok: false, output: "The latest snapshot is incomplete and cannot be undone." };
+    // manifest 落在仓库内,内容可能被篡改;恢复目标必须仍位于根工作区内。
+    try {
+      assertContained(this.rootWorkspace, manifest.workspace);
+    } catch {
+      return { ok: false, output: "Undo refused: the snapshot manifest points outside the workspace." };
+    }
     const currentHead = await gitHead(manifest.workspace);
     if (manifest.preHead !== manifest.postHead || currentHead !== manifest.postHead) {
       return {
