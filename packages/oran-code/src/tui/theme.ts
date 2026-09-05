@@ -38,6 +38,7 @@ export interface ThemePalette {
   thought: string | undefined;
   tool: string | undefined;
   system: string | undefined;
+  surface: string | undefined;
 }
 
 const DARK_PALETTE: ThemePalette = {
@@ -54,6 +55,7 @@ const DARK_PALETTE: ThemePalette = {
   thought: "#A58B6B",
   tool: "#7895A1",
   system: "#77716C",
+  surface: undefined,
 };
 
 /** 浅色背景:同色相加深,保证白底可读。 */
@@ -71,6 +73,7 @@ const LIGHT_PALETTE: ThemePalette = {
   thought: "#75604A",
   tool: "#3E6D82",
   system: "#6A645E",
+  surface: undefined,
 };
 
 /** 单色:全部交给终端默认前景色,层级靠字重维持。 */
@@ -88,6 +91,7 @@ const MONO_PALETTE: ThemePalette = {
   thought: undefined,
   tool: undefined,
   system: undefined,
+  surface: undefined,
 };
 
 /** 预渲染转义码(Static / live text blobs)。 */
