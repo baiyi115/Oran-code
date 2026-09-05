@@ -191,4 +191,3 @@ function renderVerification(message: VerificationMessage, width: number): string
   }
   return lines;
 }
-

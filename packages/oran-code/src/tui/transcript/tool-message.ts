@@ -114,4 +114,3 @@ function shouldShowSuccessSummary(detail: string): boolean {
   if (!text) return false;
   return text !== "ok";
 }
-

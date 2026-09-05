@@ -1,5 +1,6 @@
 import type { ToolDefinition, ToolResult } from "../types.js";
 import { isRecord } from "../types.js";
+import { redactSecretText } from "../formatting.js";
 
 export const BATCH_TOOL_NAME = "batch_tools";
 /** 单个脚本允许的最大步骤数:步骤间没有轮次推进,必须用硬上限防止无界执行。 */
@@ -165,9 +166,10 @@ export function formatBatchScriptResult(run: BatchScriptRun): ToolResult {
     const status = step.ok ? "ok" : "FAILED";
     const duration = step.durationMs === undefined ? "" : ` (${step.durationMs}ms)`;
     lines.push("", `=== step ${step.id} [${step.tool}] ${status}${duration} ===`);
-    if (step.error) lines.push(`error: ${step.error}`);
-    if (step.output?.trim()) lines.push(step.output.trimEnd());
-    else if (!step.error && step.summary) lines.push(step.summary);
+    // 步骤输出可能携带凭据(命令回显、报错信息),聚合进上下文前统一脱敏。
+    if (step.error) lines.push(`error: ${redactSecretText(step.error)}`);
+    if (step.output?.trim()) lines.push(redactSecretText(step.output.trimEnd()));
+    else if (!step.error && step.summary) lines.push(redactSecretText(step.summary));
   }
   return {
     ok: failedCount === 0,

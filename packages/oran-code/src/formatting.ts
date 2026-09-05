@@ -3,7 +3,11 @@
 export function redactSecretText(value: string): string {
   return value
     .replace(/\bsk-[A-Za-z0-9_-]{8,}\b/g, "sk-[redacted]")
-    .replace(/((?:api[_-]?key|token|secret|password)\s*[=:]\s*)[^\s,&]+/gi, "$1[redacted]");
+    .replace(/\b(Authorization\s*:\s*Bearer)\s+\S+/gi, "$1 [redacted]")
+    .replace(
+      /((?:api[_-]?key|access[_-]?token|refresh[_-]?token|client[_-]?secret|private[_-]?key|secret|password|credential|token)\s*[=:]\s*)[^\s,&"]+/gi,
+      "$1[redacted]",
+    );
 }
 
 export function formatDuration(value: number): string {

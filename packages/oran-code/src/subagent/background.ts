@@ -123,7 +123,7 @@ export class BackgroundAgentTaskManager {
     const settle = (result: SubagentRunResult): void => {
       if (settled) return;
       settled = true;
-      settle(result);
+      resolvePromise(result);
     };
     const deadline = setTimeout(() => {
       if (task.status !== "running") return;
