@@ -272,7 +272,14 @@ export function inferToolKind(name: string): "readonly" | "write" | "command" {
   return "command";
 }
 
-export async function workspaceFingerprint(root: string): Promise<string> {
+export interface WorkspaceSnapshot {
+  fingerprint: string;
+  /** `git status --porcelain` 行列表;git 不可用时为空(此时无回执信息)。 */
+  entries: readonly string[];
+}
+
+/** 指纹与状态行一次取齐:执行回执需要变更前后两份行列表做差集。 */
+export async function workspaceSnapshot(root: string): Promise<WorkspaceSnapshot> {
   try {
     const result = await execFileAsync("git", ["-C", root, "status", "--porcelain=v1", "--untracked-files=all"], {
       encoding: "utf8",
@@ -280,10 +287,29 @@ export async function workspaceFingerprint(root: string): Promise<string> {
       timeout: WORKSPACE_FINGERPRINT_TIMEOUT_MS,
       windowsHide: true,
     });
-    return `git:${result.stdout.split(/\r?\n/).filter(Boolean).sort().join("\n")}`;
+    const entries = result.stdout.split(/\r?\n/).filter(Boolean).sort();
+    return { fingerprint: `git:${entries.join("\n")}`, entries };
   } catch {
-    return collectWorkspaceEntries(resolve(root));
+    return { fingerprint: await collectWorkspaceEntries(resolve(root)), entries: [] };
   }
+}
+
+export async function workspaceFingerprint(root: string): Promise<string> {
+  return (await workspaceSnapshot(root)).fingerprint;
+}
+
+/** 状态行差集:新增/变更行原样列出,消失的行以 `-` 前缀标记。 */
+export function diffWorkspaceEntries(before: readonly string[], after: readonly string[]): readonly string[] {
+  const beforeSet = new Set(before);
+  const afterSet = new Set(after);
+  const changes: string[] = [];
+  for (const entry of after) {
+    if (!beforeSet.has(entry)) changes.push(entry);
+  }
+  for (const entry of before) {
+    if (!afterSet.has(entry)) changes.push(`- ${entry}`);
+  }
+  return changes;
 }
 
 async function collectWorkspaceEntries(root: string): Promise<string> {

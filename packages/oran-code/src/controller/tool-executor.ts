@@ -42,7 +42,8 @@ import {
   planModeDeniedResult,
   summarizeArguments,
   toolUnavailableResult,
-  workspaceFingerprint,
+  workspaceSnapshot,
+  diffWorkspaceEntries,
 } from "../controller-utils.js";
 
 interface DeferredToolRecord {
@@ -258,8 +259,9 @@ export class ToolBatchExecutor {
         }
         const results = new Map<number, { call: ToolCall; result: ToolResult; duration: number; mutated: boolean }>();
         // 指纹按批取前后各一次;逐调用前后各跑一次 git status 在大仓库上代价过高。
+        // snapshot 同时携带状态行列表,用于生成执行回执。
         const batchBefore = executable.some((item) => this.isPotentiallyMutating(item.call))
-          ? await workspaceFingerprint(task.workspace)
+          ? await workspaceSnapshot(task.workspace)
           : undefined;
         for (let offset = 0; offset < executable.length; offset += concurrency) {
           this.ports.throwIfCancelled();
@@ -321,8 +323,8 @@ export class ToolBatchExecutor {
             }),
           );
         }
-        const batchAfter = batchBefore === undefined ? undefined : await workspaceFingerprint(task.workspace);
-        if (batchBefore !== undefined && batchAfter !== undefined && batchBefore !== batchAfter) {
+        const batchAfter = batchBefore === undefined ? undefined : await workspaceSnapshot(task.workspace);
+        if (batchBefore !== undefined && batchAfter !== undefined && batchBefore.fingerprint !== batchAfter.fingerprint) {
           for (const entry of results.values()) {
             if (this.isPotentiallyMutating(entry.call)) entry.mutated = true;
           }
@@ -336,7 +338,12 @@ export class ToolBatchExecutor {
           }
           const entry = results.get(item.index);
           if (!entry) continue;
-          if (entry.mutated) workspaceMutated = true;
+          if (entry.mutated) {
+            workspaceMutated = true;
+            if (batchBefore && batchAfter) {
+              entry.result = withWorkspaceChangesReceipt(entry.result, batchBefore.entries, batchAfter.entries);
+            }
+          }
           if (entry.result.ok && this.isPotentiallyMutating(entry.call)) this.ports.readonlyCache.clear();
           if (entry.result.ok && entry.call.name === "read_file") {
             await this.ports.trackSuccessfulFileRead(task.workspace, entry.call);
@@ -494,7 +501,7 @@ export class ToolBatchExecutor {
     loop.record(call);
     const started = Date.now();
     const beforeWorkspace = this.isPotentiallyMutating(call)
-      ? await workspaceFingerprint(task.workspace)
+      ? await workspaceSnapshot(task.workspace)
       : undefined;
     const before = await fileHash(task.workspace, call);
     let result: ToolResult;
@@ -513,9 +520,14 @@ export class ToolBatchExecutor {
     const duration = Date.now() - started;
     const after = await fileHash(task.workspace, call);
     const afterWorkspace =
-      beforeWorkspace === undefined ? undefined : await workspaceFingerprint(task.workspace);
+      beforeWorkspace === undefined ? undefined : await workspaceSnapshot(task.workspace);
     const mutated =
-      beforeWorkspace !== undefined && afterWorkspace !== undefined && beforeWorkspace !== afterWorkspace;
+      beforeWorkspace !== undefined &&
+      afterWorkspace !== undefined &&
+      beforeWorkspace.fingerprint !== afterWorkspace.fingerprint;
+    if (mutated && beforeWorkspace && afterWorkspace) {
+      result = withWorkspaceChangesReceipt(result, beforeWorkspace.entries, afterWorkspace.entries);
+    }
     if (before && after && before.hash !== after.hash) {
       this.ports.trace.appendFileChange(task.id, before.path, before.hash, after.hash);
     }
@@ -819,4 +831,26 @@ export class ToolBatchExecutor {
       }),
     );
   }
+}
+
+const WORKSPACE_CHANGES_RECEIPT_LIMIT = 40;
+
+/** 变异调用后把工作区变更清单追加到结果尾部,省去模型下一轮的探查调用。 */
+function withWorkspaceChangesReceipt(
+  result: ToolResult,
+  before: readonly string[],
+  after: readonly string[],
+): ToolResult {
+  const changes = diffWorkspaceEntries(before, after);
+  if (!changes.length) return result;
+  const listed = changes.slice(0, WORKSPACE_CHANGES_RECEIPT_LIMIT).join("\n");
+  const suffix =
+    changes.length > WORKSPACE_CHANGES_RECEIPT_LIMIT
+      ? `${listed}\n...[${changes.length - WORKSPACE_CHANGES_RECEIPT_LIMIT} more]`
+      : listed;
+  const base = result.output?.trimEnd() ?? "";
+  return {
+    ...result,
+    output: `${base}${base ? "\n\n" : ""}<workspace-changes>\n${suffix}\n</workspace-changes>`,
+  };
 }
