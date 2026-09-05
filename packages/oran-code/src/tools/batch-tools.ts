@@ -54,8 +54,7 @@ export class BatchScriptError extends Error {
 export function parseBatchScript(raw: unknown): BatchScriptSpec {
   if (!isRecord(raw)) throw new BatchScriptError("batch_tools arguments must be an object");
   const rawSteps = raw.steps;
-  if (!Array.isArray(rawSteps) || rawSteps.length === 0)
-    throw new BatchScriptError("steps must be a non-empty array");
+  if (!Array.isArray(rawSteps) || rawSteps.length === 0) throw new BatchScriptError("steps must be a non-empty array");
   if (rawSteps.length > MAX_BATCH_STEPS)
     throw new BatchScriptError(`steps must contain at most ${MAX_BATCH_STEPS} entries`);
   const onFailure = raw.on_failure === undefined ? "abort" : raw.on_failure;
@@ -66,7 +65,8 @@ export function parseBatchScript(raw: unknown): BatchScriptSpec {
   rawSteps.forEach((item, index) => {
     if (!isRecord(item)) throw new BatchScriptError(`steps[${index}] must be an object`);
     const id = item.id;
-    if (typeof id !== "string" || !id.trim()) throw new BatchScriptError(`steps[${index}].id must be a non-empty string`);
+    if (typeof id !== "string" || !id.trim())
+      throw new BatchScriptError(`steps[${index}].id must be a non-empty string`);
     if (knownIds.has(id)) throw new BatchScriptError(`duplicate step id "${id}"`);
     const tool = item.tool;
     if (typeof tool !== "string" || !tool.trim())
@@ -115,10 +115,7 @@ function normalizeRefToken(token: string): string {
  * (可解析为 JSON 时给出对象,否则保持字符串);字符串内插替换为输出原文。
  * 解析不到引用时保留占位原样,便于定位而不是静默损坏参数。
  */
-export function substituteStepArguments(
-  value: unknown,
-  resolve: (stepId: string) => string | undefined,
-): unknown {
+export function substituteStepArguments(value: unknown, resolve: (stepId: string) => string | undefined): unknown {
   if (Array.isArray(value)) return value.map((item) => substituteStepArguments(item, resolve));
   if (isRecord(value)) {
     const ref = value[REF_KEY];

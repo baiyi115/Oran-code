@@ -43,7 +43,8 @@ export class AnthropicProvider implements ModelProvider {
       body: JSON.stringify(this.payload(messages, tools, false)),
       ...(options?.signal ? { signal: options.signal } : {}),
     });
-    if (!response.ok) throw new ModelRequestError(response.status, await boundedError(response), retryAfterMsFromResponse(response));
+    if (!response.ok)
+      throw new ModelRequestError(response.status, await boundedError(response), retryAfterMsFromResponse(response));
     const data = (await response.json()) as Record<string, unknown>;
     return parseAnthropicMessage(data, false);
   }
@@ -61,7 +62,8 @@ export class AnthropicProvider implements ModelProvider {
         body: JSON.stringify(this.payload(messages, tools, true)),
         signal: request.signal,
       });
-      if (!response.ok) throw new ModelRequestError(response.status, await boundedError(response), retryAfterMsFromResponse(response));
+      if (!response.ok)
+        throw new ModelRequestError(response.status, await boundedError(response), retryAfterMsFromResponse(response));
       const contentType = response.headers.get("content-type") ?? "";
       if (!contentType.includes("text/event-stream") || !response.body) {
         yield* modelResponseChunks(parseAnthropicMessage((await response.json()) as Record<string, unknown>, false));

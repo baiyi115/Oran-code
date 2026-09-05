@@ -300,8 +300,7 @@ function parseHeading(value: string): Heading | undefined {
  * 块级语法(标题/列表)只在行首生效;模型常把标题或列表项挤进段落行,
  * 在围栏外按句子终止符把它们拆到独立行。表格行不拆,风险过高。
  */
-const INLINE_BLOCK_SPLIT =
-  /(?<=[。！？!?"”』」)\]])\s+(?=#{1,6}(?:\s|[\u4E00-\u9FFF])|[-*+]\s|\d+[.)]\s)/g;
+const INLINE_BLOCK_SPLIT = /(?<=[。！？!?"”』」)\]])\s+(?=#{1,6}(?:\s|[\u4E00-\u9FFF])|[-*+]\s|\d+[.)]\s)/g;
 
 function splitCollapsedBlocks(value: string): string[] {
   const out: string[] = [];

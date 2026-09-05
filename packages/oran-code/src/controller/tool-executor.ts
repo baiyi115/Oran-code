@@ -325,7 +325,11 @@ export class ToolBatchExecutor {
           );
         }
         const batchAfter = batchBefore === undefined ? undefined : await workspaceSnapshot(task.workspace);
-        if (batchBefore !== undefined && batchAfter !== undefined && batchBefore.fingerprint !== batchAfter.fingerprint) {
+        if (
+          batchBefore !== undefined &&
+          batchAfter !== undefined &&
+          batchBefore.fingerprint !== batchAfter.fingerprint
+        ) {
           for (const entry of results.values()) {
             if (this.isPotentiallyMutating(entry.call)) entry.mutated = true;
           }
@@ -380,21 +384,37 @@ export class ToolBatchExecutor {
     try {
       script = parseBatchScript(call.arguments);
     } catch (error) {
-      await this.recordTool(task, messages, call, index, {
-        ok: false,
-        output: "",
-        error: error instanceof Error ? error.message : String(error),
-        summary: "invalid batch_tools script",
-      }, 0, { executed: false });
+      await this.recordTool(
+        task,
+        messages,
+        call,
+        index,
+        {
+          ok: false,
+          output: "",
+          error: error instanceof Error ? error.message : String(error),
+          summary: "invalid batch_tools script",
+        },
+        0,
+        { executed: false },
+      );
       return false;
     }
     if (!loop.canRecordToolCall()) {
-      await this.recordTool(task, messages, call, index, {
-        ok: false,
-        output: "",
-        error: "tool call budget exhausted before batch_tools could run",
-        summary: "budget exhausted",
-      }, 0, { executed: false });
+      await this.recordTool(
+        task,
+        messages,
+        call,
+        index,
+        {
+          ok: false,
+          output: "",
+          error: "tool call budget exhausted before batch_tools could run",
+          summary: "budget exhausted",
+        },
+        0,
+        { executed: false },
+      );
       return false;
     }
     loop.record(call);
@@ -430,9 +450,13 @@ export class ToolBatchExecutor {
       durationMs,
       ...(abortedAt !== undefined ? { abortedAt } : {}),
     });
-    const result: ToolResult = formatted.output.length <= 16_000
-      ? formatted
-      : { ...formatted, output: `${formatted.output.slice(0, 11_200)}\n...[truncated]...\n${formatted.output.slice(-4_000)}` };
+    const result: ToolResult =
+      formatted.output.length <= 16_000
+        ? formatted
+        : {
+            ...formatted,
+            output: `${formatted.output.slice(0, 11_200)}\n...[truncated]...\n${formatted.output.slice(-4_000)}`,
+          };
     await this.recordTool(task, messages, call, index, result, durationMs);
     return workspaceMutated;
   }
@@ -484,7 +508,13 @@ export class ToolBatchExecutor {
     if (hookBlock) return complete(hookBlock, 0, false, false, false);
     if (!tool) {
       loop.recordUnknownTool(call);
-      return complete({ ok: false, output: "", error: `unknown tool: ${call.name}`, summary: "unknown tool" }, 0, false, false, false);
+      return complete(
+        { ok: false, output: "", error: `unknown tool: ${call.name}`, summary: "unknown tool" },
+        0,
+        false,
+        false,
+        false,
+      );
     }
     if (!this.ports.isToolVisible(tool)) return complete(toolUnavailableResult(call), 0, false, false, false);
     if (this.ports.config.workMode === "plan" && !isPlanModeTool(tool)) {
@@ -501,13 +531,17 @@ export class ToolBatchExecutor {
       return complete({ ...cached, metadata: { ...cached.metadata, cached: true } }, 0, false, false, false);
     }
     if (!loop.canRecordToolCall()) {
-      return complete({ ok: false, output: "", error: "tool call budget exhausted", summary: "budget exhausted" }, 0, false, false, false);
+      return complete(
+        { ok: false, output: "", error: "tool call budget exhausted", summary: "budget exhausted" },
+        0,
+        false,
+        false,
+        false,
+      );
     }
     loop.record(call);
     const started = Date.now();
-    const beforeWorkspace = this.isPotentiallyMutating(call)
-      ? await workspaceSnapshot(task.workspace)
-      : undefined;
+    const beforeWorkspace = this.isPotentiallyMutating(call) ? await workspaceSnapshot(task.workspace) : undefined;
     const before = await fileHash(task.workspace, call);
     let result: ToolResult;
     try {
@@ -517,15 +551,20 @@ export class ToolBatchExecutor {
       result = await this.ports.registry.invoke(call, executionContext);
     } catch (error) {
       if (isAbortError(error) || this.ports.getAbortSignal()?.aborted) {
-        result = { ok: false, output: "", error: "tool cancelled", summary: "cancelled", metadata: { cancelled: true } };
+        result = {
+          ok: false,
+          output: "",
+          error: "tool cancelled",
+          summary: "cancelled",
+          metadata: { cancelled: true },
+        };
       } else {
         result = { ok: false, output: "", error: error instanceof Error ? error.message : String(error) };
       }
     }
     const duration = Date.now() - started;
     const after = await fileHash(task.workspace, call);
-    const afterWorkspace =
-      beforeWorkspace === undefined ? undefined : await workspaceSnapshot(task.workspace);
+    const afterWorkspace = beforeWorkspace === undefined ? undefined : await workspaceSnapshot(task.workspace);
     const mutated =
       beforeWorkspace !== undefined &&
       afterWorkspace !== undefined &&

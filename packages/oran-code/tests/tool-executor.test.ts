@@ -577,10 +577,17 @@ describe("ToolBatchExecutor batch_tools scripts", () => {
     const task = createTask(workspace, "script abort");
     const messages = runMessages();
 
-    await executor.runTools(task, messages, [makeBatchCall([
-      { id: "s1", tool: "fail", arguments: {} },
-      { id: "s2", tool: "after", arguments: {} },
-    ])], loopStub);
+    await executor.runTools(
+      task,
+      messages,
+      [
+        makeBatchCall([
+          { id: "s1", tool: "fail", arguments: {} },
+          { id: "s2", tool: "after", arguments: {} },
+        ]),
+      ],
+      loopStub,
+    );
 
     expect(consume).not.toHaveBeenCalled();
     expect(messages[0]!.content).toContain('aborted at "s1" (on_failure=abort)');
@@ -604,10 +611,15 @@ describe("ToolBatchExecutor batch_tools scripts", () => {
     const summary = await executor.runTools(
       task,
       messages,
-      [makeBatchCall([
-        { id: "s1", tool: "fail", arguments: {} },
-        { id: "s2", tool: "after", arguments: {} },
-      ], "continue")],
+      [
+        makeBatchCall(
+          [
+            { id: "s1", tool: "fail", arguments: {} },
+            { id: "s2", tool: "after", arguments: {} },
+          ],
+          "continue",
+        ),
+      ],
       loopStub,
     );
 
@@ -623,13 +635,16 @@ describe("ToolBatchExecutor batch_tools scripts", () => {
     const task = createTask(workspace, "script unknown tool");
     const messages = runMessages();
 
-    await executor.runTools(task, messages, [makeBatchCall([
-      { id: "s1", tool: "does_not_exist", arguments: {} },
-    ])], loopStub);
+    await executor.runTools(
+      task,
+      messages,
+      [makeBatchCall([{ id: "s1", tool: "does_not_exist", arguments: {} }])],
+      loopStub,
+    );
 
     expect(loopStub.recordUnknownTool).toHaveBeenCalledTimes(1);
     expect(messages[0]!.content).toContain("unknown tool: does_not_exist");
-    expect(messages[0]!.content).toContain("aborted at \"s1\"");
+    expect(messages[0]!.content).toContain('aborted at "s1"');
   });
 
   it("enforces plan mode per step: readonly steps run, write steps are denied", async () => {
@@ -646,10 +661,17 @@ describe("ToolBatchExecutor batch_tools scripts", () => {
     const task = createTask(workspace, "script plan mode");
     const messages = runMessages();
 
-    await executor.runTools(task, messages, [makeBatchCall([
-      { id: "s1", tool: "probe", arguments: {} },
-      { id: "s2", tool: "scribe", arguments: {} },
-    ])], loopStub);
+    await executor.runTools(
+      task,
+      messages,
+      [
+        makeBatchCall([
+          { id: "s1", tool: "probe", arguments: {} },
+          { id: "s2", tool: "scribe", arguments: {} },
+        ]),
+      ],
+      loopStub,
+    );
 
     expect(scribe).not.toHaveBeenCalled();
     expect(messages[0]!.content).toContain("=== step s1 [probe] ok");
@@ -669,9 +691,7 @@ describe("ToolBatchExecutor batch_tools scripts", () => {
     const task = createTask(workspace, "script hook block");
     const messages = runMessages();
 
-    await executor.runTools(task, messages, [makeBatchCall([
-      { id: "s1", tool: "guarded", arguments: {} },
-    ])], loopStub);
+    await executor.runTools(task, messages, [makeBatchCall([{ id: "s1", tool: "guarded", arguments: {} }])], loopStub);
 
     expect(guarded).not.toHaveBeenCalled();
     expect(messages[0]!.content).toContain("error: blocked by policy");
@@ -686,9 +706,7 @@ describe("ToolBatchExecutor batch_tools scripts", () => {
     const task = createTask(workspace, "script invalid");
     const messages = runMessages();
 
-    await executor.runTools(task, messages, [makeBatchCall([
-      { tool: "probe", arguments: {} },
-    ])], loopStub);
+    await executor.runTools(task, messages, [makeBatchCall([{ tool: "probe", arguments: {} }])], loopStub);
 
     expect(probe).not.toHaveBeenCalled();
     expect(loopStub.record).not.toHaveBeenCalled();

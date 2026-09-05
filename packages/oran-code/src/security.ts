@@ -306,15 +306,15 @@ export function parseShellCommand(input: string): ShellCompoundNode {
       const tok = tokens[i]!;
       if (tok.type === "word") {
         currentCommandWords.push({ value: tok.value, hasSubshell: tok.hasSubshell });
-        } else if (tok.type === "redirect") {
-          let target = "";
-          const nextTok = tokens[i + 1];
-          if (nextTok && nextTok.type === "word") {
-            target = nextTok.value;
-            i++;
-          }
-          currentRedirects.push({ type: tok.op, target, ...(tok.fdDup ? { fdDup: true } : {}) });
-        } else if (tok.type === "op") {
+      } else if (tok.type === "redirect") {
+        let target = "";
+        const nextTok = tokens[i + 1];
+        if (nextTok && nextTok.type === "word") {
+          target = nextTok.value;
+          i++;
+        }
+        currentRedirects.push({ type: tok.op, target, ...(tok.fdDup ? { fdDup: true } : {}) });
+      } else if (tok.type === "op") {
         if (tok.value === "|") {
           flushCommand();
         } else {

@@ -43,18 +43,28 @@ export function renderToolMessage(message: ToolMessage, width: number, liveTick 
   const headingPrefix = `${indicatorColor}${indicator}${ANSI.reset} `;
   const headingBody = `${call}${status}${duration}${summary}`;
   const headingWidth = Math.max(1, width - visibleWidth(headingPrefix));
-  const lines = wrapDisplayText(headingBody, headingWidth).map((line, index) => `${index === 0 ? headingPrefix : " ".repeat(2)}${line}`);
+  const lines = wrapDisplayText(headingBody, headingWidth).map(
+    (line, index) => `${index === 0 ? headingPrefix : " ".repeat(2)}${line}`,
+  );
   const output = message.error || message.output || "";
   const changeDiff = writeToolDiff(message);
   if (message.expanded && output && !changeDiff) {
     const preview = output.split(/\r?\n/).filter(Boolean);
     const limit = 12;
-    lines.push(...preview.slice(0, limit).flatMap((line) => wrapDisplayText(`\u2502 ${line}`, Math.max(1, width - 2)).map((wrapped) => `  ${wrapped}`)));
+    lines.push(
+      ...preview
+        .slice(0, limit)
+        .flatMap((line) => wrapDisplayText(`\u2502 ${line}`, Math.max(1, width - 2)).map((wrapped) => `  ${wrapped}`)),
+    );
     if (preview.length > limit)
       lines.push(`${ANSI.gray}  \u2502 ... ${preview.length - limit} more lines (ctrl+t to expand)${ANSI.reset}`);
   } else if (output && message.status !== "success" && output.trim() !== detail.trim()) {
     const error = truncateVisible(output.replace(/\s+/g, " ").trim(), Math.max(40, width * 2));
-    lines.push(...wrapDisplayText(`\u2502 ${error}`, Math.max(1, width - 2)).map((wrapped) => `  ${wrapped}`).slice(0, 2));
+    lines.push(
+      ...wrapDisplayText(`\u2502 ${error}`, Math.max(1, width - 2))
+        .map((wrapped) => `  ${wrapped}`)
+        .slice(0, 2),
+    );
   }
   // File-modifying tools always surface what changed (diff-style), collapsed
   // to a short preview; ctrl+t on the row expands it to more lines.

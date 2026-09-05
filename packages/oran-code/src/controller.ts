@@ -632,7 +632,9 @@ export class TaskController {
   }
 
   private syncConversation(messages: readonly Message[]): void {
-    const filtered = messages.filter((message) => message.role !== "system" || message.metadata?.contextManaged === true);
+    const filtered = messages.filter(
+      (message) => message.role !== "system" || message.metadata?.contextManaged === true,
+    );
     this.conversation = filtered.map((message) => this.cachedClone(message));
     this.conversationCallback([...this.conversation]);
   }

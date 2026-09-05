@@ -82,7 +82,11 @@ async function executeHttp(
   // 不带超时的 fetch 会永久阻塞 agent 循环(端点挂起不响应);超时由 deps.fetch
   // 以 { ok:false, status:0 } 形式返回。
   const timeoutMs = action.timeoutMs ?? defaultTimeoutMs;
-  const { ok, status, body: responseBody } = await deps.fetch(url, {
+  const {
+    ok,
+    status,
+    body: responseBody,
+  } = await deps.fetch(url, {
     method,
     headers,
     body,
