@@ -138,7 +138,10 @@ function valueAfter(args: readonly string[], ...names: string[]): string | undef
 
 export function resolveWorkspace(requested: string | undefined): string {
   if (requested) return resolve(requested);
-  return resolve(process.env.INIT_CWD ?? process.cwd());
+  // The process cwd is the user's invocation directory. INIT_CWD can be
+  // inherited from a package-manager process that launched the CLI and may
+  // point at Oran's source/install directory instead of the target project.
+  return resolve(process.cwd());
 }
 
 async function inspectWorkspace(workspace: string): Promise<void> {
