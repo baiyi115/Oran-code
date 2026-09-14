@@ -4,7 +4,8 @@
   "description": "Oran code, a lightweight model-agnostic coding agent CLI.",
   "type": "module",
   "bin": {
-    "oran": "dist/cli.js"
+    "oran": "dist/cli.js",
+    "oran-code": "dist/cli.js"
   },
   "engines": {
     "node": ">=22.5"

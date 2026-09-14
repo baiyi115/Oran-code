@@ -74,13 +74,15 @@ export async function main(argv = process.argv.slice(2)): Promise<void> {
     await handleConfigCommand(argv.slice(1), workspace);
     return;
   }
-  if (command && !["tui", "run"].includes(command) && !command.startsWith("-")) {
+  if (command && !["tui", "run", "code"].includes(command) && !command.startsWith("-")) {
     throw new Error(`unknown command: ${command}; use --help`);
   }
 
   const config = await loadConfig(workspace);
   const requestedModel = valueAfter(argv, "--model", "-m");
   const approveAll = argv.includes("--approve-all") || argv.includes("-y") || config.agent?.approveAll === true;
+  const acceptEdits = argv.includes("--accept-edits") || argv.includes("-a");
+  const requestedPermissionMode = approveAll ? "bypass" : acceptEdits ? "accept-edits" : undefined;
   const prompt = command === "run" ? firstPositional(argv.slice(1)) : undefined;
 
   if (command === "run" && !prompt) {
@@ -89,7 +91,13 @@ export async function main(argv = process.argv.slice(2)): Promise<void> {
   if (prompt) {
     const model = resolveModelConfig(config, requestedModel ?? config.agent?.lastModel);
     const { TerminalSession } = await import("./session.js");
-    const session = new TerminalSession({ workspace, model, config, approveAll });
+    const session = new TerminalSession({
+      workspace,
+      model,
+      config,
+      approveAll,
+      ...(requestedPermissionMode ? { permissionMode: requestedPermissionMode } : {}),
+    });
     const task = await session.runOnce(prompt);
     if (task.state === "failed") process.exitCode = 1;
     return;
@@ -97,7 +105,13 @@ export async function main(argv = process.argv.slice(2)): Promise<void> {
 
   const model = requestedModel ? resolveModelConfig(config, requestedModel) : undefined;
   const { TerminalSession } = await import("./session.js");
-  const session = new TerminalSession({ workspace, ...(model ? { model } : {}), config, approveAll });
+  const session = new TerminalSession({
+    workspace,
+    ...(model ? { model } : {}),
+    config,
+    approveAll,
+    ...(requestedPermissionMode ? { permissionMode: requestedPermissionMode } : {}),
+  });
   const removeSignalHandlers = installSignalHandlers(session);
   try {
     await session.run();
@@ -125,6 +139,7 @@ function firstPositional(args: readonly string[]): string | undefined {
       continue;
     }
     if (arg === "--approve-all" || arg === "-y") continue;
+    if (arg === "--accept-edits" || arg === "-a") continue;
     if (arg.startsWith("-")) continue;
     values.push(arg);
   }
@@ -325,6 +340,7 @@ export async function printHelp(): Promise<void> {
 
 Usage:
   oran                              start an interactive session
+  oran code                         start an interactive session (alias)
   oran tui                          start an interactive session
   oran run "inspect project"        run one task without the prompt loop
   oran inspect                       inspect the active workspace and tools
@@ -336,7 +352,8 @@ Usage:
   oran config unset KEY              remove an agent or session-title setting
   oran --model provider/model       choose the configured model
   oran --workspace PATH             choose the active workspace
-  oran --approve-all                skip tool approvals
+  oran --accept-edits, -a           auto-apply file edits (only confirm shell commands)
+  oran --approve-all, -y            skip all tool approvals (bypass mode)
 
 Configuration:
   ~/${USER_DATA_DIRECTORY}/config.json             user model/provider catalog
