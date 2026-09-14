@@ -66,7 +66,7 @@ function offloadedPath(replacement: string): string {
 }
 
 describe("ContextManager tool-result offloading", () => {
-  it("keeps a 50,000-byte result inline and offloads a 50,001-byte result without losing content", async () => {
+  it("keeps an at-budget result inline and offloads an over-budget result without losing content", async () => {
     await withWorkspace(async (workspace) => {
       const manager = new ContextManager({ workspace });
       const atLimit = "a".repeat(CONTEXT_LIMITS.singleToolResultBytes);
@@ -89,15 +89,20 @@ describe("ContextManager tool-result offloading", () => {
     });
   });
 
-  it("offloads the largest result first when a tool round exceeds 200,000 bytes", async () => {
+  it("offloads the largest result first when a tool round exceeds the per-round byte budget", async () => {
     await withWorkspace(async (workspace) => {
       const manager = new ContextManager({ workspace });
+      // 每项都低于单条上限,只有整轮超预算才触发卸载;卸载最大一项后应回到预算内。
+      const largestBytes = Math.floor(CONTEXT_LIMITS.toolRoundBytes * 0.22);
+      const mediumBytes = Math.floor(CONTEXT_LIMITS.toolRoundBytes * 0.205);
+      expect(largestBytes).toBeLessThan(CONTEXT_LIMITS.singleToolResultBytes);
+      expect(mediumBytes).toBeLessThan(CONTEXT_LIMITS.singleToolResultBytes);
       const candidates = [
-        { id: "medium-1", content: "a".repeat(45_000) },
-        { id: "largest", content: "b".repeat(49_000) },
-        { id: "medium-2", content: "c".repeat(45_000) },
-        { id: "medium-3", content: "d".repeat(45_000) },
-        { id: "medium-4", content: "e".repeat(45_000) },
+        { id: "medium-1", content: "a".repeat(mediumBytes) },
+        { id: "largest", content: "b".repeat(largestBytes) },
+        { id: "medium-2", content: "c".repeat(mediumBytes) },
+        { id: "medium-3", content: "d".repeat(mediumBytes) },
+        { id: "medium-4", content: "e".repeat(mediumBytes) },
       ];
 
       const result = await manager.offloadToolResults(candidates);

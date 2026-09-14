@@ -12,17 +12,17 @@ const MAX_OFFLOAD_FAILURES = 3;
 const SUMMARY_REJECTED_RESPONSE_CHARS = 2_000;
 
 export const CONTEXT_LIMITS = Object.freeze({
-  singleToolResultBytes: 50_000,
-  toolRoundBytes: 200_000,
-  historicalToolResultBytes: 8_000,
-  historicalToolRoundBytes: 24_000,
+  singleToolResultBytes: 80_000,
+  toolRoundBytes: 300_000,
+  historicalToolResultBytes: 32_000,
+  historicalToolRoundBytes: 96_000,
   summaryOutputTokens: 20_000,
   automaticSafetyTokens: 13_000,
   manualSafetyTokens: 3_000,
-  recentRawTokens: 10_000,
+  recentRawTokens: 12_000,
   recentRawMessages: 5,
   recentFileCount: 5,
-  recentFileTokens: 5_000,
+  recentFileTokens: 8_000,
   automaticFailureLimit: 3,
   summaryDirectDrops: 3,
   summaryDropFraction: 0.2,
@@ -31,8 +31,8 @@ export const CONTEXT_LIMITS = Object.freeze({
   charactersPerToken: 3.5,
   /** CJK 字符按 1 token/字 保守估算(常见中文 tokenizer 为 1~1.5 字/token)。 */
   cjkTokensPerCharacter: 1.0,
-  previewBytes: 2_048,
-  previewLines: 20,
+  previewBytes: 8_192,
+  previewLines: 80,
 });
 
 const SUMMARY_ATTEMPTS = CONTEXT_LIMITS.summaryAttempts;
@@ -489,6 +489,21 @@ export class ContextManager {
       const recent = selectRecentRawMessages(summarized.coveredMessages);
       const compacted = [...cloneMessages(prefix), summaryMessage, recoveryMessage, ...recent];
 
+      // 防御性保障:下游模型(Gemini/Anthropic/OpenAI)均严格要求对话在系统提示词之后
+      // 首条业务消息必须为 user 角色。若 recent 为空或首条非系统消息非 user,补入恢复引导 user 消息。
+      const firstNonSystemIndex = compacted.findIndex((message) => message.role !== "system");
+      if (firstNonSystemIndex === -1) {
+        compacted.push({
+          role: "user",
+          content: "Continue from the conversation summary above.",
+        });
+      } else if (compacted[firstNonSystemIndex]?.role !== "user") {
+        compacted.splice(firstNonSystemIndex, 0, {
+          role: "user",
+          content: "Continue from the conversation summary above.",
+        });
+      }
+
       this.resetUsageAnchor();
       const afterTokens = this.estimateTokens(compacted, options.tools);
       if (options.reason === "emergency" && afterTokens >= options.contextWindow - CONTEXT_LIMITS.manualSafetyTokens) {
@@ -833,6 +848,32 @@ function selectRecentRawMessages(messages: readonly Message[]): Message[] {
     tokens += unitTokens;
     count += unit.length;
   }
+
+  // 保证 recent 消息片段必须从合法的 user 轮开始:
+  // 如果当前选取的起点落在了某个 turn 中途(如孤儿 assistant 工具调用或 tool 结果),
+  // 绝不能直接作为压缩后非系统消息的开头(Gemini/Anthropic/OpenAI 均要求对话由 user 开启)。
+  if (start < units.length && units[start]?.[0]?.role !== "user") {
+    // 优先向后查找:若当前位置之后存在 user 消息,说明候选集越界拖入了更早 turn 的末尾片段;
+    // 丢弃更早 turn 的孤儿单元,从最近一个合法的 user 轮开始保留。
+    const forwardUserIndex = units.findIndex((unit, idx) => idx >= start && unit[0]?.role === "user");
+    if (forwardUserIndex !== -1) {
+      start = forwardUserIndex;
+    } else {
+      // 若向后没有 user 消息(说明整个候选区间处于同一个超长 turn 内部),
+      // 向前倒推至开启当前 turn 的 user 消息,保证该 turn 的完整性与合法起始角色。
+      let backwardUserIndex = -1;
+      for (let i = start - 1; i >= 0; i--) {
+        if (units[i]?.[0]?.role === "user") {
+          backwardUserIndex = i;
+          break;
+        }
+      }
+      if (backwardUserIndex !== -1) {
+        start = backwardUserIndex;
+      }
+    }
+  }
+
   return cloneMessages(units.slice(start).flat());
 }
 
@@ -848,6 +889,60 @@ function groupConversation(messages: readonly Message[]): Message[][] {
   }
   if (current.length) groups.push(current);
   return groups.map(cloneMessages);
+}
+
+function serializeConversation(messages: readonly Message[]): string {
+  const parts: string[] = [];
+  const readFiles = new Set<string>();
+  const modifiedFiles = new Set<string>();
+
+  for (const msg of messages) {
+    if (msg.role === "system") continue;
+    if (msg.role === "user") {
+      const text = typeof msg.content === "string" ? msg.content.trim() : "";
+      if (text) parts.push(`[User]:\n${text}`);
+    } else if (msg.role === "assistant") {
+      if (typeof msg.content === "string" && msg.content.trim()) {
+        parts.push(`[Assistant]:\n${msg.content.trim()}`);
+      }
+      if (msg.toolCalls && msg.toolCalls.length > 0) {
+        const calls = msg.toolCalls.map((call) => {
+          const args =
+            typeof call.arguments === "object" && call.arguments !== null
+              ? Object.entries(call.arguments as Record<string, unknown>)
+                  .map(([k, v]) => `${k}=${JSON.stringify(v)}`)
+                  .join(", ")
+              : "";
+          const pathArg = (call.arguments as Record<string, unknown> | undefined)?.path;
+          if (typeof pathArg === "string" && pathArg.trim()) {
+            if (call.name === "read_file" || call.name === "show_signature") {
+              readFiles.add(pathArg.trim());
+            } else if (["write_file", "edit_file", "apply_patch"].includes(call.name)) {
+              modifiedFiles.add(pathArg.trim());
+            }
+          }
+          return `${call.name}(${args})`;
+        });
+        parts.push(`[Assistant tool calls]:\n${calls.join("; ")}`);
+      }
+    } else if (msg.role === "tool") {
+      const text = typeof msg.content === "string" ? msg.content : "";
+      const maxChars = 2000;
+      const truncated =
+        text.length > maxChars ? `${text.slice(0, maxChars)}\n[... ${text.length - maxChars} chars truncated]` : text;
+      parts.push(`[Tool result (${msg.toolCallId ?? "call"})]:\n${truncated.trim()}`);
+    }
+  }
+
+  const fileSummary: string[] = [];
+  if (readFiles.size > 0) {
+    fileSummary.push(`<read-files>\n${Array.from(readFiles).join("\n")}\n</read-files>`);
+  }
+  if (modifiedFiles.size > 0) {
+    fileSummary.push(`<modified-files>\n${Array.from(modifiedFiles).join("\n")}\n</modified-files>`);
+  }
+
+  return [...fileSummary, ...parts].join("\n\n");
 }
 
 function buildSummaryRequest(messages: readonly Message[]): Message[] {
@@ -875,7 +970,7 @@ function buildSummaryRequest(messages: readonly Message[]): Message[] {
     { role: "system", content: instructions },
     {
       role: "user",
-      content: `<conversation>\n${JSON.stringify(messages, null, 2)}\n</conversation>`,
+      content: `<conversation>\n${serializeConversation(messages)}\n</conversation>`,
     },
   ];
 }
