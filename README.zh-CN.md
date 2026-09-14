@@ -64,6 +64,9 @@ oran
 # 单次执行任务（非交互模式）
 oran run "修复 src/index.ts 中的类型错误"
 
+# 脚本化运行：从文件读提示词，并落一份结构化 JSONL 事件日志
+oran run --task prompt.md --output run.jsonl --timeout 300
+
 # 指定模型或工作区目录
 oran --model deepseek/deepseek-v4-flash --workspace ./my-project
 
@@ -73,6 +76,20 @@ oran inspect
 # 查看历史任务执行记录
 oran tasks
 ```
+
+### 脚本化运行（Headless）
+
+`oran run` 完全非交互，可直接放进脚本或 CI：
+
+| 参数                        | 说明                                                                          |
+| :-------------------------- | :---------------------------------------------------------------------------- |
+| `--task FILE`               | 从文件读取提示词（避免 Windows 命令行长度限制）                               |
+| `--output FILE.jsonl`, `-o` | 逐行写出 `oran-event/1` 事件日志（`run_start` / `runtime_event` / `run_end`） |
+| `--timeout SECONDS`         | 超时后取消任务                                                                |
+
+这三个参数仅在 `run` 子命令下有效，其他子命令使用会以用法错误退出。
+退出码：`0` 完成、`1` 失败或运行时错误、`2` 用法错误、`3` 超时、`4` 被取消（非超时）。
+若外层 harness 强杀了进程，以 JSONL 中的 `run_end` 记录为准。
 
 ### 终端快捷键
 

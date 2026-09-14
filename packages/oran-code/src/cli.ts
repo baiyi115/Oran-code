@@ -14,7 +14,8 @@ import {
   userConfigPath,
   userConfigReadPath,
 } from "./config.js";
-import type { UserConfig } from "./types.js";
+import type { Task, UserConfig } from "./types.js";
+import type { JsonlEventLog } from "./headless-events.js";
 import { formatErrorDetail } from "./error-format.js";
 import {
   CLI_NAME,
@@ -83,13 +84,29 @@ export async function main(argv = process.argv.slice(2)): Promise<void> {
   const approveAll = argv.includes("--approve-all") || argv.includes("-y") || config.agent?.approveAll === true;
   const acceptEdits = argv.includes("--accept-edits") || argv.includes("-a");
   const requestedPermissionMode = approveAll ? "bypass" : acceptEdits ? "accept-edits" : undefined;
-  const prompt = command === "run" ? firstPositional(argv.slice(1)) : undefined;
+  const outputPath = valueAfter(argv, "--output", "-o");
+  const taskFile = valueAfter(argv, "--task");
+  const timeoutSeconds = secondsOption(argv, "--timeout");
+  const prompt = command === "run" ? (taskFile ? await readTaskFile(taskFile) : firstPositional(argv.slice(1))) : undefined;
 
+  if (command !== "run" && (outputPath || taskFile || timeoutSeconds !== undefined)) {
+    throw new UsageError("--output, --task and --timeout are only supported by the run command");
+  }
   if (command === "run" && !prompt) {
-    throw new Error(`usage: ${CLI_NAME} run "..." [--workspace PATH]`);
+    throw new UsageError(`usage: ${CLI_NAME} run "..." [--workspace PATH] [--output FILE.jsonl] [--timeout SECONDS]`);
+  }
+  if (timeoutSeconds !== undefined && timeoutSeconds <= 0) {
+    throw new UsageError("--timeout must be a positive number of seconds");
   }
   if (prompt) {
     const model = resolveModelConfig(config, requestedModel ?? config.agent?.lastModel);
+    const eventLog = outputPath
+      ? await openEventLog(outputPath, {
+          model: `${model.provider}/${model.model}`,
+          workspace,
+          prompt,
+        })
+      : undefined;
     const { TerminalSession } = await import("./session.js");
     const session = new TerminalSession({
       workspace,
@@ -97,9 +114,26 @@ export async function main(argv = process.argv.slice(2)): Promise<void> {
       config,
       approveAll,
       ...(requestedPermissionMode ? { permissionMode: requestedPermissionMode } : {}),
+      ...(eventLog ? { runtimeEventSink: (event) => eventLog.record(event) } : {}),
     });
-    const task = await session.runOnce(prompt);
-    if (task.state === "failed") process.exitCode = 1;
+    const startedAt = Date.now();
+    const outcome = await runScripted(session, prompt, timeoutSeconds ? timeoutSeconds * 1000 : undefined);
+    const exitCode = EXIT_CODES[outcome.outcome];
+    if (eventLog) {
+      await eventLog.finish({
+        outcome: outcome.outcome,
+        exitCode,
+        durationMs: Date.now() - startedAt,
+        finalText: outcome.task?.result ?? "",
+        ...(outcome.error ? { error: withoutStack(outcome.error) } : {}),
+      });
+      if (eventLog.writeFailure) {
+        console.error(`warning: could not write the event log at ${eventLog.outputPath}: ${eventLog.writeFailure.message}`);
+      }
+      console.error(`${CLI_NAME}: ${outcome.outcome} -> ${eventLog.outputPath}`);
+    }
+    if (outcome.error) console.error(outcome.error);
+    process.exitCode = exitCode;
     return;
   }
 
@@ -129,12 +163,125 @@ function installSignalHandlers(session: { cancel(): void }): () => void {
   return () => process.off("SIGINT", cancel);
 }
 
+/** Invalid command-line usage; reported without a stack trace and exits with code 2. */
+export class UsageError extends Error {}
+
+/** Process exit codes for scripted runs; the JSONL `run_end` record repeats them. */
+export const EXIT_CODES = {
+  completed: 0,
+  failed: 1,
+  timeout: 3,
+  cancelled: 4,
+} as const;
+
+interface ScriptedSession {
+  runOnce(prompt: string): Promise<Task>;
+  cancel(): void;
+}
+
+type ScriptedOutcome = {
+  outcome: keyof typeof EXIT_CODES;
+  task?: Task;
+  error?: string;
+};
+
+/**
+ * Runs one prompt without the interactive loop and classifies the result.
+ * A CLI-level `--timeout` cancels the running task; the harness may also apply
+ * its own timeout, in which case the JSONL `run_end` record is authoritative.
+ */
+async function runScripted(
+  session: ScriptedSession,
+  prompt: string,
+  timeoutMs: number | undefined,
+): Promise<ScriptedOutcome> {
+  const attempt = session.runOnce(prompt).then(
+    (task): ScriptedOutcome => ({ outcome: outcomeForState(task.state), task }),
+    (error: unknown): ScriptedOutcome => ({
+      outcome: "failed",
+      error: formatErrorDetail(error, { includeStack: true }),
+    }),
+  );
+  if (!timeoutMs) return attempt;
+
+  let timer: NodeJS.Timeout | undefined;
+  let graceTimer: NodeJS.Timeout | undefined;
+  let timedOut = false;
+  const deadline = new Promise<ScriptedOutcome>((resolve) => {
+    timer = setTimeout(() => {
+      timedOut = true;
+      session.cancel();
+      // Cancel unwinds the loop asynchronously; give it a bounded window so
+      // trace/session state and MCP child processes are torn down cleanly.
+      graceTimer = setTimeout(() => resolve({ outcome: "timeout" }), CANCEL_GRACE_MS);
+    }, timeoutMs);
+  });
+  try {
+    const settled = await Promise.race([attempt, deadline]);
+    // A run cancelled because of --timeout is reported as a timeout even when
+    // the session settles first, so the outcome never depends on a race.
+    return timedOut ? { outcome: "timeout", ...(settled.task ? { task: settled.task } : {}) } : settled;
+  } finally {
+    if (timer) clearTimeout(timer);
+    if (graceTimer) clearTimeout(graceTimer);
+  }
+}
+
+/** How long a `--timeout` cancellation may take to unwind before reporting. */
+const CANCEL_GRACE_MS = 3_000;
+
+function outcomeForState(state: Task["state"]): keyof typeof EXIT_CODES {
+  if (state === "completed") return "completed";
+  if (state === "cancelled") return "cancelled";
+  return "failed";
+}
+
+/** Reads a positive seconds option, reporting invalid values as usage errors. */
+function secondsOption(args: readonly string[], name: string): number | undefined {
+  const raw = valueAfter(args, name);
+  if (raw === undefined) return undefined;
+  const value = Number(raw);
+  if (!Number.isFinite(value)) throw new UsageError(`${name} must be a number of seconds`);
+  return value;
+}
+
+async function readTaskFile(path: string): Promise<string> {
+  const target = resolve(path);
+  let content: string;
+  try {
+    content = await readFile(target, "utf8");
+  } catch (error) {
+    throw new UsageError(`cannot read --task file ${target}: ${(error as Error).message}`);
+  }
+  const prompt = content.trim();
+  if (!prompt) throw new UsageError(`--task file is empty: ${target}`);
+  return prompt;
+}
+
+/** Drops the appended stack trace; stderr keeps the full detail for debugging. */
+function withoutStack(detail: string): string {
+  const marker = detail.indexOf("\nstack:");
+  return marker === -1 ? detail : detail.slice(0, marker);
+}
+
+async function openEventLog(
+  path: string,
+  header: { model: string; workspace: string; prompt: string },
+): Promise<JsonlEventLog> {
+  const { JsonlEventLog } = await import("./headless-events.js");
+  try {
+    return JsonlEventLog.open(path, { ...header, productVersion: VERSION });
+  } catch (error) {
+    throw new UsageError(`cannot write --output log at ${resolve(path)}: ${(error as Error).message}`);
+  }
+}
+
 function firstPositional(args: readonly string[]): string | undefined {
   const values: string[] = [];
   for (let index = 0; index < args.length; index += 1) {
     const arg = args[index];
     if (arg === undefined) continue;
-    if (["--model", "-m", "--workspace", "-w"].includes(arg)) {
+    if (["--model", "-m", "--workspace", "-w", "--output", "-o", "--task", "--timeout"].includes(arg)) {
       index += 1;
       continue;
     }
@@ -355,6 +502,13 @@ Usage:
   oran --accept-edits, -a           auto-apply file edits (only confirm shell commands)
   oran --approve-all, -y            skip all tool approvals (bypass mode)
 
+Scripted runs (oran run):
+  --task FILE                       read the prompt from a file instead of argv
+  --output FILE.jsonl, -o           write one JSON event per line (see evals/README.md)
+  --timeout SECONDS                 cancel the run and exit 3 when it exceeds the limit
+  exit codes                        0 completed, 1 failed, 2 invalid usage,
+                                    3 timeout, 4 cancelled
+
 Configuration:
   ~/${USER_DATA_DIRECTORY}/config.json             user model/provider catalog
   <workspace>/${PROJECT_STATE_DIRECTORY}/config.json project overrides
@@ -380,6 +534,11 @@ export async function runCli(argv = process.argv.slice(2)): Promise<void> {
   try {
     await main(argv);
   } catch (error: unknown) {
+    if (error instanceof UsageError) {
+      console.error(`${CLI_NAME}: ${error.message}`);
+      process.exitCode = 2;
+      return;
+    }
     console.error(formatErrorDetail(error, { includeStack: true }));
     process.exitCode = 1;
   }

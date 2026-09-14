@@ -67,6 +67,9 @@ oran
 # Run a single task non-interactively
 oran run "Fix the type error in src/index.ts"
 
+# Scripted run: read the prompt from a file and write a structured JSONL event log
+oran run --task prompt.md --output run.jsonl --timeout 300
+
 # Choose a specific model or workspace
 oran --model deepseek/deepseek-v4-flash --workspace ./my-project
 
@@ -76,6 +79,21 @@ oran inspect
 # Review past task execution traces
 oran tasks
 ```
+
+### Scripted Runs (Headless)
+
+`oran run` is fully non-interactive and can be driven from scripts or CI:
+
+| Flag                        | Description                                                                                              |
+| :-------------------------- | :------------------------------------------------------------------------------------------------------- |
+| `--task FILE`               | Reads the prompt from a file (avoids the Windows command-line length limit)                              |
+| `--output FILE.jsonl`, `-o` | Writes an `oran-event/1` event log, one JSON object per line (`run_start` / `runtime_event` / `run_end`) |
+| `--timeout SECONDS`         | Cancels the task after this many seconds                                                                 |
+
+These flags are only accepted by `run`; other subcommands reject them as a usage error.
+Exit codes: `0` completed, `1` failed or runtime error, `2` invalid usage, `3` timed out,
+`4` cancelled otherwise. If an outer harness kills the process, the JSONL `run_end` record
+is authoritative.
 
 ### Keyboard Shortcuts
 

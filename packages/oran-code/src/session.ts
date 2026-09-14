@@ -131,6 +131,11 @@ export interface SessionOptions {
   providerFactory?: (model: ModelConfig) => ModelProvider;
   stablePromptModules?: OptionalSystemPromptModules;
   onCommandReloadReady?: (reload: () => Promise<void>) => void;
+  /**
+   * Receives every runtime event for this session. Used by the scripted
+   * `--output` JSONL log; implementations must not throw.
+   */
+  runtimeEventSink?: (event: RuntimeEvent) => void;
 }
 
 interface FollowUpItem {
@@ -215,6 +220,7 @@ export class TerminalSession {
   private latestUsage: Record<string, number> = {};
   private readonly debugLogSink: DebugLogSink;
   private readonly debugTracker: StreamDebugTracker;
+  private readonly runtimeEventSink: ((event: RuntimeEvent) => void) | undefined;
   private hookEngine: HookEngine | undefined;
   private hookWarningsShown = false;
   private readonly hookSubagentAbortControllers = new Set<AbortController>();
@@ -303,6 +309,7 @@ export class TerminalSession {
     this.handlers = new SessionCommandHandlers(this.handlersPort());
     this.workspaceFileIndex = new WorkspaceFileIndex(this.workspace);
     this.skipVerify = options.config.agent?.skipVerify ?? (options.config.agent?.verifyCommands?.length ? false : true);
+    this.runtimeEventSink = options.runtimeEventSink;
     this.input = input;
     this.output = output;
     this.renderer = new TerminalRenderer(output);
@@ -1363,6 +1370,7 @@ export class TerminalSession {
   }
 
   private async onEvent(event: RuntimeEvent): Promise<void> {
+    this.runtimeEventSink?.(event);
     if (event.type === "assistant_end") this.latestUsage = { ...event.usage };
     this.debugTracker.track(event);
     if (event.type === "context_compaction") {
