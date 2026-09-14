@@ -87,7 +87,8 @@ export async function main(argv = process.argv.slice(2)): Promise<void> {
   const outputPath = valueAfter(argv, "--output", "-o");
   const taskFile = valueAfter(argv, "--task");
   const timeoutSeconds = secondsOption(argv, "--timeout");
-  const prompt = command === "run" ? (taskFile ? await readTaskFile(taskFile) : firstPositional(argv.slice(1))) : undefined;
+  const prompt =
+    command === "run" ? (taskFile ? await readTaskFile(taskFile) : firstPositional(argv.slice(1))) : undefined;
 
   if (command !== "run" && (outputPath || taskFile || timeoutSeconds !== undefined)) {
     throw new UsageError("--output, --task and --timeout are only supported by the run command");
@@ -128,7 +129,9 @@ export async function main(argv = process.argv.slice(2)): Promise<void> {
         ...(outcome.error ? { error: withoutStack(outcome.error) } : {}),
       });
       if (eventLog.writeFailure) {
-        console.error(`warning: could not write the event log at ${eventLog.outputPath}: ${eventLog.writeFailure.message}`);
+        console.error(
+          `warning: could not write the event log at ${eventLog.outputPath}: ${eventLog.writeFailure.message}`,
+        );
       }
       console.error(`${CLI_NAME}: ${outcome.outcome} -> ${eventLog.outputPath}`);
     }

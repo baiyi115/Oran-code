@@ -88,12 +88,14 @@ export interface TaskControllerOptions {
   /** Callback to poll steering messages queued by the user while the agent is running. */
   getSteeringMessages?: () => Promise<string[]> | string[];
   /** Handler for ask_user_question tool */
-  askUserCallback?: (questions: Array<{
-    header: string;
-    question: string;
-    options: Array<{ label: string; description: string; preview?: string | undefined }>;
-    multiSelect?: boolean | undefined;
-  }>) => Promise<Record<string, string>>;
+  askUserCallback?: (
+    questions: Array<{
+      header: string;
+      question: string;
+      options: Array<{ label: string; description: string; preview?: string | undefined }>;
+      multiSelect?: boolean | undefined;
+    }>,
+  ) => Promise<Record<string, string>>;
 }
 
 export class TaskController {
@@ -286,10 +288,7 @@ export class TaskController {
       this.conversation.length > 0
         ? `[Previous task completed. New user task begins below.]\nUser message:\n${task.prompt}`
         : `User message:\n${task.prompt}`;
-    const turnConversation: Message[] = [
-      ...cloneMessages(this.conversation),
-      { role: "user", content: userContent },
-    ];
+    const turnConversation: Message[] = [...cloneMessages(this.conversation), { role: "user", content: userContent }];
     this.syncConversation(turnConversation);
     const snapshot = casualConversation
       ? {

@@ -512,9 +512,7 @@ export class OverlayHandlers {
     if (isSubmitKey(input, key)) {
       const updatedAnswers = { ...overlay.answers };
       if (currentQ.multiSelect) {
-        const selectedLabels = overlay.selectedIndices
-          .map((i) => currentQ.options[i]?.label)
-          .filter(Boolean);
+        const selectedLabels = overlay.selectedIndices.map((i) => currentQ.options[i]?.label).filter(Boolean);
         updatedAnswers[currentQ.question] =
           selectedLabels.length > 0 ? selectedLabels.join(", ") : (currentQ.options[0]?.label ?? "None");
       } else {

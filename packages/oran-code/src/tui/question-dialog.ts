@@ -18,12 +18,7 @@ export function questionDialogLines(
   const stepLabel = `Question ${currentQuestionIndex + 1}/${questions.length}`;
   const headerTag = current.header ? `[${current.header.trim()}] ` : "";
 
-  const lines: string[] = [
-    `${headerTag}${stepLabel}`,
-    dimHorizontalRule(safeWidth),
-    current.question,
-    "",
-  ];
+  const lines: string[] = [`${headerTag}${stepLabel}`, dimHorizontalRule(safeWidth), current.question, ""];
 
   if (isMulti) {
     lines.push("  (Press Space to toggle, Enter to confirm)", "");
@@ -34,12 +29,7 @@ export function questionDialogLines(
     const isFocused = idx === selectedIndex;
     const isChecked = isMulti ? selectedIndices.includes(idx) : isFocused;
 
-    let marker = "";
-    if (isMulti) {
-      marker = isChecked ? "[✓]" : "[ ]";
-    } else {
-      marker = isFocused ? "●" : "○";
-    }
+    const marker = isMulti ? (isChecked ? "[✓]" : "[ ]") : isFocused ? "●" : "○";
 
     const labelLine = `  ${marker} ${opt.label}`;
     lines.push(highlightSelection(labelLine, isFocused));
@@ -66,9 +56,7 @@ export function questionDialogLines(
 
   lines.push(
     "",
-    isMulti
-      ? "↑↓ Navigate   Space Toggle   Enter Confirm   Esc Reject"
-      : "↑↓ Navigate   Enter Confirm   Esc Reject",
+    isMulti ? "↑↓ Navigate   Space Toggle   Enter Confirm   Esc Reject" : "↑↓ Navigate   Enter Confirm   Esc Reject",
   );
 
   return lines.flatMap((line) => {

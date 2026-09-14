@@ -9,39 +9,37 @@ const BRACKETED_PASTE_START = "\x1b[200~";
 const BRACKETED_PASTE_END = "\x1b[201~";
 
 /**
+ * 透传签名刻意放宽：chunk/encoding/cb 的实际组合由调用方决定，拦截层不做静态约束。
+ * 必须 bind，否则裸函数调用会丢掉 write 依赖的 stream 上下文。
+ */
+type RawWrite = (chunk: unknown, encoding?: unknown, cb?: unknown) => boolean;
+
+/**
  * Wraps a WriteStream with CSI 2026 synchronized output brackets.
  * When supported by the terminal emulator (Windows Terminal, iTerm2, WezTerm,
  * Alacritty, Ghostty, Foot, Kitty), all updates between 2026h and 2026l are
  * rendered atomically in a single screen refresh, eliminating tearing and flicker.
  */
 export function createSynchronizedWriteStream(target: NodeJS.WriteStream): NodeJS.WriteStream {
+  const write = target.write.bind(target) as unknown as RawWrite;
   return new Proxy(target, {
     get(obj, prop, receiver) {
       if (prop === "write") {
         return (chunk: unknown, encoding?: unknown, cb?: unknown): boolean => {
           if (!target.isTTY) {
-            return (target.write as any)(chunk, encoding, cb);
+            return write(chunk, encoding, cb);
           }
           const str =
-            typeof chunk === "string"
-              ? chunk
-              : Buffer.isBuffer(chunk)
-                ? chunk.toString("utf8")
-                : String(chunk);
+            typeof chunk === "string" ? chunk : Buffer.isBuffer(chunk) ? chunk.toString("utf8") : String(chunk);
 
           if (!str || str.startsWith(BEGIN_SYNCHRONIZED_OUTPUT)) {
-            return (target.write as any)(chunk, encoding, cb);
+            return write(chunk, encoding, cb);
           }
 
-          const callback =
-            typeof encoding === "function" ? encoding : typeof cb === "function" ? cb : undefined;
+          const callback = typeof encoding === "function" ? encoding : typeof cb === "function" ? cb : undefined;
           const enc = typeof encoding === "string" ? encoding : undefined;
 
-          return (target.write as any)(
-            `${BEGIN_SYNCHRONIZED_OUTPUT}${str}${END_SYNCHRONIZED_OUTPUT}`,
-            enc,
-            callback,
-          );
+          return write(`${BEGIN_SYNCHRONIZED_OUTPUT}${str}${END_SYNCHRONIZED_OUTPUT}`, enc, callback);
         };
       }
       const val = Reflect.get(obj, prop, receiver);

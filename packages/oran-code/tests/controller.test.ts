@@ -17,7 +17,6 @@ import type {
   RuntimeEvent,
   ToolCall,
   ToolDefinition,
-  VerificationResult,
 } from "../src/types.js";
 
 const model: ModelConfig = {

@@ -11,9 +11,7 @@ export type ApprovalHandler = (
   origin: SubagentOrigin,
 ) => Promise<ApprovalResponse>;
 export type ApprovalCancelHandler = () => void;
-export type QuestionHandler = (
-  questions: readonly QuestionDialogItem[],
-) => Promise<Record<string, string>>;
+export type QuestionHandler = (questions: readonly QuestionDialogItem[]) => Promise<Record<string, string>>;
 export type QuestionCancelHandler = () => void;
 
 export interface TuiRendererLayout {
