@@ -14,6 +14,7 @@ import type {
   TaskPlanStep,
   ToolCall,
   ToolDefinition,
+  ToolExecutionContext,
   ToolKind,
   ToolResult,
 } from "../types.js";
@@ -88,6 +89,7 @@ export interface ToolExecutorPorts {
   getAbortSignal(): AbortSignal | undefined;
   getTurnSequence(): number;
   getModelResponseStepId(): number | undefined;
+  readonly askUser?: ToolExecutionContext["askUser"];
 }
 
 /**
@@ -285,9 +287,11 @@ export class ToolBatchExecutor {
               const before = await fileHash(task.workspace, item.call);
               let result: ToolResult;
               try {
-                const executionContext = this.ports.getAbortSignal()
-                  ? { workspace: task.workspace, signal: this.ports.getAbortSignal()! }
-                  : { workspace: task.workspace };
+                const executionContext: ToolExecutionContext = {
+                  workspace: task.workspace,
+                  ...(this.ports.getAbortSignal() ? { signal: this.ports.getAbortSignal()! } : {}),
+                  ...(this.ports.askUser !== undefined ? { askUser: this.ports.askUser } : {}),
+                };
                 result = await this.ports.registry.invoke(item.call, executionContext);
               } catch (error) {
                 if (isAbortError(error) || this.ports.getAbortSignal()?.aborted) {
@@ -548,9 +552,11 @@ export class ToolBatchExecutor {
     const before = await fileHash(task.workspace, call);
     let result: ToolResult;
     try {
-      const executionContext = this.ports.getAbortSignal()
-        ? { workspace: task.workspace, signal: this.ports.getAbortSignal()! }
-        : { workspace: task.workspace };
+      const executionContext: ToolExecutionContext = {
+        workspace: task.workspace,
+        ...(this.ports.getAbortSignal() ? { signal: this.ports.getAbortSignal()! } : {}),
+        ...(this.ports.askUser !== undefined ? { askUser: this.ports.askUser } : {}),
+      };
       result = await this.ports.registry.invoke(call, executionContext);
     } catch (error) {
       if (isAbortError(error) || this.ports.getAbortSignal()?.aborted) {

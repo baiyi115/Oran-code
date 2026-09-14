@@ -15,7 +15,14 @@ import type {
   TuiRenderCommitKind,
   TuiState,
   TranscriptMessage,
+  QuestionDialogItem,
 } from "./types.js";
+import {
+  createBracketedPasteStream,
+  createSynchronizedWriteStream,
+  ENABLE_BRACKETED_PASTE,
+  DISABLE_BRACKETED_PASTE,
+} from "./terminal-streams.js";
 import type { ConnectInput, ConnectPrefill } from "./types.js";
 import { appendSystemMessage } from "./message-reducer.js";
 import { nextMessageNumber } from "./state.js";
@@ -115,6 +122,7 @@ export class InkTuiApp {
   private readonly committedStaticTranscriptIds = new Set<string>();
   private readonly renderWaiters: Array<{ revision: number; resolve: () => void }> = [];
   private lastTranscriptRenderLines: ReturnType<TranscriptView["linesWithAnchors"]> = [];
+  private questionResolve: ((answers: Record<string, string>) => void) | undefined;
 
   constructor(options: TuiAppOptions, dependencies: InkTuiAppDependencies = {}) {
     this.options = options;
@@ -162,6 +170,7 @@ export class InkTuiApp {
         this.dismissedCommandInput = value;
       },
       resolveApproval: (response) => this.resolveApproval(response),
+      resolveQuestion: (answers) => this.resolveQuestion(answers),
     });
     this.connectWizard = new ConnectWizard({
       state: this.state,
@@ -188,14 +197,25 @@ export class InkTuiApp {
       this.openApproval(call, level, description, origin),
     );
     this.renderer.setApprovalCancelHandler(() => this.cancelApproval());
+    this.renderer.setQuestionHandler((questions) => this.openQuestion(questions));
+    this.renderer.setQuestionCancelHandler(() => this.cancelQuestion());
   }
 
   run(): Promise<void> {
     if (this.destroyed) return Promise.resolve();
     this.restoreNativeMouse();
+    if (this.options.output.isTTY) {
+      try {
+        this.options.output.write(ENABLE_BRACKETED_PASTE);
+      } catch {
+        // stdout may already be closed
+      }
+    }
+    const wrappedInput = createBracketedPasteStream(this.options.input);
+    const wrappedOutput = createSynchronizedWriteStream(this.options.output);
     this.inkInstance = this.renderInk(<InkRoot app={this} revision={this.renderRevision} />, {
-      stdin: this.options.input as NodeJS.ReadStream,
-      stdout: this.options.output,
+      stdin: wrappedInput as NodeJS.ReadStream,
+      stdout: wrappedOutput,
       exitOnCtrlC: false,
     });
     return new Promise<void>((resolve) => {
@@ -207,6 +227,7 @@ export class InkTuiApp {
     if (this.destroyed) return;
     this.destroyed = true;
     this.cancelApproval();
+    this.cancelQuestion();
     if (this.state.session.status === "press Ctrl+C again to exit") {
       this.state.session.status = "";
     }
@@ -221,10 +242,10 @@ export class InkTuiApp {
       committedRevision: this.committedRenderRevision,
       staticCount: staticTranscriptCount(this.state.transcript),
     });
-    // Restore cursor/SGR and leave a clean line for the host shell.
+    // Restore cursor/SGR, close synchronized output & bracketed paste mode, and leave a clean line for the host shell.
     // Do not clear host scrollback: sealed chat history should remain reviewable.
     try {
-      this.options.output.write("\x1b[?25h\x1b[0m\n");
+      this.options.output.write(`\x1b[?2026l${DISABLE_BRACKETED_PASTE}\x1b[?25h\x1b[0m\n`);
     } catch {
       // stdout may already be closed during process teardown
     }
@@ -322,6 +343,10 @@ export class InkTuiApp {
     }
     if (this.state.overlay.kind === "approval") {
       this.overlayHandlers.handleApprovalKey(input, key);
+      return;
+    }
+    if (this.state.overlay.kind === "question") {
+      this.overlayHandlers.handleQuestionKey(input, key);
       return;
     }
     if (this.state.overlay.kind === "models") {
@@ -701,6 +726,49 @@ export class InkTuiApp {
     this.resolveApproval(false);
   }
 
+  private openQuestion(questions: readonly QuestionDialogItem[]): Promise<Record<string, string>> {
+    this.cancelQuestion();
+    this.state.overlay = {
+      kind: "question",
+      questions: [...questions],
+      currentQuestionIndex: 0,
+      selectedIndex: 0,
+      selectedIndices: [],
+      answers: {},
+    };
+    this.state.session.status = "question pending";
+    this.invalidate();
+    return new Promise<Record<string, string>>((resolve) => {
+      this.questionResolve = resolve;
+    });
+  }
+
+  private resolveQuestion(answers: Record<string, string>): void {
+    const resolve = this.questionResolve;
+    if (!resolve) return;
+    this.questionResolve = undefined;
+    this.state.overlay = { kind: "none" };
+    if (this.state.session.status === "question pending") {
+      this.state.session.status = "";
+    }
+    resolve(answers);
+    this.invalidate();
+  }
+
+  private cancelQuestion(): void {
+    if (!this.questionResolve) return;
+    const overlay = this.state.overlay.kind === "question" ? this.state.overlay : undefined;
+    const fallback: Record<string, string> = overlay ? { ...overlay.answers } : {};
+    if (overlay) {
+      for (const q of overlay.questions) {
+        if (!fallback[q.question]) {
+          fallback[q.question] = q.options[0]?.label ?? "Yes";
+        }
+      }
+    }
+    this.resolveQuestion(fallback);
+  }
+
   private isBlocked(): boolean {
     return this.options.isInteractionBlocked?.() === true;
   }
@@ -887,13 +955,23 @@ export class InkTuiApp {
     const contentLines = renderedLines.length;
     const maximumOffset = Math.max(0, contentLines - Math.max(1, viewportLines));
     const anchor = this.state.transcriptScroll.anchor;
+    let anchorApplied = false;
     if (anchor && !this.state.transcriptScroll.followBottom) {
       const anchoredLine = findAnchoredLine(renderedLines, anchor.messageId, anchor.lineOffset);
       if (anchoredLine >= 0) {
         this.state.transcriptScroll.offsetFromBottom = Math.max(0, maximumOffset - anchoredLine);
+        anchorApplied = true;
+      } else {
+        this.state.transcriptScroll.anchor = undefined;
       }
     }
-    syncTranscriptScroll(this.state.transcriptScroll, contentLines, viewportLines, this.state.lastTranscriptLines);
+    syncTranscriptScroll(
+      this.state.transcriptScroll,
+      contentLines,
+      viewportLines,
+      this.state.lastTranscriptLines,
+      anchorApplied,
+    );
     this.state.lastTranscriptLines = contentLines;
     this.state.lastTranscriptViewportLines = viewportLines;
     this.lastTranscriptRenderLines = renderedLines;
@@ -1205,7 +1283,7 @@ function InkRoot({ app, revision }: { app: InkTuiApp; revision: number }): React
   const parkUp = footer.length + frameEndOffset + Math.max(0, composerLineCount - 1 - cursor.row);
   const parkColumn = 1 + 2 + Math.max(0, cursor.column);
   useEffect(() => {
-    if (busy || state.overlay.kind === "approval") {
+    if (busy || state.overlay.kind === "approval" || state.overlay.kind === "question") {
       app.unparkComposerCursor();
       return;
     }

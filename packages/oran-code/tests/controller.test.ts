@@ -7,7 +7,6 @@ import { createRuntimeConfig } from "../src/runtime.js";
 import { InMemoryTraceStore } from "../src/trace.js";
 import { createTask } from "../src/types.js";
 import { ToolRegistry } from "../src/tools.js";
-import { Verifier } from "../src/verifier.js";
 import type {
   HookEnginePort,
   Message,
@@ -88,7 +87,6 @@ function toolResponse(call: ToolCall): ModelStreamChunk[] {
 interface ControllerTestOptions {
   approvalCallback?: (call: ToolCall, level: number, description: string, requestId: string) => boolean;
   hookEngine?: HookEnginePort;
-  verifier?: Verifier;
 }
 
 function createController(
@@ -106,33 +104,11 @@ function createController(
     trace,
     ...(options.approvalCallback ? { approvalCallback: options.approvalCallback } : {}),
     ...(options.hookEngine ? { hookEngine: options.hookEngine } : {}),
-    ...(options.verifier ? { verifier: options.verifier } : {}),
     eventCallback: (event) => {
       events.push(event);
     },
   });
   return { controller, trace };
-}
-
-class ScriptedVerifier extends Verifier {
-  private index = 0;
-
-  constructor(
-    workspace: string,
-    private readonly batches: VerificationResult[][],
-  ) {
-    super(workspace);
-  }
-
-  override async runMany(): Promise<VerificationResult[]> {
-    const batch = this.batches[this.index++];
-    if (!batch) throw new Error("scripted verifier ran out of results");
-    return batch;
-  }
-}
-
-function verification(command: string, passed: boolean, output = passed ? "ok" : "failed"): VerificationResult {
-  return { command, exitCode: passed ? 0 : 1, output, durationMs: 1, passed };
 }
 
 describe("TaskController", () => {
@@ -421,7 +397,7 @@ describe("TaskController", () => {
     }
   });
 
-  it("feeds a later verification failure back to the model before completing", async () => {
+  it("completes directly when the model responds without running implicit verification", async () => {
     const workspace = await mkdtemp(join(tmpdir(), "liteagent-controller-"));
     try {
       const registry = new ToolRegistry();
@@ -445,37 +421,21 @@ describe("TaskController", () => {
           createdAt: new Date().toISOString(),
         }),
         textResponse("The change is ready."),
-        textResponse("The verification failure is fixed."),
-      ]);
-      const verifier = new ScriptedVerifier(workspace, [
-        [verification("typecheck", true), verification("build", false, "build failed")],
-        [verification("typecheck", true), verification("build", true)],
       ]);
       const events: RuntimeEvent[] = [];
       const { controller } = createController(workspace, provider, registry, events, {
         approvalCallback: () => true,
-        verifier,
       });
 
-      const task = await controller.execute(createTask(workspace, "write and verify a note"));
+      const task = await controller.execute(createTask(workspace, "write a note"));
 
       expect(task.state).toBe("completed");
-      expect(task.result).toBe("The verification failure is fixed.");
-      expect(provider.requests).toHaveLength(3);
-      expect(
-        provider.requests[2]?.some(
-          (message) =>
-            message.role === "user" && typeof message.content === "string" && message.content.includes("build failed"),
-        ),
-      ).toBe(true);
+      expect(task.result).toBe("The change is ready.");
+      expect(provider.requests).toHaveLength(2);
       const verifyEvents = events.filter(
         (event): event is Extract<RuntimeEvent, { type: "verify" }> => event.type === "verify",
       );
-      expect(verifyEvents).toHaveLength(2);
-      expect(verifyEvents[0]?.results).toEqual([
-        verification("typecheck", true),
-        verification("build", false, "build failed"),
-      ]);
+      expect(verifyEvents).toHaveLength(0);
     } finally {
       await rm(workspace, { recursive: true, force: true });
     }

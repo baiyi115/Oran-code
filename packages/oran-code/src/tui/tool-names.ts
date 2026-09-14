@@ -3,6 +3,8 @@ export function toolDisplayName(name: string): string {
   switch (name) {
     case "read_file":
       return "Read";
+    case "show_signature":
+      return "Outline";
     case "write_file":
       return "Write";
     case "edit_file":

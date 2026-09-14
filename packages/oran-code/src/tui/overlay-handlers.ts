@@ -38,6 +38,7 @@ export interface OverlayHandlerContext {
   /** Esc 关闭命令面板时记录当前输入,避免打字时面板重弹。 */
   noteDismissedCommandInput(value: string): void;
   resolveApproval(response: ApprovalResponse): void;
+  resolveQuestion(answers: Record<string, string>): void;
 }
 
 /**
@@ -450,5 +451,90 @@ export class OverlayHandlers {
     else if (isSubmitKey(input, key)) this.ctx.resolveApproval(approvalResponse(next));
     else this.ctx.state.overlay = { ...this.ctx.state.overlay, selectedIndex: next };
     this.ctx.invalidate();
+  }
+
+  handleQuestionKey(input: string, key: Key): void {
+    if (this.ctx.state.overlay.kind !== "question") return;
+    const overlay = this.ctx.state.overlay;
+    const currentQ = overlay.questions[overlay.currentQuestionIndex];
+    if (!currentQ) {
+      this.ctx.resolveQuestion({});
+      return;
+    }
+
+    if (key.upArrow) {
+      this.ctx.state.overlay = {
+        ...overlay,
+        selectedIndex: Math.max(0, overlay.selectedIndex - 1),
+      };
+      this.ctx.invalidate();
+      return;
+    }
+
+    if (key.downArrow) {
+      this.ctx.state.overlay = {
+        ...overlay,
+        selectedIndex: Math.min(currentQ.options.length - 1, overlay.selectedIndex + 1),
+      };
+      this.ctx.invalidate();
+      return;
+    }
+
+    if (currentQ.multiSelect && input === " ") {
+      const idx = overlay.selectedIndex;
+      const currentSelected = [...overlay.selectedIndices];
+      const existing = currentSelected.indexOf(idx);
+      if (existing >= 0) {
+        currentSelected.splice(existing, 1);
+      } else {
+        currentSelected.push(idx);
+      }
+      this.ctx.state.overlay = {
+        ...overlay,
+        selectedIndices: currentSelected,
+      };
+      this.ctx.invalidate();
+      return;
+    }
+
+    if (key.escape) {
+      const fallbackAnswers = { ...overlay.answers };
+      for (let i = overlay.currentQuestionIndex; i < overlay.questions.length; i++) {
+        const q = overlay.questions[i];
+        if (q) {
+          fallbackAnswers[q.question] = q.options[0]?.label ?? "Yes";
+        }
+      }
+      this.ctx.resolveQuestion(fallbackAnswers);
+      return;
+    }
+
+    if (isSubmitKey(input, key)) {
+      const updatedAnswers = { ...overlay.answers };
+      if (currentQ.multiSelect) {
+        const selectedLabels = overlay.selectedIndices
+          .map((i) => currentQ.options[i]?.label)
+          .filter(Boolean);
+        updatedAnswers[currentQ.question] =
+          selectedLabels.length > 0 ? selectedLabels.join(", ") : (currentQ.options[0]?.label ?? "None");
+      } else {
+        const chosen = currentQ.options[overlay.selectedIndex];
+        updatedAnswers[currentQ.question] = chosen?.label ?? currentQ.options[0]?.label ?? "Yes";
+      }
+
+      if (overlay.currentQuestionIndex < overlay.questions.length - 1) {
+        this.ctx.state.overlay = {
+          ...overlay,
+          currentQuestionIndex: overlay.currentQuestionIndex + 1,
+          selectedIndex: 0,
+          selectedIndices: [],
+          answers: updatedAnswers,
+        };
+        this.ctx.invalidate();
+        return;
+      }
+
+      this.ctx.resolveQuestion(updatedAnswers);
+    }
   }
 }

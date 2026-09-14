@@ -4,7 +4,6 @@ import { AgentLoop, type NoProgressDiagnostic } from "./loop.js";
 import { ContextManager } from "./context-manager.js";
 import { PermissionPolicy } from "./security.js";
 import { discoverWorkspace } from "./workspace.js";
-import { Verifier } from "./verifier.js";
 import { isAbortError } from "./utils/abort-error.js";
 import { cloneMessages } from "./message-utils.js";
 import {
@@ -62,7 +61,7 @@ export interface TaskControllerOptions {
   provider: ModelProvider;
   registry: ToolRegistry;
   trace: TraceStore;
-  verifier?: Verifier;
+  verifier?: unknown;
   permission?: PermissionPolicy;
   approvalCallback?: ApprovalCallback;
   eventCallback?: RuntimeEventCallback;
@@ -86,6 +85,15 @@ export interface TaskControllerOptions {
   /** Optional per-session file checkpoint store used by /undo. */
   snapshotStore?: SnapshotStorePort;
   snapshotSessionId?: string;
+  /** Callback to poll steering messages queued by the user while the agent is running. */
+  getSteeringMessages?: () => Promise<string[]> | string[];
+  /** Handler for ask_user_question tool */
+  askUserCallback?: (questions: Array<{
+    header: string;
+    question: string;
+    options: Array<{ label: string; description: string; preview?: string | undefined }>;
+    multiSelect?: boolean | undefined;
+  }>) => Promise<Record<string, string>>;
 }
 
 export class TaskController {
@@ -93,7 +101,6 @@ export class TaskController {
   private readonly provider: ModelProvider;
   private readonly registry: ToolRegistry;
   private readonly trace: TraceStore;
-  private readonly verifier: Verifier;
   private readonly permission: PermissionPolicy;
   private readonly approvalCallback: ApprovalCallback;
   private readonly eventCallback: RuntimeEventCallback;
@@ -110,6 +117,8 @@ export class TaskController {
   private readonly readonlyCache = new Map<string, ToolResult>();
   private readonly snapshotStore: SnapshotStorePort | undefined;
   private readonly snapshotSessionId: string | undefined;
+  private readonly getSteeringMessages: (() => Promise<string[]> | string[]) | undefined;
+  private readonly pendingSteeringMessages: string[] = [];
   private loop: AgentLoop | undefined;
   private abortController: AbortController | undefined;
   private activeTask: Task | undefined;
@@ -124,7 +133,6 @@ export class TaskController {
     this.provider = options.provider;
     this.registry = options.registry;
     this.trace = options.trace;
-    this.verifier = options.verifier ?? new Verifier(options.config.workspace, options.config.loop.commandTimeout);
     this.permission = options.permission ?? new PermissionPolicy(options.config.permissions);
     this.permission.registerTools(options.registry.list());
     this.approvalCallback = options.approvalCallback ?? (async () => false);
@@ -147,6 +155,7 @@ export class TaskController {
     this.previousToolCalls = options.previousToolCalls ?? [];
     this.snapshotStore = options.snapshotStore;
     this.snapshotSessionId = options.snapshotSessionId;
+    this.getSteeringMessages = options.getSteeringMessages;
     if (options.previousReadonlyResults) {
       for (const [key, value] of options.previousReadonlyResults) this.readonlyCache.set(key, value);
     }
@@ -190,6 +199,7 @@ export class TaskController {
       getAbortSignal: () => this.abortController?.signal,
       getTurnSequence: () => this.turnRequester.currentTurnSequence,
       getModelResponseStepId: () => this.turnRequester.currentModelResponseStepId,
+      askUser: options.askUserCallback,
     });
   }
 
@@ -207,6 +217,16 @@ export class TaskController {
 
   get readonlyResultSnapshot(): ReadonlyMap<string, ToolResult> {
     return new Map(this.readonlyCache);
+  }
+
+  pushSteeringMessage(text: string): void {
+    if (text && text.trim()) {
+      this.pendingSteeringMessages.push(text.trim());
+    }
+  }
+
+  hasActiveLoop(): boolean {
+    return Boolean(this.activeTask && this.loop && this.loop.canContinue());
   }
 
   async execute(task: Task): Promise<Task> {
@@ -262,9 +282,13 @@ export class TaskController {
     transitionTask(task, planMode ? "planning" : "executing");
     task.model = this.config.model.model;
     await this.persist(task);
+    const userContent =
+      this.conversation.length > 0
+        ? `[Previous task completed. New user task begins below.]\nUser message:\n${task.prompt}`
+        : `User message:\n${task.prompt}`;
     const turnConversation: Message[] = [
       ...cloneMessages(this.conversation),
-      { role: "user", content: `User message:\n${task.prompt}` },
+      { role: "user", content: userContent },
     ];
     this.syncConversation(turnConversation);
     const snapshot = casualConversation
@@ -292,19 +316,38 @@ export class TaskController {
     ];
     this.syncConversation(messages);
 
-    let workspaceMutated = false;
     while (loop.canContinue()) {
       this.throwIfCancelled();
       loop.recordTurn();
+
+      // Ingest steering messages sent by user while tools were executing or waiting
+      const externalSteering = this.getSteeringMessages ? await this.getSteeringMessages() : [];
+      const pendingSteering = this.pendingSteeringMessages.splice(0);
+      const allSteering = [...externalSteering, ...pendingSteering];
+      if (allSteering.length > 0) {
+        for (const steeringText of allSteering) {
+          messages.push({
+            role: "user",
+            content: `[User steering guidance provided while task in progress]:\n${steeringText}`,
+          });
+        }
+        this.syncConversation(messages);
+      }
+
       const finalTurn = loop.isFinalTurn();
       const hookNotices = this.hookEngine ? this.hookEngine.drainNotices() : [];
       const noProgressWarning = loop.noProgressWarning();
-      const reminders = [
+      const reminders: string[] = [
         taskModeReminder(planMode, loop.turns),
         loopBudgetReminder(loop.remainingTurns(), finalTurn),
         ...this.runtimeReminders(),
         ...hookNotices.map((notice) => `[hook:${notice.event}] ${notice.text}`),
-      ];
+      ].filter((item): item is string => Boolean(item && item.trim()));
+      if (casualConversation) {
+        reminders.push(
+          "The user sent a greeting or casual conversational message. Respond politely and concisely in direct text without calling any tools.",
+        );
+      }
       if (task.planState && task.planState.steps.length > 0) {
         reminders.push(taskPlanReminder(task.planState));
       }
@@ -371,6 +414,14 @@ export class TaskController {
             }
           }
           this.throwIfCancelled();
+        }
+        if (casualConversation) {
+          const replyText = response.text.trim() || "你好！有什么我可以帮你的吗？";
+          task.result = replyText;
+          transitionTask(task, "completed");
+          await this.persist(task);
+          await this.emitCompleted(loop);
+          return task;
         }
         if (!response.text && !response.toolCalls.length) throw new Error("model returned an empty response");
         if (finalTurn && response.toolCalls.length) {
@@ -452,7 +503,6 @@ export class TaskController {
           }
           try {
             const turnExecution = await this.toolExecutor.runTools(task, messages, response.toolCalls, loop);
-            workspaceMutated ||= turnExecution.workspaceMutated;
             const progress = loop.recordTurnProgress({ hasMutation: turnExecution.workspaceMutated });
             this.appendDiagnosticStep("turn_progress", {
               turn: this.turnRequester.currentTurnSequence,
@@ -478,59 +528,16 @@ export class TaskController {
             });
             return task;
           }
-        } else if (loop.toolCalls.length === 0) {
-          // A conversational response such as "hi" is complete as soon as the
-          // model answers. Do not run workspace verification for turns that did
-          // not perform any tool work.
-          this.throwIfCancelled();
-          task.result = response.text;
-          transitionTask(task, "completed");
-          await this.persist(task);
-          this.throwIfCancelled();
-          await this.emitCompleted(loop);
-          return task;
-        } else if (!workspaceMutated || this.config.workMode === "plan") {
-          // Read-only exploration and ordinary conversation do not need a
-          // verifier pass. In particular, saying "hi" or inspecting a project
-          // must not unexpectedly run tests or builds.
-          this.throwIfCancelled();
-          task.result = response.text;
-          transitionTask(task, "completed");
-          await this.persist(task);
-          this.throwIfCancelled();
-          await this.emitCompleted(loop);
-          return task;
         } else {
-          const verification = await this.verify(task);
+          // The model finished calling tools and returned its final response.
+          // Complete the task directly without running any verification harness.
           this.throwIfCancelled();
-          if (verification.passed) {
-            task.result = response.text;
-            transitionTask(task, "completed");
-            await this.persist(task);
-            this.throwIfCancelled();
-            await this.emitCompleted(loop);
-            return task;
-          }
-          const progress = loop.recordTurnProgress({
-            hasMutation: false,
-            externalEvidence: {
-              kind: "verification_result_changed",
-              value: {
-                command: verification.command,
-                exitCode: verification.exitCode,
-                output: verification.output,
-                passed: verification.passed,
-              },
-            },
-          });
-          this.appendDiagnosticStep("turn_progress", {
-            turn: this.turnRequester.currentTurnSequence,
-            ...progress,
-          });
-          messages.push({ role: "user", content: `Verification failed:\n${verification.output}` });
-          this.syncConversation(messages);
-          transitionTask(task, "executing");
+          task.result = response.text;
+          transitionTask(task, "completed");
           await this.persist(task);
+          this.throwIfCancelled();
+          await this.emitCompleted(loop);
+          return task;
         }
         const noProgress = loop.noProgressDiagnostic();
         if (noProgress) {
@@ -655,27 +662,6 @@ export class TaskController {
     }
   }
 
-  private async verify(task: Task): Promise<import("./types.js").VerificationResult> {
-    transitionTask(task, "verifying");
-    await this.persist(task);
-    const commands = this.config.verifyCommands ?? Verifier.inferCommands(task.workspace);
-    const results = this.config.skipVerify
-      ? [{ command: "(skipped)", exitCode: 0, output: "Verification skipped by user.", durationMs: 0, passed: true }]
-      : await this.verifier.runMany(commands, this.abortController?.signal);
-    this.throwIfCancelled();
-    const result = results.find((candidate) => !candidate.passed) ??
-      results.at(-1) ?? {
-        command: "(none)",
-        exitCode: 0,
-        output: "No test/lint command configured; verification skipped.",
-        durationMs: 0,
-        passed: true,
-      };
-    this.trace.appendStep(task.id, "verify", { results });
-    await this.emit("verify", { results });
-    return result;
-  }
-
   private async requestApproval(call: ToolCall, level: number, description: string): Promise<ApprovalResponse> {
     const requestId = `approval-${++this.sequence}`;
     await this.emit("approval_request", { requestId, call, level, description });
@@ -726,14 +712,6 @@ export class TaskController {
   }
 
   private toolSchemasForMode(): Record<string, unknown>[] {
-    // Plan mode must always expose write_plan even though it is now deferred.
-    // Activate it once before computing schemas so isExposed() lets it through.
-    if (this.config.workMode === "plan") {
-      const planTool = this.registry.list().find((tool) => tool.name === "write_plan");
-      if (planTool && this.registry.isDeferred(planTool) && !this.registry.isExposed("write_plan")) {
-        this.registry.activate("write_plan");
-      }
-    }
     return this.registry.schemas(
       (tool) => this.isToolVisible(tool) && (this.config.workMode !== "plan" || isPlanModeTool(tool)),
     );

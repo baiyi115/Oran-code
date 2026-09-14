@@ -1,4 +1,4 @@
-import type { TuiState } from "./types.js";
+import type { QuestionDialogItem, TuiState } from "./types.js";
 import type { ApprovalResponse, RuntimeEvent, ToolCall } from "../types.js";
 import type { PromptOutputHooks } from "../renderer.js";
 import type { SubagentOrigin } from "../subagent/types.js";
@@ -11,6 +11,10 @@ export type ApprovalHandler = (
   origin: SubagentOrigin,
 ) => Promise<ApprovalResponse>;
 export type ApprovalCancelHandler = () => void;
+export type QuestionHandler = (
+  questions: readonly QuestionDialogItem[],
+) => Promise<Record<string, string>>;
+export type QuestionCancelHandler = () => void;
 
 export interface TuiRendererLayout {
   redraw(state: TuiState): void;
@@ -22,11 +26,30 @@ export class TuiTranscriptRenderer {
   private readonly state: TuiState;
   private approvalHandler: ApprovalHandler | undefined;
   private approvalCancelHandler: ApprovalCancelHandler | undefined;
+  private questionHandler: QuestionHandler | undefined;
+  private questionCancelHandler: QuestionCancelHandler | undefined;
+  private redrawTimer: NodeJS.Timeout | undefined;
 
   constructor(layout: TuiRendererLayout, state: TuiState, approvalHandler?: ApprovalHandler) {
     this.layout = layout;
     this.state = state;
     this.approvalHandler = approvalHandler;
+  }
+
+  private scheduleThrottledRedraw(): void {
+    if (this.redrawTimer !== undefined) return;
+    this.redrawTimer = setTimeout(() => {
+      this.redrawTimer = undefined;
+      this.layout.redraw(this.state);
+    }, 32);
+  }
+
+  private flushRedraw(): void {
+    if (this.redrawTimer !== undefined) {
+      clearTimeout(this.redrawTimer);
+      this.redrawTimer = undefined;
+    }
+    this.layout.redraw(this.state);
   }
 
   setApprovalHandler(handler: ApprovalHandler): void {
@@ -42,34 +65,50 @@ export class TuiTranscriptRenderer {
     this.approvalCancelHandler = handler;
   }
 
+  setQuestionHandler(handler: QuestionHandler): void {
+    this.questionHandler = handler;
+  }
+
+  setQuestionCancelHandler(handler: QuestionCancelHandler): void {
+    this.questionCancelHandler = handler;
+  }
+
   cancelApproval(): void {
     this.approvalCancelHandler?.();
   }
 
+  cancelQuestion(): void {
+    this.questionCancelHandler?.();
+  }
+
   render(event: RuntimeEvent): void {
     reduceRuntimeEvent(this.state, event);
-    this.redraw();
+    if (event.type === "assistant_delta" || event.type === "thought_delta") {
+      this.scheduleThrottledRedraw();
+    } else {
+      this.flushRedraw();
+    }
   }
 
   user(prompt: string, queued = false): void {
     appendUserMessage(this.state, prompt, queued);
-    this.redraw();
+    this.flushRedraw();
   }
 
   status(message: string): void {
     this.state.session.status = message;
-    this.redraw();
+    this.flushRedraw();
   }
 
   markdown(title: string, content: string): void {
     appendSystemMessage(this.state, `${title}\n${content}`, title.toLowerCase() === "plan" ? "plan" : "system");
-    this.redraw();
+    this.flushRedraw();
   }
 
   error(message: string): void {
     appendSystemMessage(this.state, message, "error");
     this.state.session.status = "error";
-    this.redraw();
+    this.flushRedraw();
   }
 
   clearTranscript(): void {
@@ -90,6 +129,11 @@ export class TuiTranscriptRenderer {
   ): Promise<ApprovalResponse> | void {
     this.state.session.status = "approval required";
     return this.approvalHandler?.(call, level, description, origin);
+  }
+
+  question(questions: readonly QuestionDialogItem[]): Promise<Record<string, string>> | void {
+    this.state.session.status = "question pending";
+    return this.questionHandler?.(questions);
   }
 
   redraw(): void {

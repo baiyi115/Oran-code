@@ -8,6 +8,7 @@ import { registerCommandTools } from "./command-tools.js";
 import { registerBatchTools } from "./batch-tools.js";
 import { registerPlanTools } from "./plan-tools.js";
 import { registerSearchTools } from "./search-tools.js";
+import { registerInteractionTools } from "./interaction-tools.js";
 import type { ToolFactoryContext } from "./registry.js";
 import { ToolRegistry } from "./registry.js";
 
@@ -26,6 +27,7 @@ export function registerBuiltinTools(registry: ToolRegistry, workspace: string):
   registerBatchTools(registry);
   registerWriteTools(registry, ctx);
   registerCommandTools(registry, ctx);
+  registerInteractionTools(registry, ctx);
   registerSearchTools(registry);
   registerWorktreeTools(registry, root);
 }

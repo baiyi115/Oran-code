@@ -107,46 +107,44 @@ describe("builtin tools", () => {
       const registry = new ToolRegistry();
       registerBuiltinTools(registry, workspace);
 
-      // 高频只读 git 工具常驻暴露,无需发现/激活即可进入 schema 列表
+      // 核心读写、修改与命令工具默认常驻暴露
       expect(registry.isExposed("git_status")).toBe(true);
       expect(registry.isExposed("get_diff")).toBe(true);
+      expect(registry.isExposed("write_file")).toBe(true);
+      expect(registry.isExposed("edit_file")).toBe(true);
+      expect(registry.isExposed("apply_patch")).toBe(true);
+      expect(registry.isExposed("run_command")).toBe(true);
+
+      // 实验性/低频扩展工具(如 worktree 工具)按需延迟暴露
+      expect(registry.isExposed("enter_worktree")).toBe(false);
 
       // Direct invocation before activation is rejected
       const directResult = await registry.invoke({
-        name: "write_file",
-        arguments: { path: "hello.txt", content: "hello" },
+        name: "enter_worktree",
+        arguments: { slug: "feature-test" },
         createdAt: new Date().toISOString(),
       });
       expect(directResult.ok).toBe(false);
-      expect(directResult.error).toContain("tool is not activated: write_file");
+      expect(directResult.error).toContain("tool is not activated: enter_worktree");
 
       // Search tools returns matching deferred tools
       const searchResult = await registry.invoke({
         name: "search_tools",
-        arguments: { query: "write" },
+        arguments: { query: "worktree" },
         createdAt: new Date().toISOString(),
       });
       expect(searchResult.ok).toBe(true);
-      expect(searchResult.output).toContain("write_file");
+      expect(searchResult.output).toContain("enter_worktree");
 
       // Selecting the tool activates it and returns its parameter schema
       const selectResult = await registry.invoke({
         name: "search_tools",
-        arguments: { query: "select:write_file" },
+        arguments: { query: "select:enter_worktree" },
         createdAt: new Date().toISOString(),
       });
       expect(selectResult.ok).toBe(true);
       expect(selectResult.output).toContain("parameters");
-      expect(registry.isExposed("write_file")).toBe(true);
-
-      // Now invocation succeeds
-      const writeResult = await registry.invoke({
-        name: "write_file",
-        arguments: { path: "hello.txt", content: "hello" },
-        createdAt: new Date().toISOString(),
-      });
-      expect(writeResult.ok).toBe(true);
-      await expect(readFile(join(workspace, "hello.txt"), "utf8")).resolves.toBe("hello");
+      expect(registry.isExposed("enter_worktree")).toBe(true);
     } finally {
       await rm(workspace, { recursive: true, force: true });
     }

@@ -77,6 +77,18 @@ function writeToolDiff(message: ToolMessage): string | undefined {
   // file change, so do not present their requested arguments as an applied diff.
   if (message.status !== "success") return undefined;
   if (message.name === "edit_file") {
+    if (Array.isArray(message.arguments.edits)) {
+      const diffs: string[] = [];
+      for (const edit of message.arguments.edits as Array<Record<string, unknown>>) {
+        const oldString = typeof edit.old_string === "string" ? edit.old_string : "";
+        const newString = typeof edit.new_string === "string" ? edit.new_string : "";
+        if (!oldString && !newString) continue;
+        const removals = oldString.split(/\r?\n/).map((line) => `-${line}`);
+        const additions = newString.split(/\r?\n/).map((line) => `+${line}`);
+        diffs.push([...removals, ...additions].join("\n"));
+      }
+      return diffs.length > 0 ? diffs.join("\n") : undefined;
+    }
     const oldString = typeof message.arguments.old_string === "string" ? message.arguments.old_string : "";
     const newString = typeof message.arguments.new_string === "string" ? message.arguments.new_string : "";
     if (!oldString && !newString) return undefined;

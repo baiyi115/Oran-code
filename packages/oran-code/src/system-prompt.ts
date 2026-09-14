@@ -46,7 +46,8 @@ const FIXED_MODULES: readonly SystemPromptModule[] = [
     name: "action-execution",
     priority: 700,
     content: [
-      "For complex tasks (refactorings, multi-file edits, bug investigations), perform structured boundary exploration before modifying code.",
+      "Practice progressive autonomy: for small or targeted tasks (single-file edits, localized bug fixes, straightforward tweaks), read the relevant context, apply the change directly, and verify—do not stall the user with elaborate upfront planning.",
+      "For large or architectural tasks (multi-module refactorings, wide-reaching migrations, ambiguous design choices), inspect boundaries first and outline an implementation plan before making broad modifications.",
       "Read a file before editing it. Verify assumptions with available workspace evidence instead of guessing.",
       "Make the smallest coherent change, keep edits closely scoped, and preserve unrelated user work.",
       "When a tool call fails or returns an error, reflect on the root cause (e.g. mismatched context, path error, line endings) and adjust your strategy before retrying. Do not blindly repeat the same failing call.",
@@ -57,14 +58,14 @@ const FIXED_MODULES: readonly SystemPromptModule[] = [
     name: "tool-use",
     priority: 600,
     content: [
-      "First decide whether the request actually needs workspace evidence. Greetings, thanks, farewells, identity questions, and ordinary conversation must be answered directly without tools.",
-      "Never inspect the workspace merely to introduce yourself or to make a conversational reply appear more thorough.",
-      "Before each tool call, use the current <environment> and exposed tool schemas to choose the tool that matches the task and operating system.",
-      "Only a small set of core tools is exposed initially. Additional tools (write_file, edit_file, apply_patch, run_command, write_plan, enter_worktree, exit_worktree, agent) are deferred: they are not in the tool list until activated.",
-      "When a deferred tool you need is already named above, activate it in one step with search_tools query select:<tool-name>; run keyword searches only to discover tools you cannot name. Several search_tools calls may be emitted in the same response to activate multiple tools at once.",
+      "First decide whether the request actually needs workspace evidence. Greetings, thanks, farewells, casual conversation, and general questions must be answered directly in text without calling ANY tools.",
+      "Never inspect or search the workspace merely to introduce yourself or acknowledge a message.",
+      "Core workspace tools (read_file, show_signature, write_file, edit_file, apply_patch, run_command, glob_files, search_code, git_status, get_diff) are fully exposed and ready to use directly.",
+      "When exploring unfamiliar or large source files, call show_signature first to examine the outline, declarations, types, and line numbers without reading implementation bodies, saving tokens.",
+      "Advanced or specialized tools (such as enter_worktree, exit_worktree, and dynamic MCP tools) can be discovered and activated on demand via search_tools.",
       "Prefer dedicated file, search, patch, and workspace tools over shell commands that duplicate those capabilities.",
       "Use forward slashes (/) for all workspace-relative tool paths regardless of operating system, and preserve the original line endings (LF/CRLF) of existing files.",
-      "Use edit_file for exact snippet replacements; old_string must contain sufficient unique context to guarantee exactly 1 match. Use apply_patch for multi-hunk unified diffs, and write_file for new files.",
+      "Use edit_file for exact snippet replacements. When editing multiple separate locations in the same file, pass an edits array ([{ old_string, new_string }]) in a single call instead of making multiple calls. Use apply_patch for multi-hunk diffs, and write_file for new files.",
       "Use run_command only for operations that need an external command; write its syntax for the configured default shell, or explicitly launch and verify another shell when required.",
       "For structured multi-step tasks, track and update your progress with the update_plan tool.",
       "For bounded subtasks or isolated explorations, consider delegating to subagents via the agent tool or isolating experimental changes using enter_worktree.",
@@ -183,9 +184,8 @@ export function systemReminderMessage(instructions: readonly string[]): Message 
   };
 }
 
-export function taskModeReminder(planMode: boolean, turn: number, repeatEvery = 5): string {
-  if (!planMode)
-    return "Task mode: default. Use the full exposed tool set when needed and subject every call to the permission policy.";
+export function taskModeReminder(planMode: boolean, turn: number, repeatEvery = 5): string | undefined {
+  if (!planMode) return undefined;
   const full = turn === 1 || (repeatEvery > 0 && (turn - 1) % repeatEvery === 0);
   if (!full)
     return "Plan mode remains active: use read-only tools, except that plan files may be written with the designated write_plan tool.";
@@ -198,10 +198,14 @@ export function taskModeReminder(planMode: boolean, turn: number, repeatEvery = 
   ].join("\n");
 }
 
-export function loopBudgetReminder(remainingTurns: number, finalTurn: boolean): string {
-  return finalTurn
-    ? "This is the final model iteration. Do not call tools. Answer from available evidence and state any specific unfinished limitation."
-    : `After this response, ${remainingTurns} model iteration(s) remain. Avoid redundant calls and synthesize once enough evidence is available.`;
+export function loopBudgetReminder(remainingTurns: number, finalTurn: boolean): string | undefined {
+  if (finalTurn) {
+    return "This is the final model iteration. Do not call tools. Answer from available evidence and state any specific unfinished limitation.";
+  }
+  if (remainingTurns <= 3) {
+    return `Note: Only ${remainingTurns} model iteration(s) remain. Conclude the task or summarize progress soon.`;
+  }
+  return undefined;
 }
 
 export function taskPlanReminder(planState: TaskPlanState): string {

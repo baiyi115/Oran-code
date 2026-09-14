@@ -83,6 +83,7 @@ import {
   userTraceRoot,
 } from "./paths.js";
 import type { SubagentOrigin } from "./subagent/types.js";
+import type { QuestionItem } from "./tools/interaction-tools.js";
 import type { ContextManager } from "./context-manager.js";
 import type { TaskController } from "./controller.js";
 import type { SqliteTraceStore } from "./trace.js";
@@ -126,6 +127,7 @@ export interface SessionOptions {
   model?: ModelConfig;
   config: UserConfig;
   approveAll: boolean;
+  permissionMode?: PermissionMode;
   providerFactory?: (model: ModelConfig) => ModelProvider;
   stablePromptModules?: OptionalSystemPromptModules;
   onCommandReloadReady?: (reload: () => Promise<void>) => void;
@@ -235,7 +237,7 @@ export class TerminalSession {
     this.model = options.model ?? resolveRememberedModel(options.config);
     this.config = options.config;
     this.approveAll = options.approveAll;
-    this.permissionMode = configuredPermissionMode(options.config, options.approveAll);
+    this.permissionMode = options.permissionMode ?? configuredPermissionMode(options.config, options.approveAll);
     this.workMode = workModeForPermission(this.permissionMode);
     this.reasoningEffort = this.model?.reasoningEffort ?? "medium";
     this.sessionStore = new SessionStore(this.workspace);
@@ -300,7 +302,7 @@ export class TerminalSession {
     });
     this.handlers = new SessionCommandHandlers(this.handlersPort());
     this.workspaceFileIndex = new WorkspaceFileIndex(this.workspace);
-    this.skipVerify = options.config.agent?.skipVerify === true;
+    this.skipVerify = options.config.agent?.skipVerify ?? (options.config.agent?.verifyCommands?.length ? false : true);
     this.input = input;
     this.output = output;
     this.renderer = new TerminalRenderer(output);
@@ -594,6 +596,13 @@ export class TerminalSession {
     if (input.startsWith("!")) {
       await this.runShell(input.slice(1).trim());
     } else if (this.taskRunning()) {
+      if (this.controller?.hasActiveLoop()) {
+        this.controller.pushSteeringMessage(input);
+        this.renderer.user(`[Steering] ${input}`, false);
+        this.renderer.status("Injected steering guidance into running task", "cyan");
+        this.refreshTui();
+        return;
+      }
       this.enqueueFollowUp(input);
     } else if (this.shellRunning()) {
       this.renderer.error("finish the current shell command before submitting another input");
@@ -791,6 +800,7 @@ export class TerminalSession {
         : await this.currentContextManager(),
       approvalCallback: (call, level, description, requestId) =>
         this.requestApproval(call, level, description, { kind: "main" }, requestId),
+      askUserCallback: (questions) => this.requestUserQuestions(questions),
       eventCallback: (event) => this.onEvent(event),
       ...(!isolated
         ? {
@@ -840,8 +850,17 @@ export class TerminalSession {
         await joinStructuredForkSummaries(structuredScope, task, runtimeConfig.subagent.forkWaitTimeoutMs);
       }
       completed = task.state === "completed";
-      if (task.state === "completed") this.renderer.status("Task completed.", "green");
-      else if (task.state !== "cancelled") this.renderer.status(`Task ${task.state}.`, "yellow");
+      if (task.state === "completed") {
+        this.renderer.status("Task completed.", "green");
+        const contextMgr = this.currentSession ? this.contextManagers.get(this.currentSession.id) : undefined;
+        const estimatedTokens = contextMgr ? contextMgr.estimateTokens(this.conversation) : 0;
+        if (estimatedTokens >= 35_000) {
+          this.renderer.status(
+            `💡 Current context has accumulated ~${Math.round(estimatedTokens / 1000)}k tokens. If switching to a new topic, consider using /clear or /compact for better focus and lower latency.`,
+            "cyan",
+          );
+        }
+      } else if (task.state !== "cancelled") this.renderer.status(`Task ${task.state}.`, "yellow");
       return task;
     } catch (error) {
       // Runtime already appends a concise error event to the transcript. Only
@@ -1447,6 +1466,18 @@ export class TerminalSession {
 
   private cancelApprovalsForOrigin(origin: SubagentOrigin): void {
     this.approvalQueue.cancelForOrigin(origin);
+  }
+
+  private async requestUserQuestions(questions: readonly QuestionItem[]): Promise<Record<string, string>> {
+    if (this.renderer.question) {
+      const answers = await this.renderer.question(questions);
+      if (answers) return answers;
+    }
+    const fallback: Record<string, string> = {};
+    for (const q of questions) {
+      fallback[q.question] = q.options[0]?.label ?? "Yes";
+    }
+    return fallback;
   }
 
   private resolveApproval(value: string): void {

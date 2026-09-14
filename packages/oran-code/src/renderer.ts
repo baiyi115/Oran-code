@@ -1,6 +1,7 @@
 import { clearLine, cursorTo } from "node:readline";
 import type { Writable } from "node:stream";
 import type { ApprovalResponse, RuntimeEvent, ToolCall, ToolResult, VerificationResult } from "./types.js";
+import type { QuestionDialogItem } from "./tui/types.js";
 import { subagentOriginLabel, type SubagentOrigin } from "./subagent/types.js";
 import { stripPlanCompleteMarkers } from "./message-utils.js";
 import { formatDuration, formatRate, redactSecretText, truncateText } from "./formatting.js";
@@ -33,6 +34,8 @@ export interface SessionRenderer {
     origin: SubagentOrigin,
   ): Promise<ApprovalResponse> | void;
   cancelApproval?(): void;
+  question?(questions: readonly QuestionDialogItem[]): Promise<Record<string, string>> | void;
+  cancelQuestion?(): void;
 }
 
 export class TerminalRenderer implements SessionRenderer {
@@ -194,6 +197,14 @@ export class TerminalRenderer implements SessionRenderer {
         `${description}\n${truncateText(args, 1200)}\n` +
         "Reply y to allow once, a to always allow this exact tool request, or n to reject.\n",
     );
+  }
+
+  question(questions: readonly QuestionDialogItem[]): Promise<Record<string, string>> {
+    const fallbackAnswers: Record<string, string> = {};
+    for (const q of questions) {
+      fallbackAnswers[q.question] = q.options[0]?.label ?? "Yes";
+    }
+    return Promise.resolve(fallbackAnswers);
   }
 
   error(message: string): void {

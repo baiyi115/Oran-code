@@ -3,6 +3,7 @@ import { Text } from "ink";
 import { commandCandidates } from "./command-palette.js";
 import { modelSelectorLines } from "./model-selector.js";
 import { approvalDialogLines } from "./approval-dialog.js";
+import { questionDialogLines } from "./question-dialog.js";
 import { currentSessionLine, sessionOptionLabel } from "./session-list.js";
 import { providerDeleteConfirmLines, providersListLines } from "./providers-list.js";
 import { ANSI, dimHorizontalRule } from "./theme.js";
@@ -75,6 +76,14 @@ export function renderOverlayLines(state: TuiState, commandLines: string[], widt
         state.overlay.approval.workspace,
         state.overlay.approval.origin,
         state.overlay.selectedIndex,
+        width,
+      );
+    case "question":
+      return questionDialogLines(
+        state.overlay.questions,
+        state.overlay.currentQuestionIndex,
+        state.overlay.selectedIndex,
+        state.overlay.selectedIndices,
         width,
       );
     case "details":

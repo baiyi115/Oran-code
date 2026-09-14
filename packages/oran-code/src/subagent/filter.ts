@@ -25,6 +25,7 @@ export const CUSTOM_SUBAGENT_DENIED_TOOLS = new Set(GLOBAL_SUBAGENT_DENIED_TOOLS
 export const BACKGROUND_SUBAGENT_ALLOWED_TOOLS = new Set([
   "list_files",
   "read_file",
+  "show_signature",
   "write_file",
   "write_plan",
   "edit_file",

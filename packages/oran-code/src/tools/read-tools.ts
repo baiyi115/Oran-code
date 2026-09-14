@@ -1,7 +1,9 @@
 import { execFile } from "node:child_process";
-import { promisify } from "node:util";
+import { existsSync } from "node:fs";
 import { readdir, readFile, stat } from "node:fs/promises";
-import { relative } from "node:path";
+import { homedir } from "node:os";
+import { join, relative } from "node:path";
+import { promisify } from "node:util";
 import type { ToolDefinition } from "../types.js";
 import type { ToolFactoryContext } from "./registry.js";
 import { compileGlob, walkFiles } from "./glob.js";
@@ -129,6 +131,67 @@ export function registerReadTools(registry: { register(tool: ToolDefinition): vo
         };
       } catch (error) {
         return failedResult(error, "read_file failed");
+      }
+    },
+  });
+
+  register({
+    name: "show_signature",
+    description:
+      "Extract structural outline from a source file (functions, classes, interfaces, types, imports, exports) with line numbers without reading implementation bodies. Use this to quickly inspect large files and save tokens.",
+    parameters: {
+      type: "object",
+      properties: {
+        path: { type: "string", description: "Path relative to workspace root." },
+        only: {
+          type: "string",
+          description:
+            "Optional category filter: 'signatures', 'imports', 'exports', 'interfaces', 'types', 'variables'.",
+        },
+      },
+      required: ["path"],
+    },
+    permissionLevel: 0,
+    kind: "readonly",
+    maxOutputChars: 32_000,
+    invoke: async (call, context) => {
+      try {
+        const workspace = activeRoot(context);
+        const targetPath = pathFor(context, call.arguments.path);
+        const only = typeof call.arguments.only === "string" ? call.arguments.only.trim() : undefined;
+        const cliPath = resolveShowSignatureCli();
+
+        if (cliPath) {
+          const args = ["map"];
+          if (only) args.push("--only", only);
+          args.push(targetPath);
+          try {
+            const { stdout } = await execFileAsync(process.execPath, [cliPath, ...args], {
+              cwd: workspace,
+              maxBuffer: 5 * 1024 * 1024,
+            });
+            if (stdout && stdout.trim()) {
+              const rel = displayPath(workspace, targetPath);
+              return {
+                ok: true,
+                output: stdout.trim(),
+                summary: `${rel} (${stdout.trim().split("\n").length} items)`,
+              };
+            }
+          } catch {
+            // Fall back to built-in outline extractor
+          }
+        }
+
+        const outline = await extractFileOutline(targetPath, only);
+        const rel = displayPath(workspace, targetPath);
+        return {
+          ok: true,
+          output: outline || "no signatures or structural declarations found",
+          summary: `${rel} (${outline ? outline.split("\n").length : 0} items)`,
+        };
+      } catch (error) {
+        return failedResult(error, "show_signature failed");
       }
     },
   });
@@ -317,4 +380,76 @@ export function registerReadTools(registry: { register(tool: ToolDefinition): vo
       },
     });
   }
+}
+
+let cachedShowSignatureCliPath: string | null | undefined;
+
+function resolveShowSignatureCli(): string | undefined {
+  if (cachedShowSignatureCliPath !== undefined) return cachedShowSignatureCliPath ?? undefined;
+  const candidates = [
+    join(homedir(), ".pi", "agent", "npm", "node_modules", "showsignature", "dist", "02-cli.js"),
+    join(process.cwd(), "node_modules", "showsignature", "dist", "02-cli.js"),
+  ];
+  for (const candidate of candidates) {
+    if (existsSync(candidate)) {
+      cachedShowSignatureCliPath = candidate;
+      return candidate;
+    }
+  }
+  cachedShowSignatureCliPath = null;
+  return undefined;
+}
+
+async function extractFileOutline(targetPath: string, only?: string): Promise<string> {
+  const content = await readFile(targetPath, "utf8");
+  const lines = content.split(/\r?\n/);
+  const results: string[] = [];
+  const wantImports = !only || only === "imports";
+  const wantExports = !only || only === "exports";
+  const wantTypes = !only || only === "types" || only === "interfaces";
+  const wantSignatures = !only || only === "signatures";
+
+  for (let i = 0; i < lines.length; i++) {
+    const rawLine = lines[i]!;
+    const line = rawLine.trim();
+    if (!line || line.startsWith("//") || line.startsWith("/*") || line.startsWith("*")) continue;
+
+    const isImport = line.startsWith("import ") || line.startsWith("require(");
+    if (isImport && wantImports) {
+      results.push(`${i + 1} ${line}`);
+      continue;
+    }
+
+    const isExport = line.startsWith("export ");
+    if (isExport && wantExports && !line.includes("function") && !line.includes("class")) {
+      results.push(`${i + 1} ${line.slice(0, 120)}`);
+      continue;
+    }
+
+    const isTypeOrInterface =
+      line.startsWith("interface ") ||
+      line.startsWith("type ") ||
+      line.startsWith("export interface ") ||
+      line.startsWith("export type ") ||
+      line.startsWith("enum ") ||
+      line.startsWith("export enum ");
+    if (isTypeOrInterface && wantTypes) {
+      results.push(`${i + 1} ${line.slice(0, 120)}`);
+      continue;
+    }
+
+    const isSignature =
+      line.includes("function ") ||
+      line.startsWith("def ") ||
+      line.startsWith("async def ") ||
+      line.startsWith("class ") ||
+      line.startsWith("export class ") ||
+      line.startsWith("func ") ||
+      line.startsWith("pub fn ");
+    if (isSignature && wantSignatures) {
+      const truncated = line.length > 140 ? `${line.slice(0, 137)}...` : line;
+      results.push(`${i + 1} ${truncated}`);
+    }
+  }
+  return results.join("\n");
 }

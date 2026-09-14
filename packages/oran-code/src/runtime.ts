@@ -54,7 +54,7 @@ export function createRuntimeConfig(
     subagent: {
       forkWaitTimeoutMs: normalizeForkWaitTimeout(config.subagent?.forkWaitTimeoutMs),
     },
-    skipVerify: config.agent?.skipVerify === true,
+    skipVerify: config.agent?.skipVerify ?? (config.agent?.verifyCommands?.length ? false : true),
     approveAll,
     traceDb,
     ...(config.agent?.verifyCommands?.length ? { verifyCommands: [...config.agent.verifyCommands] } : {}),

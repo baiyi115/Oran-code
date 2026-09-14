@@ -28,7 +28,6 @@ export function registerWriteTools(registry: { register(tool: ToolDefinition): v
     permissionLevel: 2,
     kind: "write",
     maxOutputChars: 16_000,
-    deferred: true,
     invoke: async (call, context) =>
       writeTextFile(activeRoot(context), (raw) => pathFor(context, raw), call.arguments.path, call.arguments.content),
   });
@@ -47,32 +46,49 @@ export function registerWriteTools(registry: { register(tool: ToolDefinition): v
     permissionLevel: 2,
     kind: "write",
     maxOutputChars: 16_000,
-    deferred: true,
     invoke: async (call, context) => writePlanFile(activeRoot(context), call.arguments.path, call.arguments.content),
   });
 
   register({
     name: "edit_file",
     description:
-      "Replace text in an existing file after reading it. By default the old_string must match exactly once; set replace_all=true to replace every match. Returns a clear error when match count is 0 or >1.",
+      "Replace text in an existing file after reading it. Supports single replacement via old_string/new_string, or multiple disjoint replacements via edits[]. By default old_string must match exactly once; set replace_all=true for single replacement to replace every match. Returns a clear error when match count is 0 or >1.",
     parameters: {
       type: "object",
       properties: {
         path: { type: "string", description: "Path relative to workspace root." },
-        old_string: { type: "string", description: "Exact text to find." },
-        new_string: { type: "string", description: "Replacement text." },
+        old_string: {
+          type: "string",
+          description: "Exact text to find (for single replacement when edits is not provided).",
+        },
+        new_string: {
+          type: "string",
+          description: "Replacement text (for single replacement when edits is not provided).",
+        },
         replace_all: {
           type: "boolean",
-          description: "Replace every match instead of requiring a unique match.",
+          description: "Replace every match instead of requiring a unique match (single replacement only).",
           default: false,
         },
+        edits: {
+          type: "array",
+          description:
+            "One or more targeted replacements to apply atomically. Each item must specify old_string (unique exact text) and new_string. Matched against the original file; edits must not overlap.",
+          items: {
+            type: "object",
+            properties: {
+              old_string: { type: "string", description: "Exact text for one targeted replacement." },
+              new_string: { type: "string", description: "Replacement text for this targeted edit." },
+            },
+            required: ["old_string", "new_string"],
+          },
+        },
       },
-      required: ["path", "old_string", "new_string"],
+      required: ["path"],
     },
     permissionLevel: 2,
     kind: "write",
     maxOutputChars: 16_000,
-    deferred: true,
     invoke: async (call, context) => {
       try {
         const workspace = activeRoot(context);
@@ -86,10 +102,106 @@ export function registerWriteTools(registry: { register(tool: ToolDefinition): v
             summary: "is directory",
           };
         }
+
+        const rawEdits = call.arguments.edits;
+        if (Array.isArray(rawEdits)) {
+          if (rawEdits.length === 0) {
+            return { ok: false, output: "", error: "edits array must not be empty", summary: "invalid arguments" };
+          }
+          const content = await readFile(path, "utf8");
+          const isCrlf = content.includes("\r\n");
+          const normalizedContent = content.replace(/\r\n/g, "\n");
+
+          interface EditRange {
+            startIndex: number;
+            endIndex: number;
+            normalizedNew: string;
+            rawIndex: number;
+          }
+          const ranges: EditRange[] = [];
+
+          for (let i = 0; i < rawEdits.length; i++) {
+            const item = rawEdits[i];
+            if (!item || typeof item !== "object") {
+              return { ok: false, output: "", error: `edits[${i}] must be an object`, summary: "invalid arguments" };
+            }
+            const oldStr = String((item as Record<string, unknown>).old_string ?? "");
+            const newStr = String((item as Record<string, unknown>).new_string ?? "");
+            if (!oldStr) {
+              return {
+                ok: false,
+                output: "",
+                error: `edits[${i}].old_string must not be empty`,
+                summary: "invalid arguments",
+              };
+            }
+            const normalizedOld = oldStr.replace(/\r\n/g, "\n");
+            const normalizedNew = newStr.replace(/\r\n/g, "\n");
+            const count = countOccurrences(normalizedContent, normalizedOld);
+            if (count === 0) {
+              return {
+                ok: false,
+                output: "",
+                error: `edits[${i}].old_string matched 0 times in ${displayPath(workspace, path)}; provide a unique exact snippet`,
+                summary: "0 matches",
+                metadata: { editIndex: i, matches: 0 },
+              };
+            }
+            if (count > 1) {
+              return {
+                ok: false,
+                output: "",
+                error: `edits[${i}].old_string matched ${count} times in ${displayPath(workspace, path)}; provide a unique exact snippet with more surrounding context`,
+                summary: `${count} matches`,
+                metadata: { editIndex: i, matches: count },
+              };
+            }
+            const startIndex = normalizedContent.indexOf(normalizedOld);
+            const endIndex = startIndex + normalizedOld.length;
+            ranges.push({ startIndex, endIndex, normalizedNew, rawIndex: i });
+          }
+
+          // Check for overlapping edits
+          const sortedByStart = [...ranges].sort((a, b) => a.startIndex - b.startIndex);
+          for (let i = 0; i < sortedByStart.length - 1; i++) {
+            const current = sortedByStart[i]!;
+            const next = sortedByStart[i + 1]!;
+            if (current.endIndex > next.startIndex) {
+              return {
+                ok: false,
+                output: "",
+                error: `edits[${current.rawIndex}] and edits[${next.rawIndex}] overlap in ${displayPath(workspace, path)}; merge nearby changes into a single edit`,
+                summary: "overlapping edits",
+              };
+            }
+          }
+
+          // Apply from back to front to preserve offsets
+          sortedByStart.sort((a, b) => b.startIndex - a.startIndex);
+          let resultNormalized = normalizedContent;
+          for (const item of sortedByStart) {
+            resultNormalized =
+              resultNormalized.slice(0, item.startIndex) + item.normalizedNew + resultNormalized.slice(item.endIndex);
+          }
+          const next = isCrlf ? resultNormalized.replace(/\n/g, "\r\n") : resultNormalized;
+          await atomicWriteFile(path, next);
+          return {
+            ok: true,
+            output: `edited ${displayPath(workspace, path)} (${ranges.length} batch replacement${ranges.length === 1 ? "" : "s"})`,
+            summary: `batch ${ranges.length} edits`,
+            metadata: { matches: ranges.length, batch: true },
+          };
+        }
+
         const oldString = String(call.arguments.old_string ?? "");
         const newString = String(call.arguments.new_string ?? "");
         if (!oldString) {
-          return { ok: false, output: "", error: "old_string must not be empty", summary: "invalid arguments" };
+          return {
+            ok: false,
+            output: "",
+            error: "old_string must not be empty (or provide edits array)",
+            summary: "invalid arguments",
+          };
         }
         const content = await readFile(path, "utf8");
         const matches = countOccurrences(content, oldString);
@@ -172,7 +284,6 @@ export function registerWriteTools(registry: { register(tool: ToolDefinition): v
     permissionLevel: 2,
     kind: "write",
     maxOutputChars: 16_000,
-    deferred: true,
     invoke: async (call, context) => {
       try {
         const workspace = activeRoot(context);

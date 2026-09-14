@@ -78,7 +78,21 @@ export type TuiOverlay =
   | "files"
   | "approval"
   | "details"
-  | "connect";
+  | "connect"
+  | "question";
+
+export interface QuestionDialogOption {
+  label: string;
+  description: string;
+  preview?: string | undefined;
+}
+
+export interface QuestionDialogItem {
+  header: string;
+  question: string;
+  options: QuestionDialogOption[];
+  multiSelect?: boolean | undefined;
+}
 
 export interface CursorPosition {
   line: number;
@@ -277,6 +291,14 @@ export type OverlayState =
       selectedIndex: number;
       returnSelectedIndex: number;
       options: ProviderOption[];
+    }
+  | {
+      kind: "question";
+      questions: QuestionDialogItem[];
+      currentQuestionIndex: number;
+      selectedIndex: number;
+      selectedIndices: number[];
+      answers: Record<string, string>;
     };
 
 export type ConnectStep = "info" | "models";

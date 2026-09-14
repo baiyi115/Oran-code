@@ -84,6 +84,7 @@ function harness(overrides: Partial<TuiState> = {}): Harness {
     resolveApproval: (response) => {
       h.approvals.push(response);
     },
+    resolveQuestion: () => {},
   };
   h.handlers = new OverlayHandlers(ctx);
   return h;

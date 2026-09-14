@@ -299,9 +299,15 @@ export interface ToolResult {
 }
 
 export interface ToolExecutionContext {
-  signal?: AbortSignal;
+  signal?: AbortSignal | undefined;
   workspace: string;
-  bypassActivation?: boolean;
+  bypassActivation?: boolean | undefined;
+  askUser?: ((questions: Array<{
+    header: string;
+    question: string;
+    options: Array<{ label: string; description: string; preview?: string | undefined }>;
+    multiSelect?: boolean | undefined;
+  }>) => Promise<Record<string, string>>) | undefined;
 }
 
 export interface ToolDefinition {

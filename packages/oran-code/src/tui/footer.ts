@@ -103,6 +103,9 @@ function usageLabel(state: TuiState): string | undefined {
   const parts = [`in ${compactNumber(usage.inputTokens)}`, `out ${compactNumber(usage.outputTokens)}`];
   if (usage.cacheReadTokens > 0) parts.push(cacheReadLabel(usage.cacheReadTokens, usage.inputTokens));
   if (usage.cacheWriteTokens > 0) parts.push(`write ${compactNumber(usage.cacheWriteTokens)}`);
+  if (state.session.outputTokensPerSecond !== undefined && state.session.outputTokensPerSecond > 0) {
+    parts.push(`${formatRate(state.session.outputTokensPerSecond)} tok/s`);
+  }
   return parts.join(" · ");
 }
 

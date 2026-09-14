@@ -34,7 +34,6 @@ export function registerCommandTools(
     permissionLevel: 3,
     kind: "command",
     maxOutputChars: 32_000,
-    deferred: true,
     invoke: async (call, context) => {
       const timeout = Math.max(1, numberArg(call.arguments.timeout, 60)) * 1000;
       try {

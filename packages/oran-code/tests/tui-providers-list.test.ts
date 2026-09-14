@@ -55,6 +55,7 @@ function harness(list: ProviderOption[] = options, deletedOk = true): Harness {
     detachInputHistory: () => {},
     noteDismissedCommandInput: () => {},
     resolveApproval: () => {},
+    resolveQuestion: () => {},
   };
   h.handlers = new OverlayHandlers(ctx);
   return h;

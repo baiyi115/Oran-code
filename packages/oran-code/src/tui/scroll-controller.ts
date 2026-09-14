@@ -11,9 +11,10 @@ export function syncTranscriptScroll(
   contentLines: number,
   viewportLines: number,
   previousContentLines = contentLines,
+  anchorApplied = Boolean(state.anchor),
 ): number {
   const maximum = Math.max(0, Math.floor(contentLines) - Math.max(1, Math.floor(viewportLines)));
-  if (!state.followBottom && !state.anchor && contentLines > previousContentLines) {
+  if (!state.followBottom && !anchorApplied && contentLines > previousContentLines) {
     state.offsetFromBottom += contentLines - previousContentLines;
   }
   state.offsetFromBottom = Math.max(0, Math.min(maximum, state.offsetFromBottom));
