@@ -8,7 +8,13 @@ import type {
   ToolCall,
 } from "../types.js";
 import { CLIENT_ID, CLIENT_USER_AGENT, PRODUCT_VERSION } from "../paths.js";
-import { ModelRequestError, boundedError, retryAfterMsFromResponse, streamErrorMessage } from "./errors.js";
+import {
+  ModelRequestError,
+  boundedError,
+  retryAfterMsFromResponse,
+  streamErrorMessage,
+  streamErrorToModelRequestError,
+} from "./errors.js";
 import { parseSseJson, readSseEvents } from "./sse.js";
 import { createStreamingRequest, modelResponseChunks, numericUsage, requestOptions } from "./transport.js";
 import { appendTailReminder, completeRequestSignal } from "./common.js";
@@ -186,7 +192,7 @@ function openAiToolCallChunks(state: OpenAiStreamState): ModelStreamChunk[] {
 function parseOpenAiStreamEvent(event: string, state: OpenAiStreamState): ModelStreamChunk[] {
   const parsed = parseSseJson(event);
   if (!parsed) return [];
-  if (parsed.error !== undefined) throw new Error(streamErrorMessage(parsed.error, "OpenAI-compatible stream error"));
+  if (parsed.error !== undefined) throw streamErrorToModelRequestError(parsed.error, "OpenAI-compatible stream error");
   const updates: ModelStreamChunk[] = [];
   const usage = numericUsage(parsed.usage);
   if (Object.keys(usage).length) updates.push({ type: "usage", usage, streamed: true });
