@@ -234,6 +234,14 @@ export function parseShellCommand(input: string): ShellCompoundNode {
         index += 1;
         continue;
       }
+      // 未加引号的圆括号是控制操作符(子 shell 或函数定义)。不断开时 "(rm -rf /)"
+      // 会被切成可执行名 "(rm"、参数 "/)",可执行名比对与根目录匹配同时落空;这里
+      // 断开分词,并把整条命令标记为含子 shell,使其无法被只读白名单自动放行。
+      if (char === "(" || char === ")") {
+        hasGlobalSubshell = true;
+        index += 1;
+        continue;
+      }
       // "2>&1" 是 fd 复制而非文件写入:记为 fdDup,后续只读判定据此放行。
       if (char === ">" && text[index + 1] === "&") {
         tokens.push({ type: "redirect", op: ">", fdDup: true });
@@ -264,7 +272,7 @@ export function parseShellCommand(input: string): ShellCompoundNode {
       while (index < text.length) {
         const c = text[index]!;
         if (!inSingleQuote && !inDoubleQuote) {
-          if (/[\s;&|<>]/.test(c)) break;
+          if (/[\s;&|<>()]/.test(c)) break;
         }
 
         if (c === "'" && !inDoubleQuote) {
