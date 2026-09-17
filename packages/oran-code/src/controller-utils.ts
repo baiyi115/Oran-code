@@ -151,8 +151,23 @@ export function withRuntimeReminders(messages: readonly Message[], reminders: re
   return copy;
 }
 
+/**
+ * 把模型回复转成 assistant 消息。推理输出一并保留：DeepSeek thinking 模式
+ * 要求下一轮请求回传 reasoning_content，Anthropic 扩展思考要求回放带签名的
+ * thinking 块，两者都从这里取数据。
+ */
+export function assistantMessage(response: ModelResponse): Message {
+  return {
+    role: "assistant",
+    content: response.text,
+    toolCalls: response.toolCalls,
+    ...(response.reasoning ? { reasoning: response.reasoning } : {}),
+    ...(response.reasoningSignature ? { reasoningSignature: response.reasoningSignature } : {}),
+  };
+}
+
 export function usageAnchorMessages(messages: readonly Message[], response: ModelResponse): Message[] {
-  return [...messages, { role: "assistant", content: response.text, toolCalls: response.toolCalls }];
+  return [...messages, assistantMessage(response)];
 }
 
 export function summarizeArguments(argumentsValue: Record<string, unknown>): Record<string, unknown> {

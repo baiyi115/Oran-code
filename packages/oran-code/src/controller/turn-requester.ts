@@ -358,6 +358,8 @@ export class TurnRequester {
     let toolCallChunkCount = 0;
     const usage: Record<string, number> = {};
     const reasoningParts: string[] = [];
+    /** Anthropic thinking 块的签名,仅用于下一轮回放,不产生 UI 事件。 */
+    const reasoningSignatures: string[] = [];
     let streamed = false;
     let finishReason: string | undefined;
     let responseCompleted = false;
@@ -407,6 +409,9 @@ export class TurnRequester {
             reasoningParts.push(chunk.text);
             await this.ports.emit("thought_delta", { step, source, attempt, text: chunk.text }, turnId);
             break;
+          case "reasoning_signature":
+            reasoningSignatures.push(chunk.signature);
+            break;
           case "text_delta":
             textParts.push(chunk.text);
             await this.ports.emit("assistant_delta", { step, source, attempt, text: chunk.text }, turnId);
@@ -445,6 +450,7 @@ export class TurnRequester {
       const response: ModelResponse = {
         text: textParts.join(""),
         ...(reasoningParts.length ? { reasoning: reasoningParts.join("") } : {}),
+        ...(reasoningSignatures.length ? { reasoningSignature: reasoningSignatures.join("") } : {}),
         toolCalls: normalizedCalls,
         raw: { usage, finishReason, toolCalls: normalizedCalls },
         usage,
@@ -549,6 +555,7 @@ export class TurnRequester {
         return {
           text: textParts.join(""),
           ...(reasoningParts.length ? { reasoning: reasoningParts.join("") } : {}),
+          ...(reasoningSignatures.length ? { reasoningSignature: reasoningSignatures.join("") } : {}),
           toolCalls: [],
           raw: { usage, finishReason, toolCalls: [], aborted: true },
           usage,

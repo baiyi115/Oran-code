@@ -111,11 +111,19 @@ export interface Message {
   toolCalls?: ToolCall[];
   toolCallId?: string;
   metadata?: Record<string, unknown>;
+  /**
+   * 上一轮模型输出的推理文本。请求体中默认不回传：OpenAI 兼容端点的
+   * reasoning_content 只在端点明确要求时才带上（见 ModelConfig.reasoningEchoRequired）。
+   */
+  reasoning?: string;
+  /** Anthropic 扩展思考的签名，与 reasoning 一起构成可回放的 thinking 块。 */
+  reasoningSignature?: string;
 }
 
 export interface ModelResponse {
   text: string;
   reasoning?: string;
+  reasoningSignature?: string;
   toolCalls: ToolCall[];
   raw: Record<string, unknown>;
   usage: Record<string, number>;
@@ -132,6 +140,8 @@ export interface ModelResponse {
 export type ModelStreamChunk =
   | { type: "text_delta"; text: string; streamed: boolean }
   | { type: "reasoning_delta"; text: string; streamed: boolean }
+  /** Anthropic thinking 块的签名：只用于回放，不产生任何 UI 事件。 */
+  | { type: "reasoning_signature"; signature: string; streamed: boolean }
   | { type: "tool_call_complete"; toolCall: ToolCallComplete; streamed: boolean }
   | { type: "usage"; usage: Record<string, number>; streamed: boolean }
   | { type: "response_complete"; streamed: boolean; finishReason?: string };
@@ -167,6 +177,11 @@ export interface ModelConfig {
   reasoningEffort?: ReasoningEffort;
   /** 该端点拒绝 reasoning_effort 参数时置位，请求体不再携带。 */
   reasoningEffortDisabled?: boolean;
+  /**
+   * 该端点要求把历史 assistant 消息的 reasoning_content 原样回传时置位。
+   * 只在进程内记忆（由 400 探测得来），不写入用户配置文件。
+   */
+  reasoningEchoRequired?: boolean;
   options?: Record<string, unknown>;
 }
 

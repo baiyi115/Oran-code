@@ -112,6 +112,10 @@ export class AnthropicProvider implements ModelProvider {
           } else if (deltaType === "thinking_delta" || typeof delta.thinking === "string") {
             const reasoning = typeof delta.thinking === "string" ? delta.thinking : "";
             if (reasoning) yield { type: "reasoning_delta", text: reasoning, streamed: true };
+          } else if (deltaType === "signature_delta" || typeof delta.signature === "string") {
+            // 签名只用于回放 thinking 块,不参与展示。
+            const signature = typeof delta.signature === "string" ? delta.signature : "";
+            if (signature) yield { type: "reasoning_signature", signature, streamed: true };
           } else if (deltaType === "input_json_delta" || typeof delta.partial_json === "string") {
             if (index === undefined) continue;
             const current = toolUses.get(index) ?? { name: "", arguments: "" };
@@ -284,6 +288,12 @@ function toAnthropicMessages(messages: Message[]): {
     }
     if (message.role === "assistant") {
       const content: Record<string, unknown>[] = [];
+      // 扩展思考的回放契约:thinking 块必须带原签名、且排在内容最前。
+      // 缺签名的推理文本不能回放(带 thinking 不带 signature 会被直接 400)。
+      // 注意:安全策略抹除的 redacted_thinking 块(只有 data、没有文本)不在回放范围内。
+      if (message.reasoning && message.reasoningSignature) {
+        content.push({ type: "thinking", thinking: message.reasoning, signature: message.reasoningSignature });
+      }
       if (message.content?.trim()) content.push({ type: "text", text: message.content });
       for (const call of message.toolCalls ?? []) {
         content.push({
@@ -327,15 +337,17 @@ function parseAnthropicMessage(data: Record<string, unknown>, streamed: boolean)
   const content = Array.isArray(data.content) ? data.content : [];
   const textParts: string[] = [];
   const reasoningParts: string[] = [];
+  let reasoningSignature: string | undefined;
   const toolCalls: ToolCall[] = [];
   for (const raw of content) {
     if (!raw || typeof raw !== "object" || Array.isArray(raw)) continue;
     const block = raw as Record<string, unknown>;
     const type = typeof block.type === "string" ? block.type : "";
     if (type === "text" && typeof block.text === "string") textParts.push(block.text);
-    else if ((type === "thinking" || type === "reasoning") && typeof block.thinking === "string")
+    else if ((type === "thinking" || type === "reasoning") && typeof block.thinking === "string") {
       reasoningParts.push(block.thinking);
-    else if (type === "tool_use") {
+      if (typeof block.signature === "string" && block.signature) reasoningSignature = block.signature;
+    } else if (type === "tool_use") {
       const input = block.input;
       const argumentsValue =
         input && typeof input === "object" && !Array.isArray(input) ? (input as Record<string, unknown>) : {};
@@ -351,6 +363,7 @@ function parseAnthropicMessage(data: Record<string, unknown>, streamed: boolean)
   return {
     text: textParts.join(""),
     ...(reasoningParts.length ? { reasoning: reasoningParts.join("") } : {}),
+    ...(reasoningSignature ? { reasoningSignature } : {}),
     toolCalls,
     raw: data,
     usage,

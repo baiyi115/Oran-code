@@ -13,12 +13,26 @@ import { parseSseJson, readSseEvents } from "./sse.js";
 import { createStreamingRequest, modelResponseChunks, numericUsage, requestOptions } from "./transport.js";
 import { appendTailReminder, completeRequestSignal } from "./common.js";
 
+/**
+ * 端点明确拒绝 reasoning_effort 参数时的报错文本(如
+ * "Unrecognized request argument: reasoning_effort")。要求 "reasoning" 与
+ * "effort" 同时出现,才不会被 reasoning_content 之类的 400 误判。
+ */
+const REASONING_EFFORT_REJECTED = /\breasoning[\s_-]?effort\b/i;
+/** 400 必须同时提到 reasoning_content 和"必须回传"语义,才认作回传要求。 */
+const REASONING_CONTENT_MENTIONED = /reasoning_content/i;
+const REASONING_ECHO_HINT = /pass(?:ed)?[ _]?back|required|must be|missing|expect(?:ed)?/i;
+
 export class OpenAICompatibleProvider implements ModelProvider {
   private readonly endpoint: string;
   /** 端点对 reasoning_effort 返回 400 后置位,后续请求体不再携带该参数。 */
   private reasoningBlocked = false;
+  /** 端点要求回传 reasoning_content 后置位,后续请求体带上历史推理文本。 */
+  private reasoningEcho = false;
   /** 剥参回退发生时通知上层(用于持久化结论),失败不影响请求本身。 */
   onReasoningUnsupported?: () => void | Promise<void>;
+  /** 探测到端点要求回传推理内容时通知上层,由上层在当前进程内记住。 */
+  onReasoningEchoRequired?: () => void | Promise<void>;
 
   constructor(private readonly config: ModelConfig) {
     const base = config.baseUrl ?? "https://api.openai.com/v1";
@@ -27,13 +41,22 @@ export class OpenAICompatibleProvider implements ModelProvider {
       : `${base.replace(/\/$/, "")}/chat/completions`;
   }
 
-  /** 发出请求;400+reasoning 的剥参回退只做一次,其余错误原样抛出。 */
+  /**
+   * 发出请求,并让两类可自愈的 400 各回退一次:
+   * - 端点拒绝 reasoning_effort → 剥掉该参数重发(结论写入用户配置,后续会话不再发送);
+   * - 端点要求回传 reasoning_content → 带上历史推理重发(只在当前进程内记住:
+   *   这是这次对话的上下文要求,不是用户配置,不能落盘)。
+   * 两条规则互斥,其余 400 原样抛出。
+   */
   private async postWithReasoningFallback(send: () => Promise<Response>): Promise<Response> {
     let response = await send();
     if (!response.ok) {
       const detail = await boundedError(response);
-      if (response.status === 400 && this.sendsReasoningEffort() && /reasoning/i.test(detail)) {
+      if (response.status === 400 && this.sendsReasoningEffort() && REASONING_EFFORT_REJECTED.test(detail)) {
         await this.markReasoningUnsupported();
+        response = await send();
+      } else if (response.status === 400 && !this.echoesReasoning() && isReasoningEchoDemand(detail)) {
+        await this.markReasoningEchoRequired();
         response = await send();
       } else {
         throw new ModelRequestError(response.status, detail, retryAfterMsFromResponse(response));
@@ -121,6 +144,16 @@ export class OpenAICompatibleProvider implements ModelProvider {
     await this.onReasoningUnsupported?.();
   }
 
+  /** 端点要求回传推理内容(配置里已记住,或本次会话刚探测到)。 */
+  private echoesReasoning(): boolean {
+    return this.reasoningEcho || this.config.reasoningEchoRequired === true;
+  }
+
+  private async markReasoningEchoRequired(): Promise<void> {
+    this.reasoningEcho = true;
+    await this.onReasoningEchoRequired?.();
+  }
+
   private headers(): Record<string, string> {
     return {
       "content-type": "application/json",
@@ -151,13 +184,18 @@ export class OpenAICompatibleProvider implements ModelProvider {
     return {
       ...options,
       model: this.config.model,
-      messages: toOpenAiMessages(messages),
+      messages: toOpenAiMessages(messages, this.echoesReasoning()),
       temperature: this.config.temperature,
       max_tokens: this.config.maxTokens,
       stream,
       ...(tools?.length ? { tools, tool_choice: "auto" } : {}),
     };
   }
+}
+
+/** 400 报错文本是否在要求回传 reasoning_content。 */
+function isReasoningEchoDemand(detail: string): boolean {
+  return REASONING_CONTENT_MENTIONED.test(detail) && REASONING_ECHO_HINT.test(detail);
 }
 
 interface OpenAiStreamState {
@@ -226,7 +264,7 @@ function parseOpenAiStreamEvent(event: string, state: OpenAiStreamState): ModelS
 
 /** 运行时提醒移到对话真正的末尾(与 Anthropic 路径一致),避免逐轮变化的
  *  揕醒文本就地改写历史消息而击穿稳定前缀缓存。 */
-function toOpenAiMessages(messages: readonly Message[]): Record<string, unknown>[] {
+function toOpenAiMessages(messages: readonly Message[], echoReasoningContent: boolean): Record<string, unknown>[] {
   const result: Record<string, unknown>[] = [];
   const tailReminders: string[] = [];
   for (const message of messages) {
@@ -235,13 +273,13 @@ function toOpenAiMessages(messages: readonly Message[]): Record<string, unknown>
       if (reminderText) tailReminders.push(reminderText);
       continue;
     }
-    result.push(toApiMessage(message));
+    result.push(toApiMessage(message, echoReasoningContent));
   }
   if (tailReminders.length) appendTailReminder(result, tailReminders.join("\n\n"));
   return result;
 }
 
-function toApiMessage(message: Message): Record<string, unknown> {
+function toApiMessage(message: Message, echoReasoningContent: boolean): Record<string, unknown> {
   const result: Record<string, unknown> = {
     role: message.role,
     content:
@@ -255,6 +293,10 @@ function toApiMessage(message: Message): Record<string, unknown> {
       type: "function",
       function: { name: call.name, arguments: JSON.stringify(call.arguments) },
     }));
+  }
+  // 只有端点明确要求时才回传:严格端点对未知参数直接 400,默认带上反而更脆。
+  if (echoReasoningContent && message.role === "assistant" && message.reasoning) {
+    result.reasoning_content = message.reasoning;
   }
   return result;
 }

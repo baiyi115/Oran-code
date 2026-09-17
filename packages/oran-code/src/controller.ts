@@ -7,6 +7,7 @@ import { discoverWorkspace } from "./workspace.js";
 import { isAbortError } from "./utils/abort-error.js";
 import { cloneMessages } from "./message-utils.js";
 import {
+  assistantMessage,
   ensureCallId,
   extractPlanText,
   extractToolFilePath,
@@ -394,7 +395,7 @@ export class TaskController {
         );
         messages = request.messages;
         const response = request.response;
-        messages.push({ role: "assistant", content: response.text, toolCalls: response.toolCalls });
+        messages.push(assistantMessage(response));
         this.syncConversation(messages);
         if (this.abortController?.signal.aborted) {
           // Partial assistant already synced; if there are tool calls, pair them with cancelled results.

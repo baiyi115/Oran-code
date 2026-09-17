@@ -322,6 +322,7 @@ export class TerminalSession {
       const provider = baseProviderFactory(model);
       if (provider instanceof OpenAICompatibleProvider) {
         provider.onReasoningUnsupported = () => this.handleReasoningUnsupported(model);
+        provider.onReasoningEchoRequired = () => this.handleReasoningEchoRequired(model);
       }
       return provider;
     };
@@ -1226,6 +1227,21 @@ export class TerminalSession {
     if (this.model?.provider === model.provider && this.model?.model === model.model) {
       this.model = { ...this.model, reasoningEffortDisabled: true };
     }
+  }
+
+  /**
+   * 端点要求回传 reasoning_content 时的处理:只在当前进程内记住,不写用户配置。
+   * 这是某次对话的上下文要求(上一轮推理必须原样带回),不是端点能力缺陷,
+   * 落盘会污染以后所有会话。
+   */
+  private handleReasoningEchoRequired(model: ModelConfig): void {
+    if (this.model?.provider === model.provider && this.model?.model === model.model) {
+      this.model = { ...this.model, reasoningEchoRequired: true };
+    }
+    this.renderer.status(
+      `reasoning content must be echoed back to ${formatModelReference(model)}; enabled for this session.`,
+      "yellow",
+    );
   }
 
   /** 斜杠命令 handler 的端口:提供状态读写与副作用回调。 */
