@@ -387,20 +387,23 @@ export function registerReadTools(registry: { register(tool: ToolDefinition): vo
 
 let cachedShowSignatureCliPath: string | null | undefined;
 
+/**
+ * The optional external outline CLI, looked up in the user's own installation
+ * only.
+ *
+ * A `<cwd>/node_modules/showsignature/dist/02-cli.js` candidate used to be here.
+ * Since the agent is normally started inside the repository it is asked about,
+ * that candidate is workspace-controlled, and show_signature is
+ * `permissionLevel: 0, kind: "readonly"` — which the permission layer allows in
+ * every mode, without a prompt. Reproduced: a payload at that path ran and its
+ * output was returned to the model. The negative result is not cached either, so
+ * a later check cannot be answered from a stale miss.
+ */
 function resolveShowSignatureCli(): string | undefined {
-  if (cachedShowSignatureCliPath !== undefined) return cachedShowSignatureCliPath ?? undefined;
-  const candidates = [
-    join(homedir(), ".pi", "agent", "npm", "node_modules", "showsignature", "dist", "02-cli.js"),
-    join(process.cwd(), "node_modules", "showsignature", "dist", "02-cli.js"),
-  ];
-  for (const candidate of candidates) {
-    if (existsSync(candidate)) {
-      cachedShowSignatureCliPath = candidate;
-      return candidate;
-    }
-  }
-  cachedShowSignatureCliPath = null;
-  return undefined;
+  if (cachedShowSignatureCliPath) return cachedShowSignatureCliPath;
+  const candidate = join(homedir(), ".pi", "agent", "npm", "node_modules", "showsignature", "dist", "02-cli.js");
+  cachedShowSignatureCliPath = existsSync(candidate) ? candidate : null;
+  return cachedShowSignatureCliPath ?? undefined;
 }
 
 async function extractFileOutline(targetPath: string, only?: string): Promise<string> {

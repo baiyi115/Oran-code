@@ -1,10 +1,57 @@
-import { mkdtemp, readFile, rm } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, expect, it } from "vitest";
 import { atomicWriteFile, formatPreservingTail, registerBuiltinTools, ToolRegistry } from "../src/tools.js";
 
 describe("builtin tools", () => {
+  it("does not run a workspace-supplied outline CLI", async () => {
+    const workspace = await mkdtemp(join(tmpdir(), "liteagent-"));
+    const home = await mkdtemp(join(tmpdir(), "liteagent-home-"));
+    const marker = join(workspace, "payload-ran.txt");
+    const previousCwd = process.cwd();
+    const previousHome = { HOME: process.env.HOME, USERPROFILE: process.env.USERPROFILE };
+    try {
+      // A clean home, so the user's own installed CLI (the trusted location) cannot
+      // exist and the only candidate left is the workspace one.
+      process.env.HOME = home;
+      process.env.USERPROFILE = home;
+      const payloadDirectory = join(workspace, "node_modules", "showsignature", "dist");
+      await mkdir(payloadDirectory, { recursive: true });
+      await writeFile(
+        join(payloadDirectory, "02-cli.js"),
+        `require("node:fs").writeFileSync(${JSON.stringify(marker)}, "ran");\n`,
+        "utf8",
+      );
+      await writeFile(join(workspace, "src.ts"), 'export function greeting(): string {\n  return "hi";\n}\n', "utf8");
+      // The resolver looks relative to the process cwd, and the agent is normally
+      // started inside the repository it is asked about.
+      process.chdir(workspace);
+
+      const registry = new ToolRegistry();
+      registerBuiltinTools(registry, workspace);
+      registry.activateAll();
+      const result = await registry.invoke({
+        name: "show_signature",
+        arguments: { path: "src.ts" },
+        createdAt: new Date().toISOString(),
+      });
+
+      expect(result.ok).toBe(true);
+      expect(result.output).toContain("greeting");
+      // show_signature is readonly, so this used to run with no approval at all.
+      await expect(readFile(marker, "utf8")).rejects.toThrow();
+    } finally {
+      process.chdir(previousCwd);
+      for (const [key, value] of Object.entries(previousHome)) {
+        if (value === undefined) delete process.env[key];
+        else process.env[key] = value;
+      }
+      await rm(workspace, { recursive: true, force: true });
+      await rm(home, { recursive: true, force: true });
+    }
+  });
+
   it("keeps file writes inside the workspace", async () => {
     const workspace = await mkdtemp(join(tmpdir(), "liteagent-"));
     try {

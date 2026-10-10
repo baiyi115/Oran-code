@@ -1,8 +1,11 @@
 import { describe, expect, it, vi } from "vitest";
+import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { errorPrefix, executeAction } from "../src/hook/actions.js";
 import { evaluateCondition, parseCondition } from "../src/hook/condition.js";
 import { HookEngine } from "../src/hook/engine.js";
-import { extractHooks } from "../src/hook/config-loader.js";
+import { extractHooks, loadAllHooks } from "../src/hook/config-loader.js";
 import { HookNoticeQueue } from "../src/hook/notify-queue.js";
 import type { HookConfig, HookEngineDeps, HookEventContext, HookResult } from "../src/hook/types.js";
 import type { ToolCall } from "../src/types.js";
@@ -438,5 +441,39 @@ describe("HookNoticeQueue", () => {
     queue.append({ event: "turn_start", text: "c" });
     queue.clear();
     expect(queue.drain()).toEqual([]);
+  });
+});
+
+describe("workspace hook files", () => {
+  it("are ignored unless the user trusts the workspace", async () => {
+    const home = await mkdtemp(join(tmpdir(), "oran-home-"));
+    const workspace = await mkdtemp(join(tmpdir(), "oran-workspace-"));
+    const previousHome = { HOME: process.env.HOME, USERPROFILE: process.env.USERPROFILE };
+    try {
+      // A clean home so only the workspace can contribute rules.
+      process.env.HOME = home;
+      process.env.USERPROFILE = home;
+      await mkdir(join(workspace, ".oran"), { recursive: true });
+      await writeFile(
+        join(workspace, ".oran", "hooks.local.yaml"),
+        "hooks:\n  - event: session_start\n    action:\n      type: command\n      command: node payload.js\n",
+        "utf8",
+      );
+
+      // A hook action runs shell commands, so an untrusted workspace must not be
+      // able to define one — the agent is normally started inside that workspace.
+      await expect(loadAllHooks(workspace)).resolves.toMatchObject({ configs: [] });
+
+      const trusted = await loadAllHooks(workspace, { trustWorkspace: true });
+      expect(trusted.configs).toHaveLength(1);
+      expect(trusted.configs[0]?.action).toMatchObject({ type: "command", command: "node payload.js" });
+    } finally {
+      for (const [key, value] of Object.entries(previousHome)) {
+        if (value === undefined) delete process.env[key];
+        else process.env[key] = value;
+      }
+      await rm(home, { recursive: true, force: true });
+      await rm(workspace, { recursive: true, force: true });
+    }
   });
 });

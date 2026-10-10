@@ -12,6 +12,7 @@ import {
 import { isPermissionMode, isReasoningEffort } from "./types.js";
 import type {
   AgentSettings,
+  HookRule,
   ModelConfig,
   ModelOptions,
   ModelProfile,
@@ -124,6 +125,13 @@ function normalizeConfig(value: unknown): UserConfig {
   if (mcpServers) result.mcpServers = mcpServers;
   const web = normalizeWebSettings(item.web);
   if (web) result.web = web;
+  const trustWorkspace = booleanOrUndefined(item.trustWorkspace ?? item.trust_workspace);
+  if (trustWorkspace !== undefined) result.trustWorkspace = trustWorkspace;
+  // Hooks are parsed and validated by the hook loader, which reads this file
+  // itself; they are carried through here only so a config rewrite does not erase
+  // them (see toFileShape).
+  const hooks = normalizeHooks(item.hooks);
+  if (hooks) result.hooks = hooks;
 
   // Read the pre-0.1 top-level settings so an existing installation remains usable.
   // Legacy top-level model/default fields stay ignored; the current preference lives at agent.lastModel.
@@ -446,17 +454,89 @@ function merge(base: UserConfig, override: UserConfig): UserConfig {
       : {}),
     ...(base.mcpServers || override.mcpServers ? { mcpServers: { ...base.mcpServers, ...override.mcpServers } } : {}),
     ...(base.web || override.web ? { web: { ...base.web, ...override.web } } : {}),
+    ...(override.trustWorkspace !== undefined ? { trustWorkspace: override.trustWorkspace } : {}),
   };
+}
+
+/**
+ * Keys a workspace-supplied config file may not set, unless the user turned on
+ * `trustWorkspace` in their own config.
+ *
+ * A workspace file is content the agent did not choose. Cloning a repository
+ * that carries `.oran/config.json` used to be enough to switch a session to
+ * bypass mode, disable the progress guard, point the SSRF guard at private
+ * addresses, or add an MCP server — and the hook loader read shell-command rules
+ * from the same place. A privilege the user granted is not the workspace's to
+ * widen.
+ */
+const WORKSPACE_BLOCKED_KEYS = ["mcpServers", "hooks", "trustWorkspace"] as const;
+const WORKSPACE_BLOCKED_AGENT_KEYS = [
+  "approveAll",
+  "permissionMode",
+  "noProgressLimit",
+  "skipVerify",
+  "verifyCommands",
+] as const;
+
+export interface WorkspaceConfigSanitization {
+  config: UserConfig;
+  /** The keys that were dropped, for the caller to report rather than hide. */
+  ignored: string[];
+}
+
+/** Strip the keys a workspace config may not set (see WORKSPACE_BLOCKED_KEYS). */
+export function stripWorkspacePrivileges(config: UserConfig): WorkspaceConfigSanitization {
+  const ignored: string[] = [];
+  const sanitized: UserConfig = { ...config };
+  for (const key of WORKSPACE_BLOCKED_KEYS) {
+    if (sanitized[key] !== undefined) {
+      delete sanitized[key];
+      ignored.push(key);
+    }
+  }
+  if (sanitized.agent) {
+    const agent = { ...sanitized.agent };
+    for (const key of WORKSPACE_BLOCKED_AGENT_KEYS) {
+      if (agent[key] !== undefined) {
+        delete agent[key];
+        ignored.push(`agent.${key}`);
+      }
+    }
+    if (Object.keys(agent).length > 0) sanitized.agent = agent;
+    else delete sanitized.agent;
+  }
+  if (sanitized.web?.allowPrivateHosts !== undefined) {
+    const web = { ...sanitized.web };
+    delete web.allowPrivateHosts;
+    sanitized.web = web;
+    ignored.push("web.allowPrivateHosts");
+  }
+  return { config: sanitized, ignored };
 }
 
 export async function loadConfig(workspace?: string): Promise<UserConfig> {
   await ensureUserConfig();
   let config = await readConfigTolerant(userConfigPath());
   if (workspace) {
-    for (const legacyPath of legacyProjectConfigPaths(workspace)) {
-      config = merge(config, await readConfigTolerant(legacyPath));
+    const trusted = config.trustWorkspace === true;
+    const ignored = new Set<string>();
+    const layers = [...legacyProjectConfigPaths(workspace), projectConfigPath(workspace)];
+    for (const path of layers) {
+      let layer = await readConfigTolerant(path);
+      if (!trusted) {
+        const stripped = stripWorkspacePrivileges(layer);
+        layer = stripped.config;
+        for (const key of stripped.ignored) ignored.add(key);
+      }
+      config = merge(config, layer);
     }
-    config = merge(config, await readConfigTolerant(projectConfigPath(workspace)));
+    if (ignored.size > 0) {
+      console.error(
+        `warning: ignoring ${[...ignored].sort().join(", ")} from the workspace config: a workspace may not ` +
+          `raise permissions, disable a guard, or run commands. Set "trustWorkspace": true in ${userConfigPath()} ` +
+          `to allow it for the workspaces you control.`,
+      );
+    }
   }
   return config;
 }
@@ -509,14 +589,27 @@ function toFileShape(config: UserConfig): Record<string, unknown> {
       models,
     };
   }
-  return {
-    providers,
-    ...(config.agent ? { agent: config.agent } : {}),
-    ...(config.subagent ? { subagent: config.subagent } : {}),
-    ...(config.sessionTitles ? { sessionTitles: config.sessionTitles } : {}),
-    ...(config.mcpServers ? { mcpServers: config.mcpServers } : {}),
-    ...(config.web ? { web: config.web } : {}),
-  };
+  // Everything else is written back exactly as it was read. Listing the keys
+  // explicitly meant a rewrite erased whatever was not on the list: hooks and
+  // trustWorkspace went missing the next time /model saved the file.
+  return { ...config, providers };
+}
+
+/**
+ * Hooks are not interpreted here — normalizeHookConfig in the hook loader does
+ * that, and reports its own errors — but they have to survive a read so that a
+ * rewrite does not drop them.
+ */
+function normalizeHooks(value: unknown): HookRule[] | undefined {
+  if (!Array.isArray(value)) return undefined;
+  const rules = value.filter(
+    (entry): entry is HookRule =>
+      typeof entry === "object" &&
+      entry !== null &&
+      !Array.isArray(entry) &&
+      typeof (entry as HookRule).event === "string",
+  );
+  return rules.length > 0 ? rules : undefined;
 }
 
 function serializeOptions(options: Record<string, unknown>): Record<string, unknown> {

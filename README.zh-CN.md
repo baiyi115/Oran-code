@@ -159,6 +159,7 @@ Oran code 将全局用户配置存储于 `~/.oran/`，将项目工作区状态�
 
 - `protocol` 取值 `"openai"`（OpenAI 兼容 Chat Completions）或 `"anthropic"`（Anthropic Messages）。若端点不支持 `reasoning_effort` 参数，Oran 会自动剥离后重试一次，并通过 `disableReasoningEffort` 按模型记住该结论。
 - `agent.lastModel` 记录通过 `/model` 或 `/connect` 选择的模型；单次运行可用 `--model provider/model` 覆盖。
+- `trustWorkspace`（默认 `false`）允许**工作区**的 `.oran/config.json` 与 `.oran/hooks.local.yaml` 设置那些会提权或会执行命令的项：`agent.approveAll`、`agent.permissionMode`、`agent.noProgressLimit`、`agent.skipVerify`、`agent.verifyCommands`、`mcpServers`、`hooks`、`web.allowPrivateHosts`。除非它为 `true`，工作区文件里的这些键一律忽略（其余键如 `agent.maxSteps`、`web.searchProvider` 照常生效），并会打印一行说明忽略了哪些键。默认关闭，是因为 agent 通常就在被询问的那个仓库里启动；只对你掌控的工作区开启。
 
 ### 项目工作区结构 (`.oran/` & `AGENTS.md`)
 

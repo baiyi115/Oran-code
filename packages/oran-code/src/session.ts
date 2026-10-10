@@ -685,6 +685,7 @@ export class TerminalSession {
       const { createHookEngine } = await loadHookFacade();
       const built = await createHookEngine(this.workspace, {
         defaultCommandTimeoutMs: 60_000,
+        trustWorkspace: this.config.trustWorkspace === true,
         log: (message) => {
           try {
             this.renderer.status(message);
@@ -801,6 +802,7 @@ export class TerminalSession {
         hookFactory: async (workspace, messages) => {
           const built = await createHookEngine(workspace, {
             defaultCommandTimeoutMs: 60_000,
+            trustWorkspace: this.config.trustWorkspace === true,
             sessionMessages: messages,
           });
           return built.engine;

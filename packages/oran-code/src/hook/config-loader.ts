@@ -57,17 +57,32 @@ function normalizeHookConfig(value: unknown): HookConfig {
   return config;
 }
 
-export async function loadAllHooks(workspace: string): Promise<{ configs: HookConfig[]; loadErrors: string[] }> {
+/**
+ * Collect hook rules from the user's own config, plus — only when the user has
+ * opted in with `trustWorkspace` — the workspace's config and
+ * `.oran/hooks.local.yaml`.
+ *
+ * A hook action runs shell commands and HTTP requests, so a workspace that can
+ * define one can execute anything, with no approval step. Since the agent is
+ * normally started inside the repository it is asked about, loading those files
+ * unconditionally made the workspace the authority on what runs.
+ */
+export async function loadAllHooks(
+  workspace: string,
+  options: { trustWorkspace?: boolean } = {},
+): Promise<{ configs: HookConfig[]; loadErrors: string[] }> {
   const collected: HookConfig[] = [];
   const loadErrors: string[] = [];
 
   collected.push(...(await loadHooksFromJsonFile(userConfigPath(), loadErrors)));
 
-  const projectJson = resolve(projectStateRoot(workspace), "config.json");
-  collected.push(...(await loadHooksFromJsonFile(projectJson, loadErrors)));
+  if (options.trustWorkspace === true) {
+    const projectJson = resolve(projectStateRoot(workspace), "config.json");
+    collected.push(...(await loadHooksFromJsonFile(projectJson, loadErrors)));
 
-  const projectYaml = resolve(projectStateRoot(workspace), "hooks.local.yaml");
-  collected.push(...(await loadHooksFromYamlFile(projectYaml, loadErrors)));
+    const projectYaml = resolve(projectStateRoot(workspace), "hooks.local.yaml");
+    collected.push(...(await loadHooksFromYamlFile(projectYaml, loadErrors)));
+  }
 
   return { configs: collected, loadErrors };
 }
@@ -159,6 +174,8 @@ export async function createHookEngine(
   workspace: string,
   options: {
     defaultCommandTimeoutMs: number;
+    /** Set from the user config's trustWorkspace; see loadAllHooks. */
+    trustWorkspace?: boolean;
     log?: (message: string) => void;
     subAgentExecutor?: HookSubAgentExecutor;
     sessionMessages?: HookEngineDeps["sessionMessages"];
@@ -176,7 +193,9 @@ export async function createHookEngine(
   if (options.subAgentExecutor) depsOptions.subAgentExecutor = options.subAgentExecutor;
   if (options.sessionMessages) depsOptions.sessionMessages = options.sessionMessages;
   const deps = createHookEngineDeps(depsOptions);
-  const { configs, loadErrors } = await loadAllHooks(workspace);
+  const { configs, loadErrors } = await loadAllHooks(workspace, {
+    ...(options.trustWorkspace !== undefined ? { trustWorkspace: options.trustWorkspace } : {}),
+  });
   const engine = new HookEngine(configs, {
     ...deps,
     defaultCommandTimeoutMs: options.defaultCommandTimeoutMs,

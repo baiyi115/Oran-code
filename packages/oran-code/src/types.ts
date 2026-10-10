@@ -298,6 +298,14 @@ export interface UserConfig {
   mcpServers?: Record<string, McpServerConfig>;
   hooks?: HookRule[];
   web?: WebSettings;
+  /**
+   * Allow this workspace's own config and hook files to set things that raise
+   * permissions or run commands (approveAll, permissionMode, noProgressLimit,
+   * mcpServers, hooks, web.allowPrivateHosts). Off by default, and only this
+   * user-level file can turn it on: a workspace cannot opt itself in. Point the
+   * agent at a repository you control before enabling it.
+   */
+  trustWorkspace?: boolean;
 }
 
 /**

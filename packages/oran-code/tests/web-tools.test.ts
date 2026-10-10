@@ -2,7 +2,7 @@ import { createServer, type IncomingMessage, type Server } from "node:http";
 import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { afterEach, describe, expect, it } from "vitest";
+import { afterAll, afterEach, beforeAll, describe, expect, it } from "vitest";
 import {
   isPrivateAddress,
   assertFetchableUrl,
@@ -15,6 +15,31 @@ import {
 import { registerBuiltinTools, ToolRegistry } from "../src/tools.js";
 
 const servers: Server[] = [];
+
+/**
+ * These fixtures fetch loopback, which needs `web.allowPrivateHosts` — and a
+ * workspace config may not set that, since it disables the SSRF guard. The
+ * decision belongs to the user's own config, so the file runs against a temp home
+ * that grants it, and the workspace stays untrusted like any other.
+ */
+let home = "";
+const previousHome = { HOME: process.env.HOME, USERPROFILE: process.env.USERPROFILE };
+
+beforeAll(async () => {
+  home = await mkdtemp(join(tmpdir(), "oran-web-home-"));
+  process.env.HOME = home;
+  process.env.USERPROFILE = home;
+  await mkdir(join(home, ".oran"), { recursive: true });
+  await writeFile(join(home, ".oran", "config.json"), JSON.stringify({ providers: {}, trustWorkspace: true }), "utf8");
+});
+
+afterAll(async () => {
+  for (const [key, value] of Object.entries(previousHome)) {
+    if (value === undefined) delete process.env[key];
+    else process.env[key] = value;
+  }
+  if (home) await rm(home, { recursive: true, force: true });
+});
 
 afterEach(async () => {
   await Promise.all(
