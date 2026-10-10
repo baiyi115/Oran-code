@@ -1,5 +1,5 @@
 import { execFile } from "node:child_process";
-import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { promisify } from "node:util";
@@ -34,6 +34,31 @@ describe("SnapshotStore /undo", () => {
 
     const [manifest] = await store.list("session-1");
     expect(manifest?.status).toBe("undone");
+  });
+
+  it("says which changed paths git ignores, since undo cannot restore them", async () => {
+    const root = await createSnapshotFixture("oran-snapshot-ignored-");
+    await writeFile(join(root, ".gitignore"), "generated/\n", "utf8");
+    await runGit(root, ["add", ".gitignore"]);
+    await commit(root, "ignore generated");
+
+    const store = new SnapshotStore(root);
+    const task = createTask(root, "edit a tracked file and an ignored one");
+    task.id = "task-ignored";
+    await store.begin("session-ignored", task);
+    await writeFile(join(root, "README.md"), "updated", "utf8");
+    await mkdir(join(root, "generated"), { recursive: true });
+    await writeFile(join(root, "generated", "report.json"), "{}", "utf8");
+    await store.finalize(task);
+
+    const result = await store.undoLatest("session-ignored");
+    expect(result.ok).toBe(true);
+    expect(await readFile(join(root, "README.md"), "utf8")).toBe("initial");
+    // The snapshot is a pair of git trees, so the ignored file keeps the agent's
+    // content; the message has to say so rather than read as a full rollback.
+    expect(result.output).toContain("generated");
+    expect(result.output).toContain("left as they are");
+    expect(await readFile(join(root, "generated", "report.json"), "utf8")).toBe("{}");
   });
 
   it("refuses when the post-task files were modified again, then retries after conflict resolved", async () => {

@@ -41,7 +41,14 @@ export function usageTotal(usage: Record<string, number>): number | undefined {
   const cacheCreation = value("cache_write_tokens", "cache_creation_input_tokens");
   const output = value("output_tokens", "completion_tokens");
   if ([input, cacheRead, cacheCreation, output].some((item) => item !== undefined)) {
-    return (input ?? 0) + (cacheRead ?? 0) + (cacheCreation ?? 0) + (output ?? 0);
+    // OpenAI-style usage counts cached tokens inside prompt_tokens, so adding them
+    // again inflated the total — and the anchor built from it, and every estimate
+    // after that. Anthropic-style fields are disjoint, so they are added.
+    // token-usage.ts draws the same distinction for the loop's accounting; this is
+    // the same rule, kept in step with it.
+    const openAiShape = value("prompt_tokens") !== undefined || value("completion_tokens") !== undefined;
+    const cacheTotal = openAiShape ? (cacheCreation ?? 0) : (cacheRead ?? 0) + (cacheCreation ?? 0);
+    return (input ?? 0) + (output ?? 0) + cacheTotal;
   }
   return value("total_tokens");
 }

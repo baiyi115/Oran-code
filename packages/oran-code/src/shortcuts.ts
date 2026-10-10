@@ -22,14 +22,19 @@ export const SHORTCUTS: readonly ShortcutGroup[] = [
       ["Ctrl/Alt + ←/→", "按词移动光标;Home/End 到 当前行 首尾"],
       ["Ctrl+Q", "查看并取消排队中的 follow-up"],
       ["@", '补全文件路径(@"带空格的路径" 也支持)'],
+      // Idle-only: while a task runs both callbacks refuse and the TUI says to finish
+      // or cancel first, so this cannot live under "While a task is running".
+      ["Tab / Shift+Tab", "切换工作模式(plan/auto)/切换思考强度(空闲时;任务运行中会提示先结束当前任务)"],
     ],
   },
   {
     topic: "Reading the transcript",
     lines: [
-      ["PageUp / PageDown", "翻页(transcript 与 details 覆盖层都支持)"],
+      // Only the live region scrolls: everything already committed is in the
+      // terminal's own scrollback, so paging here cannot reach it.
+      ["PageUp / PageDown", "翻页(活动区;更早的输出已进入终端自身的回滚缓冲,用终端的滚动)"],
       ["Ctrl+↑ / Ctrl+↓", "滚 3 行"],
-      ["滚轮", "滚动记录区(详情覆盖层同样适用;选中文字改用 Shift+拖选)"],
+      ["滚轮", "滚动活动区(详情覆盖层同样适用;选中文字改用 Shift+拖选)"],
       ["Ctrl+T", "打开“最近活动”详情(只展开最近一段;可滚动,再按关闭)"],
       ["Esc(空闲)", "清空 composer(文本、光标与粘贴内容都可用 Ctrl+Z 恢复)"],
     ],
@@ -39,7 +44,6 @@ export const SHORTCUTS: readonly ShortcutGroup[] = [
     lines: [
       ["Esc ×2", "在 1.2s 内连按两次取消当前任务"],
       ["直接输入", "作为 steering 指导注入正在运行的任务"],
-      ["Tab / Shift+Tab", "切换工作模式(plan/auto)/切换思考强度"],
     ],
   },
   {

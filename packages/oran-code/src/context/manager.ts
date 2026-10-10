@@ -133,6 +133,11 @@ export class ContextManager {
 
   resetUsageAnchor(): void {
     this.usageAnchor = undefined;
+    // Compaction is the one caller, and the level has to drop with the anchor: the
+    // estimate falls after it, so the next climb through 60% or 80% is news again.
+    // Without this the model was warned once per session at most, which is the
+    // opposite of the point of the reminder.
+    this.usageNoticeLevel = 0;
   }
 
   reset(): void {

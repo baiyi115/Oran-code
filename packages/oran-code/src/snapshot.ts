@@ -23,6 +23,15 @@ export interface SnapshotManifest {
   readonly preHead: string;
   readonly postHead?: string;
   readonly changedPaths: readonly string[];
+  /**
+   * Paths git ignores that were modified between `createdAt` and `completedAt`.
+   *
+   * The snapshot itself is a pair of git trees, so a file git ignores (.env, a
+   * build directory, a local settings file) never enters `changedPaths` and undo
+   * cannot restore it — while the undo message read as if the whole batch had been
+   * rolled back. Recording them lets that message say what it left alone.
+   */
+  readonly ignoredChanges?: readonly string[];
   readonly status: SnapshotStatus;
   readonly undoneAt?: string;
 }
@@ -79,12 +88,14 @@ export class SnapshotStore implements SnapshotStorePort {
     const changedPaths = [...new Set([...preEntries.keys(), ...postEntries.keys()])]
       .filter((path) => preEntries.get(path) !== postEntries.get(path))
       .sort();
+    const ignoredChanges = await ignoredPathsChangedSince(task.workspace, manifest.createdAt);
     await writeJsonAtomic(manifestPath, {
       ...manifest,
       completedAt: new Date().toISOString(),
       postTree,
       postHead,
       changedPaths,
+      ...(ignoredChanges.length > 0 ? { ignoredChanges } : {}),
       status: "ready",
     } satisfies SnapshotManifest);
   }
@@ -165,7 +176,10 @@ export class SnapshotStore implements SnapshotStorePort {
       };
     }
     await this.updateStatus(manifest, "undone", new Date().toISOString());
-    return { ok: true, output: `Undid the latest Agent file change batch (${manifest.taskId}).` };
+    return {
+      ok: true,
+      output: `Undid the latest Agent file change batch (${manifest.taskId}).${describeIgnoredChanges(manifest.ignoredChanges)}`,
+    };
   }
 
   /**
@@ -253,7 +267,11 @@ export class SnapshotStore implements SnapshotStorePort {
       output: [
         `Reverted ${paths.length} file(s) to the state before turn ${taskId}:`,
         ...paths.map((path) => `- ${path}`),
-      ].join("\n"),
+        // Every snapshot in the chain, since the rewind undoes all of them.
+        describeIgnoredChanges([...new Set(chain.flatMap((item) => item.ignoredChanges ?? []))]),
+      ]
+        .filter((line) => line.length > 0)
+        .join("\n"),
     };
   }
 
@@ -318,6 +336,42 @@ async function gitBuffer(workspace: string, args: readonly string[]): Promise<Bu
       resolvePromise(Buffer.isBuffer(stdout) ? stdout : Buffer.from(stdout));
     });
   });
+}
+
+/** Paths git ignores that were modified since the task started (see SnapshotManifest.ignoredChanges). */
+async function ignoredPathsChangedSince(workspace: string, since: string): Promise<string[]> {
+  const cutoff = Date.parse(since);
+  if (!Number.isFinite(cutoff)) return [];
+  let stdout: string;
+  try {
+    // matching: an ignored directory is one entry, not a walk into it.
+    stdout = (await git(workspace, ["status", "--porcelain", "--ignored=matching"])).stdout;
+  } catch {
+    return []; // not a repository, or git refused: nothing to report
+  }
+  const changed: string[] = [];
+  for (const line of stdout.split("\n")) {
+    if (!line.startsWith("!! ")) continue;
+    const path = line.slice(3).trim().replace(/\/$/, "");
+    if (!path) continue;
+    // The snapshot store itself lives here, under a state directory git ignores, and
+    // this function runs after it has written.
+    if (PROJECT_STATE_DIR_NAMES.some((name) => path.split("/").includes(name))) continue;
+    try {
+      if ((await lstat(resolve(workspace, path))).mtimeMs >= cutoff) changed.push(path);
+    } catch {
+      // Removed since: nothing to restore and nothing to warn about.
+    }
+  }
+  return changed.sort();
+}
+
+/** The sentence undo appends when a batch touched files git does not track. */
+function describeIgnoredChanges(paths: readonly string[] | undefined): string {
+  if (!paths || paths.length === 0) return "";
+  const shown = paths.slice(0, 3).join(", ");
+  const more = paths.length > 3 ? `, and ${paths.length - 3} more` : "";
+  return ` ${paths.length} path(s) git ignores changed during this task and were left as they are: ${shown}${more}.`;
 }
 
 async function gitHead(workspace: string): Promise<string> {

@@ -60,7 +60,9 @@ export const PLAN_COMPLETE_MARKERS = [
  * "plan complete" notices, then drops the trailing blank lines. */
 export function stripPlanCompleteMarkers(text: string): string {
   let plan = text.replace(/\r/g, "");
-  for (const marker of PLAN_COMPLETE_MARKERS) {
+  // Longest first: the bare "PLAN_COMPLETE" is a prefix of the bracketed forms, and
+  // removing it first left their punctuation behind — the text showed "<<>>".
+  for (const marker of [...PLAN_COMPLETE_MARKERS].sort((left, right) => right.length - left.length)) {
     plan = plan.split(marker).join("");
   }
   const lines = plan.split(/\n/);

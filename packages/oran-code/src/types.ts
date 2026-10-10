@@ -262,7 +262,11 @@ export interface AgentSettings {
   workMode?: WorkMode;
   permissionMode?: PermissionMode;
   lastModel?: string;
-  /** Explicit verification commands run after workspace mutations. Takes precedence over inferred commands. */
+  /**
+   * Explicit verification commands. Parsed and carried into the runtime config, but
+   * nothing executes them yet — the Verifier has no production caller — so this is
+   * not a behaviour the agent will perform.
+   */
   verifyCommands?: string[];
 }
 
@@ -314,7 +318,10 @@ export interface UserConfig {
  * has been configured.
  */
 export interface WebSettings {
-  /** When disabled, no web tool is registered at all. */
+  /**
+   * Disabled web tools stay in the tool list and refuse when called, saying why:
+   * registration does not read the settings, `invoke` does.
+   */
   enabled?: boolean;
   /** Search backend protocol, tavily by default. */
   searchProvider?: "tavily" | "searxng" | "brave" | "google";

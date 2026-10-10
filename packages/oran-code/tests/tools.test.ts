@@ -223,6 +223,40 @@ describe("builtin tools", () => {
   });
 });
 
+describe("show_signature", () => {
+  it("lists exported functions and classes when only exports are asked for", async () => {
+    const workspace = await mkdtemp(join(tmpdir(), "liteagent-"));
+    const home = await mkdtemp(join(tmpdir(), "liteagent-home-"));
+    const previousHome = { HOME: process.env.HOME, USERPROFILE: process.env.USERPROFILE };
+    try {
+      // A clean home keeps the optional external outline CLI out of the way.
+      process.env.HOME = home;
+      process.env.USERPROFILE = home;
+      await writeFile(join(workspace, "api.ts"), "export function handler() {}\nexport const LIMIT = 1;\n", "utf8");
+      const registry = new ToolRegistry();
+      registerBuiltinTools(registry, workspace);
+      registry.activateAll();
+      const result = await registry.invoke({
+        name: "show_signature",
+        arguments: { path: "api.ts", only: "exports" },
+        createdAt: new Date().toISOString(),
+      });
+      expect(result.ok).toBe(true);
+      // A function or class line is listed by the signature branch, so switching that
+      // branch off used to make every exported function and class disappear.
+      expect(result.output).toContain("export function handler");
+      expect(result.output).toContain("export const LIMIT");
+    } finally {
+      for (const [key, value] of Object.entries(previousHome)) {
+        if (value === undefined) delete process.env[key];
+        else process.env[key] = value;
+      }
+      await rm(workspace, { recursive: true, force: true });
+      await rm(home, { recursive: true, force: true });
+    }
+  });
+});
+
 describe("search_code", () => {
   async function search(workspace: string, pattern: string): Promise<{ output: string; durationMs: number }> {
     const registry = new ToolRegistry();

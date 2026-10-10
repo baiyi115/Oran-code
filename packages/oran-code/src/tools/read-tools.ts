@@ -151,8 +151,7 @@ export function registerReadTools(registry: { register(tool: ToolDefinition): vo
         path: { type: "string", description: "Path relative to workspace root." },
         only: {
           type: "string",
-          description:
-            "Optional category filter: 'signatures', 'imports', 'exports', 'interfaces', 'types', 'variables'.",
+          description: "Optional category filter: 'signatures', 'imports', 'exports', 'interfaces', 'types'.",
         },
       },
       required: ["path"],
@@ -445,7 +444,12 @@ async function extractFileOutline(targetPath: string, only?: string): Promise<st
     }
 
     const isExport = line.startsWith("export ");
-    if (isExport && wantExports && !line.includes("function") && !line.includes("class")) {
+    // A function or class declaration is listed by the signature branch below, so it
+    // is skipped here to avoid listing one line twice — but only when that branch
+    // runs: with `only: "exports"` it does not, and every exported function and
+    // class used to disappear from the answer.
+    const matchedAsSignature = line.includes("function") || line.includes("class");
+    if (isExport && wantExports && !(matchedAsSignature && wantSignatures)) {
       results.push(`${i + 1} ${line.slice(0, 120)}`);
       continue;
     }

@@ -8,6 +8,13 @@ export const CONTEXT_LIMITS = Object.freeze({
   toolRoundBytes: 300_000,
   historicalToolResultBytes: 32_000,
   historicalToolRoundBytes: 96_000,
+  /**
+   * Space reserved for the summary when sizing a compaction request. Deliberately
+   * conservative and much larger than what the model will actually emit (the usual
+   * output cap is a few thousand tokens): over-reserving makes compaction fire
+   * early, which is the safe direction, so this is a policy number rather than the
+   * request's real ceiling.
+   */
   summaryOutputTokens: 20_000,
   automaticSafetyTokens: 13_000,
   manualSafetyTokens: 3_000,
