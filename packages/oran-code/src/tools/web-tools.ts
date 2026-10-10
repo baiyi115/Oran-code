@@ -1,5 +1,9 @@
 import { lookup } from "node:dns/promises";
-import { isIPv4, isIPv6 } from "node:net";
+import { request as httpRequest, type IncomingMessage } from "node:http";
+import { request as httpsRequest } from "node:https";
+import { isIPv4, isIPv6, type LookupFunction } from "node:net";
+import { createUnzip } from "node:zlib";
+import type { Readable } from "node:stream";
 import type { ToolDefinition, WebSettings } from "../types.js";
 import { loadConfig } from "../config.js";
 import type { ToolFactoryContext } from "./registry.js";
@@ -259,6 +263,52 @@ export function decodeHtmlEntities(value: string): string {
   });
 }
 
+/**
+ * Resolve a host once, refuse a private answer unless the user allows it, and
+ * return the addresses a connection may use.
+ *
+ * The addresses returned here are the only ones the request will connect to (see
+ * pinnedLookup), which is what closes the check-then-connect gap: the earlier code
+ * validated one resolution and then let `fetch` resolve the name again, so a name
+ * that answered differently the second time — DNS rebinding — reached whatever
+ * address it liked, on every redirect hop as well.
+ */
+async function resolveAddresses(host: string, options: { allowPrivateHosts?: boolean }): Promise<string[]> {
+  if (!options.allowPrivateHosts && isPrivateAddress(host)) {
+    throw new Error(`refusing to fetch a private/loopback address: ${host}`);
+  }
+  let entries: Array<{ address: string }>;
+  try {
+    entries = await lookup(host, { all: true });
+  } catch (error) {
+    throw new Error(`cannot resolve host ${host}: ${error instanceof Error ? error.message : String(error)}`, {
+      cause: error,
+    });
+  }
+  const addresses = entries.map((entry) => entry.address);
+  if (addresses.length === 0) throw new Error(`cannot resolve host ${host}: it has no address`);
+  if (!options.allowPrivateHosts && addresses.some((address) => isPrivateAddress(address))) {
+    throw new Error(`refusing to fetch ${host}: it resolves to a private/loopback address`);
+  }
+  return addresses;
+}
+
+/** Answer the connection from the validated set instead of asking DNS again. */
+function pinnedLookup(addresses: readonly string[]): LookupFunction {
+  const familyOf = (address: string): number => (address.includes(":") ? 6 : 4);
+  return (_hostname, lookupOptions, callback) => {
+    if (lookupOptions && typeof lookupOptions === "object" && lookupOptions.all) {
+      callback(
+        null,
+        addresses.map((address) => ({ address, family: familyOf(address) })),
+      );
+      return;
+    }
+    const first = addresses[0]!;
+    callback(null, first, familyOf(first));
+  };
+}
+
 interface FetchOutcome {
   finalUrl: string;
   contentType: string;
@@ -267,29 +317,84 @@ interface FetchOutcome {
   truncated: boolean;
 }
 
-async function fetchWithRedirects(url: URL, options: { allowPrivateHosts?: boolean }): Promise<FetchOutcome> {
+/** One GET, with the connect step pinned to an address that was validated. */
+async function requestOnce(
+  url: URL,
+  options: { allowPrivateHosts?: boolean },
+): Promise<{ response: IncomingMessage; stream: Readable }> {
+  const host = url.hostname.replace(/^\[|\]$/g, "");
+  const addresses = await resolveAddresses(host, options);
+  return await new Promise((resolve, reject) => {
+    const transport = url.protocol === "https:" ? httpsRequest : httpRequest;
+    const request = transport(
+      {
+        protocol: url.protocol,
+        hostname: host,
+        ...(url.port ? { port: url.port } : {}),
+        path: `${url.pathname}${url.search}`,
+        method: "GET",
+        headers: {
+          accept: "text/html,application/xhtml+xml,application/json,text/plain;q=0.9,*/*;q=0.5",
+          // Only what this layer decodes; a server that ignores the header sends
+          // text, which is handled as-is.
+          "accept-encoding": "gzip, deflate",
+          "user-agent": "oran-code/1.0 (+https://github.com/oran-code)",
+        },
+        lookup: pinnedLookup(addresses),
+        ...(url.protocol === "https:" ? { servername: host } : {}),
+      },
+      (response) => resolve({ response, stream: response }),
+    );
+    const deadline = setTimeout(() => {
+      request.destroy(new Error(`request timed out after ${FETCH_TIMEOUT_MS}ms`));
+    }, FETCH_TIMEOUT_MS);
+    deadline.unref?.();
+    request.on("close", () => clearTimeout(deadline));
+    request.on("error", (error) => {
+      clearTimeout(deadline);
+      reject(error);
+    });
+    // Defence in depth: whatever the resolver said, the socket has to have landed
+    // on an address that was checked.
+    request.on("socket", (socket) => {
+      socket.once("connect", () => {
+        const remote = socket.remoteAddress?.replace(/^::ffff:/, "");
+        if (remote && !addresses.includes(remote)) {
+          request.destroy(
+            new Error(
+              `refusing to read ${url.hostname}: connected to ${remote}, which was not one of the validated addresses`,
+            ),
+          );
+        }
+      });
+    });
+    request.end();
+  });
+}
+
+async function fetchWithRedirects(url: URL, options: { allowPrivateHosts?: boolean } = {}): Promise<FetchOutcome> {
   let current = url;
   for (let hop = 0; hop <= MAX_REDIRECTS; hop += 1) {
-    const response = await fetch(current, {
-      redirect: "manual",
-      signal: AbortSignal.timeout(FETCH_TIMEOUT_MS),
-      headers: {
-        accept: "text/html,application/xhtml+xml,application/json,text/plain;q=0.9,*/*;q=0.5",
-        "user-agent": "oran-code/1.0 (+https://github.com/oran-code)",
-      },
-    });
-    const location = response.headers.get("location");
-    if (response.status >= 300 && response.status < 400 && location) {
-      const next = new URL(location, current);
-      current = await assertFetchableUrl(next.toString(), options);
+    const { response, stream } = await requestOnce(current, options);
+    const status = response.statusCode ?? 0;
+    const location = response.headers.location;
+    if (status >= 300 && status < 400) {
+      // A bare 3xx (no Location) is a broken answer, not an empty page: returning
+      // it as success told the model the page had no content.
+      if (!location) {
+        stream.resume();
+        throw new Error(`HTTP ${status} without a Location header`);
+      }
+      stream.resume(); // release the redirect body; it is not read
+      current = await assertFetchableUrl(new URL(location, current).toString(), options);
       continue;
     }
-    const contentType = response.headers.get("content-type") ?? "";
-    const text = await readBoundedBody(response, MAX_HTML_BYTES);
+    const contentType = response.headers["content-type"] ?? "";
+    const text = await readBoundedBody(stream, response.headers["content-encoding"] ?? "", MAX_HTML_BYTES);
     return {
       finalUrl: current.toString(),
       contentType,
-      status: response.status,
+      status,
       body: text.body,
       truncated: text.truncated,
     };
@@ -297,12 +402,44 @@ async function fetchWithRedirects(url: URL, options: { allowPrivateHosts?: boole
   throw new Error(`too many redirects (more than ${MAX_REDIRECTS})`);
 }
 
-async function readBoundedBody(response: Response, maxBytes: number): Promise<{ body: string; truncated: boolean }> {
-  const buffer = await response.arrayBuffer();
-  const bytes = new Uint8Array(buffer);
-  const truncated = bytes.byteLength > maxBytes;
-  const slice = truncated ? bytes.slice(0, maxBytes) : bytes;
-  return { body: new TextDecoder("utf-8", { fatal: false }).decode(slice), truncated };
+/**
+ * Read at most `maxBytes`, stopping the connection when the ceiling is reached.
+ *
+ * The previous version awaited `arrayBuffer()` and then sliced: the whole body was
+ * materialised (plus a second copy for the slice) before the ceiling applied, so a
+ * response streaming gigabytes allocated gigabytes first — from a URL the model
+ * chose, through a tool that needs no approval.
+ */
+async function readBoundedBody(
+  stream: Readable,
+  contentEncoding: string,
+  maxBytes: number,
+): Promise<{ body: string; truncated: boolean }> {
+  const encoding = contentEncoding.toLowerCase();
+  const source = encoding.includes("gzip") || encoding.includes("deflate") ? stream.pipe(createUnzip()) : stream;
+  const chunks: Buffer[] = [];
+  let size = 0;
+  let truncated = false;
+  try {
+    for await (const chunk of source as AsyncIterable<Buffer>) {
+      chunks.push(chunk);
+      size += chunk.byteLength;
+      if (size > maxBytes) {
+        truncated = true;
+        break;
+      }
+    }
+  } catch (error) {
+    // A decode failure after the ceiling is expected (the tail is cut mid-stream);
+    // before it, the response really is unusable.
+    if (!truncated) throw error;
+  }
+  if (truncated) {
+    source.destroy();
+    stream.destroy();
+  }
+  const bytes = Buffer.concat(chunks).subarray(0, maxBytes);
+  return { body: new TextDecoder("utf-8", { fatal: false }).decode(bytes), truncated };
 }
 
 function isHtml(contentType: string): boolean {

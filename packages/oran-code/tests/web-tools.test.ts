@@ -207,6 +207,66 @@ describe("web tools", () => {
     }
   }, 30_000);
 
+  it("treats a redirect without a Location header as an error, not an empty page", async () => {
+    const { workspace, baseUrl } = await startFixtureServer(() => ({
+      status: 302,
+      contentType: "text/html",
+      body: "",
+    }));
+    try {
+      const result = await registryFor(workspace).invoke({
+        name: "web_fetch",
+        arguments: { url: `${baseUrl}/broken` },
+        createdAt: new Date().toISOString(),
+      });
+      expect(result.ok).toBe(false);
+      expect(result.error).toContain("without a Location header");
+    } finally {
+      await rm(workspace, { recursive: true, force: true });
+    }
+  }, 30_000);
+
+  it("stops reading a response at the ceiling instead of buffering the whole body", async () => {
+    const chunk = "x".repeat(512 * 1024);
+    let sent = 0;
+    const server = createServer((_request, response) => {
+      response.writeHead(200, { "content-type": "text/plain" });
+      const pump = (): void => {
+        if (sent >= 16 || response.destroyed) return; // 16 × 512KB = 8MB, four times the ceiling
+        sent += 1;
+        response.write(chunk, () => setImmediate(pump));
+      };
+      pump();
+    });
+    servers.push(server);
+    await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
+    const address = server.address();
+    if (!address || typeof address === "string") throw new Error("fixture server did not bind a port");
+
+    const workspace = await mkdtemp(join(tmpdir(), "oran-web-"));
+    try {
+      await mkdir(join(workspace, ".oran"), { recursive: true });
+      await writeFile(
+        join(workspace, ".oran", "config.json"),
+        JSON.stringify({ providers: {}, web: { enabled: true, allowPrivateHosts: true } }),
+        "utf8",
+      );
+      const result = await registryFor(workspace).invoke({
+        name: "web_fetch",
+        arguments: { url: `http://127.0.0.1:${address.port}/big` },
+        createdAt: new Date().toISOString(),
+      });
+      expect(result.ok).toBe(true);
+      expect(result.output).toContain("cut off at 2,000,000 bytes");
+      // The read stopped at the ceiling and closed the connection: the previous
+      // version awaited the entire body before applying it, so the server would
+      // have written all eight megabytes.
+      expect(sent).toBeLessThan(16);
+    } finally {
+      await rm(workspace, { recursive: true, force: true });
+    }
+  }, 30_000);
+
   it("returns an actionable error when web_search is not configured", async () => {
     const workspace = await mkdtemp(join(tmpdir(), "oran-web-"));
     try {
