@@ -222,3 +222,48 @@ describe("builtin tools", () => {
     expect(truncated).toContain("truncated");
   });
 });
+
+describe("search_code", () => {
+  async function search(workspace: string, pattern: string): Promise<{ output: string; durationMs: number }> {
+    const registry = new ToolRegistry();
+    registerBuiltinTools(registry, workspace);
+    registry.activateAll();
+    const started = Date.now();
+    const result = await registry.invoke({
+      name: "search_code",
+      arguments: { pattern, path: "." },
+      createdAt: new Date().toISOString(),
+    });
+    expect(result.ok).toBe(true);
+    return { output: result.output, durationMs: Date.now() - started };
+  }
+
+  it("finds matches and reports the file and line", async () => {
+    const workspace = await mkdtemp(join(tmpdir(), "liteagent-"));
+    try {
+      await writeFile(join(workspace, "a.ts"), "const needle = 1;\n", "utf8");
+      const { output } = await search(workspace, "needle");
+      expect(output).toContain("a.ts:1:");
+      expect(output).toContain("needle");
+    } finally {
+      await rm(workspace, { recursive: true, force: true });
+    }
+  });
+
+  it("stops a pattern that backtracks catastrophically instead of freezing the agent", async () => {
+    const workspace = await mkdtemp(join(tmpdir(), "liteagent-"));
+    try {
+      // Exponential backtracking needs tens of characters, not a long line: this
+      // run of identical characters makes `(a+)+b` never return. The scan is
+      // synchronous, so its own budget cannot interrupt it — only killing the
+      // process it runs in can, which is why the search runs in a host.
+      await writeFile(join(workspace, "blob.txt"), `${"a".repeat(40)}\nboring line\n`, "utf8");
+      const { output, durationMs } = await search(workspace, "(a+)+b");
+      expect(output).toContain("search interrupted");
+      expect(output).toContain("(a+)+");
+      expect(durationMs).toBeLessThan(15_000);
+    } finally {
+      await rm(workspace, { recursive: true, force: true });
+    }
+  });
+});

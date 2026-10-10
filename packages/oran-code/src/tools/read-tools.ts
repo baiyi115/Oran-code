@@ -7,6 +7,7 @@ import { promisify } from "node:util";
 import type { ToolDefinition } from "../types.js";
 import type { ToolFactoryContext } from "./registry.js";
 import { compileGlob, walkFiles } from "./glob.js";
+import { searchWithDeadline } from "./search-service.js";
 import { displayPath, errorMessage, failedResult, intArg } from "./fs-helpers.js";
 
 const execFileAsync = promisify(execFile);
@@ -15,10 +16,14 @@ const DEFAULT_READ_LIMIT = 200;
 const MAX_READ_LINE_CHARS = 2_000;
 const DEFAULT_GLOB_LIMIT = 200;
 const DEFAULT_SEARCH_LIMIT = 200;
-/** Catastrophic backtracking needs long input; over-long lines are matched on the prefix only. */
-const SEARCH_MAX_LINE_LENGTH = 4_096;
-/** Total time budget for a search; on timeout partial results are returned. */
+/** Total time budget for a search; the search host is killed shortly after it. */
 const SEARCH_TIME_BUDGET_MS = 2_000;
+
+/** A short "a, b, c, …" for a notice line, without spelling out hundreds of paths. */
+function describePaths(paths: readonly string[]): string {
+  const shown = paths.slice(0, 3).join(", ");
+  return paths.length > 3 ? `${shown}, …` : shown;
+}
 
 const pathSchema = {
   type: "object",
@@ -239,18 +244,28 @@ export function registerReadTools(registry: { register(tool: ToolDefinition): vo
         const limit = Math.max(1, intArg(call.arguments.limit, DEFAULT_GLOB_LIMIT));
         const matcher = compileGlob(pattern);
         const hits: Array<{ path: string; mtime: number }> = [];
-        await walkFiles(base, async (filePath, mtime) => {
-          const relFromBase = relative(base, filePath).replaceAll("\\", "/");
-          const relFromRoot = relative(workspace, filePath).replaceAll("\\", "/");
-          if (matcher(relFromBase) || matcher(relFromRoot) || matcher(filePath.replaceAll("\\", "/"))) {
-            hits.push({ path: relFromRoot, mtime });
-          }
-        });
+        // A directory the walk cannot list loses its whole subtree, and the caller
+        // reading "no matches" concludes the file is not there. The graph side
+        // already reports these; the listing has to as well.
+        const unreadable: string[] = [];
+        await walkFiles(
+          base,
+          async (filePath, mtime) => {
+            const relFromBase = relative(base, filePath).replaceAll("\\", "/");
+            const relFromRoot = relative(workspace, filePath).replaceAll("\\", "/");
+            if (matcher(relFromBase) || matcher(relFromRoot) || matcher(filePath.replaceAll("\\", "/"))) {
+              hits.push({ path: relFromRoot, mtime });
+            }
+          },
+          (failure) => unreadable.push(relative(workspace, failure.path).replaceAll("\\", "/") || failure.path),
+        );
         hits.sort((a, b) => b.mtime - a.mtime || a.path.localeCompare(b.path));
         const selected = hits.slice(0, limit);
         const truncated = hits.length > selected.length;
         const lines = selected.map((item) => item.path);
         if (truncated) lines.push(`...[truncated ${hits.length - selected.length} more files]`);
+        if (unreadable.length > 0)
+          lines.push(`...[could not read ${unreadable.length} path(s): ${describePaths(unreadable)}]`);
         return {
           ok: true,
           output: lines.join("\n") || "no matches",
@@ -291,9 +306,10 @@ export function registerReadTools(registry: { register(tool: ToolDefinition): vo
       try {
         const source = String(call.arguments.pattern ?? "");
         if (!source) return { ok: false, output: "", error: "pattern is required", summary: "invalid arguments" };
-        let regex: RegExp;
         try {
-          regex = new RegExp(source);
+          // Rejected here rather than after a spawn: a bad pattern is an argument
+          // error, and the answer should not cost a process.
+          new RegExp(source);
         } catch (error) {
           return {
             ok: false,
@@ -305,53 +321,55 @@ export function registerReadTools(registry: { register(tool: ToolDefinition): vo
         const workspace = activeRoot(context);
         const base = pathFor(context, call.arguments.path ?? ".");
         const limit = Math.max(1, intArg(call.arguments.limit, DEFAULT_SEARCH_LIMIT));
-        const fileFilter =
+        const glob =
           typeof call.arguments.glob === "string" && call.arguments.glob.trim()
-            ? compileGlob(String(call.arguments.glob))
+            ? String(call.arguments.glob)
             : undefined;
-        const hits: string[] = [];
-        let total = 0;
-        // A model-supplied regex may backtrack catastrophically: truncating long lines plus a
-        // total time budget give two layers of protection.
-        const startedAt = Date.now();
-        let timedOut = false;
-        await walkFiles(base, async (filePath) => {
-          if (hits.length >= limit || timedOut) return;
-          const rel = relative(workspace, filePath).replaceAll("\\", "/");
-          const name = rel.split("/").pop() ?? rel;
-          if (fileFilter && !fileFilter(rel) && !fileFilter(name)) return;
-          try {
-            const lines = (await readFile(filePath, "utf8")).split(/\r?\n/);
-            for (let index = 0; index < lines.length; index += 1) {
-              if ((index & 0xff) === 0 && Date.now() - startedAt > SEARCH_TIME_BUDGET_MS) {
-                timedOut = true;
-                return;
-              }
-              const line = lines[index] ?? "";
-              regex.lastIndex = 0;
-              if (!regex.test(line.length > SEARCH_MAX_LINE_LENGTH ? line.slice(0, SEARCH_MAX_LINE_LENGTH) : line))
-                continue;
-              total += 1;
-              if (hits.length < limit) {
-                hits.push(`${rel}:${index + 1}:${line.trim().slice(0, 200)}`);
-              }
-            }
-          } catch {
-            // Skip binary/unreadable files.
-          }
+        // The scan runs in the search host, which can be killed: a model-supplied
+        // pattern may backtrack catastrophically on a short input, and the scan's
+        // own budget is checked between lines, so it cannot interrupt one match.
+        const outcome = await searchWithDeadline({
+          root: workspace,
+          base,
+          pattern: source,
+          glob,
+          limit,
+          budgetMs: SEARCH_TIME_BUDGET_MS,
         });
-        const truncated = total > hits.length;
-        if (truncated) hits.push(`...[truncated ${total - hits.length} more matches]`);
-        if (timedOut) hits.push(`...[search stopped after ${SEARCH_TIME_BUDGET_MS}ms; results may be incomplete]`);
+        const hits = [...outcome.hits];
+        const truncated = outcome.total > hits.length;
+        if (truncated) hits.push(`...[truncated ${outcome.total - hits.length} more matches]`);
+        if (outcome.timedOut && !outcome.interrupted) {
+          hits.push(`...[search stopped after ${SEARCH_TIME_BUDGET_MS}ms; results may be incomplete]`);
+        }
+        if (outcome.interrupted) {
+          hits.push(
+            "...[search interrupted: this pattern can take exponential time on some input (nested quantifiers " +
+              "such as (a+)+ do), so it was stopped. Simplify the pattern and search again.]",
+          );
+        }
+        // A subtree the walk could not list is missing from this search, and a model
+        // reading "no matches" otherwise concludes the text is not in the repository.
+        if (outcome.unreadable.length > 0) {
+          hits.push(`...[could not read ${outcome.unreadable.length} path(s): ${describePaths(outcome.unreadable)}]`);
+        }
         return {
           ok: true,
           output: hits.join("\n") || "no matches",
-          summary: timedOut
-            ? `partial: ${Math.min(total, limit)}/${total}+ matches (time budget reached)`
-            : truncated
-              ? `${Math.min(total, limit)}/${total} matches`
-              : `${total} matches`,
-          metadata: { total, returned: Math.min(total, limit), truncated, ...(timedOut ? { timedOut: true } : {}) },
+          summary: outcome.interrupted
+            ? `interrupted: ${hits.length} hit(s) before the pattern was stopped`
+            : outcome.timedOut
+              ? `partial: ${Math.min(outcome.total, limit)}/${outcome.total}+ matches (time budget reached)`
+              : truncated
+                ? `${Math.min(outcome.total, limit)}/${outcome.total} matches`
+                : `${outcome.total} matches`,
+          metadata: {
+            total: outcome.total,
+            returned: Math.min(outcome.total, hits.length),
+            truncated,
+            ...(outcome.timedOut ? { timedOut: true } : {}),
+            ...(outcome.interrupted ? { interrupted: true } : {}),
+          },
         };
       } catch (error) {
         return failedResult(error, "search_code failed");

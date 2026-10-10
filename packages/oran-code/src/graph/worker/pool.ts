@@ -1,7 +1,7 @@
 import { spawn, type ChildProcess } from "node:child_process";
-import { existsSync } from "node:fs";
-import { dirname, join } from "node:path";
+import { dirname } from "node:path";
 import { fileURLToPath } from "node:url";
+import { childHostCommand } from "../../utils/child-host.js";
 import type { FileAnalysis } from "../extract-raw.js";
 
 /**
@@ -54,10 +54,7 @@ function retire(key: string, entry: GrammarHost): void {
 }
 
 function hostCommand(): { command: string; args: string[] } {
-  const dir = dirname(fileURLToPath(import.meta.url));
-  const distEntry = join(dir, "parse-host.js");
-  if (existsSync(distEntry)) return { command: process.execPath, args: [distEntry] };
-  return { command: process.execPath, args: ["--import", "tsx", join(dir, "parse-host.ts")] };
+  return childHostCommand(dirname(fileURLToPath(import.meta.url)), "parse-host");
 }
 
 /** Release the event-loop ref: an idle host must not keep the CLI alive. */
