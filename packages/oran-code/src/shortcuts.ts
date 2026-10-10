@@ -30,11 +30,17 @@ export const SHORTCUTS: readonly ShortcutGroup[] = [
   {
     topic: "Reading the transcript",
     lines: [
-      // Only the live region scrolls: everything already committed is in the
+      // Only the live region scrolls in-app: everything already committed is in the
       // terminal's own scrollback, so paging here cannot reach it.
-      ["PageUp / PageDown", "翻页(活动区;更早的输出已进入终端自身的回滚缓冲,用终端的滚动)"],
-      ["Ctrl+↑ / Ctrl+↓", "滚 3 行"],
-      ["滚轮", "滚动活动区(详情覆盖层同样适用;选中文字改用 Shift+拖选)"],
+      ["PageUp / PageDown", "翻页(活动区;更早的输出已封存,用终端的滚动)"],
+      ["Ctrl+↑ / Ctrl+↓", "滚 3 行(活动区)"],
+      // The wheel is shared with the terminal: the app takes it only while it has lines of its
+      // own to scroll (a live region taller than the frame, or the details overlay), and leaves
+      // the scrollback to the terminal the rest of the time.
+      [
+        "滚轮",
+        "滚活动区;活动区没有可滚内容时滚终端自身的回滚缓冲(那里有全部历史);详情覆盖层内滚详情。选中文字改用 Shift+拖选",
+      ],
       ["Ctrl+T", "打开“最近活动”详情(只展开最近一段;可滚动,再按关闭)"],
       ["Esc(空闲)", "清空 composer(文本、光标与粘贴内容都可用 Ctrl+Z 恢复)"],
     ],

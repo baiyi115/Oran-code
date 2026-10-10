@@ -48,7 +48,7 @@ import { footerLines, workSummaryLine } from "./footer.js";
 import type { SubagentOrigin } from "../subagent/types.js";
 import { commandPaletteLines } from "./command-palette.js";
 import { COLORS, horizontalRule } from "./theme.js";
-import { scrollPercent, scrollTranscript, syncTranscriptScroll } from "./scroll-controller.js";
+import { scrollPercent, scrollTranscript, shouldCaptureWheel, syncTranscriptScroll } from "./scroll-controller.js";
 import {
   hasActiveBackgroundTasks,
   isSessionBusy,
@@ -105,7 +105,9 @@ const RENDER_WAIT_TIMEOUT_MS = 1_000;
  *
  * Completed transcript messages are appended through Ink Static so the host
  * terminal owns scrollback, selection, and copying. Only the mutable tail and
- * composer chrome remain in Ink's dynamic frame.
+ * composer chrome remain in Ink's dynamic frame — and the wheel follows the same
+ * split: the app captures it only while it has lines of its own to scroll, and
+ * leaves it to the terminal otherwise (see shouldCaptureWheel).
  */
 export class InkTuiApp {
   readonly renderer: TuiTranscriptRenderer;
@@ -123,6 +125,8 @@ export class InkTuiApp {
   private lastCancelAt = 0;
   /** True while the real caret is parked on the composer via DECSC/DECRC. */
   private parkedComposerCursor = false;
+  /** True while this process has taken the wheel from the host terminal (mouse reporting on). */
+  private wheelCaptured = false;
   private lastEscapeCancelAt = 0;
   private submitBusy = false;
   private renderScheduled = false;
@@ -218,7 +222,9 @@ export class InkTuiApp {
     this.restoreNativeMouse();
     if (this.options.output.isTTY) {
       try {
-        this.options.output.write(`${ENABLE_BRACKETED_PASTE}${ENABLE_MOUSE_REPORTING}`);
+        // Mouse reporting is deliberately not enabled here: the first frame decides whether the
+        // app has lines of its own to scroll (see syncWheelCapture).
+        this.options.output.write(ENABLE_BRACKETED_PASTE);
       } catch {
         // stdout may already be closed
       }
@@ -358,9 +364,14 @@ export class InkTuiApp {
    * out of the byte stream, so structured events arrive here: only wheel events are consumed,
    * click/move reports are harmlessly swallowed. The price is that native text selection moves to
    * Shift+drag (the same trade-off as pi, documented in help).
+   *
+   * A report carries no authority of its own: the terminal only sends them while this process
+   * holds the wheel, so one still in flight when the mode was released is dropped instead of
+   * being applied to a surface the terminal has taken back.
    */
   private handleTerminalMouse(event: TerminalMouseEvent): void {
-    if (this.destroyed || (event.button & 64) === 0) return;
+    if (this.destroyed || !this.wheelCaptured) return;
+    if ((event.button & 64) === 0) return;
     if (event.release) return;
     const up = (event.button & 1) === 0;
     if (this.state.overlay.kind === "details") {
@@ -1041,9 +1052,28 @@ export class InkTuiApp {
   }
 
   private restoreNativeMouse(): void {
+    this.wheelCaptured = false;
     if (!this.options.output.isTTY) return;
     try {
       this.options.output.write(RESTORE_NATIVE_MOUSE);
+    } catch {
+      // stdout may already be closed during process teardown
+    }
+  }
+
+  /**
+   * Take the wheel from the host terminal, or hand it back. Driven by the render, next to
+   * syncViewportScroll: whether the app has lines of its own to scroll is only known there.
+   *
+   * While the terminal owns it, the wheel scrolls the scrollback that holds everything Static has
+   * printed — the only surface where sealed history is reachable at all.
+   */
+  syncWheelCapture(capture: boolean): void {
+    if (capture === this.wheelCaptured) return;
+    this.wheelCaptured = capture;
+    if (!this.options.output.isTTY) return;
+    try {
+      this.options.output.write(capture ? ENABLE_MOUSE_REPORTING : RESTORE_NATIVE_MOUSE);
     } catch {
       // stdout may already be closed during process teardown
     }
@@ -1084,9 +1114,15 @@ export class InkTuiApp {
     }
   }
 
-  /** Full rendered transcript as display lines. */
-  transcriptLines(width = Math.max(20, (this.options.output.columns || 80) - 2)): string[] {
-    return this.transcript.lines(this.state, width);
+  /**
+   * The lines the frame can scroll: everything not yet committed to Ink Static. Committed history
+   * has been printed above the frame and belongs to the terminal's scrollback, so no offset here
+   * can reach it.
+   */
+  private liveTranscriptLines(width: number): ReturnType<TranscriptView["linesWithAnchors"]> {
+    return this.transcript
+      .linesWithAnchors(this.state, width)
+      .filter((line) => !this.committedStaticTranscriptIds.has(line.messageId));
   }
 
   scrollState(): TuiState["transcriptScroll"] {
@@ -1127,7 +1163,10 @@ export class InkTuiApp {
     // actual transcript viewport, so estimating from terminal rows can turn a
     // single PageUp into a jump to the beginning.
     const viewportLines = Math.max(1, this.state.lastTranscriptViewportLines || rows - 6);
-    const renderedLines = this.transcript.linesWithAnchors(this.state, width);
+    // Measure against the window the frame renders and clamps to. Measuring the whole transcript
+    // instead let the offset rise past what the render keeps, so the next frame reset it to the
+    // live maximum (usually 0) and the key — or the wheel — looked dead.
+    const renderedLines = this.liveTranscriptLines(width);
     const maximum = Math.max(0, renderedLines.length - viewportLines);
     const before = this.state.transcriptScroll.offsetFromBottom;
     scrollTranscript(this.state.transcriptScroll, delta, maximum);
@@ -1424,6 +1463,23 @@ function InkRoot({ app, revision }: { app: InkTuiApp; revision: number }): React
   // clearTerminal paint path. The completed form is emitted to Static in full.
   const viewportLines = Math.max(1, rows - baseChromeLines - (overlayLines.length > 0 ? overlayLines.length + 1 : 0));
   app.syncViewportScroll(transcriptLines, viewportLines);
+  // The wheel follows the same split the render does: the app takes it only while it has lines of
+  // its own to scroll, and the terminal keeps it otherwise. Its scrollback is where everything
+  // older than this window already is, so holding the wheel with nothing to move made history
+  // unreachable by mouse entirely.
+  const captureWheel = shouldCaptureWheel({
+    overlayOpen: state.overlay.kind !== "none",
+    detailsOpen: state.overlay.kind === "details",
+    liveLines: transcriptLines.length,
+    viewportLines,
+    offsetFromBottom: state.transcriptScroll.offsetFromBottom,
+  });
+  useEffect(() => {
+    app.syncWheelCapture(captureWheel);
+    // The mode belongs to this effect for as long as the frame is mounted: a terminal left
+    // reporting mouse input after the app goes away never scrolls its own scrollback again.
+    return () => app.syncWheelCapture(false);
+  }, [app, captureWheel]);
   const maximumStart = Math.max(0, transcriptLines.length - viewportLines);
   const viewportStart = Math.max(0, maximumStart - Math.min(maximumStart, state.transcriptScroll.offsetFromBottom));
   const visibleTranscriptLines = transcriptLines

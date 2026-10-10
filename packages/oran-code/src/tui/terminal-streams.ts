@@ -5,9 +5,10 @@ export const END_SYNCHRONIZED_OUTPUT = "\x1b[?2026l";
 export const ENABLE_BRACKETED_PASTE = "\x1b[?2004h";
 export const DISABLE_BRACKETED_PASTE = "\x1b[?2004l";
 /**
- * Button press/release + SGR extended coordinates, a small scope: only clicks and the wheel are
- * handled, motion (1002/1003) is left alone to keep the frame rate down; the price is that
- * native text selection needs Shift+drag.
+ * Button press/release + SGR extended coordinates, a small scope: only wheel reports are acted on
+ * (see InkTuiApp.handleTerminalMouse), motion (1002/1003) is left alone to keep the frame rate
+ * down. Turning it on costs native text selection (Shift+drag), so the app only asks for it while
+ * it has lines of its own to scroll, and hands the wheel back to the terminal otherwise.
  */
 export const ENABLE_MOUSE_REPORTING = "\x1b[?1000h\x1b[?1006h";
 
