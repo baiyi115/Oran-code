@@ -23,4 +23,5 @@ coverage/
 # local agent/editor state
 tmp/
 .zcode/
+.zcodeignore
 .claude/settings.local.json
