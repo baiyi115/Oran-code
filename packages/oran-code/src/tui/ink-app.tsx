@@ -22,6 +22,8 @@ import {
   createSynchronizedWriteStream,
   ENABLE_BRACKETED_PASTE,
   DISABLE_BRACKETED_PASTE,
+  ENABLE_MOUSE_REPORTING,
+  type TerminalMouseEvent,
 } from "./terminal-streams.js";
 import type { ConnectInput, ConnectPrefill } from "./types.js";
 import { appendSystemMessage } from "./message-reducer.js";
@@ -47,7 +49,13 @@ import type { SubagentOrigin } from "../subagent/types.js";
 import { commandPaletteLines } from "./command-palette.js";
 import { COLORS, horizontalRule } from "./theme.js";
 import { scrollPercent, scrollTranscript, syncTranscriptScroll } from "./scroll-controller.js";
-import { hasActiveBackgroundTasks, isSessionBusy, workingIndicatorLine } from "./status-indicator.js";
+import {
+  hasActiveBackgroundTasks,
+  isSessionBusy,
+  subagentTaskLines,
+  workingIndicatorLine,
+  type TaskPanelTone,
+} from "./status-indicator.js";
 import { isDeleteBackward, isDeleteForward, isEndKey, isHomeKey, isSubmitKey } from "./keys.js";
 import { ConnectWizard } from "./connect-wizard.js";
 import { OverlayHandlers } from "./overlay-handlers.js";
@@ -86,9 +94,8 @@ export function staticTranscriptCount(messages: readonly TranscriptMessage[]): n
 // selection. Clear every common tracking mode in case a previous process exited
 // before restoring the terminal.
 const RESTORE_NATIVE_MOUSE = "\x1b[?1003l\x1b[?1002l\x1b[?1000l\x1b[?1015l\x1b[?1006l\x1b[?1005l";
-// Ink 5 throttles its real stdout paint by 32ms but does not expose
-// waitUntilRenderFlush(). Boundary events wait past that window so a short,
-// burst-delivered response cannot skip directly to its completed frame.
+/** 滚轮一次事件滚动 transcript 的行数。 */
+const WHEEL_SCROLL_LINES = 3;
 const INK_PAINT_BARRIER_MS = 40;
 /** boundary/terminal 事件等待渲染提交的上限;超时兜底放行并补一次渲染。 */
 const RENDER_WAIT_TIMEOUT_MS = 1_000;
@@ -211,12 +218,14 @@ export class InkTuiApp {
     this.restoreNativeMouse();
     if (this.options.output.isTTY) {
       try {
-        this.options.output.write(ENABLE_BRACKETED_PASTE);
+        this.options.output.write(`${ENABLE_BRACKETED_PASTE}${ENABLE_MOUSE_REPORTING}`);
       } catch {
         // stdout may already be closed
       }
     }
-    const wrappedInput = createBracketedPasteStream(this.options.input);
+    const wrappedInput = createBracketedPasteStream(this.options.input, {
+      onMouse: (event) => this.handleTerminalMouse(event),
+    });
     const wrappedOutput = createSynchronizedWriteStream(this.options.output);
     this.inkInstance = this.renderInk(<InkRoot app={this} revision={this.renderRevision} />, {
       stdin: wrappedInput as NodeJS.ReadStream,
@@ -343,10 +352,34 @@ export class InkTuiApp {
     return this.state;
   }
 
+  /**
+   *  stdin 过滤层(createBracketedPasteStream 的 onMouse)已经把鼠标上报从字节
+   *  流里截走,这里拿到的是结构化事件:只消费滚轮,点击/移动上报无害吞掉。
+   *  代价是原生文本选择改走 Shift+拖选(pi 同款取舍,help 里有说明)。
+   */
+  private handleTerminalMouse(event: TerminalMouseEvent): void {
+    if (this.destroyed || (event.button & 64) === 0) return;
+    if (event.release) return;
+    const up = (event.button & 1) === 0;
+    if (this.state.overlay.kind === "details") {
+      const overlay = this.state.overlay;
+      const offset = overlay.scrollOffset ?? 0;
+      const next = up
+        ? Math.max(0, offset - WHEEL_SCROLL_LINES)
+        : Math.min(Math.max(0, overlay.lines.length - 1), offset + WHEEL_SCROLL_LINES);
+      if (next !== offset) {
+        setOverlay(this.state, { ...overlay, scrollOffset: next });
+        this.invalidate();
+      }
+      return;
+    }
+    this.scrollTranscriptBy(up ? WHEEL_SCROLL_LINES : -WHEEL_SCROLL_LINES);
+  }
+
   handleKey(input: string, key: Key): void {
     if (this.destroyed) return;
-    // The raw stream listener owns wheel events; ignore the same sequence if
-    // Ink forwards it through useInput so it cannot be mistaken for Escape.
+    // Mouse reports (wheel etc.) are consumed by the input-transform hook before
+    // Ink's keypress parser ever sees them, so they cannot reach this handler.
     if (key.ctrl && input === "c") {
       if (this.options.onCancel()) return;
       this.requestExit();
@@ -1266,6 +1299,20 @@ function colorProps(color: string | undefined): { color: string } | Record<strin
   return color !== undefined ? { color } : {};
 }
 
+/** 子代理面板行的配色:running 高亮,queued 衰减,done 成功绿,failed 危险红。 */
+function taskRowColorProps(tone: TaskPanelTone): Record<string, string | boolean> {
+  switch (tone) {
+    case "running":
+      return colorProps(COLORS.activity);
+    case "queued":
+      return { dimColor: true };
+    case "done":
+      return colorProps(COLORS.success);
+    case "failed":
+      return colorProps(COLORS.danger);
+  }
+}
+
 function InkRoot({ app, revision }: { app: InkTuiApp; revision: number }): React.JSX.Element {
   void revision;
   const [spinnerTick, setSpinnerTick] = useState(0);
@@ -1310,6 +1357,8 @@ function InkRoot({ app, revision }: { app: InkTuiApp; revision: number }): React
   const footer = footerLines(state, width);
   const summary = workSummaryLine(state);
   const workingLine = workingIndicatorLine(state, spinnerTick);
+  // 输入框下方的逐任务子代理面板:任务是什么、进行到什么程度,一眼可读。
+  const taskRows = subagentTaskLines(state.session.backgroundTasks ?? [], spinnerTick, Date.now(), width);
   useEffect(() => {
     if (!activeSpinner) return;
     // The same tick animates the fallback Working line, Subagent indicator, and live Thought/Tool rows.
@@ -1332,6 +1381,7 @@ function InkRoot({ app, revision }: { app: InkTuiApp; revision: number }): React
     1 + // upper rule
     Math.max(1, editorLines.length) +
     1 + // lower rule
+    taskRows.length +
     footer.length;
   // Reserve one row for the overlay margin. Candidate lists are windowed so a
   // short terminal never pushes the composer away.
@@ -1379,7 +1429,8 @@ function InkRoot({ app, revision }: { app: InkTuiApp; revision: number }): React
     (overlayLines.length > 0 ? overlayLines.length + 1 : 0) +
     (visibleTranscriptLines.length === 0 && overlayLines.length === 0 ? 1 : 0);
   const frameEndOffset = frameHeight >= rows ? 1 : 2;
-  const parkUp = footer.length + frameEndOffset + Math.max(0, composerLineCount - 1 - cursor.row);
+  const parkUp =
+    footer.length + taskRows.length + frameEndOffset + Math.max(0, composerLineCount - 1 - cursor.row);
   const parkColumn = 1 + 2 + Math.max(0, cursor.column);
   useEffect(() => {
     if (busy || state.overlay.kind === "approval" || state.overlay.kind === "question") {
@@ -1449,6 +1500,11 @@ function InkRoot({ app, revision }: { app: InkTuiApp; revision: number }): React
           ) : null}
         </Text>
         <Text dimColor>{horizontalRule(width)}</Text>
+        {taskRows.map((row, index) => (
+          <Text key={`task-${index}`} {...taskRowColorProps(row.tone)}>
+            {row.text}
+          </Text>
+        ))}
         {footer.map((line, index) =>
           index === 0 ? (
             <Text key={`footer-${index}`} {...colorProps(COLORS.accentDim)}>

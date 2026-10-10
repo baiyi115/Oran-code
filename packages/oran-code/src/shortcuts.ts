@@ -28,6 +28,7 @@ export const SHORTCUTS: readonly ShortcutGroup[] = [
     lines: [
       ["PageUp / PageDown", "翻页(transcript 与 details 覆盖层都支持)"],
       ["Ctrl+↑ / Ctrl+↓", "滚 3 行"],
+      ["滚轮", "滚动记录区(详情覆盖层同样适用;选中文字改用 Shift+拖选)"],
       ["Ctrl+T", "打开“最近活动”详情(可滚动;再按关闭)"],
       ["Esc(空闲)", "清空 composer(草稿可用 Ctrl+Z 恢复)"],
     ],

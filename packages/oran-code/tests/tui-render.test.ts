@@ -256,6 +256,22 @@ describe("running tool elapsed time and badges", () => {
     );
     expect(rows.join("\n")).toContain("[cached, hook]");
   });
+
+  it("labels parallel agent calls with role and task description", () => {
+    const rows = renderToolMessage(
+      {
+        ...runningMessage(),
+        name: "agent",
+        arguments: {
+          description: "审计仓库的错误分类逻辑",
+          prompt: "阅读 controller 与 provider 层…",
+          subagent_type: "explore",
+        },
+      },
+      120,
+    );
+    expect(rows.join("\n")).toContain("explore · 审计仓库的错误分类逻辑");
+  });
 });
 
 describe("footer permission and context chips", () => {

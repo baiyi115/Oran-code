@@ -185,10 +185,20 @@ src/context/
 3. **Composer 手感**(`9795e1e`):Ctrl+Z/Ctrl+Y 按段合并的撤销栈(上限 50 段;同类连续编辑 300ms 内并段,**"整段 set"不并段**——这是"误按 Esc 清掉的草稿能救回"成立的边界),空闲 Esc 清稿时提示"ctrl+z 救回",Ctrl+W 按词删、Ctrl/Alt+←→ 按词移动;@ 补全索引由"从来都建不上缓存(每次触发都全树扫描)"修复为建缓存 + 15 秒 TTL,支持 @"带空格的路径"(开引号已打、闭引号可选)。
 4. **弹窗一致性与帮助**(`ac67f79`):审批弹窗接入 y/a/n 快捷回答(readline 端三大键在 TUI 里全面可用),删除类确认默认落在 Cancel 且只认 Enter 落在 Delete(堵掉"确认层里 Backspace 一律删"的误杀),提问弹窗 Esc 提示改"Skip remaining"与预览改为头 5+尾 3,新增 `src/shortcuts.ts` 快捷键总表拼接进 /help 与 cli 启动帮助,README[中英] 快捷键表修正(Tab 描述与实现漂移两年)。
 
+### 第四轮（2026-09-25，用户实测反馈两处）✅
+
+用户拿真实界面反馈:滚轮一划终端直接跳到最顶上;并行的子代理渲染成几行无法区分的 `agent 16.1s`,看不出每个在干什么、进行到什么程度。
+
+1. **滚轮→transcript 滚动**(`c6a5e52`):根因是 TUI 从未处理鼠标——原缓冲区下滚轮归宿主终端滚动条,惯性一划就飞到历史顶部,而应用帧还在底部持续重绘。方案参照 pi:启动时开 `?1000h/?1006h`(按键+SGR 坐标,不开 motion 控帧率),在 bracketed-paste 输入变换里**先于 Ink 的 keypress 解析器**剥离鼠标序列(否则会被拆成垃圾按键灌进 composer),滚轮映射到既有 transcript/details 滚动路径(每次 3 行);粘帖帧内的字节一律放行(粘帖内容里的转义串是数据),拆分跨 chunk 的序列用 40ms 兜底透传 + flush() 收尾,退出时 RESTORE_NATIVE_MOUSE 还原。代价:原生选择改 Shift+拖选(pi 同款取舍),已写进快捷键帮助。顺带修掉 handleKey 里"raw stream listener 拥有滚轮"这条从未为真的陈年注释。
+2. **子代理可见性**(`3e38a58`):两处根因——`toolArgumentSummary` 只认 path/command 类参数,agent 工具的 `description/subagent_type` 全都漏掉;后台任务被折叠成一行 `[N subagents running]`。现在 agent/team_spawn 工具行显示 `role · 任务描述`(并行的几行一眼可分);输入框下方(Claude Code 风格)新增逐任务面板:每个后台子代理一行,状态图标(⠋/…/✓/✗)+ 角色·任务标签 + 时间口径(running=已用,finished=总耗时),刚结束的任务停留 60 秒,超过 6 行折叠成 `+N more (ctrl+t details)`;working line 撤掉重复的子代理汇总、只保留 shell 作业徽标。视口行数计算与 IME 光标停靠都补上了新增行数。
+
+诚实边界:子代理的"进度"只有状态+时间,runner 没有暴露步骤级/Token 级进度事件,面板不做假进度条。
+
 ### 仍未覆盖（下一阶段候选）
 
 - microcompact / 压缩阈值按真实长会话调参（当前是公式默认值）；
 - shell 作业的 `/tasks` 专属面板（持久化恢复倾向不做，与"进程即生命周期"的设计冲突）；
 - 截断保护的汇聚上限与 `maxSteps` 耗尽路径；
 - web_search 的更多后端与站点级折叠;
-- TUI 深层:窄终端模式与 16 色降级、每帧全量行数组重建(as-is 阶段)、按需虚拟化、图片粘贴(需多模态)、Vim 模态、滚轮(需牺牲原生选择复制,建议默认关)、overlay 体系抽象化(11 种弹窗散落 3 个 handler + 4 处同步修改)。
+- 子代理的步骤级进度事件(runner → TUI 的 current-tool 通报,面板可升级成真进度);
+- TUI 深层:窄终端模式与 16 色降级、每帧全量行数组重建(as-is 阶段)、按需虚拟化、图片粘贴(需多模态)、Vim 模态、overlay 体系抽象化(11 种弹窗散落 3 个 handler + 4 处同步修改)。

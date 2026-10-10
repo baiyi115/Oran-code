@@ -1,5 +1,6 @@
 import type { TuiBackgroundTask, TuiState } from "./types.js";
 import { toolDisplayName } from "./tool-names.js";
+import { truncateVisible } from "./text-width.js";
 
 /** Braille spinner frames, matching common CLI working indicators (pi/Ink loaders). */
 export const WORKING_SPINNER_FRAMES = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"] as const;
@@ -27,55 +28,84 @@ export function isSessionBusy(state: TuiState): boolean {
   });
 }
 
+/** 子代理任务面板的颜色语义(渲染层映射到 COLORS)。 */
+export type TaskPanelTone = "running" | "queued" | "done" | "failed";
+
+export interface TaskPanelRow {
+  readonly text: string;
+  readonly tone: TaskPanelTone;
+}
+
+/** 面板渲染行数上限;更老的任务折叠成 "+N more"。 */
+export const TASK_PANEL_MAX_ROWS = 6;
+/** 刚结束的子代理在面板里停留的窗口(看得见"刚完成/刚失败"的那一下)。 */
+export const TASK_PANEL_RECENT_DONE_MS = 60_000;
+
 /**
- * Formats running background subagent tasks into a concise label.
- * Single: "[Subagent: explore] Searching codebase... 8.4s"
- * Multiple: "[2 subagents running] explore (18.1s), tester (5.2s)"
+ * 输入框下方的逐任务子代理面板(Claude Code 风格):每个后台子代理一行,
+ * 带状态图标、角色·任务描述与时间口径(running=已用,finished=总耗时)。
+ * shell 作业不在这里,仍由状态行的 jobs 徽标承担。
  */
-export function formatBackgroundTasksIndicator(
+export function subagentTaskLines(
   tasks: readonly TuiBackgroundTask[],
+  tick = 0,
   now = Date.now(),
-): string | undefined {
+  width = 80,
+): TaskPanelRow[] {
   const subagents = tasks.filter((task) => task.kind !== "job");
-  const running = subagents.filter((task) => task.status === "running");
-  const queued = subagents.filter((task) => task.status === "queued");
-  if (running.length === 0 && queued.length === 0) return undefined;
-
-  if (running.length === 1 && queued.length === 0) {
-    const task = running[0]!;
-    const name =
-      task.definitionName ||
-      (task.origin?.kind === "definition" ? task.origin.name : undefined) ||
-      task.name ||
-      "agent";
-    const description = task.name && task.name !== name ? task.name : undefined;
-    const startTime = Date.parse(task.startedAt);
-    const elapsed = Number.isFinite(startTime) ? formatCompactDuration(Math.max(0, now - startTime)) : undefined;
-    const parts = [`[Subagent: ${name}]`];
-    if (description) parts.push(description);
-    if (elapsed) parts.push(elapsed);
-    return parts.join(" ");
-  }
-
-  if (running.length === 0 && queued.length > 0) {
-    return queued.length === 1
-      ? `[1 subagent queued: ${queued[0]!.definitionName || queued[0]!.name || "agent"}]`
-      : `[${queued.length} subagents queued]`;
-  }
-
-  const taskSummaries = running.map((task) => {
-    const name =
-      task.definitionName ||
-      (task.origin?.kind === "definition" ? task.origin.name : undefined) ||
-      task.name ||
-      "agent";
-    const startTime = Date.parse(task.startedAt);
-    const elapsed = Number.isFinite(startTime) ? formatCompactDuration(Math.max(0, now - startTime)) : undefined;
-    return elapsed ? `${name} (${elapsed})` : name;
+  if (subagents.length === 0) return [];
+  const isActive = (task: TuiBackgroundTask): boolean => task.status === "running" || task.status === "queued";
+  const active = subagents.filter(isActive);
+  const finished = subagents.filter((task) => {
+    if (isActive(task)) return false;
+    const endedAt = task.endedAt ? Date.parse(task.endedAt) : Number.NaN;
+    return Number.isFinite(endedAt) && now - endedAt <= TASK_PANEL_RECENT_DONE_MS;
   });
+  const ordered = [...active, ...finished];
+  if (ordered.length === 0) return [];
 
-  const queuedSuffix = queued.length > 0 ? ` (+${queued.length} queued)` : "";
-  return `[${running.length} subagents running${queuedSuffix}] ${taskSummaries.join(", ")}`;
+  // "+N more" 折叠行本身要占一行,所以被藏起的任务数按 MAX-1 算。
+  const hidden =
+    ordered.length > TASK_PANEL_MAX_ROWS ? ordered.length - (TASK_PANEL_MAX_ROWS - 1) : 0;
+  const visible = hidden > 0 ? ordered.slice(0, TASK_PANEL_MAX_ROWS - 1) : ordered;
+  const rows = visible.map((task) => buildTaskPanelRow(task, tick, now, width));
+  if (hidden > 0) rows.push({ text: `… +${hidden} more (ctrl+t details)`, tone: "queued" });
+  return rows;
+}
+
+function buildTaskPanelRow(task: TuiBackgroundTask, tick: number, now: number, width: number): TaskPanelRow {
+  const role =
+    task.definitionName ||
+    (task.origin?.kind === "definition" ? task.origin.name : task.origin?.kind) ||
+    undefined;
+  const label = role && role !== task.name ? `${role} · ${task.name}` : task.name || "agent";
+  const startedAt = Date.parse(task.startedAt);
+  const endedAt = task.endedAt ? Date.parse(task.endedAt) : Number.NaN;
+
+  let icon: string;
+  let timing: string;
+  let tone: TaskPanelTone;
+  if (task.status === "running") {
+    icon = spinnerFrame(tick);
+    tone = "running";
+    timing = Number.isFinite(startedAt) ? formatCompactDuration(Math.max(0, now - startedAt)) : "running";
+  } else if (task.status === "queued") {
+    icon = "…";
+    tone = "queued";
+    timing = "queued";
+  } else {
+    icon = task.status === "completed" ? "✓" : "✗";
+    tone = task.status === "completed" ? "done" : "failed";
+    const total = Number.isFinite(startedAt) && Number.isFinite(endedAt)
+      ? ` ${formatCompactDuration(Math.max(0, endedAt - startedAt))}`
+      : "";
+    timing = `${task.status}${total}`;
+  }
+  // 计时尾缀优先保活:长描述只截断标签部分。
+  const suffix = ` · ${timing}`;
+  const prefix = `${icon} `;
+  const budget = Math.max(8, width - prefix.length - suffix.length);
+  return { text: `${prefix}${truncateVisible(label.replace(/\s+/g, " ").trim(), budget)}${suffix}`, tone };
 }
 
 /** 后台 shell 作业(dev server / 构建)的活体指示:与子代理分开计数与措辞。 */
@@ -98,18 +128,13 @@ export function formatBackgroundJobsIndicator(
 
 /**
  * Live "working" line rendered above the composer while a task is active.
- * Example: "⠋ Working... 2.4s" or "⠋ Running Bash 1.1s" or "⠋ [Subagent: explore] 8.4s".
+ * Example: "⠋ Working... 2.4s" or "⠋ Running Bash 1.1s".子代理进度归
+ * 输入框下方的逐任务面板,这里只保留 shell 作业徽标。
  */
 export function workingIndicatorLine(state: TuiState, tick: number, now = Date.now()): string | undefined {
   const frame = spinnerFrame(tick);
   const bgTasks = state.session.backgroundTasks ?? [];
-  const indicator = [
-    formatBackgroundTasksIndicator(bgTasks, now),
-    formatBackgroundJobsIndicator(bgTasks, now),
-  ]
-    .filter(Boolean)
-    .join(" · ");
-  const bgIndicator = indicator || undefined;
+  const bgIndicator = formatBackgroundJobsIndicator(bgTasks, now);
 
   if (!isSessionBusy(state)) {
     if (bgIndicator) {
