@@ -53,6 +53,16 @@ const SUMMARY_REJECTED_RESPONSE_CHARS = 2_000;
 const SUMMARY_ATTEMPTS = CONTEXT_LIMITS.summaryAttempts;
 
 /**
+ * Appended when the last summarization attempt was still cut off by the output
+ * limit: the summary the model reads has to say it is partial, because what
+ * follows it in the conversation is exactly what the summary was supposed to
+ * carry.
+ */
+const TRUNCATED_SUMMARY_NOTE =
+  "(This summary was cut off by the output limit and is incomplete — later sections may be missing. " +
+  "Re-read the files it mentions before relying on it.)";
+
+/**
  * Host capabilities the compaction flow borrows.
  * Provided by ContextManager, which owns the cross-turn state (ledger, anchor, recent files,
  * automatic-failure counter).
@@ -304,8 +314,28 @@ async function requestSummary(
     }
     try {
       const response = await provider.complete(request, undefined, signal ? { signal } : undefined);
+      // A reply cut off by the output limit holds only part of the nine sections,
+      // and the recovery path accepts whatever follows an opening <summary> tag —
+      // so a half-written hand-off was stored as complete, with no Current Work,
+      // Pending Tasks or next step, while the coverage metadata said the whole
+      // conversation was covered. Ask again; if the last attempt is still
+      // truncated, keep it but say so in the summary the model reads.
+      const truncated = response.truncated === true;
+      if (truncated && attempt < SUMMARY_ATTEMPTS - 1) {
+        rejected = {
+          text: response.text,
+          reason:
+            "the response was cut off by the output limit, so the summary is incomplete: " +
+            "emit the nine sections and nothing else, keeping them short",
+        };
+        continue;
+      }
       const summary = extractSummary(response.text, coveredMessages, carryover);
-      return { summary, coveredMessages, droppedGroups };
+      return {
+        summary: truncated ? `${summary}\n\n${TRUNCATED_SUMMARY_NOTE}` : summary,
+        coveredMessages,
+        droppedGroups,
+      };
     } catch (error) {
       if (isPromptTooLongError(error)) {
         const dropped = dropOldestGroups(groups, dropRound);
@@ -545,16 +575,46 @@ function extractSummary(text: string, coveredMessages: readonly Message[], carry
       })
       .join("\n\n") || "(no user messages in the covered conversation)";
 
-  // If section 6 (User Messages) is injected (missing from model output), splice in
-  // verbatim user messages ourselves. If it exists, replace its body with verbatim copies.
+  // Section 6 (User Messages): the verbatim messages go in whether or not the
+  // model wrote the section itself.
   const sectionSix = headings[5]!;
   const sectionSeven = headings[6]!;
   const sectionSevenStart = sectionSeven.injected ? summaryText.length : sectionSeven.index;
-  if (sectionSix.injected) {
-    const insertPoint = sectionSevenStart;
-    return `${summaryText.slice(0, insertPoint).trimEnd()}\n\n### 6. User Messages\n\n${userMessages}\n\n${summaryText.slice(sectionSevenStart).trimStart()}`.trim();
-  }
-  return `${summaryText.slice(0, sectionSix.end)}\n\n${userMessages}\n\n${summaryText.slice(sectionSevenStart)}`.trim();
+  const head = sectionSix.injected
+    ? `${summaryText.slice(0, sectionSevenStart).trimEnd()}\n\n### 6. User Messages\n\n${userMessages}`
+    : `${summaryText.slice(0, sectionSix.end)}\n\n${userMessages}`;
+
+  /**
+   * Everything the model wrote after the user-message section, kept verbatim.
+   *
+   * This used to be `summaryText.slice(sectionSevenStart)`, which returned an
+   * empty string whenever section 7's heading was not recognised: headings are
+   * matched as `#{1,6}`, and a model decorating them differently (`**7. Pending
+   * Tasks**`) lost Pending Tasks, Current Work and Possible Next Step — the parts
+   * a continuation needs — while the compaction reported success. When the
+   * heading is not recognised the tail now starts right after section 6 instead,
+   * so the content survives (it repeats the original section 6 body, which the
+   * verbatim messages above it supersede).
+   */
+  const tailStart = sectionSeven.injected
+    ? sectionSix.injected
+      ? summaryText.length
+      : sectionSix.end
+    : sectionSeven.index;
+  const tail = summaryText.slice(tailStart).trim();
+  // A tail that never mentions a section 7, 8 or 9 is very likely the model's
+  // section-6 body and nothing else, so the missing sections are named rather than
+  // leaving a hand-off that looks complete. When they were written with an
+  // unrecognised decoration the ordinal is still there and no marker is added.
+  const tailCarriesLaterSections = /\b[789]\s*[.)、]/.test(tail);
+  const missing = tailCarriesLaterSections
+    ? []
+    : headings.slice(6).map((section) => `${section.heading}\n\n(this section was not recognised in the reply)`);
+
+  return [head, tail, ...missing]
+    .filter((part) => part.trim().length > 0)
+    .join("\n\n")
+    .trim();
 }
 
 function recoverSummaryWithoutTags(text: string): string | undefined {

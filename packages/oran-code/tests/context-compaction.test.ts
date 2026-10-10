@@ -59,6 +59,26 @@ function turn(index: number): Message[] {
   ];
 }
 
+/** Compact six turns and return the summary text the model would read. */
+async function compactWith(provider: ModelProvider): Promise<string> {
+  const workspace = await mkdtemp(join(tmpdir(), "oran-compaction-"));
+  try {
+    const messages: Message[] = [];
+    for (let index = 0; index < 6; index += 1) messages.push(...turn(index));
+    const result = await new ContextManager({ workspace, conversation: [] }).compact({
+      messages,
+      provider,
+      tools: [],
+      contextWindow: 200_000,
+      reason: "manual",
+    });
+    const summary = result.messages.find((message) => message.metadata?.promptBlock === "context-summary");
+    return String(summary?.content ?? "");
+  } finally {
+    await rm(workspace, { recursive: true, force: true });
+  }
+}
+
 describe("compaction trigger", () => {
   it("triggers at 80% of a large window, before the hard budget threshold", async () => {
     const workspace = await mkdtemp(join(tmpdir(), "oran-compaction-"));
@@ -113,6 +133,166 @@ describe("recent raw retention", () => {
     expect(fixed.length).toBeLessThan(messages.length);
     expect(scaled.length).toBeGreaterThan(fixed.length);
     expect(scaled.length).toBe(messages.length);
+  });
+});
+
+describe("summary tail retention", () => {
+  /** A summary whose later headings are decorated differently from the earlier ones. */
+  class MixedHeadingProvider implements ModelProvider {
+    async complete(): Promise<ModelResponse> {
+      return {
+        text: [
+          "<summary>",
+          "### 1. Main Requests and Intent",
+          "Do the thing.",
+          "### 2. Key Technical Concepts",
+          "Compaction.",
+          "### 3. Files and Code Sections",
+          "src/example.ts",
+          "### 4. Errors and Fixes",
+          "None.",
+          "### 5. Problem-Solving Progress",
+          "In progress.",
+          "### 6. User Messages",
+          "This body is replaced with the verbatim messages.",
+          "**7. Pending Tasks**",
+          "Finish the thing.",
+          "**8. Current Work**",
+          "Halfway through the change.",
+          "**9. Possible Next Step**",
+          "Run the test suite.",
+          "</summary>",
+        ].join("\n"),
+        toolCalls: [],
+        raw: {},
+        usage: {},
+        finishReason: "stop",
+        streamed: false,
+      };
+    }
+
+    async *streamResponse(): AsyncGenerator<ModelStreamChunk> {
+      throw new Error("streamResponse is not used by compaction");
+    }
+  }
+
+  /** A summary that simply stops after the user-message section. */
+  class TruncatedTailProvider implements ModelProvider {
+    async complete(): Promise<ModelResponse> {
+      return {
+        text: [
+          "<summary>",
+          "### 1. Main Requests and Intent",
+          "Do the thing.",
+          "### 2. Key Technical Concepts",
+          "Compaction.",
+          "### 3. Files and Code Sections",
+          "src/example.ts",
+          "### 4. Errors and Fixes",
+          "None.",
+          "### 5. Problem-Solving Progress",
+          "In progress.",
+          "### 6. User Messages",
+          "This body is replaced with the verbatim messages.",
+          "</summary>",
+        ].join("\n"),
+        toolCalls: [],
+        raw: {},
+        usage: {},
+        finishReason: "stop",
+        streamed: false,
+      };
+    }
+
+    async *streamResponse(): AsyncGenerator<ModelStreamChunk> {
+      throw new Error("streamResponse is not used by compaction");
+    }
+  }
+
+  it("keeps the sections whose headings were not written with # marks", async () => {
+    // Headings are recognised as #{1,6}, so a bold "**7. Pending Tasks**" was not a
+    // heading — and the tail was taken from that (unmatched) heading's position,
+    // which is the end of the text: sections 7-9 disappeared while the compaction
+    // reported success, taking the plan state and the next step with them.
+    const summary = await compactWith(new MixedHeadingProvider());
+    expect(summary).toContain("Finish the thing.");
+    expect(summary).toContain("Halfway through the change.");
+    expect(summary).toContain("Run the test suite.");
+    expect(summary).toContain("request 0");
+  });
+
+  it("says so when the reply stops before those sections", async () => {
+    const summary = await compactWith(new TruncatedTailProvider());
+    expect(summary).toContain("Pending Tasks");
+    expect(summary).toContain("this section was not recognised in the reply");
+  });
+});
+
+describe("truncated summary replies", () => {
+  const HEAD = [
+    "### 1. Main Requests and Intent",
+    "Do the thing.",
+    "### 2. Key Technical Concepts",
+    "Context compaction and recovery.",
+    "### 3. Files and Code Sections",
+    "src/example.ts",
+    "### 4. Errors and Fixes",
+    "None unresolved.",
+    "### 5. Problem-Solving Progress",
+    "The change is in progress.",
+    "### 6. User Messages",
+    "This body is replaced with the verbatim messages.",
+  ];
+  const TAIL = [
+    "### 7. Pending Tasks",
+    "Finish the thing.",
+    "### 8. Current Work",
+    "Halfway through the change.",
+    "### 9. Possible Next Step",
+    "Run the test suite.",
+  ];
+
+  /** Replies that report being cut off by the output limit. */
+  class TruncatingProvider implements ModelProvider {
+    calls = 0;
+
+    constructor(private readonly truncateThrough: number) {}
+
+    async complete(): Promise<ModelResponse> {
+      this.calls += 1;
+      const truncated = this.calls <= this.truncateThrough;
+      return {
+        text: ["<summary>", ...(truncated ? HEAD : [...HEAD, ...TAIL]), "</summary>"].join("\n"),
+        truncated,
+        toolCalls: [],
+        raw: {},
+        usage: {},
+        finishReason: truncated ? "length" : "stop",
+        streamed: false,
+      };
+    }
+
+    async *streamResponse(): AsyncGenerator<ModelStreamChunk> {
+      throw new Error("streamResponse is not used by compaction");
+    }
+  }
+
+  it("asks again when the reply was cut off, and keeps the complete one", async () => {
+    // A cut-off reply holds only part of the nine sections, and the recovery path
+    // accepts whatever follows an opening <summary> tag: the half-written hand-off
+    // used to be stored as complete.
+    const provider = new TruncatingProvider(1);
+    const summary = await compactWith(provider);
+    expect(provider.calls).toBe(2);
+    expect(summary).not.toContain("cut off by the output limit");
+    expect(summary).toContain("Run the test suite.");
+  });
+
+  it("says the summary is partial when every reply was cut off", async () => {
+    const provider = new TruncatingProvider(Number.POSITIVE_INFINITY);
+    const summary = await compactWith(provider);
+    expect(provider.calls).toBeGreaterThan(1);
+    expect(summary).toContain("cut off by the output limit");
   });
 });
 
