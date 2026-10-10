@@ -69,4 +69,18 @@ describe("code_impact tool surface", () => {
     // filtered test set while direct came from the unfiltered full set, printing "1 total, 2 direct".
     expect(result.output).toContain(": 1 total, 1 direct");
   });
+
+  it("names file-scope callers, including calls to a function bound to a const", async () => {
+    const workspace = await makeWorkspace({
+      "src/lib.ts": "export function plain() {}\nexport const arrow = () => {};\n",
+      "src/main.ts": 'import { plain, arrow } from "./lib";\nplain();\narrow();\n',
+    });
+    const result = await registryFor(workspace).invoke(call("code_impact", { path: "src/lib.ts", mode: "callers" }));
+    expect(result.ok).toBe(true);
+    // Before this, file-scope call sites produced no edge at all and the const
+    // arrow produced no symbol, so callers mode answered zero for both.
+    expect(result.output).toContain("src/main.ts#<module> -> src/lib.ts#plain");
+    expect(result.output).toContain("src/main.ts#<module> -> src/lib.ts#arrow");
+    expect(result.output).toContain(": 2 call site(s)");
+  });
 });

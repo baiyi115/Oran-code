@@ -104,9 +104,13 @@ export async function updateGraph(
       contribution = { ...analyzed, incomplete: analyzed.incomplete || read.failed };
     }
     const { symbols: fileSymbols } = contribution;
-    if (fileSymbols && fileSymbols.symbols.length > 0) {
-      freshSymbols.push(...fileSymbols.symbols);
-      defsByNameByFile.set(path, fileSymbols.defsByName);
+    // Split rather than skip: a file with no definitions can still hold call
+    // sites (a script, module init) and the bindings they resolve through.
+    if (fileSymbols) {
+      if (fileSymbols.symbols.length > 0) {
+        freshSymbols.push(...fileSymbols.symbols);
+        defsByNameByFile.set(path, fileSymbols.defsByName);
+      }
       if (fileSymbols.bindings.size > 0) bindingsByFile.set(path, fileSymbols.bindings);
       pendingCalls.push(...fileSymbols.calls);
       pendingInherits.push(...fileSymbols.inherits);

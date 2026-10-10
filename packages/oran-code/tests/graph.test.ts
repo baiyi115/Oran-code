@@ -35,6 +35,10 @@ beforeAll(async () => {
   );
   await write("pkg/c.ts", 'import "./a";\nexport const leaf = 1;');
   await write("pkg/d.ts", "export const d = 2;");
+  // A function bound to a variable is a symbol, and a call site at file scope
+  // belongs to the module. Both used to disappear without a word.
+  await write("pkg/e.ts", "export const arrow = () => 1;\n");
+  await write("pkg/f.ts", 'import { arrow } from "./e";\narrow();\n');
   await write("src_py/__init__.py", "");
   await write(
     "src_py/m.py",
@@ -111,6 +115,15 @@ describe("code impact graph", () => {
     });
     // Inheritance edge across files.
     expect(index.extendsEdges).toContainEqual({ from: "pkg/a.ts#Child", to: "pkg/b.ts#Base" });
+    // A function-valued variable is a symbol, so calls to it resolve.
+    expect(index.symbols?.find((symbol) => symbol.id === "pkg/e.ts#arrow")).toMatchObject({ kind: "function" });
+    // File-scope call sites are attributed to the module; the const arrow one
+    // needs both halves of the fix (a symbol for the callee, an owner for the
+    // caller) to exist at all.
+    expect(index.calls).toContainEqual({ from: "pkg/a.ts#<module>", to: "pkg/b.ts#helper", provenance: "resolved" });
+    expect(index.calls).toContainEqual({ from: "pkg/f.ts#<module>", to: "pkg/e.ts#arrow", provenance: "resolved" });
+    // Nothing invents a symbol for the module owner.
+    expect(index.symbols?.some((symbol) => symbol.id.includes("<module>"))).toBe(false);
   });
 
   it("computes dependents with cycle-safe BFS", () => {
@@ -138,6 +151,13 @@ describe("code impact graph", () => {
     // Incremental rebuild preserves untouched files' edges.
     expect(third.index.imports["pkg/b.ts"]).toEqual(["pkg/c.ts"]);
     expect(third.index.calls?.some((edge) => edge.from === "pkg/b.ts#runner")).toBe(true);
+    // The re-extracted file's module-level edge is rebuilt, not lost: the module
+    // owner has to survive the path that replaces a changed file's contribution.
+    expect(third.index.calls).toContainEqual({
+      from: "pkg/a.ts#<module>",
+      to: "pkg/b.ts#helper",
+      provenance: "resolved",
+    });
 
     // Deleting the cache file heals silently on the next call.
     const { rm: remove } = await import("node:fs/promises");

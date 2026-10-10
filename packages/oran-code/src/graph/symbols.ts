@@ -25,7 +25,10 @@ export interface DefSpan {
 /** A call site whose target is only known once every file's definitions are in. */
 export interface PendingCall {
   file: string;
-  /** Symbol id of the innermost definition containing the call. */
+  /**
+   * Symbol id of the innermost definition containing the call, or the module id
+   * when the call sits at file scope (see moduleSymbolId).
+   */
   from: string;
   callee: string;
 }
@@ -54,6 +57,17 @@ function contains(span: DefSpan, row: number, column: number): boolean {
   const afterStart = span.startRow < row || (span.startRow === row && span.startColumn <= column);
   const beforeEnd = span.endRow > row || (span.endRow === row && span.endColumn >= column);
   return afterStart && beforeEnd;
+}
+
+/**
+ * Symbol id for a call site that sits outside every definition: file-scope code
+ * belongs to the module. It is not a definition and never enters
+ * `index.symbols` — an identifier cannot contain `<`, so it cannot collide with
+ * a declared name — but `from` only needs to be stable and file-scoped for the
+ * edge to be reported and for the incremental rebuild to keep it.
+ */
+export function moduleSymbolId(file: string): string {
+  return `${file}#<module>`;
 }
 
 /** Innermost definition containing the position, if any. */
@@ -117,9 +131,11 @@ export function readFileSymbols(
   for (const match of analysis.queries.calls?.matches ?? []) {
     const callee = capture(match, "callee");
     if (!callee) continue;
+    // A call outside every definition belongs to the module. Requiring an
+    // enclosing definition dropped those silently, and they are not rare: module
+    // init, a script's top level, python's `if __name__ == "__main__": main()`.
     const owner = innermostOwner(spans, callee.row, callee.column);
-    if (!owner) continue;
-    calls.push({ file, from: owner.node.id, callee: callee.text });
+    calls.push({ file, from: owner?.node.id ?? moduleSymbolId(file), callee: callee.text });
   }
 
   const inherits: PendingInherit[] = [];

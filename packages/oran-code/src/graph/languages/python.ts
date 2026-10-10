@@ -75,8 +75,12 @@ export function registerPython(): void {
       defs: [
         "(function_definition name: (identifier) @name) @def",
         "(class_definition name: (identifier) @name) @def",
+        // Same rule as the TypeScript family: a function bound to a name is a
+        // symbol, so `handler = lambda ...` can be a call target. Rare next to
+        // `def`, but its absence was silent, which is the part that matters.
+        "(assignment left: (identifier) @name right: (lambda)) @def",
       ].join("\n"),
-      defKinds: ["function", "class"],
+      defKinds: ["function", "class", "function"],
       calls: "(call function: (identifier) @callee)",
       bindings: [
         "(import_from_statement module_name: (dotted_name) @src name: (dotted_name) @bind)",

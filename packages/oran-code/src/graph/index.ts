@@ -229,17 +229,23 @@ export async function buildGraph(
     if (contribution.imports.length > 0) index.imports[contribution.path] = contribution.imports;
     if (contribution.unresolved.length > 0) index.unresolved[contribution.path] = contribution.unresolved;
     const fileSymbols = contribution.symbols;
-    if (!fileSymbols || fileSymbols.symbols.length === 0) continue;
-    symbols.push(...fileSymbols.symbols);
-    defsByNameByFile.set(contribution.path, fileSymbols.defsByName);
+    if (!fileSymbols) continue;
+    // A file with no definitions still has calls (a script, module init) and
+    // bindings (the imports those calls resolve through), so the contribution is
+    // split rather than skipped: dropping it whole is how file-scope call sites
+    // went missing.
+    if (fileSymbols.symbols.length > 0) {
+      symbols.push(...fileSymbols.symbols);
+      defsByNameByFile.set(contribution.path, fileSymbols.defsByName);
+      for (const node of fileSymbols.symbols) {
+        const bucket = byName.get(node.name);
+        if (bucket) bucket.push(node);
+        else byName.set(node.name, [node]);
+      }
+    }
     if (fileSymbols.bindings.size > 0) bindingsByFile.set(contribution.path, fileSymbols.bindings);
     pendingCalls.push(...fileSymbols.calls);
     pendingInherits.push(...fileSymbols.inherits);
-    for (const node of fileSymbols.symbols) {
-      const bucket = byName.get(node.name);
-      if (bucket) bucket.push(node);
-      else byName.set(node.name, [node]);
-    }
   }
 
   if (symbols.length > 0) {

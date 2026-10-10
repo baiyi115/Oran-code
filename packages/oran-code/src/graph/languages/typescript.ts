@@ -64,8 +64,20 @@ const SYMBOL_QUERIES = {
     "(method_definition name: (property_identifier) @name) @def",
     "(interface_declaration name: (type_identifier) @name) @def",
     "(type_alias_declaration name: (type_identifier) @name) @def",
+    // A function bound to a variable is a symbol like any other. Without this,
+    // `const handler = () => {}` had no symbol, so calls to it resolved to
+    // nothing and `code_impact --mode callers` reported no callers, silently.
+    // Only function-valued declarators are taken, so `const limit = 10` does not
+    // enter the symbol table.
+    "(variable_declarator name: (identifier) @name value: [(arrow_function) (function_expression)]) @def",
+    // A class field holding an arrow function (`class A { run = () => {} }`) is
+    // still not a symbol, and that is deliberate: the node is
+    // public_field_definition in the typescript and tsx grammars but
+    // field_definition in the javascript one, and this query is shared by all
+    // three — naming either one fails the whole query for the other language.
+    // Covering those needs per-grammar def queries, not another line here.
   ].join("\n"),
-  defKinds: ["function", "class", "method", "interface", "type"],
+  defKinds: ["function", "class", "method", "interface", "type", "function"],
   calls: "(call_expression function: (identifier) @callee)",
   bindings: [
     // Child pattern before the source field: web-tree-sitter 0.25's query

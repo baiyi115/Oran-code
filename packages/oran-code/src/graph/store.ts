@@ -23,7 +23,13 @@ import type { GraphIndex } from "./languages/registry.js";
  * the query, and a missing or corrupt cache file simply triggers a rebuild.
  */
 
-const GRAPH_STATE_VERSION = 3;
+/**
+ * Bumped when the index a build produces changes for an unchanged tree: the
+ * fingerprint above cannot see that, so an older index would keep being served.
+ * 4: function-valued variables are symbols, and file-scope calls are attributed
+ * to their module (before this, both were missing and now show up as new edges).
+ */
+const GRAPH_STATE_VERSION = 4;
 
 interface PersistedGraph {
   version: typeof GRAPH_STATE_VERSION;
