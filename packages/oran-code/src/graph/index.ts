@@ -248,8 +248,8 @@ export async function buildGraph(
     index.calls = resolveCalls(pendingCalls, scope, new Set());
     index.extendsEdges = resolveInherits(pendingInherits, scope);
   }
-  // A file that could not be parsed is still in `files`; say so, or its missing
-  // edges read as "nothing imports it".
+  // A file whose analysis came back incomplete is still in `files`; say so, or
+  // its missing edges read as "nothing imports it".
   if (unparsed.length > 0) index.unparsed = unparsed.sort();
   return index;
 }

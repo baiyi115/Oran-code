@@ -187,11 +187,12 @@ function disclosure(index: GraphIndex, target: string, handle: GraphHandle): str
   const lines = [
     `index: ${index.files.length} files (${distribution || "no languages"}) · ${handle.cached ? "cache hit" : handle.incremental ? "incremental rebuild" : "rebuilt"} · built ${index.builtAt}`,
   ];
-  // A file that failed to parse is missing from every answer below, so it has to
-  // be stated rather than left to read as "nothing depends on it".
+  // A file whose analysis came back incomplete is missing from every answer
+  // below, so it has to be stated rather than left to read as "nothing depends
+  // on it".
   if (index.unparsed?.length) {
     lines.push(
-      `WARNING: ${index.unparsed.length} file(s) could not be parsed and contribute no edges: ` +
+      `WARNING: ${index.unparsed.length} file(s) could not be fully analyzed and contribute no edges: ` +
         `${index.unparsed.slice(0, 3).join(", ")}${index.unparsed.length > 3 ? ", …" : ""}`,
     );
   }

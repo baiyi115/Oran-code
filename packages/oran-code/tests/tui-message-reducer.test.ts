@@ -317,3 +317,20 @@ describe("tool metadata badges", () => {
     expect(tool?.kind === "tool" ? tool.badges : undefined).toBeUndefined();
   });
 });
+
+describe("tool progress notes", () => {
+  it("attaches a note to the row of the call it belongs to, and drops it with the result", () => {
+    const state = createTuiState("D:\\workspace", "demo/chat");
+    const running = { ...call, id: "call-graph" };
+    reduceRuntimeEvent(state, event({ type: "tool_start", call: running, index: 0, permissionLevel: 0 }));
+    reduceRuntimeEvent(state, event({ type: "tool_progress", call: running, note: "analyzing 512/2300 files" }));
+    const tool = state.transcript.find((message) => message.kind === "tool");
+    expect(tool?.kind === "tool" ? tool.progress : undefined).toBe("analyzing 512/2300 files");
+
+    reduceRuntimeEvent(
+      state,
+      event({ type: "tool_result", call: running, index: 0, result: { ok: true, output: "12 files" } }),
+    );
+    expect(tool?.kind === "tool" ? tool.progress : undefined).toBeUndefined();
+  });
+});

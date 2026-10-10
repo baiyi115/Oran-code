@@ -60,7 +60,7 @@ export function graphSummary(index: GraphIndex): string {
   lines.push(`Unresolved specifiers: ${reasonSummary || "0"}`);
 
   if (index.unparsed?.length) {
-    lines.push(`Files that could not be parsed (missing from the graph): ${index.unparsed.length}`);
+    lines.push(`Files whose analysis was incomplete (their edges are missing): ${index.unparsed.length}`);
     for (const path of index.unparsed.slice(0, 10)) lines.push(`  ! ${path}`);
   }
   return lines.join("\n");

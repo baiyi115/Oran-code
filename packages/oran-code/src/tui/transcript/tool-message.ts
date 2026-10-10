@@ -42,7 +42,10 @@ export function renderToolMessage(message: ToolMessage, width: number, liveTick 
       : message.status === "success"
         ? ANSI.greenBold
         : ANSI.orangeBold;
-  const detail = message.summary || message.error || "";
+  // A running call has no summary yet; a progress note stands in, so a long tool
+  // (a cold code-graph build) says what it is doing instead of only how long it
+  // has been at it. The result summary takes over as soon as it lands.
+  const detail = message.summary || message.error || message.progress || "";
   const summary =
     detail && (message.status !== "success" || shouldShowSuccessSummary(detail))
       ? ` ${ANSI.gray}\u00b7 ${truncateVisible(detail.replace(/\s+/g, " ").trim(), 80)}${ANSI.reset}`

@@ -84,7 +84,8 @@ export interface GraphIndex {
   /** L2 (optional): class inheritance edges between class symbols. */
   extendsEdges?: InheritanceEdge[];
   /**
-   * Files whose analysis request failed. They are in `files` and `languages` but
+   * Files whose analysis was incomplete: the read, the request, a query or the
+   * specifier extraction failed. They are in `files` and `languages` but
    * contribute no edges, so a reader has to be told rather than left to conclude
    * that nothing imports them.
    */

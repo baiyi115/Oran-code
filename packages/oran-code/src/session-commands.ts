@@ -300,8 +300,12 @@ export class SessionCommandRouter {
       }
       case "/graph": {
         if (argument) return "Usage: /graph";
+        // A cold build over a large repository runs for tens of seconds. A slash
+        // command can only return one string, so the build reports itself through
+        // the status line and clears it again before the summary is rendered.
+        const renderer = this.ctx.renderer();
         try {
-          const handle = await ensureGraph(this.ctx.workspace);
+          const handle = await ensureGraph(this.ctx.workspace, { onProgress: (note) => renderer.status(note) });
           const how = handle.cached ? "cache hit" : handle.incremental ? "incremental rebuild" : "full rebuild";
           const scanNote = handle.scanFailures.length
             ? `\nCould not read ${handle.scanFailures.length} path(s): ${handle.scanFailures.slice(0, 3).join(", ")}`
@@ -309,6 +313,8 @@ export class SessionCommandRouter {
           return `${graphSummary(handle.index)}${scanNote}\nIndex file: ${graphIndexPath(this.ctx.workspace)} (${how})`;
         } catch (error) {
           return `Could not build the dependency graph: ${error instanceof Error ? error.message : String(error)}`;
+        } finally {
+          renderer.status("");
         }
       }
       case "/mcp": {

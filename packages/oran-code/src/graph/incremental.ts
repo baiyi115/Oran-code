@@ -89,8 +89,9 @@ export async function updateGraph(
   const pendingCalls: PendingCall[] = [];
   const pendingInherits: PendingInherit[] = [];
 
-  // Files that could not be parsed stay in the index, so the set has to survive
-  // the rebuild: entries for re-extracted files are replaced by this run's result.
+  // Files whose analysis was incomplete stay in the index, so the set has to
+  // survive the rebuild: entries for re-extracted files are replaced by this
+  // run's result.
   const unparsed = new Set((previous.unparsed ?? []).filter((path) => !touched(path)));
 
   for (const path of reextracted) {

@@ -273,6 +273,19 @@ describe("running tool elapsed time and badges", () => {
     );
     expect(rows.join("\n")).toContain("explore · 审计仓库的错误分类逻辑");
   });
+
+  it("shows a progress note while the call runs, and the summary once it lands", () => {
+    const note = "analyzing 512/2300 files";
+    const rows = renderToolMessage({ ...runningMessage(), progress: note }, 80);
+    expect(rows.join("\n")).toContain(note);
+
+    const finished = renderToolMessage(
+      { ...runningMessage(), status: "failure", durationMs: 90, summary: "12 files", progress: note },
+      80,
+    );
+    expect(finished.join("\n")).toContain("12 files");
+    expect(finished.join("\n")).not.toContain(note);
+  });
 });
 
 describe("footer permission and context chips", () => {
