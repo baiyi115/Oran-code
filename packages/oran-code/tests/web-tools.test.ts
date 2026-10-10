@@ -57,7 +57,7 @@ async function startFixtureServer(
   handler: (
     url: URL,
     request: IncomingMessage,
-  ) => { status?: number; contentType: string; body: string; headers?: Record<string, string> },
+  ) => { status?: number; contentType: string; body: string | Buffer; headers?: Record<string, string> },
   web: Record<string, unknown> = {},
 ): Promise<{ workspace: string; baseUrl: string }> {
   const server = createServer((request, response) => {
@@ -489,4 +489,76 @@ describe("web tools", () => {
       await rm(workspace, { recursive: true, force: true });
     }
   });
+});
+
+describe("web_fetch decoding", () => {
+  /** 中文 in GBK: bytes a UTF-8-only decoder destroys into replacement characters. */
+  const GBK_TEXT = Buffer.from([0xd6, 0xd0, 0xce, 0xc4]);
+  const ascii = (text: string): Buffer => Buffer.from(text, "latin1");
+
+  async function bodyOf(workspace: string, url: string): Promise<string> {
+    const result = await registryFor(workspace).invoke({
+      name: "web_fetch",
+      arguments: { url },
+      createdAt: new Date().toISOString(),
+    });
+    expect(result.ok).toBe(true);
+    return result.output;
+  }
+
+  it("decodes with the charset the response header declares", async () => {
+    const { workspace, baseUrl } = await startFixtureServer(() => ({
+      contentType: "text/html; charset=gbk",
+      body: Buffer.concat([ascii("<html><body><p>"), GBK_TEXT, ascii("</p></body></html>")]),
+    }));
+    try {
+      expect(await bodyOf(workspace, `${baseUrl}/page`)).toContain("中文");
+    } finally {
+      await rm(workspace, { recursive: true, force: true });
+    }
+  }, 30_000);
+
+  it("falls back to the document's own meta charset", async () => {
+    const { workspace, baseUrl } = await startFixtureServer(() => ({
+      contentType: "text/html",
+      body: Buffer.concat([
+        ascii('<html><head><meta charset="gbk"></head><body><p>'),
+        GBK_TEXT,
+        ascii("</p></body></html>"),
+      ]),
+    }));
+    try {
+      expect(await bodyOf(workspace, `${baseUrl}/page`)).toContain("中文");
+    } finally {
+      await rm(workspace, { recursive: true, force: true });
+    }
+  }, 30_000);
+
+  it("lets a byte-order mark outrank a wrong header, and consumes it", async () => {
+    const { workspace, baseUrl } = await startFixtureServer(() => ({
+      // The header claims GBK while the bytes are UTF-8 with a BOM: the BOM is the
+      // transport-independent statement, so it is the one to trust.
+      contentType: "text/plain; charset=gbk",
+      body: Buffer.concat([Buffer.from([0xef, 0xbb, 0xbf]), Buffer.from("你好", "utf8")]),
+    }));
+    try {
+      const body = await bodyOf(workspace, `${baseUrl}/page`);
+      expect(body).toContain("你好");
+      expect(body).not.toContain("\ufeff");
+    } finally {
+      await rm(workspace, { recursive: true, force: true });
+    }
+  }, 30_000);
+
+  it("uses UTF-8 for a charset it cannot decode rather than failing the fetch", async () => {
+    const { workspace, baseUrl } = await startFixtureServer(() => ({
+      contentType: "text/plain; charset=x-not-a-charset",
+      body: "plain ascii",
+    }));
+    try {
+      expect(await bodyOf(workspace, `${baseUrl}/page`)).toContain("plain ascii");
+    } finally {
+      await rm(workspace, { recursive: true, force: true });
+    }
+  }, 30_000);
 });

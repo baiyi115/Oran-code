@@ -390,13 +390,17 @@ async function fetchWithRedirects(url: URL, options: { allowPrivateHosts?: boole
       continue;
     }
     const contentType = response.headers["content-type"] ?? "";
-    const text = await readBoundedBody(stream, response.headers["content-encoding"] ?? "", MAX_HTML_BYTES);
+    const { bytes, truncated } = await readBoundedBody(
+      stream,
+      response.headers["content-encoding"] ?? "",
+      MAX_HTML_BYTES,
+    );
     return {
       finalUrl: current.toString(),
       contentType,
       status,
-      body: text.body,
-      truncated: text.truncated,
+      body: decodeBody(bytes, contentType),
+      truncated,
     };
   }
   throw new Error(`too many redirects (more than ${MAX_REDIRECTS})`);
@@ -414,7 +418,7 @@ async function readBoundedBody(
   stream: Readable,
   contentEncoding: string,
   maxBytes: number,
-): Promise<{ body: string; truncated: boolean }> {
+): Promise<{ bytes: Buffer; truncated: boolean }> {
   const encoding = contentEncoding.toLowerCase();
   const source = encoding.includes("gzip") || encoding.includes("deflate") ? stream.pipe(createUnzip()) : stream;
   const chunks: Buffer[] = [];
@@ -439,7 +443,48 @@ async function readBoundedBody(
     stream.destroy();
   }
   const bytes = Buffer.concat(chunks).subarray(0, maxBytes);
-  return { body: new TextDecoder("utf-8", { fatal: false }).decode(bytes), truncated };
+  return { bytes, truncated };
+}
+
+/**
+ * Decode a body with the charset it declares: a byte-order mark outranks everything, then the
+ * header's own statement, then a `<meta charset>` inside the document.
+ *
+ * Every body used to be decoded as UTF-8, so a GBK page — most of the Chinese web — reached the
+ * model as replacement characters, with the original bytes already destroyed by the time any tool
+ * could look at them again.
+ */
+function decodeBody(bytes: Buffer, contentType: string): string {
+  const charset = bomCharset(bytes) ?? headerCharset(contentType) ?? metaCharset(bytes);
+  if (charset) {
+    try {
+      return new TextDecoder(charset, { fatal: false }).decode(bytes);
+    } catch {
+      // An unrecognized label must not turn a successful fetch into a failure.
+    }
+  }
+  return new TextDecoder("utf-8", { fatal: false }).decode(bytes);
+}
+
+function bomCharset(bytes: Buffer): string | undefined {
+  if (bytes.length >= 3 && bytes[0] === 0xef && bytes[1] === 0xbb && bytes[2] === 0xbf) return "utf-8";
+  if (bytes.length >= 2 && bytes[0] === 0xff && bytes[1] === 0xfe) return "utf-16le";
+  if (bytes.length >= 2 && bytes[0] === 0xfe && bytes[1] === 0xff) return "utf-16be";
+  return undefined;
+}
+
+function headerCharset(contentType: string): string | undefined {
+  return /charset\s*=\s*"?([\w.:-]+)/i.exec(contentType)?.[1];
+}
+
+/**
+ * The document's own declaration, prescanned in the first kilobyte (the same window HTML5 looks
+ * at). Reading the head as latin1 is safe: the declaration is ASCII in every encoding it can name,
+ * and a document in an encoding where it is not (UTF-16) carries a byte-order mark instead.
+ */
+function metaCharset(bytes: Buffer): string | undefined {
+  const head = bytes.subarray(0, 1024).toString("latin1");
+  return /<meta[^>]+charset\s*=\s*["']?\s*([\w.:-]+)/i.exec(head)?.[1];
 }
 
 function isHtml(contentType: string): boolean {
