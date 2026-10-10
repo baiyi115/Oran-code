@@ -1,8 +1,9 @@
-import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, rm, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { join, relative } from "node:path";
 import { describe, expect, it } from "vitest";
 import { atomicWriteFile, formatPreservingTail, registerBuiltinTools, ToolRegistry } from "../src/tools.js";
+import { walkFiles } from "../src/tools/glob.js";
 
 describe("builtin tools", () => {
   it("does not run a workspace-supplied outline CLI", async () => {
@@ -220,6 +221,56 @@ describe("builtin tools", () => {
     expect(truncated).toContain("HEADER_START");
     expect(truncated).toContain("TAIL_END");
     expect(truncated).toContain("truncated");
+  });
+});
+
+describe("file walking", () => {
+  /** A directory link: a junction where that is what works (Windows, no privileges), a symlink otherwise. */
+  async function linkDirectory(target: string, path: string): Promise<boolean> {
+    return symlink(target, path, "junction")
+      .then(() => true)
+      .catch(() =>
+        symlink(target, path, "dir")
+          .then(() => true)
+          .catch(() => false),
+      );
+  }
+
+  it("follows links inside the walk root, once, and not the ones that leave it", async () => {
+    const workspace = await mkdtemp(join(tmpdir(), "liteagent-walk-"));
+    const outside = await mkdtemp(join(tmpdir(), "liteagent-outside-"));
+    try {
+      await mkdir(join(workspace, "src"), { recursive: true });
+      await writeFile(join(workspace, "src", "a.ts"), "export const a = 1;\n", "utf8");
+      await writeFile(join(outside, "secret.ts"), "export const secret = 1;\n", "utf8");
+
+      if (!(await linkDirectory(join(workspace, "src"), join(workspace, "linked")))) return;
+      const fileLink = await symlink(join(workspace, "src", "a.ts"), join(workspace, "alias.ts"), "file")
+        .then(() => true)
+        .catch(() => false);
+      await linkDirectory(outside, join(workspace, "escape"));
+
+      const seen: string[] = [];
+      await walkFiles(workspace, async (filePath) => {
+        seen.push(relative(workspace, filePath).replaceAll("\\", "/"));
+      });
+      const sorted = [...seen].sort();
+
+      expect(sorted).toContain("src/a.ts");
+      // The linked directory is the same physical directory, so it is walked once:
+      // a link back up the tree cannot make this unbounded, and a file is not
+      // reported under two paths.
+      expect(sorted).not.toContain("linked/a.ts");
+      // A link that leaves the walk root is not followed: a repository should not be
+      // able to make these tools read files outside the workspace.
+      expect(sorted.some((path) => path.includes("escape") || path.includes("secret"))).toBe(false);
+      // A file link needs privileges on Windows, so that half of the assertion is
+      // conditional; a directory link is available on both platforms.
+      if (fileLink) expect(sorted).toContain("alias.ts");
+    } finally {
+      await rm(workspace, { recursive: true, force: true });
+      await rm(outside, { recursive: true, force: true });
+    }
   });
 });
 
