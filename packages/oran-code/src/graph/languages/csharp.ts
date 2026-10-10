@@ -14,7 +14,10 @@ export const PACKAGE_QUERY = "(namespace_declaration name: (_) @pkg)";
 function specFromMatch(captures: ReadonlyMap<string, string>): string[] {
   const imp = captures.get("imp");
   if (!imp) return [];
-  const body = imp.replace(/^using\s+/, "").replace(/;\s*$/, "").trim();
+  const body = imp
+    .replace(/^using\s+/, "")
+    .replace(/;\s*$/, "")
+    .trim();
   if (body.startsWith("static ")) return [];
   const name = body.split("=")[0]?.trim();
   return name ? [`n:${name}`] : [];

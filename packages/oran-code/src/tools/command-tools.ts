@@ -1,5 +1,4 @@
 import type { ToolDefinition, ToolResult } from "../types.js";
-import { isAbortError } from "../utils/abort-error.js";
 import type { ToolFactoryContext } from "./registry.js";
 import { errorMessage, numberArg } from "./fs-helpers.js";
 import { formatJobOutput, shellJobs, type ShellJobManager, type ShellJobSnapshot } from "./jobs.js";
@@ -177,13 +176,13 @@ type ExitRace = { kind: "exited"; outcome: CommandOutcome } | { kind: "timeout" 
 function waitForExitOrTimeout(running: RunningCommand, timeoutSeconds: number): Promise<ExitRace> {
   if (timeoutSeconds <= 0) return running.exited.then((outcome) => ({ kind: "exited" as const, outcome }));
   return new Promise<ExitRace>((resolveRace) => {
-    let timer: NodeJS.Timeout | undefined;
+    // settle 最早只在微任务里被调用,所以声明之后引用 timer 不会踩 TDZ。
     const settle = (value: ExitRace): void => {
-      if (timer) clearTimeout(timer);
+      clearTimeout(timer);
       resolveRace(value);
     };
     void running.exited.then((outcome) => settle({ kind: "exited", outcome }));
-    timer = setTimeout(() => settle({ kind: "timeout" }), timeoutSeconds * 1000);
+    const timer = setTimeout(() => settle({ kind: "timeout" }), timeoutSeconds * 1000);
     timer.unref?.();
   });
 }

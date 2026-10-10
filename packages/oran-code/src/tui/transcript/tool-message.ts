@@ -60,7 +60,8 @@ export function renderToolMessage(message: ToolMessage, width: number, liveTick 
     const preview = output.split(/\r?\n/).filter(Boolean);
     const HEAD = 8;
     const TAIL = 4;
-    const shown = preview.length <= HEAD + TAIL ? preview : [...preview.slice(0, HEAD), undefined, ...preview.slice(-TAIL)];
+    const shown =
+      preview.length <= HEAD + TAIL ? preview : [...preview.slice(0, HEAD), undefined, ...preview.slice(-TAIL)];
     for (const line of shown) {
       if (line === undefined) {
         lines.push(
@@ -128,8 +129,7 @@ function toolArgumentSummary(message: ToolMessage): string {
   // agent/team_spawn 的 description 参数就是"这个子代理在干什么";缺了它,
   // 并行子代理只会渲染成几行无法区分的 agent + 秒数。
   if (message.name === "agent" || message.name === "team_spawn") {
-    const role =
-      stringArgument(message.arguments.subagent_type) ?? stringArgument(message.arguments.team_name);
+    const role = stringArgument(message.arguments.subagent_type) ?? stringArgument(message.arguments.team_name);
     const description = stringArgument(message.arguments.description);
     if (role && description) return truncateVisible(`${role} · ${description}`, 72);
     if (description) return truncateVisible(description, 72);

@@ -35,8 +35,8 @@ describe("classifyModelRetry", () => {
 
 describe("parseCompletedToolCall", () => {
   it("reports malformed arguments as a ToolCallParseError", () => {
-    expect(() =>
-      parseCompletedToolCall({ index: 0, name: "read_file", argumentsJson: '{"path": "a.ts"' }),
-    ).toThrow(ToolCallParseError);
+    expect(() => parseCompletedToolCall({ index: 0, name: "read_file", argumentsJson: '{"path": "a.ts"' })).toThrow(
+      ToolCallParseError,
+    );
   });
 });

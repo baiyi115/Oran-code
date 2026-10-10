@@ -97,6 +97,9 @@ describe("TerminalSession", () => {
     }
   });
 
+  // 这条用例把一次完整任务跑过 session(真实定时器 + readline),实测在整套用例
+  // 并行时接近 5s,正好卡在 vitest 默认超时上;它断言的是行为而非速度,所以给
+  // 它一个显式上限,避免负载一高就随机变红。
   it("selects a model from the freshly loaded project catalog", async () => {
     const workspace = await mkdtemp(join(tmpdir(), "liteagent-session-"));
     const projectConfig = join(workspace, ".oran", "config.json");
@@ -144,7 +147,7 @@ describe("TerminalSession", () => {
       await (session as any)?.shutdown?.().catch(() => undefined);
       await rm(workspace, { recursive: true, force: true });
     }
-  });
+  }, 15_000);
 
   it("does not auto-select a model when the catalog is opened", async () => {
     const workspace = await mkdtemp(join(tmpdir(), "liteagent-session-"));
@@ -284,7 +287,10 @@ describe("TerminalSession", () => {
         { role: "assistant", content: "handled first request" },
         { role: "user", content: "[User steering guidance provided while task in progress]:\nkeep going" },
         { role: "assistant", content: "handled steering" },
-        { role: "user", content: "[Previous task completed. New user task begins below.]\nUser message:\nsecond request" },
+        {
+          role: "user",
+          content: "[Previous task completed. New user task begins below.]\nUser message:\nsecond request",
+        },
         { role: "assistant", content: "handled second request" },
       ];
 

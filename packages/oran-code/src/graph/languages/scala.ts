@@ -13,7 +13,10 @@ export const PACKAGE_QUERY = "(package_clause name: (package_identifier) @pkg)";
 function specFromMatch(captures: ReadonlyMap<string, string>): string[] {
   const imp = captures.get("imp");
   if (!imp) return [];
-  const body = imp.replace(/^import\s+/, "").replace(/;\s*$/, "").trim();
+  const body = imp
+    .replace(/^import\s+/, "")
+    .replace(/;\s*$/, "")
+    .trim();
   const renamed = body.split(/\s+as\s+/)[0]?.trim() ?? body;
 
   const brace = /\{([^}]+)\}$/.exec(renamed);

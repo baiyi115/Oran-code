@@ -260,19 +260,30 @@ describe("TUI runtime event reducer", () => {
 
 describe("tool metadata badges", () => {
   it("shows a cached badge from result metadata", () => {
-    const state = createTuiState("D:\workspace", "demo/chat");
-    reduceRuntimeEvent(state, event({ type: "tool_start", call: { ...call, id: "call-cached" }, index: 0, permissionLevel: 0 }));
+    const state = createTuiState("D:\\workspace", "demo/chat");
     reduceRuntimeEvent(
       state,
-      event({ type: "tool_result", call: { ...call, id: "call-cached" }, index: 0, result: { ok: true, output: "status-1", metadata: { cached: true } } }),
+      event({ type: "tool_start", call: { ...call, id: "call-cached" }, index: 0, permissionLevel: 0 }),
+    );
+    reduceRuntimeEvent(
+      state,
+      event({
+        type: "tool_result",
+        call: { ...call, id: "call-cached" },
+        index: 0,
+        result: { ok: true, output: "status-1", metadata: { cached: true } },
+      }),
     );
     const tool = state.transcript.find((message) => message.kind === "tool");
     expect(tool?.kind === "tool" ? tool.badges : undefined).toEqual(["cached"]);
   });
 
   it("marks permission denials as rejected with a denied badge from metadata, not message text", () => {
-    const state = createTuiState("D:\workspace", "demo/chat");
-    reduceRuntimeEvent(state, event({ type: "tool_start", call: { ...call, id: "call-denied" }, index: 0, permissionLevel: 2 }));
+    const state = createTuiState("D:\\workspace", "demo/chat");
+    reduceRuntimeEvent(
+      state,
+      event({ type: "tool_start", call: { ...call, id: "call-denied" }, index: 0, permissionLevel: 2 }),
+    );
     reduceRuntimeEvent(
       state,
       event({
@@ -288,11 +299,19 @@ describe("tool metadata badges", () => {
   });
 
   it("clears badges when a result has no metadata", () => {
-    const state = createTuiState("D:\workspace", "demo/chat");
-    reduceRuntimeEvent(state, event({ type: "tool_start", call: { ...call, id: "call-plain" }, index: 0, permissionLevel: 0 }));
+    const state = createTuiState("D:\\workspace", "demo/chat");
     reduceRuntimeEvent(
       state,
-      event({ type: "tool_result", call: { ...call, id: "call-plain" }, index: 0, result: { ok: true, output: "plain" } }),
+      event({ type: "tool_start", call: { ...call, id: "call-plain" }, index: 0, permissionLevel: 0 }),
+    );
+    reduceRuntimeEvent(
+      state,
+      event({
+        type: "tool_result",
+        call: { ...call, id: "call-plain" },
+        index: 0,
+        result: { ok: true, output: "plain" },
+      }),
     );
     const tool = state.transcript.find((message) => message.kind === "tool");
     expect(tool?.kind === "tool" ? tool.badges : undefined).toBeUndefined();

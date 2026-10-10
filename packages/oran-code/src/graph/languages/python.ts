@@ -72,7 +72,10 @@ export function registerPython(): void {
     grammar: "python",
     importQuery: QUERY,
     symbols: {
-      defs: ["(function_definition name: (identifier) @name) @def", "(class_definition name: (identifier) @name) @def"].join("\n"),
+      defs: [
+        "(function_definition name: (identifier) @name) @def",
+        "(class_definition name: (identifier) @name) @def",
+      ].join("\n"),
       defKinds: ["function", "class"],
       calls: "(call function: (identifier) @callee)",
       bindings: [

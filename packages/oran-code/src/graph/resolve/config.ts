@@ -53,7 +53,10 @@ function parseComposer(config: ConfigSnapshot, json: string): void {
     const parsed = JSON.parse(json) as { autoload?: { "psr-4"?: Record<string, string | string[]> } };
     const psr4 = new Map<string, string[]>();
     for (const [prefix, dirs] of Object.entries(parsed.autoload?.["psr-4"] ?? {})) {
-      psr4.set(prefix.replaceAll("\\", "/").replace(/\/$/, ""), (Array.isArray(dirs) ? dirs : [dirs]).map((dir) => dir.replaceAll("\\", "/").replace(/\/$/, "")));
+      psr4.set(
+        prefix.replaceAll("\\", "/").replace(/\/$/, ""),
+        (Array.isArray(dirs) ? dirs : [dirs]).map((dir) => dir.replaceAll("\\", "/").replace(/\/$/, "")),
+      );
     }
     if (psr4.size > 0) config.composerPsr4 = psr4;
   } catch {

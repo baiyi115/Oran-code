@@ -28,8 +28,6 @@ export interface TerminalInputHooks {
 const BRACKETED_PASTE_START = "\x1b[200~";
 const BRACKETED_PASTE_END = "\x1b[201~";
 
-const SGR_MOUSE_PREFIX = "\x1b[<";
-const LEGACY_MOUSE_PREFIX = "\x1b[M";
 /** 拦截为 40ms 内的跨 chunk 拆分兜底;超时按普通按键透传,避免吞掉真实输入。 */
 const MOUSE_PREFIX_FLUSH_MS = 40;
 
@@ -131,10 +129,7 @@ export function createSynchronizedWriteStream(target: NodeJS.WriteStream): NodeJ
  * 序列,Ink 的 keypress 解析器会把它们拆成一串垃圾按键灌进 composer,所以
  * 必须在到达 Ink 之前剥离并交给 onMouse。粘帖帧内的字节一律放行。
  */
-export function createBracketedPasteStream(
-  source: NodeJS.ReadableStream,
-  hooks?: TerminalInputHooks,
-): NodeJS.ReadableStream {
+export function createBracketedPasteStream(source: NodeJS.ReadableStream, hooks?: TerminalInputHooks): Transform {
   let inPaste = false;
   let pasteBuffer = "";
   let timeoutTimer: NodeJS.Timeout | undefined;
@@ -243,5 +238,5 @@ export function createBracketedPasteStream(
       const sourceVal = Reflect.get(source, prop);
       return typeof sourceVal === "function" ? sourceVal.bind(source) : sourceVal;
     },
-  }) as NodeJS.ReadableStream;
+  }) as Transform;
 }

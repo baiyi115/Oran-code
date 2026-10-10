@@ -97,7 +97,10 @@ class OutputCollector {
  * POSIX 下使用独立进程组(detached),`killProcessTree` 的 `-pid` 才能真正杀掉整棵树;
  * Windows 下由 `taskkill /T` 负责树清理,不需要 detached。
  */
-export function startCommand(command: string, options: { cwd: string; signal?: AbortSignal | undefined }): RunningCommand {
+export function startCommand(
+  command: string,
+  options: { cwd: string; signal?: AbortSignal | undefined },
+): RunningCommand {
   const child = spawn(command, {
     cwd: options.cwd,
     shell: true,
@@ -135,7 +138,13 @@ export function startCommand(command: string, options: { cwd: string; signal?: A
       settle({ stdout: stdout.value(), stderr: stderr.value(), exitCode: code, signal });
     });
     child.once("error", (error) => {
-      settle({ stdout: stdout.value(), stderr: stderr.value(), exitCode: null, signal: null, spawnError: error.message });
+      settle({
+        stdout: stdout.value(),
+        stderr: stderr.value(),
+        exitCode: null,
+        signal: null,
+        spawnError: error.message,
+      });
     });
   });
 

@@ -151,9 +151,12 @@ export function parseCompletedToolCall(raw: ToolCallComplete): ToolCall {
   try {
     argumentsValue = JSON.parse(raw.argumentsJson);
   } catch (error) {
-    throw new ToolCallParseError(`invalid arguments for completed tool call ${raw.index}: ${formatErrorMessage(error)}`, {
-      cause: error,
-    });
+    throw new ToolCallParseError(
+      `invalid arguments for completed tool call ${raw.index}: ${formatErrorMessage(error)}`,
+      {
+        cause: error,
+      },
+    );
   }
   if (!argumentsValue || typeof argumentsValue !== "object" || Array.isArray(argumentsValue)) {
     throw new ToolCallParseError(`invalid arguments for completed tool call ${raw.index}: expected an object`);

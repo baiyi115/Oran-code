@@ -11,7 +11,9 @@ describe("shell output pipeline", () => {
 
   it("collapses long runs of repeated lines and annotates the count", () => {
     const text = ["start", ...Array.from({ length: 5 }, () => "same line"), "end"].join("\n");
-    expect(collapseRepeatedLines(text)).toBe(["start", "same line", "[... line repeated 5 times ...]", "end"].join("\n"));
+    expect(collapseRepeatedLines(text)).toBe(
+      ["start", "same line", "[... line repeated 5 times ...]", "end"].join("\n"),
+    );
   });
 
   it("keeps short repeats and blank lines untouched", () => {

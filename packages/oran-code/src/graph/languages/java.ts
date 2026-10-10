@@ -20,7 +20,10 @@ export const PACKAGE_QUERY = "(package_declaration (_) @pkg)";
 function specFromMatch(captures: ReadonlyMap<string, string>): string[] {
   const imp = captures.get("imp");
   if (!imp) return [];
-  const body = imp.replace(/^import\s+/, "").replace(/;\s*$/, "").trim();
+  const body = imp
+    .replace(/^import\s+/, "")
+    .replace(/;\s*$/, "")
+    .trim();
   if (body.startsWith("static ")) {
     const segments = body.slice(7).trim().split(".");
     if (segments.length < 2) return [];

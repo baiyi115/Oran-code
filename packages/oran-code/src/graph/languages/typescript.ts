@@ -11,7 +11,7 @@ const QUERY = [
   "(import_statement source: (string) @spec)",
   "(export_statement source: (string) @spec)",
   // require("x") and dynamic import("x"); @fn is filtered against callFns.
-  '(call_expression function: (identifier) @fn arguments: (arguments (string) @spec))',
+  "(call_expression function: (identifier) @fn arguments: (arguments (string) @spec))",
 ].join("\n");
 
 export const CALL_FN_NAMES: ReadonlySet<string> = new Set(["require", "import"]);
@@ -70,16 +70,14 @@ const SYMBOL_QUERIES = {
   bindings: [
     // Child pattern before the source field: web-tree-sitter 0.25's query
     // parser rejects this shape with the field written first.
-    '(import_statement (import_clause (identifier) @bind) source: (string) @src)',
-    '(import_statement (import_clause (named_imports (import_specifier name: (identifier) @bind))) source: (string) @src)',
+    "(import_statement (import_clause (identifier) @bind) source: (string) @src)",
+    "(import_statement (import_clause (named_imports (import_specifier name: (identifier) @bind))) source: (string) @src)",
   ].join("\n"),
   inherit: [
     "(class_declaration name: (type_identifier) @class (class_heritage (extends_clause value: (identifier) @super)))",
     "(class_declaration name: (type_identifier) @class (class_heritage (implements_clause (type_identifier) @super)))",
   ].join("\n"),
 };
-
-const DEF_KINDS = ["function", "class", "method", "interface", "type"] as const;
 
 function makeSupport(id: LanguageSupport["id"], extensions: string[], grammar: string): LanguageSupport {
   return {

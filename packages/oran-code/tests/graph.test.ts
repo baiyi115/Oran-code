@@ -51,7 +51,10 @@ beforeAll(async () => {
   await write("helpers/util.py", "import os\n\ndef calculate():\n    return 1\n");
   await write("src_py/sibling.py", "x = 1\n");
   await write("go.mod", "module example.com/m\n\ngo 1.22\n");
-  await write("main.go", 'package main\n\nimport (\n\t"fmt"\n\t"example.com/m/util"\n)\n\nfunc main() { fmt.Println(util.X) }\n');
+  await write(
+    "main.go",
+    'package main\n\nimport (\n\t"fmt"\n\t"example.com/m/util"\n)\n\nfunc main() { fmt.Println(util.X) }\n',
+  );
   await write("util/util.go", "package util\n\nvar X = 1\n");
 });
 
@@ -101,7 +104,11 @@ describe("code impact graph", () => {
     // Same-file call edge.
     expect(index.calls).toContainEqual({ from: "pkg/b.ts#runner", to: "pkg/b.ts#helper", provenance: "resolved" });
     // Cross-file call edge via a from-import binding.
-    expect(index.calls).toContainEqual({ from: "src_py/m.py#run", to: "helpers/util.py#calculate", provenance: "resolved" });
+    expect(index.calls).toContainEqual({
+      from: "src_py/m.py#run",
+      to: "helpers/util.py#calculate",
+      provenance: "resolved",
+    });
     // Inheritance edge across files.
     expect(index.extendsEdges).toContainEqual({ from: "pkg/a.ts#Child", to: "pkg/b.ts#Base" });
   });

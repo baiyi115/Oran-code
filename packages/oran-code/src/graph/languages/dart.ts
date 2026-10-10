@@ -20,11 +20,15 @@ export function resolveDartSpecifier(fromFile: string, specifier: string, contex
     // sibling packages in a monorepo live under their own directory.
     const candidate = name === context.config.dartPackageName ? `lib/${path}` : `${name}/lib/${path}`;
     if (context.fileSet.has(candidate)) return { kind: "resolved", paths: [candidate] };
-    return name === context.config.dartPackageName ? { kind: "unresolved", reason: "no-source" } : { kind: "unresolved", reason: "external" };
+    return name === context.config.dartPackageName
+      ? { kind: "unresolved", reason: "no-source" }
+      : { kind: "unresolved", reason: "external" };
   }
 
   const target = posix.normalize(posix.join(posix.dirname(fromFile), specifier));
-  return context.fileSet.has(target) ? { kind: "resolved", paths: [target] } : { kind: "unresolved", reason: "no-source" };
+  return context.fileSet.has(target)
+    ? { kind: "resolved", paths: [target] }
+    : { kind: "unresolved", reason: "no-source" };
 }
 
 export function registerDart(): void {

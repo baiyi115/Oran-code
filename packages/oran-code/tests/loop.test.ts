@@ -99,7 +99,11 @@ describe("AgentLoop no-progress guards", () => {
     for (let i = 0; i < 3; i += 1) recordTurn(loop, toolCall, oldResult);
     expect(loop.noProgressWarning()).toMatchObject({ reason: "stalled_signature", stage: "warning", repeatCount: 3 });
     for (let i = 0; i < 2; i += 1) recordTurn(loop, toolCall, oldResult);
-    expect(loop.noProgressWarning()).toMatchObject({ reason: "stalled_signature", stage: "reflection", repeatCount: 5 });
+    expect(loop.noProgressWarning()).toMatchObject({
+      reason: "stalled_signature",
+      stage: "reflection",
+      repeatCount: 5,
+    });
     for (let i = 0; i < 3; i += 1) recordTurn(loop, toolCall, oldResult);
     expect(loop.noProgressDiagnostic()).toMatchObject({ reason: "stalled_signature", stage: "pause", repeatCount: 8 });
   });

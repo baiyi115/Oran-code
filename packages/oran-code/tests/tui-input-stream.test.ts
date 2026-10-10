@@ -1,9 +1,6 @@
-import { Readable } from "node:stream";
+import { Readable, type Transform } from "node:stream";
 import { describe, expect, it } from "vitest";
-import {
-  createBracketedPasteStream,
-  type TerminalMouseEvent,
-} from "../src/tui/terminal-streams.js";
+import { createBracketedPasteStream, type TerminalMouseEvent } from "../src/tui/terminal-streams.js";
 
 async function collect(stream: NodeJS.ReadableStream): Promise<string> {
   let out = "";
@@ -11,7 +8,7 @@ async function collect(stream: NodeJS.ReadableStream): Promise<string> {
   return out;
 }
 
-function streamWithMouse(chunks: string[]): { stream: NodeJS.ReadableStream; events: TerminalMouseEvent[] } {
+function streamWithMouse(chunks: string[]): { stream: Transform; events: TerminalMouseEvent[] } {
   const events: TerminalMouseEvent[] = [];
   const source = Readable.from(chunks);
   const stream = createBracketedPasteStream(source as NodeJS.ReadableStream, {

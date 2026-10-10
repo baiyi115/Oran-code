@@ -67,11 +67,7 @@ export function formatRecentFile(file: RecentFile): string {
  * 工具结果全文落盘,返回相对路径。
  * EEXIST 时按内容比对判定可否复用;其余失败返回 undefined,由调用方决定是否保留原文。
  */
-export async function spillToolResult(
-  target: SpillTarget,
-  id: string,
-  content: string,
-): Promise<string | undefined> {
+export async function spillToolResult(target: SpillTarget, id: string, content: string): Promise<string | undefined> {
   if (!isSafeToolCallId(id)) return undefined;
   const relativePath = `${target.stateDirectory}/sessions/${target.processSessionId}/tool-results/${id}`;
   const absolutePath = resolve(target.workspace, ...relativePath.split("/"));

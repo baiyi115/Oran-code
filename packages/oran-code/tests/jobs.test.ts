@@ -24,7 +24,7 @@ describe("background shell jobs", () => {
     try {
       const { registry, jobs } = createHarness(workspace);
       const started = await invoke(registry, "run_command", {
-        command: 'node -e "console.log(\'job-ok\')"',
+        command: "node -e \"console.log('job-ok')\"",
         run_in_background: true,
       });
 
@@ -53,7 +53,7 @@ describe("background shell jobs", () => {
     try {
       const { registry, jobs } = createHarness(workspace);
       const result = await invoke(registry, "run_command", {
-        command: 'node -e "setTimeout(() => console.log(\'late-done\'), 2500)"',
+        command: "node -e \"setTimeout(() => console.log('late-done'), 2500)\"",
         timeout: 1,
       });
 
@@ -78,7 +78,7 @@ describe("background shell jobs", () => {
     try {
       const { registry, jobs } = createHarness(workspace);
       const started = await invoke(registry, "run_command", {
-        command: 'node -e "setTimeout(() => console.log(\'never\'), 30000)"',
+        command: "node -e \"setTimeout(() => console.log('never'), 30000)\"",
         run_in_background: true,
       });
       const jobId = started.metadata?.backgroundJobId as string;
@@ -109,7 +109,7 @@ describe("background shell jobs", () => {
     const workspace = await mkdtemp(join(tmpdir(), "oran-jobs-"));
     try {
       const { registry } = createHarness(workspace);
-      const ok = await invoke(registry, "run_command", { command: 'node -e "console.log(\'fg-ok\')"' });
+      const ok = await invoke(registry, "run_command", { command: "node -e \"console.log('fg-ok')\"" });
       expect(ok.ok).toBe(true);
       expect(ok.output).toContain("fg-ok");
       expect(ok.summary).toBe("exit 0");

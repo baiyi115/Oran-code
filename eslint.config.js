@@ -28,6 +28,13 @@ export default tseslint.config(
     },
   },
   {
+    // 这两个模块的职责就是匹配终端控制字节(ESC/BEL),no-control-regex 在这里是噪音。
+    files: ["packages/oran-code/src/tui/terminal-streams.ts", "packages/oran-code/src/tools/output-pipeline.ts"],
+    rules: {
+      "no-control-regex": "off",
+    },
+  },
+  {
     // 测试里的 any 用于探查私有状态、空 async 生成器用于桩实现,均为惯用法。
     files: ["packages/**/tests/**/*.ts"],
     rules: {

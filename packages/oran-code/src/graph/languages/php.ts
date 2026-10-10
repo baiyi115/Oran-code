@@ -10,7 +10,13 @@ import { firstQuoted } from "../extract.js";
  *   fall back to a unique suffix match; dynamic expressions stay dynamic.
  */
 
-const QUERY = ["(namespace_use_clause (qualified_name) @spec)", "(require_expression) @req", "(require_once_expression) @req", "(include_expression) @req", "(include_once_expression) @req"].join("\n");
+const QUERY = [
+  "(namespace_use_clause (qualified_name) @spec)",
+  "(require_expression) @req",
+  "(require_once_expression) @req",
+  "(include_expression) @req",
+  "(include_once_expression) @req",
+].join("\n");
 
 function specFromMatch(captures: ReadonlyMap<string, string>): string[] {
   const use = captures.get("spec");
@@ -51,7 +57,9 @@ function resolveRequire(fromFile: string, expression: string, context: ResolveCo
   let target: string | undefined;
   if (dirConcat?.[1]) {
     target = posix.normalize(posix.join(posix.dirname(fromFile), dirConcat[1]));
-    return context.fileSet.has(target) ? { kind: "resolved", paths: [target] } : { kind: "unresolved", reason: "no-source" };
+    return context.fileSet.has(target)
+      ? { kind: "resolved", paths: [target] }
+      : { kind: "unresolved", reason: "no-source" };
   }
   const literal = firstQuoted(expression);
   if (!literal) return { kind: "unresolved", reason: "dynamic" };
@@ -68,7 +76,9 @@ function resolveRequire(fromFile: string, expression: string, context: ResolveCo
 }
 
 export function resolvePhpSpecifier(fromFile: string, specifier: string, context: ResolveContext): ResolveResult {
-  return specifier.startsWith("u:") ? resolveUse(specifier.slice(2), context) : resolveRequire(fromFile, specifier.slice(2), context);
+  return specifier.startsWith("u:")
+    ? resolveUse(specifier.slice(2), context)
+    : resolveRequire(fromFile, specifier.slice(2), context);
 }
 
 export function registerPhp(): void {

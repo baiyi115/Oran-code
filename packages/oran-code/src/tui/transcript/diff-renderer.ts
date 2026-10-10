@@ -11,7 +11,9 @@ export function renderDiff(value: string, width: number, expanded: boolean): str
   const output: string[] = [];
   for (const line of shown) {
     if (line === undefined) {
-      output.push(`${ANSI.gray}  ... ${lines.length - head - tail} lines hidden (PageUp/PageDown in details) ...${ANSI.reset}`);
+      output.push(
+        `${ANSI.gray}  ... ${lines.length - head - tail} lines hidden (PageUp/PageDown in details) ...${ANSI.reset}`,
+      );
       continue;
     }
     const metadata = line.startsWith("@@") || line.startsWith("--- ") || line.startsWith("+++ ");

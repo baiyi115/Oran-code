@@ -9,7 +9,11 @@ import { registerLanguage, type LanguageSupport, type ResolveContext, type Resol
  *   and otherwise stay external. Inline `mod foo { }` never maps to a file.
  */
 
-const QUERY = ["(mod_item name: (identifier) @mod)", "(use_declaration (scoped_identifier) @spec)", "(use_declaration (identifier) @spec)"].join("\n");
+const QUERY = [
+  "(mod_item name: (identifier) @mod)",
+  "(use_declaration (scoped_identifier) @spec)",
+  "(use_declaration (identifier) @spec)",
+].join("\n");
 
 function specFromMatch(captures: ReadonlyMap<string, string>): string[] {
   const mod = captures.get("mod");

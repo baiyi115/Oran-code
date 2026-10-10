@@ -537,7 +537,11 @@ describe("TaskController", () => {
     it("still fails when every truncated response was empty", async () => {
       const workspace = await mkdtemp(join(tmpdir(), "liteagent-controller-"));
       try {
-        const provider = new FakeProvider([emptyTruncatedResponse(), emptyTruncatedResponse(), emptyTruncatedResponse()]);
+        const provider = new FakeProvider([
+          emptyTruncatedResponse(),
+          emptyTruncatedResponse(),
+          emptyTruncatedResponse(),
+        ]);
         const events: RuntimeEvent[] = [];
         const { controller } = createController(workspace, provider, new ToolRegistry(), events);
 
