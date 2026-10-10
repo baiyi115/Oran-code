@@ -99,6 +99,21 @@ describe("web_fetch SSRF guard", () => {
     expect(isPrivateAddress("example.com")).toBe(false);
   });
 
+  it("expands IPv6 forms that carry an IPv4 address before judging them", () => {
+    // The URL parser normalizes http://[::ffff:127.0.0.1]/ to ::ffff:7f00:1
+    // before the hostname is ever read, so the hextet form has to be recognized
+    // too — checking only the dotted prefix left this reachable without approval.
+    expect(isPrivateAddress("::ffff:7f00:1")).toBe(true);
+    expect(isPrivateAddress("::ffff:127.0.0.1")).toBe(true);
+    expect(isPrivateAddress("::7f00:1")).toBe(true);
+    expect(isPrivateAddress("64:ff9b::7f00:1")).toBe(true);
+    expect(isPrivateAddress("2002:7f00:1::")).toBe(true);
+    // Teredo stores the client address inverted, so this is 192.168.1.1.
+    expect(isPrivateAddress("2001:0:4136:e378:8000:63bf:3f57:fefe")).toBe(true);
+    expect(isPrivateAddress("fe80::1")).toBe(true);
+    expect(isPrivateAddress("2606:4700:4700::1111")).toBe(false);
+  });
+
   it("refuses non-http schemes and private hosts by default", async () => {
     await expect(assertFetchableUrl("file:///etc/passwd")).rejects.toThrow("unsupported URL scheme");
     await expect(assertFetchableUrl("http://127.0.0.1:8080/admin")).rejects.toThrow("private/loopback");
@@ -186,22 +201,20 @@ describe("web tools", () => {
   describe("search backends and de-duplication", () => {
     it("queries the brave backend with its subscription header and parses web.results", async () => {
       const seen: { url: URL; headers: IncomingMessage["headers"] }[] = [];
-      const { workspace, baseUrl } = await startFixtureServer(
-        (url, request) => {
-          seen.push({ url, headers: request.headers });
-          return {
-            contentType: "application/json",
-            body: JSON.stringify({
-              web: {
-                results: [
-                  { title: "Oran docs", url: "https://example.test/docs", description: "Brave description" },
-                  { title: "No url field", description: "dropped" },
-                ],
-              },
-            }),
-          };
-        },
-      );
+      const { workspace, baseUrl } = await startFixtureServer((url, request) => {
+        seen.push({ url, headers: request.headers });
+        return {
+          contentType: "application/json",
+          body: JSON.stringify({
+            web: {
+              results: [
+                { title: "Oran docs", url: "https://example.test/docs", description: "Brave description" },
+                { title: "No url field", description: "dropped" },
+              ],
+            },
+          }),
+        };
+      });
       // 端点需要 fixture 的端口,只能等服务起来之后再写进配置。
       await writeFile(
         join(workspace, ".oran", "config.json"),
@@ -236,15 +249,15 @@ describe("web tools", () => {
 
     it("queries the google backend with key and cx and parses items", async () => {
       const seen: { url: URL; headers: IncomingMessage["headers"] }[] = [];
-      const { workspace, baseUrl } = await startFixtureServer(
-        (url, request) => {
-          seen.push({ url, headers: request.headers });
-          return {
-            contentType: "application/json",
-            body: JSON.stringify({ items: [{ title: "Result", link: "https://example.test/a", snippet: "Google snippet" }] }),
-          };
-        },
-      );
+      const { workspace, baseUrl } = await startFixtureServer((url, request) => {
+        seen.push({ url, headers: request.headers });
+        return {
+          contentType: "application/json",
+          body: JSON.stringify({
+            items: [{ title: "Result", link: "https://example.test/a", snippet: "Google snippet" }],
+          }),
+        };
+      });
       await writeFile(
         join(workspace, ".oran", "config.json"),
         JSON.stringify({

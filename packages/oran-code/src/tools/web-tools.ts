@@ -21,17 +21,83 @@ const PRIVATE_IPV4_PATTERNS = [
   /^100\.(?:6[4-9]|[7-9]\d|1[01]\d|12[0-7])\./,
 ];
 
+/**
+ * IPv6 字面量展开成 8 段 hextet。
+ * 不能按字符串前缀判定 ::ffff: ——URL 解析器会把 `[::ffff:127.0.0.1]` 归一化成
+ * `[::ffff:7f00:1]`,前缀匹配在这里拿不到点分形式;而且 6to4 / NAT64 / Teredo
+ * 同样能把请求引回内网。展开后统一判定才不留缺口。
+ */
+function parseIpv6Hextets(address: string): number[] | undefined {
+  const zone = address.indexOf("%");
+  const text = (zone >= 0 ? address.slice(0, zone) : address).toLowerCase();
+  const sections = text.split("::");
+  if (sections.length > 2) return undefined;
+  const head = parseIpv6Groups(sections[0] ?? "");
+  if (!head) return undefined;
+  if (sections.length === 1) return head.length === 8 ? head : undefined;
+  const tail = parseIpv6Groups(sections[1] ?? "");
+  if (!tail) return undefined;
+  const zeros = 8 - head.length - tail.length;
+  if (zeros < 1) return undefined;
+  return [...head, ...new Array<number>(zeros).fill(0), ...tail];
+}
+
+function parseIpv6Groups(section: string): number[] | undefined {
+  if (section === "") return [];
+  const groups = section.split(":");
+  const values: number[] = [];
+  for (const [index, group] of groups.entries()) {
+    if (group.includes(".")) {
+      // 点分尾巴只允许出现在最后一组(`::ffff:127.0.0.1`)。
+      if (index !== groups.length - 1) return undefined;
+      const hextets = ipv4ToHextets(group);
+      if (!hextets) return undefined;
+      values.push(...hextets);
+      continue;
+    }
+    if (!/^[0-9a-f]{1,4}$/.test(group)) return undefined;
+    values.push(Number.parseInt(group, 16));
+  }
+  return values;
+}
+
+function ipv4ToHextets(value: string): number[] | undefined {
+  if (!isIPv4(value)) return undefined;
+  const [a, b, c, d] = value.split(".").map((part) => Number.parseInt(part, 10));
+  if (a === undefined || b === undefined || c === undefined || d === undefined) return undefined;
+  return [(a << 8) | b, (c << 8) | d];
+}
+
+/** 内嵌在这些 IPv6 编码里的 IPv4,取不出来就说明这个地址没有 IPv4 语义。 */
+function embeddedIpv4(hextets: readonly number[]): string | undefined {
+  const [a = 0, b = 0, c = 0, d = 0, e = 0, f = 0, g = 0, h = 0] = hextets;
+  const format = (hi: number, lo: number): string =>
+    `${(hi >> 8) & 0xff}.${hi & 0xff}.${(lo >> 8) & 0xff}.${lo & 0xff}`;
+  const leadingZeros = (count: number): boolean => hextets.slice(0, count).every((value) => value === 0);
+  // ::a.b.c.d(IPv4-compatible)与 ::ffff:a.b.c.d(IPv4-mapped),RFC 4291。
+  if (leadingZeros(5) && (f === 0 || f === 0xffff)) return format(g, h);
+  // 64:ff9b::/96:NAT64 知名前缀。
+  if (a === 0x64 && b === 0xff9b && c === 0 && d === 0 && e === 0 && f === 0) return format(g, h);
+  // 2002::/16:6to4,IPv4 在随后的 32 位。
+  if (a === 0x2002) return format(b, c);
+  // 2001:0000::/32:Teredo,末 32 位是取反后的客户端 IPv4。
+  if (a === 0x2001 && b === 0) return format(~g & 0xffff, ~h & 0xffff);
+  return undefined;
+}
+
 export function isPrivateAddress(address: string): boolean {
   if (isIPv4(address)) return PRIVATE_IPV4_PATTERNS.some((pattern) => pattern.test(address));
-  if (isIPv6(address)) {
-    const lower = address.toLowerCase();
-    if (lower === "::" || lower === "::1") return true;
-    if (lower.startsWith("fc") || lower.startsWith("fd")) return true; // ULA fc00::/7
-    if (/^fe[89ab]/.test(lower)) return true; // link-local fe80::/10
-    if (lower.startsWith("::ffff:")) return isPrivateAddress(lower.slice("::ffff:".length));
-    return false;
-  }
-  return false;
+  if (!isIPv6(address)) return false;
+  const hextets = parseIpv6Hextets(address);
+  // 自称 IPv6 却展开不了:宁可拒绝,不做放过。
+  if (!hextets) return true;
+  const first = hextets[0] ?? 0;
+  if (hextets.every((value) => value === 0)) return true; // ::
+  if (hextets.slice(0, 7).every((value) => value === 0) && hextets[7] === 1) return true; // ::1
+  if ((first & 0xfe00) === 0xfc00) return true; // ULA fc00::/7
+  if ((first & 0xffc0) === 0xfe80) return true; // link-local fe80::/10
+  const embedded = embeddedIpv4(hextets);
+  return embedded !== undefined && isPrivateAddress(embedded);
 }
 
 /**
@@ -55,7 +121,9 @@ export async function assertFetchableUrl(rawUrl: string, options: { allowPrivate
   try {
     addresses = (await lookup(host, { all: true })).map((entry) => entry.address);
   } catch (error) {
-    throw new Error(`cannot resolve host ${host}: ${error instanceof Error ? error.message : String(error)}`);
+    throw new Error(`cannot resolve host ${host}: ${error instanceof Error ? error.message : String(error)}`, {
+      cause: error,
+    });
   }
   if (addresses.some((address) => isPrivateAddress(address))) {
     throw new Error(`refusing to fetch ${host}: it resolves to a private/loopback address`);
@@ -67,14 +135,71 @@ const BLOCK_TAGS =
   /<\/?(?:p|div|section|article|header|footer|main|aside|nav|br|hr|li|ul|ol|tr|table|thead|tbody|h[1-6]|pre|blockquote|figure|figcaption|form|details|summary)\b[^>]*>/gi;
 
 /**
+ * 隐藏块的开/闭标签。两侧都用不含 `<`/`>` 的字符类,单次匹配不会跨标签,
+ * 因此整个扫描是线性的(见 stripHiddenBlocks 的注释)。
+ */
+const HIDDEN_TAG =
+  /<(script|style|noscript|template|svg|canvas|head)\b[^<>]*>|<\/(script|style|noscript|template|svg|canvas|head)\s*>/gi;
+
+/** 剥离 HTML 注释;未闭合的注释按规范延伸到串尾。 */
+function stripHtmlComments(html: string): string {
+  let out = "";
+  let cursor = 0;
+  for (;;) {
+    const start = html.indexOf("<!--", cursor);
+    if (start < 0) return out + html.slice(cursor);
+    out += `${html.slice(cursor, start)} `;
+    const end = html.indexOf("-->", start + 4);
+    if (end < 0) return out;
+    cursor = end + 3;
+  }
+}
+
+/**
+ * 剥离 script/style/noscript/template/svg/canvas/head 整块。
+ *
+ * 旧实现写的是 `<(tag)\b[^>]*>[\s\S]*?</\1>`,惰性量词遇到大量无闭合标签的
+ * 页面会把每个起点都扫到串尾:实测 400KB 的 `<script>` 重复要 2.4 秒,而抓取
+ * 上限是 2MB(>1 分钟),且清洗同步跑在事件循环上,会连带冻住 TUI。这里改成
+ * 单遍线性扫描:一次正则走完,同名的嵌套按深度计数,未闭合的块按 HTML 规范
+ * 丢弃到串尾。
+ */
+function stripHiddenBlocks(html: string): string {
+  let out = "";
+  let cursor = 0;
+  let open: string | undefined;
+  let depth = 0;
+  HIDDEN_TAG.lastIndex = 0;
+  for (let match = HIDDEN_TAG.exec(html); match; match = HIDDEN_TAG.exec(html)) {
+    const name = (match[1] ?? match[2] ?? "").toLowerCase();
+    if (match[1] === undefined) {
+      if (open === undefined || name !== open) continue;
+      depth -= 1;
+      if (depth === 0) {
+        open = undefined;
+        cursor = match.index + match[0].length;
+      }
+      continue;
+    }
+    if (open === undefined) {
+      out += `${html.slice(cursor, match.index)} `;
+      cursor = match.index + match[0].length;
+      open = name;
+      depth = 1;
+      continue;
+    }
+    if (name === open) depth += 1;
+  }
+  return out + html.slice(cursor);
+}
+
+/**
  * 零依赖 HTML → 文本抽取。
  * 目标是让模型读到正文而不是标签:剥离脚本/样式/注释,块级标签转换为换行,
  * 解码实体,压缩空白。刻意不追求 renderer 级还原(readability 一类库会引入依赖)。
  */
 export function htmlToText(html: string): string {
-  const withoutHidden = html
-    .replace(/<!--[\s\S]*?-->/g, " ")
-    .replace(/<(script|style|noscript|template|svg|canvas|head)\b[^>]*>[\s\S]*?<\/\1>/gi, " ");
+  const withoutHidden = stripHiddenBlocks(stripHtmlComments(html));
   const withBreaks = withoutHidden.replace(BLOCK_TAGS, "\n").replace(/<[^>]*>/g, " ");
   const decoded = decodeHtmlEntities(withBreaks);
   return decoded
@@ -112,9 +237,10 @@ const NAMED_ENTITIES: Readonly<Record<string, string>> = {
 export function decodeHtmlEntities(value: string): string {
   return value.replace(/&(#x?[0-9a-fA-F]+|[a-zA-Z][a-zA-Z0-9]*);/g, (match, entity: string) => {
     if (entity.startsWith("#")) {
-      const code = entity.startsWith("#x") || entity.startsWith("#X")
-        ? Number.parseInt(entity.slice(2), 16)
-        : Number.parseInt(entity.slice(1), 10);
+      const code =
+        entity.startsWith("#x") || entity.startsWith("#X")
+          ? Number.parseInt(entity.slice(2), 16)
+          : Number.parseInt(entity.slice(1), 10);
       if (!Number.isFinite(code) || code <= 0 || code > 0x10ffff) return match;
       try {
         return String.fromCodePoint(code);
@@ -164,10 +290,7 @@ async function fetchWithRedirects(url: URL, options: { allowPrivateHosts?: boole
   throw new Error(`too many redirects (more than ${MAX_REDIRECTS})`);
 }
 
-async function readBoundedBody(
-  response: Response,
-  maxBytes: number,
-): Promise<{ body: string; truncated: boolean }> {
+async function readBoundedBody(response: Response, maxBytes: number): Promise<{ body: string; truncated: boolean }> {
   const buffer = await response.arrayBuffer();
   const bytes = new Uint8Array(buffer);
   const truncated = bytes.byteLength > maxBytes;
@@ -386,12 +509,7 @@ function toSearchHit(value: unknown): SearchHit | undefined {
   return { title, url, snippet };
 }
 
-function formatSearchResults(
-  query: string,
-  provider: string,
-  hits: readonly SearchHit[],
-  duplicates = 0,
-): string {
+function formatSearchResults(query: string, provider: string, hits: readonly SearchHit[], duplicates = 0): string {
   if (!hits.length) return `No results for "${query}" (${provider}).`;
   return [
     `<web-search query="${query.replaceAll('"', "&quot;")}" provider="${provider}" results="${hits.length}"` +
@@ -405,10 +523,7 @@ function formatSearchResults(
   ].join("\n");
 }
 
-export function registerWebTools(
-  registry: { register(tool: ToolDefinition): void },
-  ctx: ToolFactoryContext,
-): void {
+export function registerWebTools(registry: { register(tool: ToolDefinition): void }, ctx: ToolFactoryContext): void {
   const { activeRoot } = ctx;
 
   registry.register({
@@ -507,7 +622,10 @@ export function registerWebTools(
       if (settings?.enabled === false) {
         return { ok: false, output: "", error: "web tools are disabled (web.enabled=false)", summary: "disabled" };
       }
-      const limit = Math.max(1, Math.min(20, Math.floor(typeof call.arguments.limit === "number" ? call.arguments.limit : 5)));
+      const limit = Math.max(
+        1,
+        Math.min(20, Math.floor(typeof call.arguments.limit === "number" ? call.arguments.limit : 5)),
+      );
       try {
         const { hits, provider, duplicates } = await runSearch(query, limit, settings ?? {});
         return {
