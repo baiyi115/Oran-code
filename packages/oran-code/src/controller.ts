@@ -46,13 +46,20 @@ import { PRODUCT_VERSION } from "./paths.js";
 import { isPlanModeTool, type ToolRegistry } from "./tools.js";
 import type { SnapshotStorePort } from "./snapshot.js";
 import { captureTurnSnapshot, goalFingerprint } from "./progress/capture.js";
-import { DEFAULT_EXPLORE_BUDGET, DEFAULT_IMPLEMENT_BUDGET, INITIAL_PHASE_STATE, isExplorationTask, updatePhase } from "./progress/phase.js";
+import {
+  DEFAULT_EXPLORE_BUDGET,
+  DEFAULT_IMPLEMENT_BUDGET,
+  INITIAL_PHASE_STATE,
+  isExplorationTask,
+  updatePhase,
+} from "./progress/phase.js";
 import { updateNovelty } from "./progress/novelty.js";
 import { judgeConvergence, parseRehearsal, rehearsalRequestNotice } from "./progress/rehearsal.js";
 import { signalToNotice, computeSignals, type ProgressSignal } from "./progress/signals.js";
 import { readCachedGraph } from "./graph/store.js";
 import {
-  EMPTY_PROGRESS_STATE,
+  freshRunState,
+  resumedRunState,
   type PersistedProgressState,
   type ProgressStopKind,
   MAX_SNAPSHOTS,
@@ -125,6 +132,12 @@ export interface TaskControllerOptions {
   snapshotSessionId?: string;
   /** Callback to poll steering messages queued by the user while the agent is running. */
   getSteeringMessages?: () => Promise<string[]> | string[];
+  /**
+   * Goal identity to adopt instead of hashing the prompt. /resume passes the
+   * paused run's fingerprint so the task continues that run's state instead of
+   * starting over (see resumedRunState).
+   */
+  resumedGoalFingerprint?: string;
   /** Handler for ask_user_question tool */
   askUserCallback?: (
     questions: Array<{
@@ -158,6 +171,9 @@ export class TaskController {
   private readonly snapshotStore: SnapshotStorePort | undefined;
   private readonly snapshotSessionId: string | undefined;
   private readonly getSteeringMessages: (() => Promise<string[]> | string[]) | undefined;
+  private readonly resumedGoalFingerprint: string | undefined;
+  /** 已注入过的电平型警告,按“上一轮仍然成立的条件”判定上升沿。 */
+  private activeLevelSignals = new Set<string>();
   private readonly pendingSteeringMessages: string[] = [];
   /** 模型输出被截断时的纠偏提醒,在下一轮请求前注入一次。 */
   private pendingTruncationNotice: string | undefined;
@@ -216,6 +232,7 @@ export class TaskController {
     this.snapshotStore = options.snapshotStore;
     this.snapshotSessionId = options.snapshotSessionId;
     this.getSteeringMessages = options.getSteeringMessages;
+    this.resumedGoalFingerprint = options.resumedGoalFingerprint;
     if (options.previousReadonlyResults) {
       for (const [key, value] of options.previousReadonlyResults) this.readonlyCache.set(key, value);
     }
@@ -635,7 +652,6 @@ export class TaskController {
             return task;
           }
           try {
-            const historyStart = loop.executionHistory.length;
             const turnExecution = await this.toolExecutor.runTools(task, messages, response.toolCalls, loop);
             const progress = loop.recordTurnProgress({ hasMutation: turnExecution.workspaceMutated });
             this.appendDiagnosticStep("turn_progress", {
@@ -643,16 +659,15 @@ export class TaskController {
               readonlyOnly: turnExecution.readonlyOnly,
               ...progress,
             });
-            const hardSignals = await this.recordProgressSnapshot(task, loop, {
-              historyStart,
-              execution: turnExecution,
-            });
+            const hardSignals = await this.recordProgressSnapshot(task, loop, { execution: turnExecution });
             if (hardSignals.length > 0) {
               const first = hardSignals[0]!;
               await this.pauseForNoProgress(task, {
-                call:
-                  loop.toolCalls.at(-1) ??
-                  { name: "progress_signal", arguments: {}, createdAt: new Date().toISOString() },
+                call: loop.toolCalls.at(-1) ?? {
+                  name: "progress_signal",
+                  arguments: {},
+                  createdAt: new Date().toISOString(),
+                },
                 repeatCount: hardSignals.length,
                 limit: hardSignals.length,
                 reason: "progress_signal",
@@ -753,7 +768,9 @@ export class TaskController {
     if (reason === "repeated_error") {
       pauseMessage = `No progress detected; task paused after ${repeatCount} consecutive tool calls failed with identical error: "${detail ?? ""}".`;
     } else if (reason === "progress_signal") {
-      pauseMessage = `Progress gate: task paused — ${detail ?? "a hard progress signal fired"}. Confirm how to proceed, then resume from the last snapshot.`;
+      pauseMessage =
+        `Progress gate: task paused — ${detail ?? "a hard progress signal fired"}. ` +
+        `Run /resume to continue this task with the gate disarmed, or send a new instruction to start over.`;
     } else if (reason === "stalled_signature") {
       pauseMessage = `No progress detected; task paused after ${repeatCount} consecutive turns without new tool results or workspace changes.`;
     } else if (reason === "repeated_execution") {
@@ -774,7 +791,7 @@ export class TaskController {
     await this.persist(task);
     await this.recordProgressStop(task, "stopped_by_budget");
     await this.emit("log", {
-      message: `${tokenBudgetMessage(loop, budget)} Send "继续" to resume with a fresh budget.`,
+      message: `${tokenBudgetMessage(loop, budget)} Run /resume to continue this task with a fresh budget.`,
     });
   }
 
@@ -829,7 +846,9 @@ export class TaskController {
   private async persist(task: Task): Promise<void> {
     this.trace.saveTask(task);
     // Terminal states (including pause) must not lose the last snapshot.
-    await this.progressStoreFor(task.workspace).flush().catch(() => undefined);
+    await this.progressStoreFor(task.workspace)
+      .flush()
+      .catch(() => undefined);
     await this.emit("state", { state: task.state });
   }
 
@@ -843,6 +862,14 @@ export class TaskController {
   }
 
   /**
+   * Goal identity of this task: the resumed run's fingerprint when /resume
+   * adopted one, otherwise a hash of the prompt.
+   */
+  private progressGoalFingerprint(task: Task): string {
+    return this.resumedGoalFingerprint ?? goalFingerprint(task.prompt);
+  }
+
+  /**
    * Capture a snapshot after each turn's tool execution and persist it outside
    * the conversation. Returns the hard signals that fired this turn; the caller
    * turns them into a pause. Failures degrade to a missing snapshot only —
@@ -851,39 +878,56 @@ export class TaskController {
   private async recordProgressSnapshot(
     task: Task,
     loop: AgentLoop,
-    context: { historyStart: number; execution: ToolBatchExecutionSummary },
+    context: { execution: ToolBatchExecutionSummary },
   ): Promise<readonly ProgressSignal[]> {
     try {
       const store = this.progressStoreFor(task.workspace);
       const persisted = await store.load();
-      const fingerprint = goalFingerprint(task.prompt);
-      // A different task prompt resets the window; the file itself is shared per workspace.
-      const state: PersistedProgressState =
-        persisted.goalFingerprint === fingerprint
-          ? persisted
-          : { ...EMPTY_PROGRESS_STATE, goalFingerprint: fingerprint };
+      const fingerprint = this.progressGoalFingerprint(task);
       const budgets = {
-        exploreBudget: state.exploreBudget > 0 ? state.exploreBudget : DEFAULT_EXPLORE_BUDGET,
-        implementBudget: state.implementBudget > 0 ? state.implementBudget : DEFAULT_IMPLEMENT_BUDGET,
+        exploreBudget: persisted.exploreBudget > 0 ? persisted.exploreBudget : DEFAULT_EXPLORE_BUDGET,
+        implementBudget: persisted.implementBudget > 0 ? persisted.implementBudget : DEFAULT_IMPLEMENT_BUDGET,
       };
-
-      // Resuming a known task in a fresh process: replay the window's
-      // warn-and-above signals once, so the model re-learns what went wrong.
-      if (state.goalFingerprint === fingerprint && this.progressRecoveryFor !== fingerprint) {
-        this.progressRecoveryFor = fingerprint;
-        for (const signal of computeSignals({
-          snapshots: state.snapshots,
-          phase: state.phase ?? INITIAL_PHASE_STATE,
-          allowedPaths: state.allowedPaths,
-          budgets,
-        })) {
-          this.notifiedProgressSignals.add(signalKey(signal));
-          if (signal.severity !== "info") this.pendingProgressNotices.push(signalToNotice(signal));
+      const resumed = this.resumedGoalFingerprint !== undefined;
+      let state: PersistedProgressState;
+      if (persisted.goalFingerprint !== fingerprint) {
+        state = freshRunState(persisted, fingerprint);
+      } else if (resumed) {
+        state = resumedRunState(persisted, fingerprint);
+      } else if (persisted.stop !== undefined) {
+        // The previous run of this goal already ended. Its window describes
+        // finished work: replaying its warnings into this run was pure noise,
+        // and its phase counters described a task that is over.
+        state = freshRunState(persisted, fingerprint);
+      } else {
+        // Interrupted run — the process died, or the user re-ran the same prompt
+        // while it was still in flight. Replay the window's warn-and-above
+        // signals once so the model re-learns what went wrong.
+        state = persisted;
+        if (this.progressRecoveryFor !== fingerprint) {
+          this.progressRecoveryFor = fingerprint;
+          for (const signal of computeSignals({
+            snapshots: state.snapshots,
+            phase: state.phase ?? INITIAL_PHASE_STATE,
+            allowedPaths: state.allowedPaths,
+            budgets,
+          })) {
+            this.notifiedProgressSignals.add(signalKey(signal));
+            // Seeded as active so the replayed warning is not immediately
+            // injected a second time by the rising-edge rule below.
+            this.activeLevelSignals.add(signal.kind);
+            if (signal.severity !== "info") this.pendingProgressNotices.push(signalToNotice(signal));
+          }
         }
       }
+      const disarmed = state.enforcement === "off";
 
       const mutatedCallIds = new Set(context.execution.mutatedCallIds);
-      const executed = loop.executionHistory.slice(context.historyStart).map((item) => ({
+      // The loop keeps this turn's records separately: slicing executionHistory
+      // by an index returns an empty list once its 50-entry cap starts dropping
+      // the oldest entries, which silently disabled the whole progress layer on
+      // exactly the long tasks it exists for.
+      const executed = loop.turnExecutionRecords().map((item) => ({
         call: item.call,
         result: item.result,
         mutated: item.call.id !== undefined && mutatedCallIds.has(item.call.id),
@@ -898,17 +942,23 @@ export class TaskController {
         },
         cumulativeTokensIn: loop.inputTokens,
         cumulativeTokensOut: loop.outputTokens,
+        previousTrackedPaths: state.allowedPaths,
         previous: state.snapshots.at(-1),
       });
+      const explorationTask = isExplorationTask(task.prompt);
+      // Mechanism B (both halves) is off for exploration-declared tasks, whose
+      // criteria do not apply, and for a task the user resumed, which is the
+      // point of resuming. Mechanism B1 used to run regardless, so a declared
+      // research task still got the "no new information" warning.
+      const gateActive = !explorationTask && !disarmed;
       const phaseResult = updatePhase(state.phase, snapshot, budgets);
       // Mechanism B2: once the exploration budget is exhausted, require a
-      // structured rehearsal instead of stopping. Exploration-declared tasks
-      // skip mechanism B entirely.
+      // structured rehearsal instead of stopping.
       let rehearsal = state.rehearsal;
       if (
+        gateActive &&
         phaseResult.state.phase === "explore" &&
         phaseResult.state.readonlyFilesRead > budgets.exploreBudget &&
-        !isExplorationTask(task.prompt) &&
         !rehearsal
       ) {
         this.pendingProgressNotices.push(rehearsalRequestNotice(true));
@@ -917,7 +967,7 @@ export class TaskController {
 
       // Mechanism B1: symbol novelty over this turn's successful reads.
       let novelty = state.novelty;
-      if (phaseResult.state.phase === "explore") {
+      if (gateActive && phaseResult.state.phase === "explore") {
         const reads = executed
           .filter((item) => item.call.name === "read_file" && item.result.ok)
           .map((item) => {
@@ -953,30 +1003,43 @@ export class TaskController {
         }
       }
 
-      const allowedPaths =
-        state.allowedPaths.length > 0
-          ? state.allowedPaths
-          : [...new Set(snapshot.toolCalls.flatMap((call) => (call.mutated ? call.paths : [])))];
+      // The task's file footprint comes from the snapshot, which grows it with
+      // this turn's writes; the goal-drift anchor was previously frozen at the
+      // first mutating turn, so a TDD run or a multi-file change counted its own
+      // later files as out of scope.
+      const allowedPaths = snapshot.trackedPaths;
       const snapshots = [...state.snapshots, snapshot].slice(-MAX_SNAPSHOTS);
 
-      const signals = [
-        ...phaseResult.signals,
-        ...computeSignals({ snapshots, phase: phaseResult.state, allowedPaths, budgets }),
-      ];
+      const levelSignals = computeSignals({ snapshots, phase: phaseResult.state, allowedPaths, budgets });
       const hardSignals: ProgressSignal[] = [];
-      for (const signal of signals) {
+      for (const signal of [...phaseResult.signals, ...levelSignals]) {
         this.debugLogger(JSON.stringify({ event: "progress_signal", ...signal }));
         if (signal.severity === "hard") {
+          if (disarmed) {
+            // The gate is disarmed by /resume: record the signal, do not stop.
+            // Pausing here would overrule a decision the user just made.
+            this.debugLogger(JSON.stringify({ event: "progress_signal_suppressed", ...signal }));
+            continue;
+          }
           hardSignals.push(signal);
           continue;
         }
-        // Warn notices inject once per firing turn; info stays in the debug log.
-        const key = signalKey(signal);
-        if (signal.severity === "warn" && !this.notifiedProgressSignals.has(key)) {
-          this.notifiedProgressSignals.add(key);
-          this.pendingProgressNotices.push(signalToNotice(signal));
+        // info stays in the debug log; warn is injected into the next request.
+        if (signal.severity !== "warn") continue;
+        if (levelSignals.includes(signal)) {
+          // Level signals are recomputed every turn while their condition holds.
+          // Keying them by turn made each turn a new key, so the same notice was
+          // re-injected for as long as the window remembered the condition;
+          // notify on the rising edge instead.
+          if (!this.activeLevelSignals.has(signal.kind)) this.pendingProgressNotices.push(signalToNotice(signal));
+          continue;
         }
+        const key = signalKey(signal);
+        if (this.notifiedProgressSignals.has(key)) continue;
+        this.notifiedProgressSignals.add(key);
+        this.pendingProgressNotices.push(signalToNotice(signal));
       }
+      this.activeLevelSignals = new Set(levelSignals.map((signal) => signal.kind));
 
       // Intermediate write debounces; persist() flushes on every state transition.
       store.scheduleSave({
@@ -1005,7 +1068,7 @@ export class TaskController {
       const store = this.progressStoreFor(task.workspace);
       const state = await store.load();
       const rehearsal = state.rehearsal;
-      if (!rehearsal || state.goalFingerprint !== goalFingerprint(task.prompt)) return undefined;
+      if (!rehearsal || state.goalFingerprint !== this.progressGoalFingerprint(task)) return undefined;
 
       const parsed = parseRehearsal(reply);
       if (parsed && judgeConvergence(rehearsal.last, parsed) === "converged") {
@@ -1035,9 +1098,11 @@ export class TaskController {
       // Already had its second chance and still did not converge.
       await store.save({ ...state, rehearsal: undefined, updatedAt: new Date().toISOString() });
       return {
-        call:
-          this.loop?.toolCalls.at(-1) ??
-          { name: "progress_signal", arguments: {}, createdAt: new Date().toISOString() },
+        call: this.loop?.toolCalls.at(-1) ?? {
+          name: "progress_signal",
+          arguments: {},
+          createdAt: new Date().toISOString(),
+        },
         repeatCount: 1,
         limit: 1,
         reason: "progress_signal",
@@ -1052,10 +1117,11 @@ export class TaskController {
   }
 
   /** Record how a task ended, for the next run of the same goal. */
-  private async recordProgressStop(task: Task, kind: ProgressStopKind): Promise<void> {    try {
+  private async recordProgressStop(task: Task, kind: ProgressStopKind): Promise<void> {
+    try {
       const store = this.progressStoreFor(task.workspace);
       const state = await store.load();
-      const fingerprint = goalFingerprint(task.prompt);
+      const fingerprint = this.progressGoalFingerprint(task);
       if (state.goalFingerprint !== fingerprint) return;
       await store.save({
         ...state,

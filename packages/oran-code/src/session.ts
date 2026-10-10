@@ -37,6 +37,7 @@ import {
 } from "./session-lifecycle.js";
 import { SessionCrudService } from "./session-crud.js";
 import { workspaceFingerprint } from "./controller-utils.js";
+import { ProgressStateStore } from "./progress/store.js";
 import { TerminalRenderer, createPromptHooks, type SessionRenderer } from "./renderer.js";
 import { createTask } from "./types.js";
 import { SessionStore, type StoredSession } from "./session-store.js";
@@ -405,6 +406,7 @@ export class TerminalSession {
         return runtime.snapshotStore.undoLatest(sessionId);
       },
       rewindConversation: (argument) => this.rewindConversation(argument),
+      resumeProgressTask: () => this.resumeProgressTask(),
       requestExit: () => {
         this.quitRequested = true;
         if (this.tui) this.tui.destroy();
@@ -719,6 +721,7 @@ export class TerminalSession {
     isolated = false,
     derivedSkill?: SkillDefinition,
     joinStructuredForks = false,
+    resumedGoalFingerprint?: string,
   ): Promise<Task> {
     if (this.shellRunning()) throw new Error("finish the current shell command before starting a task");
     if (this.compactRunning()) throw new Error("wait for or cancel context compaction before starting a task");
@@ -852,9 +855,7 @@ export class TerminalSession {
           : this.activeSkillReminders();
         const notifications = agentRuntime.backgroundAgents.drainNotifications().map(backgroundTaskNotification);
         consumedBackgroundNotifications.push(...notifications);
-        const jobNotifications = shellJobs()
-          .drainNotifications()
-          .map(shellJobNotification);
+        const jobNotifications = shellJobs().drainNotifications().map(shellJobNotification);
         consumedBackgroundNotifications.push(...jobNotifications);
         return [...reminders, ...notifications, ...jobNotifications];
       },
@@ -864,6 +865,7 @@ export class TerminalSession {
       previousToolCalls: this.previousToolHistory,
       ...(this.previousReadonlyResults !== undefined ? { previousReadonlyResults: this.previousReadonlyResults } : {}),
       debugLogger: (message) => this.writeDebugLog(message),
+      ...(resumedGoalFingerprint !== undefined ? { resumedGoalFingerprint } : {}),
       ...(sessionId ? { snapshotStore: agentRuntime.snapshotStore, snapshotSessionId: sessionId } : {}),
     });
     this.controller = controller;
@@ -951,9 +953,10 @@ export class TerminalSession {
     queued = false,
     isolated = false,
     derivedSkill?: SkillDefinition,
+    progress?: { resumeGoal: string },
   ): void {
     if (queued) this.renderer.user(prompt, true);
-    this.taskPromise = this.startTask(prompt, printErrors, isolated, derivedSkill)
+    this.taskPromise = this.startTask(prompt, printErrors, isolated, derivedSkill, false, progress?.resumeGoal)
       .catch((error) => {
         if (printErrors) return undefined as unknown as Task;
         throw error;
@@ -1471,9 +1474,7 @@ export class TerminalSession {
     const { shellJobNotification, shellJobs } = await loadShellJobs();
     const notifications = [
       ...runtime.backgroundAgents.drainNotifications().map(backgroundTaskNotification),
-      ...shellJobs()
-        .drainNotifications()
-        .map(shellJobNotification),
+      ...shellJobs().drainNotifications().map(shellJobNotification),
     ];
     if (!notifications.length) return;
     for (const notification of notifications) {
@@ -1712,6 +1713,29 @@ export class TerminalSession {
    * - 归档逻辑截断走会话存储既有的 `session-reset` 通路,原始 JSONL 字节保留可审计;
    * - 压缩边界之后的轮次才能回退:更早的对话已被摘要折叠,原文不在活跃历史里。
    */
+  /**
+   * /resume:继续被进度门禁暂停的任务。把手头这份暂停状态里的 goal 指纹交给新任务,
+   * 让新任务沿用那一次的窗口、阶段与已写文件(见 resumedRunState),同时把门禁关掉
+   * —— 这正是暂停提示里承诺的那件事。
+   */
+  private async resumeProgressTask(): Promise<{ ok: boolean; output: string }> {
+    if (!this.model) return { ok: false, output: "no model selected; use /model PROVIDER/MODEL first" };
+    const state = await new ProgressStateStore(this.workspace).load().catch(() => undefined);
+    const stop = state?.stop;
+    if (!state || (stop?.kind !== "blocked" && stop?.kind !== "stopped_by_budget")) {
+      return {
+        ok: false,
+        output: "No paused task to resume: use /resume after a progress gate or the token budget pauses one.",
+      };
+    }
+    const prompt =
+      "Continue the task that was paused, from where it stopped. The progress gate is disarmed for the rest of this run.";
+    this.renderer.user(prompt);
+    this.setPrompt();
+    this.launchTask(prompt, true, false, false, undefined, { resumeGoal: state.goalFingerprint });
+    return { ok: true, output: "Resuming the paused task; the progress gate is off for this run." };
+  }
+
   private async rewindConversation(argument: string): Promise<{ ok: boolean; output: string }> {
     const indices = userTurnIndices(this.conversation);
     if (!indices.length) return { ok: false, output: "This session has no user messages to rewind to." };
@@ -1736,7 +1760,10 @@ export class TerminalSession {
     }
     const target = Number.parseInt(requested, 10);
     if (!Number.isInteger(target) || target < 1 || target > indices.length) {
-      return { ok: false, output: `Invalid rewind target: ${requested}. Use a number between 1 and ${indices.length}.` };
+      return {
+        ok: false,
+        output: `Invalid rewind target: ${requested}. Use a number between 1 and ${indices.length}.`,
+      };
     }
     const cut = indices[target - 1]!;
     if (cut === 0) return { ok: false, output: "Already at the beginning of this session; nothing to rewind." };
@@ -2336,7 +2363,9 @@ function tuiJobStatus(status: "running" | "exited" | "failed" | "killed"): strin
 
 /** /rewind 列表里的单行摘要:去掉 "User message:" 包装,压平空白,截断到一行。 */
 function summarizeUserTurn(content: string): string {
-  const withoutPrefix = content.includes("User message:\n") ? content.slice(content.indexOf("User message:\n")) : content;
+  const withoutPrefix = content.includes("User message:\n")
+    ? content.slice(content.indexOf("User message:\n"))
+    : content;
   const flattened = withoutPrefix
     .replace(/^User message:\n?/, "")
     .replace(/\s+/g, " ")

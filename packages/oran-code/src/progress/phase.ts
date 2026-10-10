@@ -100,11 +100,17 @@ export function updatePhase(
 /**
  * Explicitly exploration-shaped tasks ("research this module") widen the
  * mechanism-B criteria; the declaration is an artifact of the prompt, not an
- * automatic classification.
+ * automatic classification. A prompt that names a research verb *and* asks for
+ * a change ("research this bug and fix it") is a delivery task: reading the
+ * first marker alone would switch the convergence gate off for exactly the
+ * tasks it is meant to cover.
  */
 const EXPLORATION_MARKERS =
   /调研|研究|调查|梳理|\b(?:understand|investigate|research|explor\w*|survey|read[- ]?through)\b/i;
+const DELIVERY_MARKERS =
+  /修复|实现|添加|新增|改一下|改成|重构|优化|升级|\b(?:fix|implement|add|create|write|rename|refactor|rewrite|upgrade|migrate|optimi[sz]e)\b/i;
 
 export function isExplorationTask(prompt: string): boolean {
-  return EXPLORATION_MARKERS.test(prompt.slice(0, 400));
+  const head = prompt.slice(0, 400);
+  return EXPLORATION_MARKERS.test(head) && !DELIVERY_MARKERS.test(head);
 }

@@ -2,7 +2,13 @@ import { describe, expect, it } from "vitest";
 import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { captureTurnSnapshot, extractEvidence, goalFingerprint, type ProgressEvidence, type TurnSnapshot } from "../src/progress/capture.js";
+import {
+  captureTurnSnapshot,
+  extractEvidence,
+  goalFingerprint,
+  type ProgressEvidence,
+  type TurnSnapshot,
+} from "../src/progress/capture.js";
 import { DEFAULT_EXPLORE_BUDGET, INITIAL_PHASE_STATE, updatePhase, type PhaseState } from "../src/progress/phase.js";
 import { computeSignals } from "../src/progress/signals.js";
 import { INITIAL_NOVELTY_STATE, updateNovelty } from "../src/progress/novelty.js";
@@ -40,7 +46,10 @@ describe("progress capture", () => {
 
   it("marks typecheck failures from tsc output", () => {
     const evidence = extractEvidence([
-      { call: call("run_command", { command: "tsc -p tsconfig.json" }), result: result("src/a.ts(1,1): error TS2304: nope", false) },
+      {
+        call: call("run_command", { command: "tsc -p tsconfig.json" }),
+        result: result("src/a.ts(1,1): error TS2304: nope", false),
+      },
     ]);
     expect(evidence).toMatchObject({ typecheckOk: false });
   });
@@ -81,11 +90,12 @@ describe("progress capture", () => {
   });
 });
 
-function readSnapshot(turn: number, files: number): TurnSnapshot {
+function readSnapshot(turn: number, files: number, trackedPaths: string[] = []): TurnSnapshot {
   return {
     turn,
     ts: "2026-09-29T00:00:00.000Z",
     workspaceDigest: `digest-${turn}`,
+    trackedPaths,
     toolCalls: Array.from({ length: files }, (_, i) => ({
       name: "read_file",
       argsDigest: `args-${turn}-${i}`,
@@ -107,7 +117,15 @@ function mutatedSnapshot(turn: number): TurnSnapshot {
   return {
     ...readSnapshot(turn, 0),
     toolCalls: [
-      { name: "edit_file", argsDigest: "a", resultDigest: "r", ok: true, readonly: false, mutated: true, paths: ["src/a.ts"] },
+      {
+        name: "edit_file",
+        argsDigest: "a",
+        resultDigest: "r",
+        ok: true,
+        readonly: false,
+        mutated: true,
+        paths: ["src/a.ts"],
+      },
     ],
   };
 }
@@ -140,7 +158,7 @@ describe("phase machine", () => {
   });
 
   it("emits phase_egress after consecutive pure-read turns inside implement", () => {
-    let state = updatePhase(undefined, mutatedSnapshot(1), budgets).state;
+    const state = updatePhase(undefined, mutatedSnapshot(1), budgets).state;
     expect(state.phase).toBe("implement");
 
     const read1 = updatePhase(state, readSnapshot(2, 1), budgets);
@@ -166,13 +184,18 @@ describe("phase machine", () => {
   });
 });
 
-function evidenceSnapshot(turn: number, evidence: ProgressEvidence | undefined, digest = `digest-${turn}`): TurnSnapshot {
-  return { ...readSnapshot(turn, 0), workspaceDigest: digest, evidence };
+function evidenceSnapshot(
+  turn: number,
+  evidence: ProgressEvidence | undefined,
+  digest = `digest-${turn}`,
+  trackedPaths: string[] = [],
+): TurnSnapshot {
+  return { ...readSnapshot(turn, 0, trackedPaths), workspaceDigest: digest, evidence };
 }
 
 function writeSnapshot(turn: number, paths: string[]): TurnSnapshot {
   return {
-    ...readSnapshot(turn, 0),
+    ...readSnapshot(turn, 0, paths),
     toolCalls: paths.map((path, i) => ({
       name: "edit_file",
       argsDigest: `a-${turn}-${i}`,
@@ -191,8 +214,8 @@ describe("computeSignals", () => {
   it("fires test_regression when testsPassed drops", () => {
     const signals = computeSignals({
       snapshots: [
-        evidenceSnapshot(1, { testsPassed: 15, testsTotal: 20 }),
-        evidenceSnapshot(2, { testsPassed: 12, testsTotal: 20 }),
+        evidenceSnapshot(1, { testsPassed: 15, testsTotal: 20, commandSig: "run_command:pnpm test" }),
+        evidenceSnapshot(2, { testsPassed: 12, testsTotal: 20, commandSig: "run_command:pnpm test" }),
       ],
       phase: INITIAL_PHASE_STATE,
       allowedPaths: [],
@@ -201,11 +224,25 @@ describe("computeSignals", () => {
     expect(signals).toContainEqual(expect.objectContaining({ kind: "test_regression", severity: "hard" }));
   });
 
+  it("ignores a smaller count that came from a different test command", () => {
+    const signals = computeSignals({
+      snapshots: [
+        evidenceSnapshot(1, { testsPassed: 40, testsTotal: 43, commandSig: "run_command:pnpm test" }),
+        evidenceSnapshot(2, { testsPassed: 3, testsTotal: 3, commandSig: "run_command:vitest run tests/one.test.ts" }),
+      ],
+      phase: INITIAL_PHASE_STATE,
+      allowedPaths: [],
+      budgets,
+    });
+    expect(signals.map((signal) => signal.kind)).not.toContain("test_regression");
+    expect(signals.map((signal) => signal.kind)).not.toContain("test_count_drop");
+  });
+
   it("fires test_count_drop when the total test count shrinks", () => {
     const signals = computeSignals({
       snapshots: [
-        evidenceSnapshot(1, { testsPassed: 20, testsTotal: 20 }),
-        evidenceSnapshot(2, { testsPassed: 18, testsTotal: 18 }),
+        evidenceSnapshot(1, { testsPassed: 20, testsTotal: 20, commandSig: "run_command:pnpm test" }),
+        evidenceSnapshot(2, { testsPassed: 18, testsTotal: 18, commandSig: "run_command:pnpm test" }),
       ],
       phase: INITIAL_PHASE_STATE,
       allowedPaths: [],
@@ -225,10 +262,14 @@ describe("computeSignals", () => {
     expect(signals).toContainEqual(expect.objectContaining({ kind: "implement_budget", severity: "hard" }));
   });
 
-  it("fires state_loop when the workspace content returns to an earlier state", () => {
+  it("fires state_loop when the tracked files hold the same bytes as an earlier turn", () => {
     const between = writeSnapshot(2, ["src/a.ts"]);
     const signals = computeSignals({
-      snapshots: [evidenceSnapshot(1, undefined, "same"), between, evidenceSnapshot(3, undefined, "same")],
+      snapshots: [
+        evidenceSnapshot(1, undefined, "same-digest", ["src/a.ts"]),
+        between,
+        evidenceSnapshot(3, undefined, "same-digest", ["src/a.ts"]),
+      ],
       phase: INITIAL_PHASE_STATE,
       allowedPaths: [],
       budgets,
@@ -236,19 +277,46 @@ describe("computeSignals", () => {
     expect(signals).toContainEqual(expect.objectContaining({ kind: "state_loop", severity: "warn" }));
   });
 
-  it("warns on two consecutive out-of-scope turns and hard-pauses at four", () => {
+  it("does not report a state loop before the task has written anything", () => {
+    // Nothing tracked means nothing to compare; an empty digest is not a state.
+    const signals = computeSignals({
+      snapshots: [
+        evidenceSnapshot(1, undefined, ""),
+        writeSnapshot(2, ["src/a.ts"]),
+        evidenceSnapshot(3, undefined, ""),
+      ],
+      phase: INITIAL_PHASE_STATE,
+      allowedPaths: [],
+      budgets,
+    });
+    expect(signals.map((signal) => signal.kind)).not.toContain("state_loop");
+  });
+
+  it("warns on consecutive out-of-scope turns but never pauses on goal drift", () => {
     const base = { phase: INITIAL_PHASE_STATE, allowedPaths: ["src/a.ts"], budgets };
     const warn = computeSignals({
       snapshots: [writeSnapshot(1, ["src/b.ts"]), writeSnapshot(2, ["src/b.ts"])],
       ...base,
     });
     expect(warn).toContainEqual(expect.objectContaining({ kind: "goal_drift", severity: "warn" }));
+    // The notice has to name the files: without them the user cannot tell whether
+    // the agent wandered off or the anchor is wrong.
+    expect(warn.find((signal) => signal.kind === "goal_drift")?.detail).toContain("src/b.ts");
 
-    const hard = computeSignals({
-      snapshots: [writeSnapshot(1, ["src/b.ts"]), writeSnapshot(2, ["src/b.ts"]), writeSnapshot(3, ["src/b.ts"]), writeSnapshot(4, ["src/b.ts"])],
+    // No hard tier: four turns of new files is exactly what a four-file refactor
+    // looks like to an anchor that cannot read the task spec, and stopping work
+    // on that guess is worse than a reminder.
+    const long = computeSignals({
+      snapshots: [
+        writeSnapshot(1, ["src/b.ts"]),
+        writeSnapshot(2, ["src/b.ts"]),
+        writeSnapshot(3, ["src/b.ts"]),
+        writeSnapshot(4, ["src/b.ts"]),
+      ],
       ...base,
     });
-    expect(hard).toContainEqual(expect.objectContaining({ kind: "goal_drift", severity: "hard" }));
+    expect(long.filter((signal) => signal.severity === "hard")).toHaveLength(0);
+    expect(long).toContainEqual(expect.objectContaining({ kind: "goal_drift", severity: "warn" }));
 
     // In-scope writes never drift, no matter how many turns.
     const none = computeSignals({
@@ -322,7 +390,8 @@ describe("structured rehearsal (mechanism B2)", () => {
   });
 
   it("parses a fenced JSON rehearsal", () => {
-    const reply = 'Here is my status:\n```json\n{"hypothesis":"h","excluded":["a"],"candidateSet":["b"],"nextCheck":"c"}\n```';
+    const reply =
+      'Here is my status:\n```json\n{"hypothesis":"h","excluded":["a"],"candidateSet":["b"],"nextCheck":"c"}\n```';
     expect(parseRehearsal(reply)).toMatchObject({ hypothesis: "h", candidateSet: ["b"] });
   });
 });

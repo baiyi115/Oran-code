@@ -117,6 +117,8 @@ export class AgentLoop {
   private readonly seenResultFingerprints = new Set<string>();
   private readonly resultFingerprintOrder: string[] = [];
   private turnResultFingerprints: string[] = [];
+  /** This turn's recorded executions; see turnExecutionRecords(). */
+  private turnExecutions: Array<{ call: ToolCall; result: ToolResult }> = [];
 
   constructor(config: LoopConfig, seedCalls: readonly ToolCall[] = []) {
     this.config = config;
@@ -149,6 +151,7 @@ export class AgentLoop {
   recordTurn(): void {
     this.turns += 1;
     this.turnResultFingerprints = [];
+    this.turnExecutions = [];
   }
 
   recordUsage(usage: Record<string, number>): void {
@@ -176,10 +179,19 @@ export class AgentLoop {
     const callSig = toolCallSignature(call);
     const resultSig = toolResultSignature(result);
     this.executionHistory.push({ call, callSig, result, resultSig, errorSig });
+    this.turnExecutions.push({ call, result });
     this.turnResultFingerprints.push(resultSig);
     if (this.executionHistory.length > AgentLoop.MAX_EXECUTION_HISTORY) {
       this.executionHistory.splice(0, this.executionHistory.length - AgentLoop.MAX_EXECUTION_HISTORY);
     }
+  }
+
+  /**
+   * 本轮记录过的调用与结果,按发生顺序。executionHistory 有 50 条上限且从头部
+   * 丢弃,拿它的下标切"本轮"在长任务上会切出空数组,所以本轮单独留一份。
+   */
+  turnExecutionRecords(): ReadonlyArray<{ call: ToolCall; result: ToolResult }> {
+    return this.turnExecutions;
   }
 
   recordTurnProgress(activity: {

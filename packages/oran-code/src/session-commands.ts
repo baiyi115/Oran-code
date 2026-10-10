@@ -54,6 +54,8 @@ export interface SessionCommandContext {
   currentSessionId(): string | undefined;
   undoLatestChanges(): Promise<{ ok: boolean; output: string }>;
   rewindConversation(argument: string): Promise<{ ok: boolean; output: string }>;
+  /** /resume:继续被进度门禁暂停的任务(该轮沿用暂停那次的任务身份)。 */
+  resumeProgressTask(): Promise<{ ok: boolean; output: string }>;
   requestExit(): void;
   /** /status 与 /mcp 的共享视图;调用方负责先确保 MCP 就绪。 */
   mcpStatus(): Promise<McpStatusSnapshot>;
@@ -203,6 +205,16 @@ export class SessionCommandRouter {
         else this.ctx.renderer().error(result.output);
         return;
       }
+      case "resume-progress": {
+        if (this.ctx.interactionRunning() || this.ctx.hasPendingApprovals()) {
+          this.ctx.renderer().status("finish or cancel the current task before resuming", "yellow");
+          return;
+        }
+        const result = await this.ctx.resumeProgressTask();
+        if (result.ok) this.ctx.renderer().status(result.output, "cyan");
+        else this.ctx.renderer().error(result.output);
+        return;
+      }
       case "exit":
         this.ctx.requestExit();
         return;
@@ -289,7 +301,10 @@ export class SessionCommandRouter {
         try {
           const handle = await ensureGraph(this.ctx.workspace);
           const how = handle.cached ? "cache hit" : handle.incremental ? "incremental rebuild" : "full rebuild";
-          return `${graphSummary(handle.index)}\nIndex file: ${graphIndexPath(this.ctx.workspace)} (${how})`;
+          const scanNote = handle.scanFailures.length
+            ? `\nCould not read ${handle.scanFailures.length} path(s): ${handle.scanFailures.slice(0, 3).join(", ")}`
+            : "";
+          return `${graphSummary(handle.index)}${scanNote}\nIndex file: ${graphIndexPath(this.ctx.workspace)} (${how})`;
         } catch (error) {
           return `Could not build the dependency graph: ${error instanceof Error ? error.message : String(error)}`;
         }

@@ -11,6 +11,7 @@ export type SlashCommandAction =
   | "permission"
   | "plan"
   | "rename"
+  | "resume-progress"
   | "rewind"
   | "session"
   | "skills"
@@ -49,6 +50,12 @@ export const DEFAULT_COMMANDS: readonly SlashCommand[] = [
   },
   { name: "/plan", description: "enter plan mode", kind: "ui", action: "plan" },
   { name: "/rename", description: "rename current session", argumentHint: "NAME", kind: "ui", action: "rename" },
+  {
+    name: "/resume",
+    description: "continue the task a progress gate paused (gate disarmed for that run)",
+    kind: "ui",
+    action: "resume-progress",
+  },
   {
     name: "/undo",
     aliases: ["/rollback"],

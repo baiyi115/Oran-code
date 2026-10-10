@@ -41,7 +41,6 @@ export interface SignalWindowInput {
 }
 
 const GOAL_DRIFT_WARN_TURNS = 2;
-const GOAL_DRIFT_HARD_TURNS = 4;
 
 /**
  * Level-based signals computed over the snapshot window. These fire while the
@@ -77,7 +76,13 @@ export function computeSignals(input: SignalWindowInput): ProgressSignal[] {
       .map((snapshot) => evidenceOf(snapshot))
       .find((evidence) => evidence !== undefined);
     if (previousEvidence) {
+      // Counts are only comparable when both came from the same test command: a
+      // subset run (one file, one test name) reports fewer passed tests than a
+      // full run and would otherwise hard-pause the task mid-debugging.
+      const sameCommand =
+        currentEvidence.commandSig !== undefined && currentEvidence.commandSig === previousEvidence.commandSig;
       if (
+        sameCommand &&
         currentEvidence.testsPassed !== undefined &&
         previousEvidence.testsPassed !== undefined &&
         currentEvidence.testsPassed < previousEvidence.testsPassed
@@ -90,6 +95,7 @@ export function computeSignals(input: SignalWindowInput): ProgressSignal[] {
         });
       }
       if (
+        sameCommand &&
         currentEvidence.testsTotal !== undefined &&
         previousEvidence.testsTotal !== undefined &&
         currentEvidence.testsTotal < previousEvidence.testsTotal
@@ -104,14 +110,19 @@ export function computeSignals(input: SignalWindowInput): ProgressSignal[] {
     }
   }
 
-  // State loop: the workspace content returned to an earlier state after
-  // mutations in between — work that undid itself.
-  const loopIndex = snapshots.findIndex(
-    (snapshot, index) =>
-      index < snapshots.length - 1 &&
-      snapshot.workspaceDigest === current.workspaceDigest &&
-      snapshots.slice(index + 1, -1).some((s) => s.toolCalls.some((call) => call.mutated)),
-  );
+  // State loop: the files this task has written hold the same bytes as they did
+  // at an earlier turn, with mutations in between — work that undid itself. The
+  // digest is content-based; while it mixed in mtimes it could never repeat an
+  // earlier value, which made this check unreachable.
+  const currentDigest = current.workspaceDigest;
+  const loopIndex = currentDigest
+    ? snapshots.findIndex(
+        (snapshot, index) =>
+          index < snapshots.length - 1 &&
+          snapshot.workspaceDigest === currentDigest &&
+          snapshots.slice(index + 1, -1).some((s) => s.toolCalls.some((call) => call.mutated)),
+      )
+    : -1;
   if (loopIndex >= 0) {
     signals.push({
       kind: "state_loop",
@@ -122,7 +133,14 @@ export function computeSignals(input: SignalWindowInput): ProgressSignal[] {
   }
 
   // Goal drift: trailing consecutive turns whose real writes land outside the
-  // task's target set. Two consecutive out-of-scope turns warn; four hard-pause.
+  // set this task has already written to.
+  //
+  // Deliberately warn-only. The anchor cannot tell "authorized new file" from
+  // "wandering off": a four-file refactor, or TDD starting from the test file,
+  // writes nothing but never-before-touched files for four turns in a row, and
+  // a gate that stops work on that guess is worse than a reminder. The plan
+  // document reaches the same conclusion in §6.4 (goal drift starts as
+  // reflection); the hard tier that contradicted it is removed here.
   if (input.allowedPaths.length > 0) {
     const allowed = new Set(input.allowedPaths);
     let driftRun = 0;
@@ -135,18 +153,20 @@ export function computeSignals(input: SignalWindowInput): ProgressSignal[] {
       if (!outOfScope) break;
       driftRun += 1;
     }
-    if (driftRun >= GOAL_DRIFT_HARD_TURNS) {
-      signals.push({
-        kind: "goal_drift",
-        severity: "hard",
-        detail: `${driftRun} consecutive turns wrote outside the task's target files`,
-        sinceTurn: current.turn,
-      });
-    } else if (driftRun >= GOAL_DRIFT_WARN_TURNS) {
+    if (driftRun >= GOAL_DRIFT_WARN_TURNS) {
+      const outside = [
+        ...new Set(
+          snapshots
+            .slice(-driftRun)
+            .flatMap((snapshot) => snapshot.toolCalls.flatMap((call) => (call.mutated ? call.paths : []))),
+        ),
+      ].sort();
       signals.push({
         kind: "goal_drift",
         severity: "warn",
-        detail: `${driftRun} consecutive turns wrote outside the task's target files`,
+        detail:
+          `${driftRun} consecutive turns wrote only files this task had not touched yet` +
+          (outside.length ? ` (${outside.slice(0, 5).join(", ")}${outside.length > 5 ? ", …" : ""})` : ""),
         sinceTurn: current.turn,
       });
     }
@@ -175,6 +195,13 @@ export function signalToNotice(signal: ProgressSignal): string {
       );
     case "rehearsal_diverged":
       return `Progress gate: ${signal.detail}`;
+    case "goal_drift":
+      return (
+        "Heads up: recent turns wrote nothing but files this task had not touched yet " +
+        `(${signal.detail}). If that is intentional, carry on; if not, restate the scope before writing more.`
+      );
+    case "state_loop":
+      return `Heads up: ${signal.detail} — your recent changes cancel out. Decide what the file should contain instead of editing it back and forth.`;
     default:
       return `Heads up: ${signal.kind} — ${signal.detail}`;
   }

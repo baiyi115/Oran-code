@@ -66,7 +66,8 @@ export function updateNovelty(
   let graphCovered = 0;
   const knownSet = new Set(state.known);
   for (const read of reads) {
-    const symbols = read.graphSymbols !== undefined ? read.graphSymbols.slice(0, MAX_SYMBOLS_PER_READ) : regexSymbols(read.text);
+    const symbols =
+      read.graphSymbols !== undefined ? read.graphSymbols.slice(0, MAX_SYMBOLS_PER_READ) : regexSymbols(read.text);
     if (read.graphSymbols !== undefined) graphCovered += 1;
     for (const name of symbols) {
       total += 1;
@@ -86,10 +87,6 @@ export function updateNovelty(
   if (novelty < NOVELTY_THRESHOLD) state.lowRun += 1;
   else state.lowRun = 0;
 
-  if (state.known.length < MAX_KNOWN_SYMBOLS) {
-    state.known = [...knownSet].slice(-MAX_KNOWN_SYMBOLS);
-  }
-
   if (state.lowRun >= NOVELTY_LOW_RUN) {
     signal = {
       kind: "low_symbol_novelty",
@@ -98,5 +95,10 @@ export function updateNovelty(
       sinceTurn: 0,
     };
   }
+  // Always re-store the trimmed set. Guarding this on the *previous* length
+  // froze the set at the cap: every symbol read afterwards was no longer
+  // remembered, so each turn counted them as fresh, novelty stayed near 1, and
+  // the lowRun counter could never reach its threshold again.
+  state.known = [...knownSet].slice(-MAX_KNOWN_SYMBOLS);
   return { state, signal };
 }

@@ -1,8 +1,8 @@
 import { createHash } from "node:crypto";
+import { readFile } from "node:fs/promises";
 import { relative, resolve } from "node:path";
 import type { ToolCall, ToolResult } from "../types.js";
 import { errorSignature, toolCallSignature, toolResultSignature } from "../loop.js";
-import { workspaceFingerprint } from "../controller-utils.js";
 
 /**
  * Per-turn capture: compress executed calls, workspace fingerprint, token
@@ -15,6 +15,13 @@ export interface ProgressEvidence {
   testsTotal?: number | undefined;
   typecheckOk?: boolean | undefined;
   buildOk?: boolean | undefined;
+  /**
+   * Signature of the command that produced the test counts. Counts from
+   * different commands are not comparable: `vitest run tests/one.test.ts`
+   * passes far fewer tests than a full run, and diffing the two numbers would
+   * read as a regression instead of a narrower selection.
+   */
+  commandSig?: string | undefined;
 }
 
 export interface CapturedToolCall {
@@ -34,8 +41,14 @@ export interface CapturedToolCall {
 export interface TurnSnapshot {
   turn: number;
   ts: string;
-  /** Workspace fingerprint (git status level); reused on turns without mutation. */
+  /**
+   * Content digest of this task's tracked files (see trackedPaths). Identical
+   * values mean the same bytes in the same files, which is what the state-loop
+   * check compares. Empty until the task writes something.
+   */
   workspaceDigest: string;
+  /** Files this task has written so far (workspace-relative, sorted). */
+  trackedPaths: string[];
   toolCalls: CapturedToolCall[];
   tokensIn: number;
   tokensOut: number;
@@ -74,7 +87,9 @@ const BUILD_COMMAND_PATTERN = /\b(build|compile)\b/i;
  * commands ran in one turn, the last non-empty value per field wins; returns
  * undefined when nothing recognizable appeared.
  */
-export function extractEvidence(calls: ReadonlyArray<{ call: ToolCall; result: ToolResult }>): ProgressEvidence | undefined {
+export function extractEvidence(
+  calls: ReadonlyArray<{ call: ToolCall; result: ToolResult }>,
+): ProgressEvidence | undefined {
   const evidence: ProgressEvidence = {};
   for (const { call, result } of calls) {
     if (call.name !== "run_command") continue;
@@ -99,6 +114,7 @@ export function extractEvidence(calls: ReadonlyArray<{ call: ToolCall; result: T
     }
     if (passed !== undefined && Number.isFinite(passed)) {
       evidence.testsPassed = passed;
+      evidence.commandSig = toolCallSignature(call);
       const totalMatch = TESTS_TOTAL_PATTERN.exec(output);
       if (totalMatch) {
         evidence.testsTotal = Number(totalMatch[1]);
@@ -120,18 +136,41 @@ export interface CaptureTurnInput {
   isReadonly: (name: string) => boolean;
   cumulativeTokensIn: number;
   cumulativeTokensOut: number;
+  /** Files earlier turns of this task already wrote to. */
+  previousTrackedPaths?: readonly string[] | undefined;
   previous?: TurnSnapshot | undefined;
+}
+
+/**
+ * Digest of the tracked files' contents. Deliberately not the workspace
+ * fingerprint: that one folds in sizes and mtimes, so it can never return to a
+ * value an earlier turn produced, and the state-loop check — which looks for
+ * exactly that repetition — could never fire.
+ */
+async function trackedContentDigest(workspace: string, paths: readonly string[]): Promise<string> {
+  const digest = createHash("sha256");
+  for (const path of paths) {
+    const content = await readFile(resolve(workspace, path)).catch(() => undefined);
+    const entry = content === undefined ? "<missing>" : createHash("sha256").update(content).digest("hex");
+    digest.update(path).update("\0").update(entry).update("\n");
+  }
+  return digest.digest("hex").slice(0, 16);
 }
 
 export async function captureTurnSnapshot(input: CaptureTurnInput): Promise<TurnSnapshot> {
   const anyMutated = input.executed.some((item) => item.mutated);
-  // The fingerprint describes the workspace's current state, so it cannot
-  // change on a turn without mutation; reuse the previous value instead of
-  // paying a git status call.
+  const turnPaths = input.executed
+    .filter((item) => item.mutated && !input.isReadonly(item.call.name))
+    .flatMap((item) => declaredWritePaths(item.call, input.workspace));
+  const trackedPaths = [...new Set([...(input.previousTrackedPaths ?? []), ...turnPaths])].sort();
+  // Only a mutating turn can have changed these files, so a read-only turn
+  // reuses the previous digest instead of re-reading them.
   const workspaceDigest =
-    anyMutated || !input.previous
-      ? await workspaceFingerprint(input.workspace)
-      : input.previous.workspaceDigest;
+    trackedPaths.length === 0
+      ? ""
+      : anyMutated || input.previous?.trackedPaths === undefined
+        ? await trackedContentDigest(input.workspace, trackedPaths)
+        : input.previous.workspaceDigest;
 
   const toolCalls: CapturedToolCall[] = input.executed.map(({ call, result, mutated }) => ({
     name: call.name,
@@ -150,6 +189,7 @@ export async function captureTurnSnapshot(input: CaptureTurnInput): Promise<Turn
     turn: input.turn,
     ts: new Date().toISOString(),
     workspaceDigest,
+    trackedPaths,
     toolCalls,
     tokensIn: Math.max(0, input.cumulativeTokensIn - previousIn),
     tokensOut: Math.max(0, input.cumulativeTokensOut - previousOut),

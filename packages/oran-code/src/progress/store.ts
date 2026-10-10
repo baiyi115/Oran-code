@@ -46,6 +46,12 @@ export interface PersistedProgressState {
   rehearsal?: { phase: "requested" | "reflected"; requestedTurn: number; last?: RehearsalData | undefined } | undefined;
   /** How the previous run of this task ended; absent while still running. */
   stop?: ProgressStop | undefined;
+  /**
+   * "off" while the user has explicitly resumed a paused task: the gate still
+   * records signals but no longer pauses on them, which is the escape hatch the
+   * pause message promises.
+   */
+  enforcement?: "off" | undefined;
   snapshots: TurnSnapshot[];
 }
 
@@ -67,6 +73,38 @@ export const EMPTY_PROGRESS_STATE: PersistedProgressState = {
   phase: undefined,
   snapshots: [],
 };
+
+/**
+ * A run that starts from scratch: the configured budgets survive, the previous
+ * run's window does not. Used for a new task and for re-running a goal whose
+ * previous run already ended — replaying a finished run's warnings into a fresh
+ * task was pure noise, and its phase counters described work that is over.
+ */
+export function freshRunState(previous: PersistedProgressState, goalFingerprint: string): PersistedProgressState {
+  return {
+    ...EMPTY_PROGRESS_STATE,
+    goalFingerprint,
+    exploreBudget: previous.exploreBudget,
+    implementBudget: previous.implementBudget,
+  };
+}
+
+/**
+ * Adopt a paused run (/resume): keep what the task already learned about the
+ * repository, restart the counters that tripped the gate, and leave the gate
+ * disarmed so the user's decision to continue is not immediately overruled.
+ */
+export function resumedRunState(previous: PersistedProgressState, goalFingerprint: string): PersistedProgressState {
+  return {
+    ...freshRunState(previous, goalFingerprint),
+    allowedPaths: previous.allowedPaths,
+    novelty: previous.novelty,
+    phase: previous.phase
+      ? { ...previous.phase, readonlyFilesRead: 0, implementTurns: 0, consecutiveReadTurns: 0, egressCount: 0 }
+      : previous.phase,
+    enforcement: "off",
+  };
+}
 
 export class ProgressStateStore {
   private state: PersistedProgressState | undefined;
@@ -99,7 +137,14 @@ export class ProgressStateStore {
       clearTimeout(this.persistTimer);
       this.persistTimer = undefined;
     }
-    if (this.dirty) await this.writeTail;
+    // Clearing the timer only cancels the pending write; the state still has to
+    // reach disk, so this queues a real snapshot (awaiting writeTail alone would
+    // await an already-settled promise and write nothing).
+    if (this.dirty) {
+      const job = this.writeTail.then(() => this.writeSnapshot()).catch(() => undefined);
+      this.writeTail = job;
+      await job;
+    }
   }
 
   private async write(state: PersistedProgressState, now: boolean): Promise<void> {
@@ -151,6 +196,7 @@ export class ProgressStateStore {
             ? (parsed.rehearsal as PersistedProgressState["rehearsal"])
             : undefined,
         stop: parsed.stop && typeof parsed.stop === "object" ? (parsed.stop as ProgressStop) : undefined,
+        enforcement: parsed.enforcement === "off" ? "off" : undefined,
         snapshots: Array.isArray(parsed.snapshots) ? parsed.snapshots : [],
       };
     } catch {
