@@ -1,41 +1,59 @@
 import { createHash } from "node:crypto";
-import { readFile } from "node:fs/promises";
-import { walkFiles } from "../tools/glob.js";
-import { extractSpecifiers, runQuery, stripQuotes } from "./extract.js";
-import type { QueryMatchData } from "./extract-raw.js";
+import { readFile, stat } from "node:fs/promises";
+import { availableParallelism } from "node:os";
+import { join } from "node:path";
+import { walkFiles, type WalkFailure } from "../tools/glob.js";
+import { mapLimit } from "../utils/map-limit.js";
+import { analyzeFile } from "./extract.js";
+import { analyzeContribution } from "./contribution.js";
+import { resolveCalls, resolveInherits, type PendingCall, type PendingInherit } from "./symbols.js";
 import { loadConfigSnapshot } from "./resolve/config.js";
 import { registerAllLanguages } from "./languages/all.js";
 import {
   languageForFile,
   registeredLanguages,
-  type CallEdge,
   type GraphIndex,
-  type InheritanceEdge,
   type LanguageSupport,
   type ResolveContext,
   type SymbolNode,
-  type UnresolvedImport,
 } from "./languages/registry.js";
 
 function ensureLanguagesRegistered(): void {
   registerAllLanguages();
 }
 
-/** A broken query in one language must never fail the whole build. */
-async function safeQuery(grammar: string, query: string, source: string): Promise<QueryMatchData[]> {
-  try {
-    return await runQuery(grammar, query, source);
-  } catch {
-    return [];
-  }
-}
+/**
+ * Files analyzed concurrently. Per file the work alternates between this thread
+ * (read, resolve, JSON) and the grammar's parse host, so a few requests in flight
+ * hide each side behind the other instead of leaving both idle in turn. Requests
+ * to one host are still served one at a time, so this is overlap, not parallelism
+ * — enough to matter, small enough to keep memory flat.
+ */
+const ANALYZE_CONCURRENCY = Math.max(2, Math.min(6, availableParallelism() - 1));
 
-async function safeSpecifiers(support: LanguageSupport, source: string): Promise<string[]> {
-  try {
-    return await extractSpecifiers(support, source);
-  } catch {
-    return [];
-  }
+/** Minimum spacing between build-progress notes; every note becomes a UI event. */
+const PROGRESS_INTERVAL_MS = 250;
+
+/** Called with a short human-readable note while a build runs. */
+export type BuildProgress = (note: string) => void;
+
+/**
+ * Throttled progress over the files of one build. A cold build is the only
+ * operation here that can run for a long time without saying anything, so the
+ * count is reported to whoever can display it — but not once per file, since
+ * each note crosses the event channel and triggers a render.
+ */
+function progressReporter(total: number, onProgress?: BuildProgress): () => void {
+  if (!onProgress) return () => undefined;
+  let done = 0;
+  let reportedAt = 0;
+  return () => {
+    done += 1;
+    const now = Date.now();
+    if (done < total && now - reportedAt < PROGRESS_INTERVAL_MS) return;
+    reportedAt = now;
+    onProgress(`analyzing ${done}/${total} files`);
+  };
 }
 
 export interface ScannedSource {
@@ -44,19 +62,23 @@ export interface ScannedSource {
 }
 
 /** Directory walk reusing the shared ignore rules; state directories excluded. */
-export async function scanSources(root: string): Promise<ScannedSource[]> {
+export async function scanSources(root: string, onFailure?: (failure: WalkFailure) => void): Promise<ScannedSource[]> {
   const scanned: ScannedSource[] = [];
   ensureLanguagesRegistered();
   const extensions = new Set(registeredLanguages().flatMap((language) => language.extensions));
-  await walkFiles(root, async (filePath, mtimeMs) => {
-    const relative = filePath.slice(root.length).replaceAll("\\", "/").replace(/^\//, "");
-    const dot = relative.lastIndexOf(".");
-    if (dot < 0) return;
-    if (!extensions.has(relative.slice(dot).toLowerCase())) return;
-    // Declaration files are build artifacts, not sources.
-    if (relative.endsWith(".d.ts")) return;
-    scanned.push({ path: relative, mtimeMs });
-  });
+  await walkFiles(
+    root,
+    async (filePath, mtimeMs) => {
+      const relative = filePath.slice(root.length).replaceAll("\\", "/").replace(/^\//, "");
+      const dot = relative.lastIndexOf(".");
+      if (dot < 0) return;
+      if (!extensions.has(relative.slice(dot).toLowerCase())) return;
+      // Declaration files are build artifacts, not sources.
+      if (relative.endsWith(".d.ts")) return;
+      scanned.push({ path: relative, mtimeMs });
+    },
+    onFailure,
+  );
   scanned.sort((left, right) => left.path.localeCompare(right.path));
   return scanned;
 }
@@ -67,6 +89,48 @@ export function fingerprintSources(scanned: readonly ScannedSource[]): string {
   return createHash("sha256").update(material).digest("hex").slice(0, 16);
 }
 
+/**
+ * Build-config files that steer resolution (go.mod module path, Cargo path
+ * dependencies, composer psr-4, pubspec package name). They are not graph
+ * nodes, but editing one re-resolves files that did not change at all, so
+ * their mtimes have to take part in the freshness fingerprint.
+ */
+export const BUILD_CONFIG_FILES = ["go.mod", "Cargo.toml", "composer.json", "pubspec.yaml"] as const;
+
+/** mtimes of the build-config files that exist; an absent file enters no material. */
+export async function scanBuildConfigSources(root: string): Promise<ScannedSource[]> {
+  const found: ScannedSource[] = [];
+  for (const name of BUILD_CONFIG_FILES) {
+    try {
+      const info = await stat(join(root, name));
+      found.push({ path: name, mtimeMs: info.mtimeMs });
+    } catch {
+      // Absent config file: nothing to fingerprint.
+    }
+  }
+  return found;
+}
+
+/**
+ * Read one source file, retrying once.
+ *
+ * A failed read used to be indistinguishable from an empty file: the caller got
+ * "" and moved on, so the file quietly contributed no edges and `code_impact`
+ * answered "nothing depends on it". Under load (many files in flight) that is
+ * not hypothetical, so a transient EMFILE/EBUSY deserves one retry, and a
+ * persistent failure is reported instead of swallowed.
+ */
+export async function readSourceText(path: string): Promise<{ text: string; failed: boolean }> {
+  for (let attempt = 0; ; attempt += 1) {
+    try {
+      return { text: await readFile(path, "utf8"), failed: false };
+    } catch {
+      if (attempt >= 1) return { text: "", failed: true };
+      await new Promise((resolve) => setTimeout(resolve, 20));
+    }
+  }
+}
+
 /** package/namespace -> files declaring it; needed by java/kotlin/scala/c# resolution. */
 async function buildPackageIndex(
   workspace: string,
@@ -74,14 +138,19 @@ async function buildPackageIndex(
 ): Promise<Map<string, string[]>> {
   const packageIndex = new Map<string, string[]>();
   for (const [support, files] of filesByLanguage) {
-    if (!support.packageQuery) continue;
+    const packageQuery = support.packageQuery;
+    if (!packageQuery) continue;
     for (const file of files) {
       const source = await readFile(`${workspace}/${file.path}`, "utf8").catch(() => "");
       if (!source) continue;
-      for (const match of await safeQuery(support.grammar, support.packageQuery, source)) {
+      const analysis = await analyzeFile(support, source, { pkg: packageQuery });
+      for (const match of analysis.queries.pkg?.matches ?? []) {
         for (const capture of match.captures) {
           if (capture.name !== "pkg") continue;
-          const pkg = capture.text.replace(/^(?:package|namespace)\s+/, "").replace(/;\s*$/, "").trim();
+          const pkg = capture.text
+            .replace(/^(?:package|namespace)\s+/, "")
+            .replace(/;\s*$/, "")
+            .trim();
           if (!pkg) continue;
           const bucket = packageIndex.get(pkg);
           if (bucket) bucket.push(file.path);
@@ -93,7 +162,11 @@ async function buildPackageIndex(
   return packageIndex;
 }
 
-export async function buildGraph(workspace: string, scanned: readonly ScannedSource[]): Promise<GraphIndex> {
+export async function buildGraph(
+  workspace: string,
+  scanned: readonly ScannedSource[],
+  onProgress?: BuildProgress,
+): Promise<GraphIndex> {
   ensureLanguagesRegistered();
   const config = await loadConfigSnapshot(workspace);
   const fileSet = new Set(scanned.map((file) => file.path));
@@ -122,183 +195,61 @@ export async function buildGraph(workspace: string, scanned: readonly ScannedSou
   const packageIndex = await buildPackageIndex(workspace, filesByLanguage);
   const resolveContext: ResolveContext = { fileSet, config, packageIndex };
 
-  const sourceCache = new Map<string, string>();
-  const readSource = async (path: string): Promise<string> => {
-    let source = sourceCache.get(path);
-    if (source === undefined) {
-      try {
-        source = await readFile(`${workspace}/${path}`, "utf8");
-      } catch {
-        source = "";
-      }
-      sourceCache.set(path, source);
-    }
-    return source;
-  };
-  for (const [support, files] of filesByLanguage) {
-    for (const file of files) {
-      const source = await readSource(file.path);
-      if (!source) continue;
-
-      const direct: string[] = [];
-      const unresolved: UnresolvedImport[] = [];
-      for (const specifier of await safeSpecifiers(support, source)) {
-        const result = support.resolve(file.path, specifier, resolveContext);
-        if (result.kind === "resolved") {
-          for (const target of result.paths) {
-            if (target !== file.path && !direct.includes(target)) direct.push(target);
-          }
-        } else if (!unresolved.some((item) => item.specifier === specifier && item.reason === result.reason)) {
-          unresolved.push({ specifier, reason: result.reason });
-        }
-      }
-      if (direct.length > 0) index.imports[file.path] = direct.sort();
-      if (unresolved.length > 0) index.unresolved[file.path] = unresolved;
-    }
-  }
-
-  const symbolLayer = await buildSymbolLayer(filesByLanguage, resolveContext, readSource);
-  if (symbolLayer.symbols.length > 0) {
-    index.symbols = symbolLayer.symbols;
-    index.calls = symbolLayer.calls;
-    index.extendsEdges = symbolLayer.extendsEdges;
-  }
-  return index;
-}
-
-/**
- * L2: symbol table plus statically determined call/inheritance edges for the
- * languages that declare symbol queries (ts family, python). Only unambiguous
- * targets produce edges — interface dispatch and name collisions are skipped
- * rather than guessed.
- */
-async function buildSymbolLayer(
-  filesByLanguage: ReadonlyMap<LanguageSupport, ScannedSource[]>,
-  resolveContext: ResolveContext,
-  readSource: (path: string) => Promise<string>,
-): Promise<{ symbols: SymbolNode[]; calls: CallEdge[]; extendsEdges: InheritanceEdge[] }> {
+  // One pass over every file: the analysis resolved here feeds both the import
+  // edges and the symbol layer, so each file is parsed once. Deriving the symbol
+  // data immediately — rather than keeping the matches until every definition is
+  // known — is what makes one parse enough: call targets stay as unresolved
+  // names until the global table exists. Sources are not cached either; the
+  // single pass reads each file once and lets it go.
   const symbols: SymbolNode[] = [];
-  const defsByFile = new Map<string, DefSpan[]>();
+  const defsByNameByFile = new Map<string, Map<string, SymbolNode>>();
+  const bindingsByFile = new Map<string, Map<string, string>>();
   const byName = new Map<string, SymbolNode[]>();
+  const pendingCalls: PendingCall[] = [];
+  const pendingInherits: PendingInherit[] = [];
 
+  const tasks: Array<{ support: LanguageSupport; path: string }> = [];
   for (const [support, files] of filesByLanguage) {
-    if (!support.symbols) continue;
-    for (const file of files) {
-      const source = await readSource(file.path);
-      if (!source) continue;
-      const spans: DefSpan[] = [];
-      for (const match of await safeQuery(support.grammar, support.symbols.defs, source)) {
-        const nameCapture = match.captures.find((capture) => capture.name === "name");
-        const defCapture = match.captures.find((capture) => capture.name === "def");
-        const kind = support.symbols.defKinds[match.pattern];
-        if (!nameCapture || !defCapture || !kind) continue;
-        const node: SymbolNode = {
-          id: `${file.path}#${nameCapture.text}`,
-          file: file.path,
-          kind: kind as SymbolNode["kind"],
-          name: nameCapture.text,
-          line: nameCapture.row + 1,
-        };
-        if (spans.some((existing) => existing.node.id === node.id)) continue;
-        spans.push({
-          node,
-          startRow: defCapture.row,
-          startColumn: defCapture.column,
-          endRow: defCapture.endRow,
-          endColumn: defCapture.endColumn,
-        });
-        symbols.push(node);
-        const bucket = byName.get(node.name);
-        if (bucket) bucket.push(node);
-        else byName.set(node.name, [node]);
-      }
-      if (spans.length > 0) defsByFile.set(file.path, spans);
+    for (const file of files) tasks.push({ support, path: file.path });
+  }
+
+  const tick = progressReporter(tasks.length, onProgress);
+  const contributions = await mapLimit(tasks, ANALYZE_CONCURRENCY, async ({ support, path }) => {
+    const read = await readSourceText(`${workspace}/${path}`);
+    tick();
+    if (!read.text) return { path, imports: [], unresolved: [], symbols: undefined, incomplete: read.failed };
+    const contribution = await analyzeContribution(support, path, read.text, resolveContext);
+    return { ...contribution, path, incomplete: contribution.incomplete || read.failed };
+  });
+
+  // Merged in input order, so the index stays byte-identical for a given tree.
+  const unparsed: string[] = [];
+  for (const contribution of contributions) {
+    if (contribution.incomplete) unparsed.push(contribution.path);
+    if (contribution.imports.length > 0) index.imports[contribution.path] = contribution.imports;
+    if (contribution.unresolved.length > 0) index.unresolved[contribution.path] = contribution.unresolved;
+    const fileSymbols = contribution.symbols;
+    if (!fileSymbols || fileSymbols.symbols.length === 0) continue;
+    symbols.push(...fileSymbols.symbols);
+    defsByNameByFile.set(contribution.path, fileSymbols.defsByName);
+    if (fileSymbols.bindings.size > 0) bindingsByFile.set(contribution.path, fileSymbols.bindings);
+    pendingCalls.push(...fileSymbols.calls);
+    pendingInherits.push(...fileSymbols.inherits);
+    for (const node of fileSymbols.symbols) {
+      const bucket = byName.get(node.name);
+      if (bucket) bucket.push(node);
+      else byName.set(node.name, [node]);
     }
   }
 
-  const resolveSymbolTarget = (file: string, name: string, bindings: Map<string, string>): SymbolNode | undefined => {
-    const sameFile = defsByFile.get(file)?.find((span) => span.node.name === name)?.node;
-    if (sameFile) return sameFile;
-    const importedFile = bindings.get(name);
-    if (importedFile !== undefined) {
-      const candidates = (byName.get(name) ?? []).filter((node) => node.file === importedFile);
-      if (candidates.length === 1) return candidates[0];
-    }
-    return undefined;
-  };
-
-  const calls: CallEdge[] = [];
-  const callEdgesSeen = new Set<string>();
-  const extendsEdges: InheritanceEdge[] = [];
-
-  for (const [support, files] of filesByLanguage) {
-    if (!support.symbols) continue;
-    for (const file of files) {
-      const spans = defsByFile.get(file.path);
-      if (!spans) continue;
-      const source = await readSource(file.path);
-      if (!source) continue;
-
-      const bindings = new Map<string, string>();
-      for (const match of await safeQuery(support.grammar, support.symbols.bindings, source)) {
-        const bind = match.captures.find((capture) => capture.name === "bind");
-        const src = match.captures.find((capture) => capture.name === "src");
-        if (!bind || !src) continue;
-        const result = support.resolve(file.path, stripQuotes(src.text), resolveContext);
-        if (result.kind === "resolved" && result.paths[0] !== undefined) bindings.set(bind.text, result.paths[0]);
-      }
-
-      for (const match of await safeQuery(support.grammar, support.symbols.calls, source)) {
-        const callee = match.captures.find((capture) => capture.name === "callee");
-        if (!callee) continue;
-        const owner = innermostOwner(spans, callee.row, callee.column);
-        if (!owner) continue;
-        const target = resolveSymbolTarget(file.path, callee.text, bindings);
-        if (!target) continue;
-        const from = owner.node.id;
-        const key = `${from}->${target.id}`;
-        if (from === target.id || callEdgesSeen.has(key)) continue;
-        callEdgesSeen.add(key);
-        calls.push({ from, to: target.id, provenance: "resolved" });
-      }
-
-      for (const match of await safeQuery(support.grammar, support.symbols.inherit, source)) {
-        const klass = match.captures.find((capture) => capture.name === "class");
-        const superName = match.captures.find((capture) => capture.name === "super");
-        if (!klass || !superName) continue;
-        const target = resolveSymbolTarget(file.path, superName.text, bindings);
-        if (!target) continue;
-        extendsEdges.push({ from: `${file.path}#${klass.text}`, to: target.id });
-      }
-    }
+  if (symbols.length > 0) {
+    const scope = { defsByNameByFile, bindingsByFile, byName };
+    index.symbols = symbols;
+    index.calls = resolveCalls(pendingCalls, scope, new Set());
+    index.extendsEdges = resolveInherits(pendingInherits, scope);
   }
-
-  return { symbols, calls, extendsEdges };
-}
-
-interface DefSpan {
-  node: SymbolNode;
-  startRow: number;
-  startColumn: number;
-  endRow: number;
-  endColumn: number;
-}
-
-function contains(span: DefSpan, row: number, column: number): boolean {
-  const afterStart = span.startRow < row || (span.startRow === row && span.startColumn <= column);
-  const beforeEnd = span.endRow > row || (span.endRow === row && span.endColumn >= column);
-  return afterStart && beforeEnd;
-}
-
-/** Innermost definition containing the position, if any. */
-function innermostOwner(spans: DefSpan[], row: number, column: number): DefSpan | undefined {
-  let best: DefSpan | undefined;
-  for (const span of spans) {
-    if (!contains(span, row, column)) continue;
-    // The smallest containing span is the innermost owner.
-    if (!best || span.startRow > best.startRow || (span.startRow === best.startRow && span.startColumn > best.startColumn)) {
-      best = span;
-    }
-  }
-  return best;
+  // A file that could not be parsed is still in `files`; say so, or its missing
+  // edges read as "nothing imports it".
+  if (unparsed.length > 0) index.unparsed = unparsed.sort();
+  return index;
 }

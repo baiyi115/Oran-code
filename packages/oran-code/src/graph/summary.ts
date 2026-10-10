@@ -13,8 +13,13 @@ export function graphSummary(index: GraphIndex): string {
     byLanguage.set(language, (byLanguage.get(language) ?? 0) + 1);
   }
   const edgeCount = Object.values(index.imports).reduce((total, targets) => total + targets.length, 0);
-  const distribution = [...byLanguage.entries()].sort().map(([language, count]) => `${language} ${count}`).join(", ");
-  lines.push(`Files: ${index.files.length} (${distribution || "no languages"}) · Edges: ${edgeCount} · built ${index.builtAt}`);
+  const distribution = [...byLanguage.entries()]
+    .sort()
+    .map(([language, count]) => `${language} ${count}`)
+    .join(", ");
+  lines.push(
+    `Files: ${index.files.length} (${distribution || "no languages"}) · Edges: ${edgeCount} · built ${index.builtAt}`,
+  );
 
   // Most-depended-on files: the highest-risk files to change.
   const depended = new Map<string, number>();
@@ -29,13 +34,16 @@ export function graphSummary(index: GraphIndex): string {
 
   const cyclic = findCyclicFiles(index);
   if (cyclic.length > 0) {
-    lines.push(`Cyclic dependencies (${cyclic.length} file(s)):`);
+    // Import-level, not runtime-level: `import type` is erased by the compiler,
+    // so a TypeScript file can appear here without any runtime cycle. Saying
+    // "cyclic dependencies" without that qualifier reads as a runtime problem.
+    lines.push(`Import cycles (${cyclic.length} file(s); import statements, including type-only imports):`);
     for (const path of cyclic.slice(0, 20)) lines.push(`  ↻ ${path}`);
   } else {
-    lines.push("Cyclic dependencies: none");
+    lines.push("Import cycles: none");
   }
 
-  const isolated = index.files.filter((file) => !(index.imports[file]?.length) && !depended.has(file));
+  const isolated = index.files.filter((file) => !index.imports[file]?.length && !depended.has(file));
   if (isolated.length > 0) {
     lines.push(`Isolated files (no imports in or out): ${isolated.length}`);
     for (const path of isolated.slice(0, 20)) lines.push(`  · ${path}`);
@@ -45,8 +53,16 @@ export function graphSummary(index: GraphIndex): string {
   for (const entries of Object.values(index.unresolved)) {
     for (const entry of entries) byReason.set(entry.reason, (byReason.get(entry.reason) ?? 0) + 1);
   }
-  const reasonSummary = [...byReason.entries()].sort().map(([reason, count]) => `${count} ${reason}`).join(", ");
+  const reasonSummary = [...byReason.entries()]
+    .sort()
+    .map(([reason, count]) => `${count} ${reason}`)
+    .join(", ");
   lines.push(`Unresolved specifiers: ${reasonSummary || "0"}`);
+
+  if (index.unparsed?.length) {
+    lines.push(`Files that could not be parsed (missing from the graph): ${index.unparsed.length}`);
+    for (const path of index.unparsed.slice(0, 10)) lines.push(`  ! ${path}`);
+  }
   return lines.join("\n");
 }
 
@@ -58,7 +74,9 @@ function findCyclicFiles(index: GraphIndex): string[] {
   const pathIndex = new Map<string, number>();
 
   const visit = (start: string): void => {
-    const stack: Array<{ node: string; iter: Iterator<string> }> = [{ node: start, iter: index.imports[start]?.[Symbol.iterator]() ?? [][Symbol.iterator]() }];
+    const stack: Array<{ node: string; iter: Iterator<string> }> = [
+      { node: start, iter: index.imports[start]?.[Symbol.iterator]() ?? [][Symbol.iterator]() },
+    ];
     color.set(start, 1);
     path.push(start);
     pathIndex.set(start, 0);

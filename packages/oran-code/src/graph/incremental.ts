@@ -1,130 +1,23 @@
-import { readFile } from "node:fs/promises";
-import { extractSpecifiers, runQuery, stripQuotes } from "./extract.js";
-import type { QueryMatchData } from "./extract-raw.js";
-import {
-  languageForFile,
-  type CallEdge,
-  type GraphIndex,
-  type InheritanceEdge,
-  type LanguageSupport,
-  type ResolveContext,
-  type SymbolNode,
-  type UnresolvedImport,
-} from "./languages/registry.js";
-import type { ScannedSource } from "./index.js";
+import { readSourceText, type ScannedSource } from "./index.js";
+import { analyzeContribution, type FileContribution } from "./contribution.js";
+import { resolveCalls, resolveInherits, type PendingCall, type PendingInherit } from "./symbols.js";
+import { languageForFile, type GraphIndex, type ResolveContext, type SymbolNode } from "./languages/registry.js";
 
 /**
  * Incremental rebuild: a file's out-edges (and its symbol data) depend only
  * on that file's content plus the resolution context, so modifications
- * re-extract just the changed files on top of the previous index. Additions
- * and removals change the context itself and fall back to a full rebuild, as
- * does any change touching a package-index language (java/kotlin/scala/c#),
- * whose package table is not worth re-deriving incrementally.
+ * re-extract just the changed files on top of the previous index — one parse
+ * and one request per file, shared by the import edges and the symbol layer.
+ * Additions and removals change the context itself (a new file can make another
+ * file's import resolve) and fall back to a full rebuild in store.ts, as does
+ * any change touching a package-index language (java/kotlin/scala/c#), whose
+ * package table is not worth re-deriving incrementally. Call edges from
+ * unchanged files are kept only while their target symbol still exists.
  */
 
-interface DefSpan {
-  node: SymbolNode;
-  startRow: number;
-  startColumn: number;
-  endRow: number;
-  endColumn: number;
-}
-
-interface FileSymbolData {
-  symbols: SymbolNode[];
-  calls: CallEdge[];
-  extendsEdges: InheritanceEdge[];
-}
-
-async function safeQuery(grammar: string, query: string, source: string): Promise<QueryMatchData[]> {
-  try {
-    return await runQuery(grammar, query, source);
-  } catch {
-    return [];
-  }
-}
-
-async function safeSpecifiers(support: LanguageSupport, source: string): Promise<string[]> {
-  try {
-    return await extractSpecifiers(support, source);
-  } catch {
-    return [];
-  }
-}
-
-function innermostOwner(spans: DefSpan[], row: number, column: number): DefSpan | undefined {
-  let best: DefSpan | undefined;
-  for (const span of spans) {
-    const afterStart = span.startRow < row || (span.startRow === row && span.startColumn <= column);
-    const beforeEnd = span.endRow > row || (span.endRow === row && span.endColumn >= column);
-    if (!afterStart || !beforeEnd) continue;
-    if (!best || span.startRow > best.startRow || (span.startRow === best.startRow && span.startColumn > best.startColumn)) {
-      best = span;
-    }
-  }
-  return best;
-}
-
-async function symbolDataForFile(
-  support: LanguageSupport,
-  file: string,
-  spans: DefSpan[],
-  source: string,
-  resolveContext: ResolveContext,
-  byName: ReadonlyMap<string, SymbolNode[]>,
-): Promise<FileSymbolData> {
-  const calls: CallEdge[] = [];
-  const extendsEdges: InheritanceEdge[] = [];
-  const seen = new Set<string>();
-
-  const resolveTarget = (name: string, bindings: Map<string, string>): SymbolNode | undefined => {
-    const sameFile = spans.find((span) => span.node.name === name)?.node;
-    if (sameFile) return sameFile;
-    const importedFile = bindings.get(name);
-    if (importedFile !== undefined) {
-      const candidates = (byName.get(name) ?? []).filter((node) => node.file === importedFile);
-      if (candidates.length === 1) return candidates[0];
-    }
-    return undefined;
-  };
-
-  return (async () => {
-    const bindings = new Map<string, string>();
-    for (const match of await safeQuery(support.grammar, support.symbols!.bindings, source)) {
-      const bind = match.captures.find((capture) => capture.name === "bind");
-      const src = match.captures.find((capture) => capture.name === "src");
-      if (!bind || !src) continue;
-      const result = support.resolve(file, stripQuotes(src.text), resolveContext);
-      if (result.kind === "resolved" && result.paths[0] !== undefined) bindings.set(bind.text, result.paths[0]);
-    }
-
-    for (const match of await safeQuery(support.grammar, support.symbols!.calls, source)) {
-      const callee = match.captures.find((capture) => capture.name === "callee");
-      if (!callee) continue;
-      const owner = innermostOwner(spans, callee.row, callee.column);
-      if (!owner) continue;
-      const target = resolveTarget(callee.text, bindings);
-      if (!target) continue;
-      const from = owner.node.id;
-      const key = `${from}->${target.id}`;
-      if (from === target.id || seen.has(key)) continue;
-      seen.add(key);
-      calls.push({ from, to: target.id, provenance: "resolved" });
-    }
-
-    for (const match of await safeQuery(support.grammar, support.symbols!.inherit, source)) {
-      const klass = match.captures.find((capture) => capture.name === "class");
-      const superName = match.captures.find((capture) => capture.name === "super");
-      if (!klass || !superName) continue;
-      const target = resolveTarget(superName.text, bindings);
-      if (!target) continue;
-      extendsEdges.push({ from: `${file}#${klass.text}`, to: target.id });
-    }
-    return { symbols: spans.map((span) => span.node), calls, extendsEdges };
-  })();
-}
-
 export interface IncrementalChange {
+  /** Files that were not in the previous scan; they change the resolution context. */
+  added: ReadonlySet<string>;
   changed: ReadonlySet<string>;
   removed: ReadonlySet<string>;
 }
@@ -140,19 +33,26 @@ export function touchesPackageLanguage(index: GraphIndex, changed: ReadonlySet<s
   return false;
 }
 
-/** Diff the previous per-file mtimes against the fresh scan. */
-export function diffScans(previous: Readonly<Record<string, number>>, scanned: readonly ScannedSource[]): IncrementalChange {
+/**
+ * Diff the previous per-file mtimes against the fresh scan. A file the previous
+ * scan never saw is an *addition*, not a modification: it can make another
+ * file's previously unresolvable import resolve, so it must not be handled by
+ * the incremental path.
+ */
+export function diffScans(
+  previous: Readonly<Record<string, number>>,
+  scanned: readonly ScannedSource[],
+): IncrementalChange {
+  const added = new Set<string>();
   const changed = new Set<string>();
   const removed = new Set<string>(Object.keys(previous));
   for (const file of scanned) {
-    if (previous[file.path] === file.mtimeMs) {
-      removed.delete(file.path);
-      continue;
-    }
-    changed.add(file.path);
+    const known = previous[file.path];
+    if (known === undefined) added.add(file.path);
+    else if (known !== file.mtimeMs) changed.add(file.path);
     removed.delete(file.path);
   }
-  return { changed, removed };
+  return { added, changed, removed };
 }
 
 export async function updateGraph(
@@ -174,99 +74,78 @@ export async function updateGraph(
   index.files = [...new Set([...index.files, ...scanned.map((file) => file.path)])].sort();
 
   const fileOf = (symbolId: string): string => symbolId.split("#")[0] ?? "";
-  const survivingSymbols = (index.symbols ?? []).filter(
-    (symbol) => !change.removed.has(symbol.file) && !change.changed.has(symbol.file),
-  );
-  const survivingCalls = (index.calls ?? []).filter(
-    (edge) => !change.removed.has(fileOf(edge.from)) && !change.changed.has(fileOf(edge.from)),
-  );
-  const survivingExtends = (index.extendsEdges ?? []).filter(
-    (edge) => !change.removed.has(fileOf(edge.from)) && !change.changed.has(fileOf(edge.from)),
-  );
+  const reextracted = new Set<string>([...change.changed, ...change.added]);
+  const touched = (file: string): boolean => change.removed.has(file) || reextracted.has(file);
+  const survivingSymbols = (index.symbols ?? []).filter((symbol) => !touched(symbol.file));
+  // Edges whose *caller* file was re-extracted are rebuilt below; edges whose
+  // caller did not change are kept only while their target still exists (see
+  // symbolIds).
+  const survivingCalls = (index.calls ?? []).filter((edge) => !touched(fileOf(edge.from)));
+  const survivingExtends = (index.extendsEdges ?? []).filter((edge) => !touched(fileOf(edge.from)));
 
   const freshSymbols: SymbolNode[] = [];
-  const freshByFile = new Map<string, DefSpan[]>();
-  const freshData = new Map<string, { support: LanguageSupport; source: string }>();
+  const defsByNameByFile = new Map<string, Map<string, SymbolNode>>();
+  const bindingsByFile = new Map<string, Map<string, string>>();
+  const pendingCalls: PendingCall[] = [];
+  const pendingInherits: PendingInherit[] = [];
 
-  for (const path of change.changed) {
+  // Files that could not be parsed stay in the index, so the set has to survive
+  // the rebuild: entries for re-extracted files are replaced by this run's result.
+  const unparsed = new Set((previous.unparsed ?? []).filter((path) => !touched(path)));
+
+  for (const path of reextracted) {
     const support = languageForFile(path);
-    if (!support || !support.symbols || index.languages[path] !== support.id) continue;
-    const source = await readFile(`${workspace}/${path}`, "utf8").catch(() => "");
-    if (!source) continue;
-    freshData.set(path, { support, source });
-    const spans: DefSpan[] = [];
-    for (const match of await safeQuery(support.grammar, support.symbols.defs, source)) {
-      const nameCapture = match.captures.find((capture) => capture.name === "name");
-      const defCapture = match.captures.find((capture) => capture.name === "def");
-      const kind = support.symbols.defKinds[match.pattern];
-      if (!nameCapture || !defCapture || !kind) continue;
-      const node: SymbolNode = {
-        id: `${path}#${nameCapture.text}`,
-        file: path,
-        kind: kind as SymbolNode["kind"],
-        name: nameCapture.text,
-        line: nameCapture.row + 1,
-      };
-      if (spans.some((existing) => existing.node.id === node.id)) continue;
-      spans.push({
-        node,
-        startRow: defCapture.row,
-        startColumn: defCapture.column,
-        endRow: defCapture.endRow,
-        endColumn: defCapture.endColumn,
-      });
-      freshSymbols.push(node);
+    if (!support || index.languages[path] !== support.id) continue;
+    const read = await readSourceText(`${workspace}/${path}`);
+    let contribution: FileContribution = { imports: [], unresolved: [], incomplete: read.failed };
+    if (read.text) {
+      const analyzed = await analyzeContribution(support, path, read.text, resolveContext);
+      contribution = { ...analyzed, incomplete: analyzed.incomplete || read.failed };
     }
-    freshByFile.set(path, spans);
+    const { symbols: fileSymbols } = contribution;
+    if (fileSymbols && fileSymbols.symbols.length > 0) {
+      freshSymbols.push(...fileSymbols.symbols);
+      defsByNameByFile.set(path, fileSymbols.defsByName);
+      if (fileSymbols.bindings.size > 0) bindingsByFile.set(path, fileSymbols.bindings);
+      pendingCalls.push(...fileSymbols.calls);
+      pendingInherits.push(...fileSymbols.inherits);
+    }
+    if (contribution.incomplete) unparsed.add(path);
+    if (contribution.imports.length > 0) index.imports[path] = contribution.imports;
+    else delete index.imports[path];
+    if (contribution.unresolved.length > 0) index.unresolved[path] = contribution.unresolved;
+    else delete index.unresolved[path];
   }
 
+  const symbols = [...survivingSymbols, ...freshSymbols];
   const byName = new Map<string, SymbolNode[]>();
-  for (const node of [...survivingSymbols, ...freshSymbols]) {
+  for (const node of symbols) {
     const bucket = byName.get(node.name);
     if (bucket) bucket.push(node);
     else byName.set(node.name, [node]);
   }
+  const scope = { defsByNameByFile, bindingsByFile, byName };
+  const freshCallEdges = resolveCalls(pendingCalls, scope, new Set());
+  const freshExtends = resolveInherits(pendingInherits, scope);
 
-  const newCalls: CallEdge[] = [...survivingCalls];
-  const newExtends: InheritanceEdge[] = [...survivingExtends];
-  for (const [path, { support, source }] of freshData) {
-    const spans = freshByFile.get(path)!;
-    const fileData = await symbolDataForFile(support, path, spans, source, resolveContext, byName);
-    newCalls.push(...fileData.calls);
-    newExtends.push(...fileData.extendsEdges);
-  }
+  // A caller that did not change still contains the same call sites, so its edge
+  // stays valid as long as the target symbol is still there. A rename or a
+  // deletion in the callee's file leaves a dangling id, and `callers` mode would
+  // then report a call site for a symbol that no longer exists.
+  const symbolIds = new Set(symbols.map((node) => node.id));
+  const keptCalls = survivingCalls.filter((edge) => !touched(fileOf(edge.to)) || symbolIds.has(edge.to));
+  const keptExtends = survivingExtends.filter((edge) => !touched(fileOf(edge.to)) || symbolIds.has(edge.to));
+  const newCalls = [...keptCalls, ...freshCallEdges];
+  const newExtends = [...keptExtends, ...freshExtends];
 
-  if (survivingSymbols.length + freshSymbols.length > 0) index.symbols = [...survivingSymbols, ...freshSymbols];
+  if (symbols.length > 0) index.symbols = symbols;
   else delete index.symbols;
   if (newCalls.length > 0) index.calls = newCalls;
   else delete index.calls;
   if (newExtends.length > 0) index.extendsEdges = newExtends;
   else delete index.extendsEdges;
-
-  // Refresh L1 edges for changed files.
-  for (const path of change.changed) {
-    const support = languageForFile(path);
-    if (!support) continue;
-    const source = await readFile(`${workspace}/${path}`, "utf8").catch(() => "");
-    const direct: string[] = [];
-    const unresolved: UnresolvedImport[] = [];
-    if (source) {
-      for (const specifier of await safeSpecifiers(support, source)) {
-        const result = support.resolve(path, specifier, resolveContext);
-        if (result.kind === "resolved") {
-          for (const target of result.paths) {
-            if (target !== path && !direct.includes(target)) direct.push(target);
-          }
-        } else if (!unresolved.some((item) => item.specifier === specifier && item.reason === result.reason)) {
-          unresolved.push({ specifier, reason: result.reason });
-        }
-      }
-    }
-    if (direct.length > 0) index.imports[path] = direct.sort();
-    else delete index.imports[path];
-    if (unresolved.length > 0) index.unresolved[path] = unresolved;
-    else delete index.unresolved[path];
-  }
+  if (unparsed.size > 0) index.unparsed = [...unparsed].sort();
+  else delete index.unparsed;
 
   return index;
 }

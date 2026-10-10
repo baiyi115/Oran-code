@@ -83,6 +83,12 @@ export interface GraphIndex {
   calls?: CallEdge[];
   /** L2 (optional): class inheritance edges between class symbols. */
   extendsEdges?: InheritanceEdge[];
+  /**
+   * Files whose analysis request failed. They are in `files` and `languages` but
+   * contribute no edges, so a reader has to be told rather than left to conclude
+   * that nothing imports them.
+   */
+  unparsed?: string[];
 }
 
 /** Per-build config snapshot, loaded once and reused for every resolution. */
@@ -105,9 +111,7 @@ export interface ResolveContext {
   packageIndex: ReadonlyMap<string, readonly string[]>;
 }
 
-export type ResolveResult =
-  | { kind: "resolved"; paths: string[] }
-  | { kind: "unresolved"; reason: UnresolvedReason };
+export type ResolveResult = { kind: "resolved"; paths: string[] } | { kind: "unresolved"; reason: UnresolvedReason };
 
 /** Language-specific raw import extraction. Opaque strings understood by resolve(). */
 export interface RawImport {
@@ -184,4 +188,35 @@ export function languageForFile(path: string): LanguageSupport | undefined {
 
 export function registeredLanguages(): LanguageSupport[] {
   return [...registry.values()];
+}
+
+const LANGUAGE_LABELS: Readonly<Record<LanguageId, string>> = {
+  typescript: "TypeScript",
+  tsx: "TSX",
+  javascript: "JavaScript",
+  python: "Python",
+  go: "Go",
+  rust: "Rust",
+  java: "Java",
+  c: "C",
+  cpp: "C++",
+  c_sharp: "C#",
+  php: "PHP",
+  ruby: "Ruby",
+  kotlin: "Kotlin",
+  swift: "Swift",
+  scala: "Scala",
+  lua: "Lua",
+  bash: "Bash",
+  vue: "Vue",
+  dart: "Dart",
+};
+
+/**
+ * Registered languages as display names, in registration order (common
+ * languages first). Derived from the registry so a tool description or an
+ * error message can never drift away from what the graph really covers.
+ */
+export function coveredLanguageLabels(): string[] {
+  return registeredLanguages().map((language) => LANGUAGE_LABELS[language.id]);
 }

@@ -66,7 +66,10 @@ beforeAll(async () => {
   await write("lib/util.dart", "// dart\n");
   await write("rel.dart", "// rel\n");
 
-  await write("comp.vue", '<script setup lang="ts">\nimport X from "./x.ts"\n// import "./fake.ts"\n</script>\n<template><div>{{ X }}</div></template>\n');
+  await write(
+    "comp.vue",
+    '<script setup lang="ts">\nimport X from "./x.ts"\n// import "./fake.ts"\n</script>\n<template><div>{{ X }}</div></template>\n',
+  );
   await write("x.ts", "export const X = 1;\n");
 });
 
@@ -79,7 +82,10 @@ describe("per-language resolution", () => {
 
   beforeAll(async () => {
     index = await buildGraph(workspace, await scanSources(workspace));
-  });
+    // 这个 fixture 覆盖 13 门语言,每个语法一个宿主进程 + 一次 wasm 加载;冷启动
+    // 实测约 12s,已超过 vitest 默认的 10s hook 超时(与本机负载有关,与代码无关)。
+    // 只放宽这一处,其余用例继续保持默认上限。
+  }, 60_000);
 
   it("rust: mod + crate:: resolve, inline mod does not, bare crates stay external", () => {
     expect(index.imports["src/lib.rs"]).toEqual(["src/foo.rs"]);
@@ -111,7 +117,7 @@ describe("per-language resolution", () => {
   it("php: psr-4 use and __DIR__ require resolve, bare include falls back, vendor needs config", () => {
     expect(index.imports["index.php"]).toContain("src/App/Foo.php");
     expect(index.imports["index.php"]).toContain("helper.php");
-    expect(reasonsOf(index, "index.php").get("r:include \"vendor_lib.php\"")).toBe("needs-config");
+    expect(reasonsOf(index, "index.php").get('r:include "vendor_lib.php"')).toBe("needs-config");
   });
 
   it("ruby: require_relative is exact, unknown gems stay external", () => {
@@ -125,6 +131,10 @@ describe("per-language resolution", () => {
   });
 
   it("lua: dotted module names map to files", () => {
+    // 这条断言先于具体编辑边:先把"没有任何文件解析失败"钉住,否则一次解析失败
+    // 会表现为"某个文件没有边",让人误以为是解析语义的问题(lua 的 wasm 在同一
+    // 进程里只能解析一次,曾经就是这样静默丢掉 import 的)。
+    expect(index.unparsed ?? []).toEqual([]);
     expect(index.imports["main.lua"]).toEqual(["util/sub.lua"]);
   });
 

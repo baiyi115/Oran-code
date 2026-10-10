@@ -1,6 +1,6 @@
 import { createInterface } from "node:readline";
 import { registerAllLanguages } from "../languages/all.js";
-import { extractSpecifiersRawFor, runQueryRaw } from "../extract-raw.js";
+import { analyzeFileRaw, type FileAnalysisRequest } from "../extract-raw.js";
 
 /**
  * Long-lived parse host: one private web-tree-sitter wasm instance, NDJSON
@@ -11,11 +11,10 @@ registerAllLanguages();
 
 interface HostRequest {
   id: number;
-  op: "specifiers" | "query";
+  op: "analyze";
   languageId?: string;
-  grammar?: string;
-  query?: string;
   source: string;
+  queries?: Record<string, string> | undefined;
 }
 
 const lines = createInterface({ input: process.stdin });
@@ -29,10 +28,21 @@ lines.on("line", (line) => {
   }
   void (async () => {
     try {
-      const result =
-        request.op === "specifiers"
-          ? await extractSpecifiersRawFor(request.languageId ?? "", request.source)
-          : await runQueryRaw(request.grammar ?? "", request.query ?? "", request.source);
+      const payload: FileAnalysisRequest = {
+        languageId: request.languageId ?? "",
+        source: request.source,
+        queries: request.queries,
+      };
+      const result = await analyzeFileRaw(payload);
+      // 有些语法在本进程里只能解析一次(runtime.parseSource)。此时结果不可信,
+      // 让父进程换一个宿主重试,并且本进程不再服务任何请求。
+      if (result.needsFreshProcess === true) {
+        process.stdout.write(
+          `${JSON.stringify({ id: request.id, ok: false, retry: true, error: "grammar needs a fresh process" })}\n`,
+          () => process.exit(0),
+        );
+        return;
+      }
       process.stdout.write(`${JSON.stringify({ id: request.id, ok: true, result })}\n`);
     } catch (error) {
       process.stdout.write(
