@@ -5,6 +5,7 @@ import { join } from "node:path";
 import { walkFiles, type WalkFailure } from "../tools/glob.js";
 import { mapLimit } from "../utils/map-limit.js";
 import { analyzeFile } from "./extract.js";
+import { isIncompleteAnalysis } from "./extract-raw.js";
 import { analyzeContribution } from "./contribution.js";
 import { resolveCalls, resolveInherits, type PendingCall, type PendingInherit } from "./symbols.js";
 import { loadConfigSnapshot } from "./resolve/config.js";
@@ -131,19 +132,35 @@ export async function readSourceText(path: string): Promise<{ text: string; fail
   }
 }
 
-/** package/namespace -> files declaring it; needed by java/kotlin/scala/c# resolution. */
+/**
+ * package/namespace -> files declaring it; needed by java/kotlin/scala/c# resolution.
+ *
+ * A read or query failure here is collected rather than skipped: a package
+ * missing from this table makes every import of it resolve as `external` — the
+ * reason reserved for packages genuinely outside the repository — and the file
+ * that declares it would not appear in `index.unparsed` either, because the main
+ * pass runs a different query.
+ */
 async function buildPackageIndex(
   workspace: string,
   filesByLanguage: ReadonlyMap<LanguageSupport, ScannedSource[]>,
-): Promise<Map<string, string[]>> {
+): Promise<{ packageIndex: Map<string, string[]>; unreadable: string[] }> {
   const packageIndex = new Map<string, string[]>();
+  const unreadable: string[] = [];
   for (const [support, files] of filesByLanguage) {
     const packageQuery = support.packageQuery;
     if (!packageQuery) continue;
     for (const file of files) {
-      const source = await readFile(`${workspace}/${file.path}`, "utf8").catch(() => "");
-      if (!source) continue;
-      const analysis = await analyzeFile(support, source, { pkg: packageQuery });
+      const read = await readSourceText(`${workspace}/${file.path}`);
+      if (!read.text) {
+        unreadable.push(file.path);
+        continue;
+      }
+      const analysis = await analyzeFile(support, read.text, { pkg: packageQuery });
+      if (isIncompleteAnalysis(analysis)) {
+        unreadable.push(file.path);
+        continue;
+      }
       for (const match of analysis.queries.pkg?.matches ?? []) {
         for (const capture of match.captures) {
           if (capture.name !== "pkg") continue;
@@ -159,7 +176,7 @@ async function buildPackageIndex(
       }
     }
   }
-  return packageIndex;
+  return { packageIndex, unreadable };
 }
 
 export async function buildGraph(
@@ -192,7 +209,7 @@ export async function buildGraph(
     else filesByLanguage.set(support, [file]);
   }
 
-  const packageIndex = await buildPackageIndex(workspace, filesByLanguage);
+  const { packageIndex, unreadable } = await buildPackageIndex(workspace, filesByLanguage);
   const resolveContext: ResolveContext = { fileSet, config, packageIndex };
 
   // One pass over every file: the analysis resolved here feeds both the import
@@ -223,9 +240,9 @@ export async function buildGraph(
   });
 
   // Merged in input order, so the index stays byte-identical for a given tree.
-  const unparsed: string[] = [];
+  const unparsed = new Set<string>(unreadable);
   for (const contribution of contributions) {
-    if (contribution.incomplete) unparsed.push(contribution.path);
+    if (contribution.incomplete) unparsed.add(contribution.path);
     if (contribution.imports.length > 0) index.imports[contribution.path] = contribution.imports;
     if (contribution.unresolved.length > 0) index.unresolved[contribution.path] = contribution.unresolved;
     const fileSymbols = contribution.symbols;
@@ -256,6 +273,6 @@ export async function buildGraph(
   }
   // A file whose analysis came back incomplete is still in `files`; say so, or
   // its missing edges read as "nothing imports it".
-  if (unparsed.length > 0) index.unparsed = unparsed.sort();
+  if (unparsed.size > 0) index.unparsed = [...unparsed].sort();
   return index;
 }

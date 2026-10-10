@@ -39,6 +39,16 @@ beforeAll(async () => {
   // belongs to the module. Both used to disappear without a word.
   await write("pkg/e.ts", "export const arrow = () => 1;\n");
   await write("pkg/f.ts", 'import { arrow } from "./e";\narrow();\n');
+  // Plain JavaScript shares the import query with the typed grammars but not
+  // their node names, so it needs its own symbol queries.
+  await write(
+    "plain/api.js",
+    "export class Base {}\nexport class Widget extends Base {}\nexport function handler() {}\nexport const arrow = () => 1;\n",
+  );
+  await write(
+    "plain/use.js",
+    'import { handler, arrow } from "./api.js";\nexport function run() { handler(); arrow(); }\n',
+  );
   await write("src_py/__init__.py", "");
   await write(
     "src_py/m.py",
@@ -124,6 +134,25 @@ describe("code impact graph", () => {
     expect(index.calls).toContainEqual({ from: "pkg/f.ts#<module>", to: "pkg/e.ts#arrow", provenance: "resolved" });
     // Nothing invents a symbol for the module owner.
     expect(index.symbols?.some((symbol) => symbol.id.includes("<module>"))).toBe(false);
+  });
+
+  it("gives plain JavaScript the same symbol layer as the typed grammars", () => {
+    // The shared query named type_identifier, which only the typed grammars have.
+    // tree-sitter aborts on the first unknown node, so the whole defs query failed
+    // for .js: no symbols, no call edges, no inheritance — and once a failed query
+    // is reported as an incomplete analysis, every .js file appeared in unparsed.
+    const ids = (index.symbols ?? []).map((symbol) => symbol.id);
+    expect(ids).toContain("plain/api.js#handler");
+    expect(ids).toContain("plain/api.js#arrow");
+    expect(ids).toContain("plain/api.js#Widget");
+    expect(index.calls).toContainEqual({
+      from: "plain/use.js#run",
+      to: "plain/api.js#handler",
+      provenance: "resolved",
+    });
+    expect(index.extendsEdges).toContainEqual({ from: "plain/api.js#Widget", to: "plain/api.js#Base" });
+    expect(index.unparsed ?? []).not.toContain("plain/api.js");
+    expect(index.unparsed ?? []).not.toContain("plain/use.js");
   });
 
   it("computes dependents with cycle-safe BFS", () => {

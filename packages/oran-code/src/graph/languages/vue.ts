@@ -6,7 +6,8 @@ import { resolveTypeScriptSpecifier } from "./typescript.js";
  * Vue single-file components. The vue grammar keeps <script> contents as raw
  * text, so imports are extracted by re-parsing each script block with the
  * TypeScript grammar — still AST-based, just across two grammars. Resolution
- * reuses the ts-family relative-path model (which also matches .vue targets).
+ * reuses the ts-family relative-path model, whose candidate list includes .vue
+ * so a component can import another component.
  */
 
 export function registerVue(): void {

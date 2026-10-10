@@ -1,10 +1,13 @@
 import { posix } from "node:path";
+import { stripQuotes } from "../extract.js";
 import { registerLanguage, type LanguageSupport, type ResolveContext, type ResolveResult } from "./registry.js";
 
 /**
- * Ruby. require_relative is exact (file dir + .rb); plain require goes through
- * the load path, which we do not model — a unique repo-wide suffix match is
- * the only honest resolution, anything else is external.
+ * Ruby. `require_relative` resolves against the file's own directory, with or
+ * without a leading "./" — the bare form is the ordinary way it is written, so
+ * those specifiers are normalised into the relative form here. Plain `require`
+ * goes through the load path, which we do not model; a unique repo-wide suffix
+ * match is the only honest resolution, anything else is external.
  */
 
 const QUERY = "(call method: (identifier) @fn arguments: (argument_list (string (string_content)) @spec))";
@@ -36,6 +39,21 @@ export function registerRuby(): void {
     grammar: "ruby",
     importQuery: QUERY,
     callFns: CALL_FNS,
+    specFromMatch: (captures) => {
+      const fn = captures.get("fn");
+      const raw = captures.get("spec");
+      if (raw === undefined || fn === undefined || !CALL_FNS.has(fn)) return [];
+      // The capture covers the string node, quotes included; the default
+      // extraction path strips them for the languages that do not come through
+      // here, so this one has to as well.
+      const spec = stripQuotes(raw);
+      // A bare `require_relative "x"` used to fall through to the repo-wide
+      // suffix match, which resolved it to an unrelated file with the same
+      // basename and reported a confident edge to it. Marking it relative sends
+      // it to the exact, file-adjacent branch above.
+      if (fn === "require_relative") return [spec.startsWith(".") ? spec : `./${spec}`];
+      return [spec];
+    },
     resolve: resolveRubySpecifier,
   };
   registerLanguage(support);

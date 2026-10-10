@@ -51,6 +51,11 @@ beforeAll(async () => {
 
   await write("main.rb", 'require_relative "helper"\nrequire "missing_lib"\n');
   await write("helper.rb", "# helper\n");
+  // The same basename in another directory: a bare require_relative must resolve
+  // to the neighbour, not to whichever match the repository happens to hold.
+  await write("vendor/helper.rb", "# decoy\n");
+  await write("rb/use.rb", 'require_relative "thing"\n');
+  await write("other/thing.rb", "# decoy\n");
 
   await write("MyMod/inner.swift", "let x = 1\n");
   await write("main.swift", "import MyMod\nimport Foundation\n");
@@ -71,6 +76,9 @@ beforeAll(async () => {
     '<script setup lang="ts">\nimport X from "./x.ts"\n// import "./fake.ts"\n</script>\n<template><div>{{ X }}</div></template>\n',
   );
   await write("x.ts", "export const X = 1;\n");
+  await write("components/Foo.vue", '<script setup lang="ts">\nexport const Foo = 1;\n</script>\n');
+  await write("components/Widget.vue", '<script setup lang="ts">\nimport Foo from "./Foo.vue"\n</script>\n');
+  await write("components/Bar.ts", 'import Foo from "./Foo.vue"\nexport const use = Foo;\n');
 });
 
 afterAll(async () => {
@@ -121,9 +129,14 @@ describe("per-language resolution", () => {
     expect(reasonsOf(index, "index.php").get('r:include "vendor_lib.php"')).toBe("needs-config");
   });
 
-  it("ruby: require_relative is exact, unknown gems stay external", () => {
+  it("ruby: require_relative resolves next to the file, unknown gems stay external", () => {
+    // Two files share the basename helper.rb; only the neighbour is a candidate.
     expect(index.imports["main.rb"]).toEqual(["helper.rb"]);
     expect(reasonsOf(index, "main.rb").get("missing_lib")).toBe("external");
+    // `require_relative "thing"` with no ./ used to suffix-match the whole
+    // repository and resolve to other/thing.rb, a file it never referenced.
+    expect(index.imports["rb/use.rb"]).toBeUndefined();
+    expect(reasonsOf(index, "rb/use.rb").get("./thing")).toBe("no-source");
   });
 
   it("swift: a same-named source directory resolves, frameworks stay external", () => {
@@ -151,8 +164,12 @@ describe("per-language resolution", () => {
     expect(reasonsOf(index, "main.dart").get("dart:io")).toBe("external");
   });
 
-  it("vue: script-block imports resolve through the TS grammar, comments do not", () => {
+  it("vue: script-block imports resolve through the TS grammar, comments do not, components import components", () => {
     expect(index.imports["comp.vue"]).toEqual(["x.ts"]);
     expect(JSON.stringify(index)).not.toContain("fake.ts");
+    // A .vue file is in the file set, so a component importing another component
+    // has to be a candidate target — otherwise every component is a leaf.
+    expect(index.imports["components/Widget.vue"]).toEqual(["components/Foo.vue"]);
+    expect(index.imports["components/Bar.ts"]).toEqual(["components/Foo.vue"]);
   });
 });
