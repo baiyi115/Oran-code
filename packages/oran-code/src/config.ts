@@ -137,14 +137,12 @@ function normalizeConfig(value: unknown): UserConfig {
   // Legacy top-level model/default fields stay ignored; the current preference lives at agent.lastModel.
   const legacyAgent: AgentSettings = {};
   const approveAll = booleanOrUndefined(item.approve_all ?? item.approveAll);
-  const skipVerify = booleanOrUndefined(item.skip_verify ?? item.skipVerify);
   const maxSteps = numberOrUndefined(item.max_steps ?? item.maxSteps);
   const noProgressLimit = numberOrUndefined(item.no_progress_limit ?? item.noProgressLimit);
   const tokenBudget = numberOrUndefined(item.token_budget ?? item.tokenBudget);
   const permissionModeValue = item.permission_mode ?? item.permissionMode;
   const permissionMode = isPermissionMode(permissionModeValue) ? permissionModeValue : undefined;
   if (approveAll !== undefined) legacyAgent.approveAll = approveAll;
-  if (skipVerify !== undefined) legacyAgent.skipVerify = skipVerify;
   if (maxSteps !== undefined) legacyAgent.maxSteps = maxSteps;
   if (noProgressLimit !== undefined) legacyAgent.noProgressLimit = noProgressLimit;
   if (tokenBudget !== undefined) legacyAgent.tokenBudget = tokenBudget;
@@ -295,7 +293,6 @@ function normalizeAgentSettings(value: unknown): AgentSettings | undefined {
   const item = value as Record<string, unknown>;
   const result: AgentSettings = {};
   const approveAll = booleanOrUndefined(item.approveAll ?? item.approve_all);
-  const skipVerify = booleanOrUndefined(item.skipVerify ?? item.skip_verify);
   const maxSteps = numberOrUndefined(item.maxSteps ?? item.max_steps);
   const noProgressLimit = numberOrUndefined(item.noProgressLimit ?? item.no_progress_limit);
   const tokenBudget = numberOrUndefined(item.tokenBudget ?? item.token_budget);
@@ -303,16 +300,13 @@ function normalizeAgentSettings(value: unknown): AgentSettings | undefined {
   const permissionModeValue = item.permissionMode ?? item.permission_mode;
   const permissionMode = isPermissionMode(permissionModeValue) ? permissionModeValue : undefined;
   const lastModel = stringOrUndefined(item.lastModel ?? item.last_model);
-  const verifyCommands = optionalStringArray(item.verifyCommands ?? item.verify_commands, "agent.verifyCommands");
   if (approveAll !== undefined) result.approveAll = approveAll;
-  if (skipVerify !== undefined) result.skipVerify = skipVerify;
   if (maxSteps !== undefined) result.maxSteps = maxSteps;
   if (noProgressLimit !== undefined) result.noProgressLimit = noProgressLimit;
   if (tokenBudget !== undefined) result.tokenBudget = tokenBudget;
   if (workMode !== undefined) result.workMode = workMode;
   if (permissionMode !== undefined) result.permissionMode = permissionMode;
   if (lastModel !== undefined) result.lastModel = lastModel;
-  if (verifyCommands !== undefined) result.verifyCommands = verifyCommands;
   return Object.keys(result).length ? result : undefined;
 }
 
@@ -470,13 +464,7 @@ function merge(base: UserConfig, override: UserConfig): UserConfig {
  * widen.
  */
 const WORKSPACE_BLOCKED_KEYS = ["mcpServers", "hooks", "trustWorkspace"] as const;
-const WORKSPACE_BLOCKED_AGENT_KEYS = [
-  "approveAll",
-  "permissionMode",
-  "noProgressLimit",
-  "skipVerify",
-  "verifyCommands",
-] as const;
+const WORKSPACE_BLOCKED_AGENT_KEYS = ["approveAll", "permissionMode", "noProgressLimit"] as const;
 
 export interface WorkspaceConfigSanitization {
   config: UserConfig;

@@ -703,8 +703,8 @@ export class TaskController {
             return task;
           }
         } else {
-          // The model finished calling tools and returned its final response.
-          // Complete the task directly without running any verification harness.
+          // The model finished calling tools and returned its final response; the task is
+          // complete as the model left it.
           this.throwIfCancelled();
           // If a pure-text truncation happened earlier, this last chunk continues it: assemble the
           // full answer before wrapping up.

@@ -114,18 +114,16 @@ describe("TerminalRenderer", () => {
     expect(text).toContain("Reply y to execute it or n to discard it.");
   });
 
-  it("renders tool results, approvals, and verification status", () => {
+  it("renders tool results and approvals", () => {
     const captured = capture();
     const renderer = new TerminalRenderer(captured.output);
     renderer.toolStart(call, 0);
     renderer.toolResult(call, { ok: true, output: "README contents", summary: "read completed", durationMs: 12 });
     renderer.approval({ ...call, name: "apply_patch" }, 2, "Modify a tracked file", { kind: "main" });
-    renderer.verify([{ command: "pnpm test", exitCode: 0, output: "passed", durationMs: 20, passed: true }]);
 
     const text = captured.text();
     expect(text).toContain("read_file L0");
     expect(text).toContain("ok: read completed (12ms)");
     expect(text).toContain("Approval required");
-    expect(text).toContain("pnpm test exit=0");
   });
 });

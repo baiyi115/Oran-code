@@ -423,10 +423,8 @@ function maskSecrets(value: unknown, key?: string): unknown {
 
 function setConfigValue(config: UserConfig, key: string, rawValue: string): void {
   switch (key) {
-    case "agent.approveAll":
-    case "agent.skipVerify": {
-      const value = parseBoolean(rawValue);
-      config.agent = { ...config.agent, [key === "agent.approveAll" ? "approveAll" : "skipVerify"]: value };
+    case "agent.approveAll": {
+      config.agent = { ...config.agent, approveAll: parseBoolean(rawValue) };
       return;
     }
     case "agent.maxSteps": {
@@ -461,7 +459,6 @@ function setConfigValue(config: UserConfig, key: string, rawValue: string): void
 
 function unsetConfigValue(config: UserConfig, key: string): void {
   if (key === "agent.approveAll") delete config.agent?.approveAll;
-  else if (key === "agent.skipVerify") delete config.agent?.skipVerify;
   else if (key === "agent.maxSteps") delete config.agent?.maxSteps;
   else if (key === "agent.tokenBudget") delete config.agent?.tokenBudget;
   else if (key === "sessionTitles.mode") delete config.sessionTitles?.mode;

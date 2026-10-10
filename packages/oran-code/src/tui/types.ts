@@ -238,6 +238,11 @@ export interface ToolMessage {
   taskId?: string;
 }
 
+/**
+ * Read-compatibility only. Nothing emits a `verify` runtime event any more, so no new
+ * message of this kind is produced; sessions written while the verification loop existed
+ * still contain them, and the store validates what it loads (see VerificationResult).
+ */
 export interface VerificationMessage {
   id: string;
   kind: "verification";

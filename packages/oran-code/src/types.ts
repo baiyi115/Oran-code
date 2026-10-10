@@ -254,7 +254,6 @@ export interface ProviderProfile {
 
 export interface AgentSettings {
   approveAll?: boolean;
-  skipVerify?: boolean;
   maxSteps?: number;
   /** Pause after this many consecutive turns without semantic progress. 0 disables this guard. */
   noProgressLimit?: number;
@@ -262,12 +261,6 @@ export interface AgentSettings {
   workMode?: WorkMode;
   permissionMode?: PermissionMode;
   lastModel?: string;
-  /**
-   * Explicit verification commands. Parsed and carried into the runtime config, but
-   * nothing executes them yet — the Verifier has no production caller — so this is
-   * not a behaviour the agent will perform.
-   */
-  verifyCommands?: string[];
 }
 
 export interface OptionalSystemPromptModules {
@@ -370,11 +363,8 @@ export interface RuntimeConfig {
   subagent: {
     forkWaitTimeoutMs: number;
   };
-  skipVerify: boolean;
   approveAll: boolean;
   traceDb?: string;
-  /** Explicit verification commands; falls back to Verifier.inferCommands when absent. */
-  verifyCommands?: string[];
 }
 
 export interface ToolResult {
@@ -431,6 +421,11 @@ export interface ToolDefinition {
   invoke: (call: ToolCall, context?: ToolExecutionContext) => Promise<ToolResult>;
 }
 
+/**
+ * Read-compatibility only: the verification loop that produced these was removed (the
+ * `verify` runtime event has no emitter), but sessions written while it existed still
+ * carry the transcript entries, and the loader validates what it reads.
+ */
 export interface VerificationResult {
   command: string;
   exitCode: number;
@@ -495,7 +490,6 @@ export interface RuntimeEventPayloads {
    * consumers may ignore it.
    */
   tool_progress: { call: ToolCall; note: string };
-  verify: { results: VerificationResult[] };
   retry: {
     step: number;
     source: string;

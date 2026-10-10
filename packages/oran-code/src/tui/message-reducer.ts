@@ -2,7 +2,7 @@ import { redactSecretText, redactSecrets } from "./interaction.js";
 import { appendTranscriptMessage, getToolMessage } from "./state.js";
 import { truncateVisible } from "./text-width.js";
 import type { TuiState } from "./types.js";
-import type { RuntimeEvent, ToolCall, ToolResult, VerificationResult } from "../types.js";
+import type { RuntimeEvent, ToolCall, ToolResult } from "../types.js";
 import { normalizeTokenUsage } from "../token-usage.js";
 import { stripPlanCompleteMarkers } from "../message-utils.js";
 
@@ -227,10 +227,6 @@ export function reduceRuntimeEvent(state: TuiState, event: RuntimeEvent): void {
       if (tool?.kind === "tool") tool.progress = event.note;
       break;
     }
-    case "verify":
-      appendTranscriptMessage(state, { kind: "verification", results: event.results.map(redactVerification) });
-      state.session.status = "verifying";
-      break;
     case "retry": {
       const detail = redactSecretText(event.message).trim() || "request failed";
       // Keep the notice to a single short line; a later successful response clears it.
@@ -652,10 +648,6 @@ function isCancelled(result: ToolResult): boolean {
     result.metadata?.cancelled === true ||
     /cancelled|canceled|aborted/i.test(`${result.summary ?? ""} ${result.error ?? ""}`)
   );
-}
-
-function redactVerification(result: VerificationResult): VerificationResult {
-  return { ...result, command: redactSecretText(result.command), output: redactSecretText(result.output) };
 }
 
 function toolCallKey(call: ToolCall): string {

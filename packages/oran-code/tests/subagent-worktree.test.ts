@@ -133,12 +133,7 @@ function createRunner(workspace: string, provider: ModelProvider): SubagentRunne
     workspace,
     registry,
     trace: new InMemoryTraceStore(),
-    baseConfig: createRuntimeConfig(
-      workspace,
-      baseModel,
-      { providers: {}, agent: { maxSteps: 5, skipVerify: true } },
-      false,
-    ),
+    baseConfig: createRuntimeConfig(workspace, baseModel, { providers: {}, agent: { maxSteps: 5 } }, false),
     baseModel,
     providerFactory: () => provider,
     resolveModel: () => baseModel,

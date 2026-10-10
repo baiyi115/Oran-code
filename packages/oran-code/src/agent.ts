@@ -11,7 +11,7 @@ import { TeamManager } from "./subagent/team.js";
 import { assembleSubagentStack, disposeStructuredScope, joinStructuredForkSummaries } from "./subagent/assembly.js";
 
 export async function runTask(options: AgentOptions, registry: ToolRegistry): Promise<void> {
-  await executeWithController(options, registry, { skipVerify: true });
+  await executeWithController(options, registry);
 }
 
 /**
@@ -22,20 +22,13 @@ export async function runTask(options: AgentOptions, registry: ToolRegistry): Pr
  * registry, so prompt, permission, context, and cancellation behavior cannot
  * drift into a second loop implementation.
  */
-export async function runTaskWithController(
-  options: AgentOptions,
-  configOverrides: { skipVerify?: boolean } = {},
-): Promise<Task> {
+export async function runTaskWithController(options: AgentOptions): Promise<Task> {
   const registry = new ToolRegistry();
   registerBuiltinTools(registry, options.workspace);
-  return executeWithController(options, registry, configOverrides);
+  return executeWithController(options, registry);
 }
 
-async function executeWithController(
-  options: AgentOptions,
-  registry: ToolRegistry,
-  configOverrides: { skipVerify?: boolean } = {},
-): Promise<Task> {
+async function executeWithController(options: AgentOptions, registry: ToolRegistry): Promise<Task> {
   const config = createRuntimeConfig(
     options.workspace,
     options.model,
@@ -43,7 +36,6 @@ async function executeWithController(
       providers: {},
       agent: {
         maxSteps: options.maxSteps,
-        ...(configOverrides.skipVerify !== undefined ? { skipVerify: configOverrides.skipVerify } : {}),
       },
     },
     options.approveAll,

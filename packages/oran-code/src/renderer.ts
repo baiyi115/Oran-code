@@ -1,6 +1,6 @@
 import { clearLine, cursorTo } from "node:readline";
 import type { Writable } from "node:stream";
-import type { ApprovalResponse, RuntimeEvent, ToolCall, ToolResult, VerificationResult } from "./types.js";
+import type { ApprovalResponse, RuntimeEvent, ToolCall, ToolResult } from "./types.js";
 import type { QuestionDialogItem } from "./tui/types.js";
 import { subagentOriginLabel, type SubagentOrigin } from "./subagent/types.js";
 import { stripPlanCompleteMarkers } from "./message-utils.js";
@@ -174,15 +174,6 @@ export class TerminalRenderer implements SessionRenderer {
     void call;
   }
 
-  verify(results: readonly VerificationResult[]): void {
-    const lines = results.map((result) => {
-      const style: Style = result.passed ? "green" : "red";
-      const output = result.output.trim();
-      return `  ${paint("verify", style, this.colorEnabled)} ${result.command} exit=${result.exitCode} (${result.durationMs}ms)${output ? `\n  | ${truncateText(output, 600)}` : ""}`;
-    });
-    if (lines.length) this.block(`${lines.join("\n")}\n`);
-  }
-
   retry(message: string, nextAttempt: number, maxRetries: number): void {
     // Non-TUI path: a single short line; the eventual success supersedes it.
     const reason = message.trim().split(/\r?\n/)[0] || "request failed";
@@ -257,9 +248,6 @@ export class TerminalRenderer implements SessionRenderer {
         break;
       case "tool_result":
         this.toolResult(event.call, event.result);
-        break;
-      case "verify":
-        this.verify(event.results);
         break;
       case "retry":
         this.retry(event.message, event.nextAttempt, event.maxRetries);

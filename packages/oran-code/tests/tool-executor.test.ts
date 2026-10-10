@@ -123,7 +123,6 @@ function makeHarness(
     },
     permissions: { workspace } as RuntimeConfig["permissions"],
     subagent: { forkWaitTimeoutMs: 600_000 },
-    skipVerify: true,
     approveAll: false,
   };
 

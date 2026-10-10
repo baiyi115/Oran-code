@@ -262,7 +262,6 @@ function subagentRuntimeConfig(
       workMode,
       allowedRoots: base.permissions.allowedRoots.map((root) => (samePath(root, base.workspace) ? workspace : root)),
     },
-    skipVerify: true,
   };
 }
 

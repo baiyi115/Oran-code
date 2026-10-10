@@ -168,7 +168,6 @@ export class TerminalSession {
   private modelWarning: string | undefined;
   private config: UserConfig;
   private approveAll: boolean;
-  private skipVerify: boolean;
   private renderer: SessionRenderer;
   private readonly input: NodeJS.ReadableStream;
   private readonly output: NodeJS.WriteStream;
@@ -311,7 +310,6 @@ export class TerminalSession {
     });
     this.handlers = new SessionCommandHandlers(this.handlersPort());
     this.workspaceFileIndex = new WorkspaceFileIndex(this.workspace);
-    this.skipVerify = options.config.agent?.skipVerify ?? (options.config.agent?.verifyCommands?.length ? false : true);
     this.runtimeEventSink = options.runtimeEventSink;
     this.input = input;
     this.output = output;
@@ -768,7 +766,6 @@ export class TerminalSession {
       this.workMode,
       this.permissionMode,
     );
-    runtimeConfig.skipVerify = this.skipVerify;
     const trace = this.trace;
     if (!trace) throw new Error("trace store is not initialized");
     const sessionId = this.currentSession?.id;

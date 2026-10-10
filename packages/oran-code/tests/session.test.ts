@@ -189,7 +189,7 @@ describe("TerminalSession", () => {
         {
           workspace,
           model,
-          config: { providers: {}, agent: { maxSteps: 10, skipVerify: false } },
+          config: { providers: {}, agent: { maxSteps: 10 } },
           approveAll: true,
           providerFactory: () => provider,
         },
@@ -234,7 +234,7 @@ describe("TerminalSession", () => {
         {
           workspace,
           model,
-          config: { providers: {}, agent: { maxSteps: 2, skipVerify: false } },
+          config: { providers: {}, agent: { maxSteps: 2 } },
           approveAll: true,
           providerFactory: () => provider,
         },
@@ -270,7 +270,7 @@ describe("TerminalSession", () => {
         {
           workspace,
           model,
-          config: { providers: {}, agent: { maxSteps: 2, skipVerify: false } },
+          config: { providers: {}, agent: { maxSteps: 2 } },
           approveAll: true,
           providerFactory: () => new FakeProvider(),
         },

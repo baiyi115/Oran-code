@@ -128,7 +128,7 @@ function createController(
 ): { controller: TaskController; trace: InMemoryTraceStore } {
   const trace = new InMemoryTraceStore();
   const controller = new TaskController({
-    config: createRuntimeConfig(workspace, model, { providers: {}, agent: { maxSteps: 5, skipVerify: false } }, false),
+    config: createRuntimeConfig(workspace, model, { providers: {}, agent: { maxSteps: 5 } }, false),
     provider,
     registry,
     trace,
@@ -600,7 +600,7 @@ describe("TaskController", () => {
     });
   });
 
-  it("completes directly when the model responds without running implicit verification", async () => {
+  it("completes the task when the model's second turn carries no tool calls", async () => {
     const workspace = await mkdtemp(join(tmpdir(), "liteagent-controller-"));
     try {
       const registry = new ToolRegistry();
@@ -618,7 +618,7 @@ describe("TaskController", () => {
       });
       const provider = new FakeProvider([
         toolResponse({
-          id: "call_verify",
+          id: "call_write",
           name: "write_file",
           arguments: { content: "hello" },
           createdAt: new Date().toISOString(),
@@ -635,10 +635,6 @@ describe("TaskController", () => {
       expect(task.state).toBe("completed");
       expect(task.result).toBe("The change is ready.");
       expect(provider.requests).toHaveLength(2);
-      const verifyEvents = events.filter(
-        (event): event is Extract<RuntimeEvent, { type: "verify" }> => event.type === "verify",
-      );
-      expect(verifyEvents).toHaveLength(0);
     } finally {
       await rm(workspace, { recursive: true, force: true });
     }
