@@ -26,7 +26,7 @@ export function providerDeleteConfirmLines(providerName: string, selectedIndex: 
     "Delete provider?",
     `  ${truncateVisible(providerName, Math.max(1, width - 2))}`,
     "─".repeat(Math.max(1, width)),
-    "Enter/D Confirm   Esc Cancel",
+    "Enter Confirm   Esc Cancel",
     "",
     highlightSelection("  Delete", selectedIndex === 0),
     highlightSelection("  Cancel", selectedIndex === 1),

@@ -1,4 +1,5 @@
 import type { ModelConfig } from "./types.js";
+import { shortcutsHelp } from "./shortcuts.js";
 
 export type SlashCommandAction =
   | "clear"
@@ -151,7 +152,7 @@ export function parseSlashCommand(value: string): ParsedCommand | undefined {
 }
 
 export function commandHelp(commands: readonly SlashCommand[] = DEFAULT_COMMANDS): string {
-  return [...commands]
+  const commandLines = [...commands]
     .filter((command) => !command.hidden)
     .sort((a, b) => a.name.localeCompare(b.name))
     .map((command) => {
@@ -159,6 +160,8 @@ export function commandHelp(commands: readonly SlashCommand[] = DEFAULT_COMMANDS
       return `  ${usage}  ${command.description}`;
     })
     .join("\n");
+  // 快捷键与 slash 命令是同一份"我能按什么"的可见性,别把帮助切成两半让用户猜。
+  return `${commandLines}\n\n${shortcutsHelp()}`;
 }
 
 export function formatModelReference(model: Pick<ModelConfig, "provider" | "model">): string {

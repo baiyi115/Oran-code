@@ -29,7 +29,7 @@ export function approvalDialogLines(
     "",
     ...APPROVAL_OPTIONS.map((option, index) => highlightSelection(`  ${option}`, index === selectedIndex)),
     "",
-    "↑↓ Select   Enter Confirm   Esc Reject",
+    "↑↓ Select   Enter Confirm   y Once   a Always   Esc/n Reject",
   );
   return lines.flatMap((line) => {
     if (!line) return [""];

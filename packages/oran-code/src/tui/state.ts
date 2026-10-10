@@ -9,6 +9,7 @@ import type {
 } from "./types.js";
 import type { PermissionMode, ReasoningEffort, WorkMode } from "../types.js";
 import { graphemeLength } from "./text-width.js";
+import { pushUndoSnapshot } from "./composer.js";
 import { DEFAULT_COMMAND_REGISTRY } from "../commands.js";
 
 export function createComposerState(history: readonly string[] = []): ComposerState {
@@ -20,6 +21,8 @@ export function createComposerState(history: readonly string[] = []): ComposerSt
     historyIndex: undefined,
     historyDraft: "",
     pastes: [],
+    undo: [],
+    redo: [],
   };
 }
 
@@ -114,7 +117,8 @@ export function composerValue(composer: ComposerState): string {
   return composer.lines.join("\n");
 }
 
-export function setComposerValue(composer: ComposerState, value: string): void {
+export function setComposerValue(composer: ComposerState, value: string, recordUndo = true): void {
+  if (recordUndo) pushUndoSnapshot(composer, "set");
   const lines = value.replace(/\r\n/g, "\n").split("\n");
   composer.lines = lines.length ? lines : [""];
   const lastLine = composer.lines.length - 1;

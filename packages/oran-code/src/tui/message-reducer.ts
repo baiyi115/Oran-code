@@ -412,6 +412,9 @@ function updateToolResult(state: TuiState, call: ToolCall, result: ToolResult, t
   else delete target.output;
   if (result.error) target.error = redactSecretText(result.error);
   else delete target.error;
+  const badges = metadataBadges(result);
+  if (badges) target.badges = badges;
+  else delete target.badges;
 }
 
 function ensureAssistant(
@@ -612,10 +615,25 @@ function reconcileTaskUsage(state: TuiState, completed: TuiState["session"]["usa
 }
 
 function isRejected(result: ToolResult): boolean {
+  // 先读结构化 metadata(权限拒绝是显式写入的),正则只做没有 metadata 的回退。
   return (
+    result.metadata?.permissionDenied === true ||
     result.metadata?.blockedBeforeExecution === true ||
     /reject|denied|permission/i.test(`${result.summary ?? ""} ${result.error ?? ""}`)
   );
+}
+
+/** 把工具结果的 metadata 翻译成用户可见的语义徽标(顺序固定,便于扫读)。 */
+function metadataBadges(result: ToolResult): string[] | undefined {
+  const metadata = result.metadata;
+  if (!metadata) return undefined;
+  const badges: string[] = [];
+  if (metadata.cached === true) badges.push("cached");
+  if (metadata.permissionDenied === true || metadata.blockedBeforeExecution === true) badges.push("denied");
+  if (metadata.hookBlocked === true) badges.push("hook");
+  if (metadata.repaired === true) badges.push("repaired");
+  if (metadata.toolUnavailable === true) badges.push("unavailable");
+  return badges.length ? badges : undefined;
 }
 
 function isCancelled(result: ToolResult): boolean {

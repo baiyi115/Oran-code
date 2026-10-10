@@ -44,19 +44,30 @@ export function questionDialogLines(
   const activeOption = current.options[selectedIndex];
   if (activeOption?.preview && activeOption.preview.trim()) {
     lines.push("", "Preview:", dimHorizontalRule(Math.min(safeWidth, 40)));
-    const previewRawLines = activeOption.preview.split("\n");
-    const previewDisplay = previewRawLines.slice(0, 8); // cap preview to 8 lines
-    for (const pLine of previewDisplay) {
+    const previewRawLines = activeOption.preview.split("\n").filter((line) => line.trim());
+    // 与工具输出同一套做法:头部 5 行 + 省略提示 + 尾部 3 行;只截前 8 行一定会
+    // 丢掉预览真正的尾部信息(结论/决策几乎都在最末)。
+    const HEAD = 5;
+    const TAIL = 3;
+    const shown =
+      previewRawLines.length <= HEAD + TAIL
+        ? previewRawLines
+        : [...previewRawLines.slice(0, HEAD), undefined, ...previewRawLines.slice(-TAIL)];
+    for (const pLine of shown) {
+      if (pLine === undefined) {
+        lines.push(`  │ ... ${previewRawLines.length - HEAD - TAIL} more lines in the middle ...`);
+        continue;
+      }
       lines.push(`  │ ${truncateVisible(pLine, safeWidth - 6)}`);
-    }
-    if (previewRawLines.length > 8) {
-      lines.push(`  │ ... (${previewRawLines.length - 8} more lines)`);
     }
   }
 
+  // Esc 的实际行为是"按首选项兜底作答",提示必须跟行为一致,否则用户不敢按。
   lines.push(
     "",
-    isMulti ? "↑↓ Navigate   Space Toggle   Enter Confirm   Esc Reject" : "↑↓ Navigate   Enter Confirm   Esc Reject",
+    isMulti
+      ? "↑↓ Navigate   Space Toggle   Enter Confirm   Esc Skip remaining"
+      : "↑↓ Navigate   Enter Confirm   Esc Skip remaining",
   );
 
   return lines.flatMap((line) => {

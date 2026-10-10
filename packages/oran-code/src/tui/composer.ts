@@ -33,7 +33,102 @@ export function visualLines(composer: ComposerState, width: number): VisualLine[
   return result.length ? result : [{ text: "", logicalLine: 0, startColumn: 0 }];
 }
 
+const UNDO_COALESCE_MS = 300;
+const UNDO_LIMIT = 50;
+
+/**
+ * 记录一次"删除/插入/结构性修改"前的快照,用于撤销。
+ * 短时间内的同类型操作(连续打字、连续删字)合并为一段,避免一个键占一层栈深。
+ */
+export function pushUndoSnapshot(composer: ComposerState, op: string, now = Date.now()): void {
+  const last = composer.undoMarker;
+  // 相邻同类**编辑**操作(连续打字/连续删字)合并为一段;"set"类整段覆盖
+  // (清空/恢复/替换)是离散的用户操作,永远各占一层,否则刚清的草稿救不回来。
+  if (last && op === last.op && op !== "set" && now - last.at < UNDO_COALESCE_MS && composer.undo.length) {
+    composer.undoMarker = { at: now, op };
+    return;
+  }
+  composer.undo.push(composer.lines.join("\n"));
+  if (composer.undo.length > UNDO_LIMIT) composer.undo.shift();
+  composer.undoMarker = { at: now, op };
+  composer.redo.length = 0;
+}
+
+function applyUndoTarget(composer: ComposerState, value: string): void {
+  const lines = value.replace(/\r\n/g, "\n").split("\n");
+  composer.lines = lines.length ? lines : [""];
+  const line = composer.lines.length - 1;
+  composer.cursor = { line, column: graphemeLength(composer.lines[line] ?? "") };
+  composer.preferredDisplayColumn = undefined;
+}
+
+export function composerUndo(composer: ComposerState): boolean {
+  const previous = composer.undo.pop();
+  if (previous === undefined) return false;
+  composer.redo.push(composer.lines.join("\n"));
+  if (composer.redo.length > UNDO_LIMIT) composer.redo.shift();
+  applyUndoTarget(composer, previous);
+  composer.undoMarker = { at: 0, op: "restore" };
+  return true;
+}
+
+export function composerRedo(composer: ComposerState): boolean {
+  const next = composer.redo.pop();
+  if (next === undefined) return false;
+  composer.undo.push(composer.lines.join("\n"));
+  if (composer.undo.length > UNDO_LIMIT) composer.undo.shift();
+  applyUndoTarget(composer, next);
+  composer.undoMarker = { at: 0, op: "restore" };
+  return true;
+}
+
+function isWordChar(value: string): boolean {
+  return value.length > 0 && /[A-Za-z0-9_]/.test(value);
+}
+
+/** 从 column 处向前找"当前词"的左边界(与 moveWordBackward 的语义一致)。 */
+function wordBackwardIndex(symbols: readonly string[], column: number): number {
+  while (column > 0 && !isWordChar(symbols[column - 1] ?? "")) column -= 1;
+  while (column > 0 && isWordChar(symbols[column - 1] ?? "")) column -= 1;
+  return column;
+}
+
+export function moveWordBackward(composer: ComposerState): void {
+  const symbols = graphemes(composer.lines[composer.cursor.line] ?? "");
+  // 先跨过光标前的非词字符,再把当前词跳到词头(readline 惯例的起跳语义)。
+  composer.cursor.column = wordBackwardIndex(symbols, composer.cursor.column);
+  composer.preferredDisplayColumn = undefined;
+}
+
+export function moveWordForward(composer: ComposerState): void {
+  const symbols = graphemes(composer.lines[composer.cursor.line] ?? "");
+  let column = composer.cursor.column;
+  // 先过当前词的剩余部分,再过非词字符,落到"下一词开头"。
+  while (column < symbols.length && isWordChar(symbols[column] ?? "")) column += 1;
+  while (column < symbols.length && !isWordChar(symbols[column] ?? "")) column += 1;
+  composer.cursor.column = column;
+  composer.preferredDisplayColumn = undefined;
+}
+
+/** 按词删除(readline 的 Ctrl+W);无跨行合并,与 deleteBackward 的行合并语义一致。 */
+export function deleteWordBackward(composer: ComposerState): void {
+  if (composer.cursor.column === 0) {
+    deleteBackward(composer);
+    return;
+  }
+  pushUndoSnapshot(composer, "delete");
+  const symbols = graphemes(composer.lines[composer.cursor.line] ?? "");
+  const boundary = wordBackwardIndex(symbols, composer.cursor.column);
+  composer.lines[composer.cursor.line] = symbols
+    .slice(0, boundary)
+    .concat(symbols.slice(composer.cursor.column))
+    .join("");
+  composer.cursor.column = boundary;
+  composer.preferredDisplayColumn = undefined;
+}
+
 export function insertText(composer: ComposerState, value: string): void {
+  pushUndoSnapshot(composer, "insert");
   const line = composer.lines[composer.cursor.line] ?? "";
   const symbols = graphemes(line);
   const before = symbols.slice(0, composer.cursor.column).join("");
@@ -53,6 +148,7 @@ export function insertText(composer: ComposerState, value: string): void {
 }
 
 export function deleteBackward(composer: ComposerState): void {
+  pushUndoSnapshot(composer, "delete");
   const { line, column } = composer.cursor;
   if (column > 0) {
     const symbols = graphemes(composer.lines[line] ?? "");
@@ -71,6 +167,7 @@ export function deleteBackward(composer: ComposerState): void {
 }
 
 export function deleteForward(composer: ComposerState): void {
+  pushUndoSnapshot(composer, "delete");
   const { line, column } = composer.cursor;
   const current = composer.lines[line] ?? "";
   if (column < graphemeLength(current)) {

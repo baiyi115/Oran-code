@@ -28,12 +28,17 @@ import { appendSystemMessage } from "./message-reducer.js";
 import { nextMessageNumber } from "./state.js";
 import {
   composerCursorOffset,
+  composerRedo,
+  composerUndo,
   cursorVisualPosition,
   deleteBackward,
   deleteForward,
+  deleteWordBackward,
   insertText,
   moveCursor,
   moveToLineEdge,
+  moveWordBackward,
+  moveWordForward,
   visualLines,
 } from "./composer.js";
 import { TranscriptView, collapsibleSegments } from "./transcript/transcript-view.js";
@@ -142,7 +147,7 @@ export class InkTuiApp {
       options.initialSession?.modelWarning ?? options.getModelWarning?.(),
     );
     this.state.session.approvalPolicy = options.getApprovalPolicy?.() ?? "ask";
-    this.state.session.backgroundTasks = options.getBackgroundTasks?.() ?? [];
+    this.preloadBackgroundTasks();
     this.overlayHandlers = new OverlayHandlers({
       state: this.state,
       loadModels: () => options.loadModels(),
@@ -276,6 +281,26 @@ export class InkTuiApp {
     this.invalidate();
   }
 
+  /** 后台任务数据源允许 Promise(子代理 runtime / shell jobs 的初始化都是异步的)。 */
+  private preloadBackgroundTasks(): void {
+    const result = this.options.getBackgroundTasks?.();
+    if (result === undefined) {
+      this.state.session.backgroundTasks = [];
+      return;
+    }
+    if (Array.isArray(result)) {
+      this.state.session.backgroundTasks = result;
+      return;
+    }
+    // Promise 型数据源(子代理 runtime 初始化也是异步),落地后刷新徽标。
+    void Promise.resolve(result)
+      .then((tasks) => {
+        this.state.session.backgroundTasks = tasks;
+        this.invalidate();
+      })
+      .catch(() => undefined);
+  }
+
   refreshContext(): void {
     this.state.session.workspace = this.options.getWorkspace();
     this.state.session.modelLabel = this.options.getModelLabel();
@@ -285,7 +310,8 @@ export class InkTuiApp {
     this.state.session.permissionMode = this.options.getPermissionMode?.() ?? this.state.session.permissionMode;
     this.state.session.reasoningEffort = this.options.getReasoningEffort?.() ?? this.state.session.reasoningEffort;
     this.state.session.followUpCount = this.options.getFollowUpCount?.() ?? this.state.session.followUpCount;
-    this.state.session.backgroundTasks = this.options.getBackgroundTasks?.() ?? [];
+    this.state.session.contextEstimate = this.options.getContextEstimate?.() ?? this.state.session.contextEstimate;
+    this.preloadBackgroundTasks();
     this.state.commands = [...(this.options.getCommands?.() ?? this.state.commands)];
     const reference = this.options.getModelReference?.();
     if (reference) this.state.session.modelReference = { ...reference };
@@ -386,9 +412,33 @@ export class InkTuiApp {
       return;
     }
     if (this.state.overlay.kind === "details") {
+      const overlay = this.state.overlay;
+      const offset = overlay.scrollOffset ?? 0;
+      const delta = (): number => this.pageScrollDelta();
       if (key.escape || (key.ctrl && input === "t")) {
         setOverlay(this.state, { kind: "none" });
         this.invalidate();
+        return;
+      }
+      if (key.pageUp && offset > 0) {
+        setOverlay(this.state, { ...overlay, scrollOffset: Math.max(0, offset - delta()) });
+        this.invalidate();
+        return;
+      }
+      if (key.pageDown) {
+        setOverlay(this.state, { ...overlay, scrollOffset: Math.min(Math.max(0, overlay.lines.length - 1), offset + delta()) });
+        this.invalidate();
+        return;
+      }
+      if (key.upArrow && offset > 0) {
+        setOverlay(this.state, { ...overlay, scrollOffset: Math.max(0, offset - 3) });
+        this.invalidate();
+        return;
+      }
+      if (key.downArrow) {
+        setOverlay(this.state, { ...overlay, scrollOffset: Math.min(Math.max(0, overlay.lines.length - 1), offset + 3) });
+        this.invalidate();
+        return;
       }
       return;
     }
@@ -428,6 +478,24 @@ export class InkTuiApp {
   }
 
   private handleComposerKey(input: string, key: Key): void {
+    if (key.ctrl && input === "z") {
+      this.detachInputHistory();
+      if (!composerUndo(this.state.composer)) this.state.session.status = "nothing to undo";
+      this.invalidate();
+      return;
+    }
+    if (key.ctrl && input === "y") {
+      this.detachInputHistory();
+      if (!composerRedo(this.state.composer)) this.state.session.status = "nothing to redo";
+      this.invalidate();
+      return;
+    }
+    if (key.ctrl && input === "w") {
+      this.detachInputHistory();
+      deleteWordBackward(this.state.composer);
+      this.invalidate();
+      return;
+    }
     if (isSubmitKey(input, key)) {
       if (key.shift || (key.ctrl && (input === "j" || input === "\n"))) {
         this.detachInputHistory();
@@ -446,8 +514,13 @@ export class InkTuiApp {
     else if (key.pageDown) this.scrollTranscriptBy(-this.pageScrollDelta());
     else if (key.ctrl && key.upArrow) this.scrollTranscriptBy(3);
     else if (key.ctrl && key.downArrow) this.scrollTranscriptBy(-3);
-    else if (key.leftArrow) moveCursor(this.state.composer, "left");
-    else if (key.rightArrow) moveCursor(this.state.composer, "right");
+    else if (key.leftArrow) {
+      if (key.ctrl || key.meta) moveWordBackward(this.state.composer);
+      else moveCursor(this.state.composer, "left");
+    } else if (key.rightArrow) {
+      if (key.ctrl || key.meta) moveWordForward(this.state.composer);
+      else moveCursor(this.state.composer, "right");
+    }
     else if (key.upArrow) {
       if (this.canMoveComposerVertically("up")) moveCursor(this.state.composer, "up", this.editorWidth());
       else this.navigateInputHistory("older");
@@ -459,8 +532,10 @@ export class InkTuiApp {
     else if (key.escape) {
       // Idle Esc clears the draft; busy Esc is handled in handleKey before this.
       this.detachInputHistory();
+      const discarded = composerValue(this.state.composer);
       setComposerValue(this.state.composer, "");
       this.state.composer.pastes = [];
+      if (discarded.trim()) this.state.session.status = "draft cleared — ctrl+z restores it";
     } else if (input && !key.ctrl && !key.meta) {
       // Multi-char payloads are paste events from Ink; keep newlines intact.
       if (input === "\r" || input === "\n") {
@@ -492,6 +567,7 @@ export class InkTuiApp {
         options: sameQuery ? previous.options : [],
         loading: true,
         tokenStart: file.start,
+        quoted: file.quoted,
       };
       void this.options
         .loadFiles(file.query)
@@ -1271,7 +1347,7 @@ function InkRoot({ app, revision }: { app: InkTuiApp; revision: number }): React
           commandItemCapacity,
         )
       : [];
-  const overlayLines = fitOverlayLines(renderOverlayLines(state, commandLines, width), overlayCapacity);
+  const overlayLines = fitOverlayLines(renderOverlayLines(state, commandLines, width, overlayCapacity), overlayCapacity);
   // Keep the mutable frame below the terminal height so Ink never enters its
   // clearTerminal paint path. The completed form is emitted to Static in full.
   const viewportLines = Math.max(1, rows - baseChromeLines - (overlayLines.length > 0 ? overlayLines.length + 1 : 0));

@@ -4,13 +4,17 @@ import { resolve } from "node:path";
 export interface WorkspaceFileIndexOptions {
   readonly ignoredNames?: readonly string[];
   readonly maxEntries?: number;
+  /** 索引过期时间(毫秒);过期后下一次 search 重新扫描,默认 15 秒。 */
+  readonly staleAfterMs?: number;
 }
 
 export class WorkspaceFileIndex {
   private entries: string[] | undefined;
   private refreshPromise: Promise<readonly string[]> | undefined;
+  private builtAt = 0;
   private readonly ignoredNames: ReadonlySet<string>;
   private readonly maxEntries: number;
+  private readonly staleAfterMs: number;
 
   constructor(
     private readonly workspace: string,
@@ -20,22 +24,28 @@ export class WorkspaceFileIndex {
       options.ignoredNames ?? [".git", ".venv", "node_modules", "dist", "build", ".next", "coverage"],
     );
     this.maxEntries = Math.max(1, options.maxEntries ?? 10000);
+    this.staleAfterMs = Math.max(1, options.staleAfterMs ?? 15_000);
   }
 
   invalidate(): void {
     this.entries = undefined;
+    this.builtAt = 0;
   }
 
   async refresh(): Promise<readonly string[]> {
-    if (this.refreshPromise) return this.refreshPromise;
-    this.refreshPromise = this.scan().finally(() => {
-      this.refreshPromise = undefined;
+    const existing = this.refreshPromise;
+    if (existing) return existing;
+    const promise = this.scan().finally(() => {
+      if (this.refreshPromise === promise) this.refreshPromise = undefined;
     });
-    return this.refreshPromise;
+    this.refreshPromise = promise;
+    return promise;
   }
 
+  /** 建好的索引在 TTL 内直接复用;过期前的下一次 search 重新扫描。 */
   async search(query: string, limit = 200): Promise<string[]> {
-    const entries = this.entries ?? (await this.refresh());
+    const entries =
+      this.entries && Date.now() - this.builtAt <= this.staleAfterMs ? this.entries : await this.refresh();
     const normalized = query.toLowerCase();
     return entries
       .filter((entry) => !normalized || entry.toLowerCase().includes(normalized))
@@ -61,6 +71,8 @@ export class WorkspaceFileIndex {
       }
     };
     await visit(this.workspace);
+    this.entries = results;
+    this.builtAt = Date.now();
     return results;
   }
 }

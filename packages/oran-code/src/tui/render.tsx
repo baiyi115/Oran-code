@@ -60,7 +60,7 @@ export function ghostCommandSuggestion(state: TuiState, input: string): string {
   return candidate.name.slice(input.length);
 }
 
-export function renderOverlayLines(state: TuiState, commandLines: string[], width: number): string[] {
+export function renderOverlayLines(state: TuiState, commandLines: string[], width: number, capacity?: number): string[] {
   switch (state.overlay.kind) {
     case "models":
       return [
@@ -86,8 +86,25 @@ export function renderOverlayLines(state: TuiState, commandLines: string[], widt
         state.overlay.selectedIndices,
         width,
       );
-    case "details":
-      return [state.overlay.title, dimHorizontalRule(width), ...state.overlay.lines, "", "Ctrl+T/Esc Close"];
+    case "details": {
+      const overlay = state.overlay;
+      const lines = overlay.lines;
+      // 此前只显示前 capacity 行,连关闭提示都被一起裁掉;现在由 scrollOffset
+      // 驱动窗口化,提示固定在第一行,内容默认从头部开始,可翻页。
+      const bodyHeight = Math.max(1, (capacity ?? lines.length + 3) - 3);
+      const maxOffset = Math.max(0, lines.length - bodyHeight);
+      const offset = Math.max(0, Math.min(overlay.scrollOffset ?? 0, maxOffset));
+      const visible = lines.slice(offset, offset + bodyHeight);
+      const hint = "PageUp/PageDown/↑↓ scroll · Ctrl+T/Esc Close";
+      return [
+        overlay.title,
+        dimHorizontalRule(width),
+        ...visible,
+        ...(lines.length > bodyHeight
+          ? [`${ANSI.gray}${offset + visible.length}/${lines.length} · ${hint}${ANSI.reset}`]
+          : [hint]),
+      ];
+    }
     case "sessions": {
       const overlay = state.overlay;
       return [
@@ -106,7 +123,7 @@ export function renderOverlayLines(state: TuiState, commandLines: string[], widt
         "Delete session?",
         `  ${truncateVisible(overlay.sessionName, Math.max(1, width - 2))}`,
         dimHorizontalRule(width),
-        "Enter/Del Confirm   Esc Cancel",
+        "Enter Confirm   Esc Cancel",
         "",
         highlightSelection("  Delete", overlay.selectedIndex === 0),
         highlightSelection("  Cancel", overlay.selectedIndex === 1),
@@ -183,11 +200,19 @@ export function fitOverlayLines(lines: readonly string[], capacity: number): str
   return [...header, ...body.slice(start, start + bodyHeight)];
 }
 
-export function fileQuery(value: string, cursor: number): { query: string; start: number } | undefined {
+export function fileQuery(
+  value: string,
+  cursor: number,
+): { query: string; start: number; quoted: boolean } | undefined {
   const before = value.slice(0, cursor);
-  const match = before.match(/(?:^|\s)@([^\s@]*)$/);
+  // 两种触发形态:@fragment 与 @"带空格的路径(闭引号可选)。
+  const match = before.match(/(?:^|\s)@("([^"]*)"?|([^\s@]*))$/);
   if (!match || match.index === undefined) return undefined;
-  return { query: match[1] ?? "", start: before.lastIndexOf("@") };
+  return {
+    query: match[2] ?? match[3] ?? "",
+    start: before.lastIndexOf("@"),
+    quoted: match[2] !== undefined,
+  };
 }
 
 /** 把 {inverse} 文本标记解析成 ink 的反白 <Text>,让选择态穿过字符串渲染管线。 */

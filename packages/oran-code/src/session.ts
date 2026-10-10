@@ -439,7 +439,7 @@ export class TerminalSession {
       modelLabel: () => this.modelLabel(),
       backgroundTasks: async () => {
         const runtime = await this.ensureAgentRuntime();
-        const { shellJobs } = await loadShellJobs();
+        const { shellJobs, formatJobOutput } = await loadShellJobs();
         const jobs = shellJobs()
           .list()
           .map((job) => ({
@@ -448,6 +448,7 @@ export class TerminalSession {
             kind: "job" as const,
             status: tuiJobStatus(job.status),
             startedAt: job.startedAt,
+            ...(job.stdout || job.stderr ? { output: formatJobOutput(job) } : {}),
             ...(job.endedAt ? { endedAt: job.endedAt } : {}),
             ...(job.error ? { error: job.error } : {}),
           }));
@@ -1863,17 +1864,34 @@ export class TerminalSession {
       loadFiles: (query) => this.loadWorkspaceFiles(query),
       onSessionChanged: () => this.persistTuiSession(),
       getFollowUpCount: () => this.followUps.length,
-      getBackgroundTasks: () =>
-        this.agentRuntime?.backgroundAgents.list().map((task) => ({
-          id: task.id,
-          name: task.name,
-          origin: task.origin,
-          definitionName: task.definitionName,
-          status: task.status,
-          startedAt: task.startedAt,
-          endedAt: task.endedAt,
-          error: task.error,
-        })) ?? [],
+      getBackgroundTasks: async () => {
+        const subagents =
+          this.agentRuntime?.backgroundAgents.list().map((task) => ({
+            id: task.id,
+            name: task.name,
+            origin: task.origin,
+            definitionName: task.definitionName,
+            status: task.status,
+            startedAt: task.startedAt,
+            endedAt: task.endedAt,
+            error: task.error,
+            output: task.output,
+          })) ?? [];
+        const { shellJobs, formatJobOutput } = await loadShellJobs();
+        const jobs = shellJobs()
+          .list()
+          .map((job) => ({
+            id: job.id,
+            name: job.command,
+            kind: "job" as const,
+            status: tuiJobStatus(job.status),
+            startedAt: job.startedAt,
+            ...(job.stdout || job.stderr ? { output: formatJobOutput(job) } : {}),
+            ...(job.endedAt ? { endedAt: job.endedAt } : {}),
+            ...(job.error ? { error: job.error } : {}),
+          }));
+        return [...subagents, ...jobs];
+      },
       getSessionName: () => (this.currentSession ? this.sessionName(this.currentSession) : "Current session"),
       getApprovalPolicy: () => (this.permissionMode === "bypass" ? "all" : "ask"),
       getWorkMode: () => this.workMode,
@@ -1917,6 +1935,12 @@ export class TerminalSession {
         return true;
       },
       getContextWindow: () => this.model?.contextWindow,
+      getContextEstimate: () => {
+        const session = this.currentSession;
+        if (!session) return undefined;
+        const manager = this.contextManagers.get(session.id);
+        return manager ? manager.estimateTokens(this.conversation, []) : undefined;
+      },
       getModelReference: () => (this.model ? this.modelReference(this.model) : this.currentSession?.modelReference),
       getModelWarning: () => this.modelWarning,
       isInteractionBlocked: () =>

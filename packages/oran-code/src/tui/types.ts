@@ -21,7 +21,10 @@ export interface TuiAppOptions {
   getSessionName?: () => string;
   getApprovalPolicy?: () => "ask" | "all";
   getFollowUpCount?: () => number;
-  getBackgroundTasks?: () => readonly TuiBackgroundTask[];
+  /** 后台子代理与 shell 作业的实时列表(异步数据源,允许 Promise)。 */
+  getBackgroundTasks?: () => readonly TuiBackgroundTask[] | Promise<readonly TuiBackgroundTask[]>;
+  /** 会话当前的上下文用量估算(tokens),用于 footer 的 ctx% 指示。 */
+  getContextEstimate?: () => number | undefined;
   onInput: (value: string) => Promise<void>;
   onCancel: () => boolean;
   loadModels: () => Promise<string[]>;
@@ -112,6 +115,11 @@ export interface ComposerState {
   historyDraft: string;
   /** Folded paste payloads referenced by [paste #N +M lines] placeholders. */
   pastes: PasteBlock[];
+  /** 撤销/重做栈(完整文本快照,按段合并;见 composer.ts 的 UNDO_COALESCE_MS)。 */
+  undo: string[];
+  redo: string[];
+  /** 上次快照的时间与操作类型(同类型操作在时间阈值内合并为一段)。 */
+  undoMarker?: { at: number; op: string } | undefined;
 }
 
 export interface TranscriptScrollState {
@@ -144,6 +152,8 @@ export interface TuiBackgroundTask {
   readonly startedAt: string;
   readonly endedAt?: string | undefined;
   readonly error?: string | undefined;
+  /** 任务输出(完成后的结果文本,供详情视图展示)。 */
+  readonly output?: string | undefined;
 }
 
 export interface TuiSessionState {
@@ -157,6 +167,8 @@ export interface TuiSessionState {
   permissionMode: PermissionMode;
   reasoningEffort: ReasoningEffort;
   contextWindow?: number;
+  /** 当前会话上下文的估算 token 数(估出 ctx% 用)。 */
+  contextEstimate?: number | undefined;
   approvalPolicy: "ask" | "all";
   taskState: TaskState | "ready";
   status: string;
@@ -213,6 +225,8 @@ export interface ToolMessage {
   output?: string;
   error?: string;
   expanded: boolean;
+  /** 由结果 metadata 派生的语义徽标(cached/denied/hook/repaired/unavailable)。 */
+  badges?: string[];
   taskId?: string;
 }
 
@@ -267,9 +281,24 @@ export type OverlayState =
       options: SessionOption[];
     }
   | { kind: "follow-ups"; selectedIndex: number; options: FollowUpOption[] }
-  | { kind: "files"; query: string; selectedIndex: number; options: string[]; loading: boolean; tokenStart: number }
+  | {
+      kind: "files";
+      query: string;
+      selectedIndex: number;
+      options: string[];
+      loading: boolean;
+      tokenStart: number;
+      /** 触发时是 @fragment 还是 @" ...(带空格路径),决定补全是否带引号。 */
+      quoted: boolean;
+    }
   | { kind: "approval"; approval: ApprovalDetails; selectedIndex: number }
-  | { kind: "details"; title: string; lines: string[] }
+  | {
+      kind: "details";
+      title: string;
+      lines: string[];
+      /** 从底部算起的滚动距离:0 = 贴近内容开头,>0 = 向上滚动。 */
+      scrollOffset?: number;
+    }
   | {
       kind: "connect";
       step: ConnectStep;

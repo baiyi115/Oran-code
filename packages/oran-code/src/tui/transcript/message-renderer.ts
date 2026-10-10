@@ -145,8 +145,8 @@ function renderThought(
     return lines;
   }
 
-  // Collapsed finished thoughts collapse to a single line; Ctrl+T expands the full text.
-  return [`${styleThoughtLabel(label)}${ANSI.gray}  (ctrl+t to expand)${ANSI.reset}`];
+  // Collapsed finished thoughts collapse to a single line; Ctrl+T shows its content in the details overlay.
+  return [`${styleThoughtLabel(label)}${ANSI.gray}  (ctrl+t details)${ANSI.reset}`];
 }
 
 function thoughtLabel(message: Extract<TranscriptMessage, { kind: "thought" }>): string {

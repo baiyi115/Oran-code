@@ -102,8 +102,13 @@ is authoritative.
 | `Enter`                      | Submit prompt or confirm selection               |
 | `Shift + Enter` / `Ctrl + J` | Multi-line input (newline)                       |
 | `Up` / `Down`                | Browse input history or navigate overlay options |
-| `Tab`                        | Autocomplete slash commands and `@file` paths    |
-| `Esc`                        | Close active overlay / cancel focus              |
+| `Tab`                        | Complete slash / `@file` overlays; toggle plan / auto work mode when idle |
+| `Shift + Tab`                | Cycle the reasoning effort (low / medium / high / xhigh) |
+| `Ctrl + T`                   | Open the latest thought / tool details overlay (scrollable; Ctrl+T closes) |
+| `Ctrl + Z` / `Ctrl + Y`      | Undo / redo composer edits (idle-Esc clears are recoverable) |
+| `Ctrl + W`                   | Delete the word before the cursor                |
+| `Ctrl + Q`                   | Manage queued follow-ups                          |
+| `Esc`                        | Close active overlay / cancel focus (press twice while busy to cancel the task) |
 | `Ctrl + C`                   | Cancel current generation or exit                |
 
 ### Essential Slash Commands

@@ -6,14 +6,14 @@ import { ANSI } from "../theme.js";
 import { spinnerFrame } from "../status-indicator.js";
 import { toolDisplayName } from "../tool-names.js";
 
-export function renderToolMessage(message: ToolMessage, width: number, liveTick = 0): string[] {
+export function renderToolMessage(message: ToolMessage, width: number, liveTick = 0, now = Date.now()): string[] {
   const indicator =
     message.status === "running"
       ? spinnerFrame(liveTick)
       : message.status === "success"
         ? "◇"
         : message.status === "failure"
-          ? "\u00D7"
+          ? "×"
           : message.status === "rejected"
             ? "!"
             : "-";
@@ -22,8 +22,15 @@ export function renderToolMessage(message: ToolMessage, width: number, liveTick 
   const call = argument
     ? `${ANSI.toolBold}${label}${ANSI.reset} ${ANSI.gray}${argument}${ANSI.reset}`
     : `${ANSI.toolBold}${label}${ANSI.reset}`;
+  // 已完成调用显示总耗时;运行中的显示已用时间(long tool 卡哪步一眼可见)。
   const duration =
-    message.durationMs === undefined ? "" : `  ${ANSI.gray}${formatDuration(message.durationMs)}${ANSI.reset}`;
+    message.durationMs !== undefined
+      ? `  ${ANSI.gray}${formatDuration(message.durationMs)}${ANSI.reset}`
+      : message.status === "running" && message.startedAt
+        ? `  ${ANSI.gray}${formatDuration(Math.max(0, now - Date.parse(message.startedAt)))}${ANSI.reset}`
+        : "";
+  const badges =
+    message.badges && message.badges.length ? `  ${ANSI.gray}[${message.badges.join(", ")}]${ANSI.reset}` : "";
   const status =
     message.status === "running" || message.status === "success"
       ? ""
@@ -40,7 +47,7 @@ export function renderToolMessage(message: ToolMessage, width: number, liveTick 
       ? ` ${ANSI.gray}\u00b7 ${truncateVisible(detail.replace(/\s+/g, " ").trim(), 80)}${ANSI.reset}`
       : "";
   const headingPrefix = `${indicatorColor}${indicator}${ANSI.reset} `;
-  const headingBody = `${call}${status}${duration}${summary}`;
+  const headingBody = `${call}${status}${duration}${summary}${badges}`;
   const headingWidth = Math.max(1, width - visibleWidth(headingPrefix));
   const lines = wrapDisplayText(headingBody, headingWidth).map(
     (line, index) => `${index === 0 ? headingPrefix : " ".repeat(2)}${line}`,
@@ -48,15 +55,21 @@ export function renderToolMessage(message: ToolMessage, width: number, liveTick 
   const output = message.error || message.output || "";
   const changeDiff = writeToolDiff(message);
   if (message.expanded && output && !changeDiff) {
+    // 只显示前 12 行会丢掉长输出真正值钱的部分(失败栈、汇总行几乎总在尾部),
+    // 所以改为"头部 8 行 + 省略提示 + 尾部 4 行",头尾可见、细节再 ctrl+t 看。
     const preview = output.split(/\r?\n/).filter(Boolean);
-    const limit = 12;
-    lines.push(
-      ...preview
-        .slice(0, limit)
-        .flatMap((line) => wrapDisplayText(`\u2502 ${line}`, Math.max(1, width - 2)).map((wrapped) => `  ${wrapped}`)),
-    );
-    if (preview.length > limit)
-      lines.push(`${ANSI.gray}  \u2502 ... ${preview.length - limit} more lines (ctrl+t to expand)${ANSI.reset}`);
+    const HEAD = 8;
+    const TAIL = 4;
+    const shown = preview.length <= HEAD + TAIL ? preview : [...preview.slice(0, HEAD), undefined, ...preview.slice(-TAIL)];
+    for (const line of shown) {
+      if (line === undefined) {
+        lines.push(
+          `${ANSI.gray}  \u2502 ... ${preview.length - HEAD - TAIL} lines hidden (PageUp/PageDown in details) ...${ANSI.reset}`,
+        );
+        continue;
+      }
+      lines.push(...wrapDisplayText(`\u2502 ${line}`, Math.max(1, width - 2)).map((wrapped) => `  ${wrapped}`));
+    }
   } else if (output && message.status !== "success" && output.trim() !== detail.trim()) {
     const error = truncateVisible(output.replace(/\s+/g, " ").trim(), Math.max(40, width * 2));
     lines.push(

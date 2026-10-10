@@ -265,7 +265,7 @@ export class TurnRequester {
         replacementCount: 0,
         message,
       });
-      this.ports.logger(`Automatic context compaction failed: ${message}`);
+      // 失败信息已经作为 context_compaction failed 事件进入转写区,不再重复发系统行。
     }
     return managedMessages;
   }
@@ -336,9 +336,7 @@ export class TurnRequester {
             delayMs,
           }),
         );
-        this.ports.logger(
-          `Retrying ${source} response (${attempt + 1}/${this.ports.config.loop.maxRetries}) in ${delayMs}ms: ${message}`,
-        );
+        // 重试已经在 retry 事件里可见,logger 通道留给"模型看不到但用户该看到"的通知。
         await sleepWithSignal(delayMs, this.ports.getAbortSignal());
       }
     }

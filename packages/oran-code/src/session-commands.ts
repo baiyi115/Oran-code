@@ -263,8 +263,8 @@ export class SessionCommandRouter {
       case "/tasks":
       case "/subagents": {
         const tasks = await this.ctx.backgroundTasks();
-        if (!tasks.length) return "No background subagent tasks found.";
-        const lines: string[] = ["Background Subagent Tasks:"];
+        if (!tasks.length) return "No background tasks (subagents or shell jobs) found.";
+        const lines: string[] = ["Background Tasks (subagents & shell jobs):"];
         for (const task of tasks) {
           const role = task.definitionName ? ` [${task.definitionName}]` : "";
           const start = Date.parse(task.startedAt);

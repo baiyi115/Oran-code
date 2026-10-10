@@ -48,3 +48,12 @@ describe("terminal commands", () => {
     expect(completeInput("/model", [])[0]).toEqual(["/model"]);
   });
 });
+
+  it("bundles keyboard shortcuts into command help", () => {
+    const help = commandHelp();
+    expect(help).toContain("/model");
+    expect(help).toContain("Ctrl+Z");
+    expect(help).toContain("y / a / n");
+    expect(help).toContain("Ctrl+T");
+    expect(help).toContain("PageUp");
+  });

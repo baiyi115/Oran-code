@@ -176,9 +176,19 @@ src/context/
 - 去重按归一化 URL（小写主机、去 www、去尾斜杠、去 fragment、剔除 `utm_*`/`fbclid`/`gclid`/`msclkid`/`mc_cid`/`mc_eid`/`ref` 等跟踪参数、其余 query 排序）：保留先出现的位置与标题，摘要取更长的一条；输出头部标注 `deduped="N"`。
 - 仍未覆盖：更多后端（如国内可用端点）、按域名折叠同一站点的多个页面（当前只按页面级 URL 判重）。
 
+### 第三轮:TUI 交互（对照 pi / ZCode 评估后经用户选定四项）✅
+
+审计后按问题密度安排,每项一提交：
+
+1. **交互正确性**(`7f52781`):按 `ctrl+t to expand` 死状态的三处提示如实改成 `ctrl+t details`,details 覆盖层加 scrollOffset 滚动与固定提示行,长工具输出改为头 8+尾 4(diff 头 20+尾 8),截断续写经默认接入事件通道的 logger 成为真实 log 事件;emit 对 log 事件失败不回写 logger 避免自身递归。
+2. **状态可见性**(`a452e3e`):footer 加 `perm:<mode>` 与 `ctx NN%` 估算徽标,InkTuiApp 的 `getBackgroundTasks` 修正为合并 subagents+shell jobs(终于让 `kind:"job"` 徽标真正生效),运行中工具实时显示已用时间,工具结果 metadata 翻译成 `[cached]/[denied]/[hook]/[repaired]/[unavailable]` 徽标,`isRejected` 改为先读 `permissionDenied` 再回退正则。
+3. **Composer 手感**(`9795e1e`):Ctrl+Z/Ctrl+Y 按段合并的撤销栈(上限 50 段;同类连续编辑 300ms 内并段,**"整段 set"不并段**——这是"误按 Esc 清掉的草稿能救回"成立的边界),空闲 Esc 清稿时提示"ctrl+z 救回",Ctrl+W 按词删、Ctrl/Alt+←→ 按词移动;@ 补全索引由"从来都建不上缓存(每次触发都全树扫描)"修复为建缓存 + 15 秒 TTL,支持 @"带空格的路径"(开引号已打、闭引号可选)。
+4. **弹窗一致性与帮助**(`ac67f79`):审批弹窗接入 y/a/n 快捷回答(readline 端三大键在 TUI 里全面可用),删除类确认默认落在 Cancel 且只认 Enter 落在 Delete(堵掉"确认层里 Backspace 一律删"的误杀),提问弹窗 Esc 提示改"Skip remaining"与预览改为头 5+尾 3,新增 `src/shortcuts.ts` 快捷键总表拼接进 /help 与 cli 启动帮助,README[中英] 快捷键表修正(Tab 描述与实现漂移两年)。
+
 ### 仍未覆盖（下一阶段候选）
 
 - microcompact / 压缩阈值按真实长会话调参（当前是公式默认值）；
 - shell 作业的 `/tasks` 专属面板（持久化恢复倾向不做，与"进程即生命周期"的设计冲突）；
 - 截断保护的汇聚上限与 `maxSteps` 耗尽路径；
-- web_search 的更多后端与站点级折叠。
+- web_search 的更多后端与站点级折叠;
+- TUI 深层:窄终端模式与 16 色降级、每帧全量行数组重建(as-is 阶段)、按需虚拟化、图片粘贴(需多模态)、Vim 模态、滚轮(需牺牲原生选择复制,建议默认关)、overlay 体系抽象化(11 种弹窗散落 3 个 handler + 4 处同步修改)。

@@ -245,7 +245,7 @@ function renderCollapsedSegment(segment: TranscriptSegment, width: number): stri
   const tools = `${segment.toolCount} tool${segment.toolCount === 1 ? "" : "s"}`;
   lines.push(
     ...wrapDisplayText(
-      `${ANSI.greenBold}◇${ANSI.reset} ${ANSI.toolBold}${tools}${ANSI.reset} ${ANSI.gray}· ctrl+t to expand${ANSI.reset}`,
+      `${ANSI.greenBold}◇${ANSI.reset} ${ANSI.toolBold}${tools}${ANSI.reset} ${ANSI.gray}· ctrl+t details${ANSI.reset}`,
       width,
     ),
   );

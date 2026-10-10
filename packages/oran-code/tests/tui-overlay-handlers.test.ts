@@ -157,7 +157,9 @@ describe("OverlayHandlers", () => {
     expect(h.state.overlay).toMatchObject({ kind: "sessions", selectedIndex: 1 });
 
     // Confirm deletes and rebuilds the list with a clamped index.
+    // 删除确认默认落在 Cancel(变更于本次一致性改造),先把高亮挪到 Delete 再 Enter。
     h.handlers.handleSessionKey("d", key({ ctrl: true }));
+    h.handlers.handleSessionDeleteConfirmKey("", up);
     await h.handlers.handleSessionDeleteConfirmKey("", enter);
     expect(h.sessionsDeleted).toEqual(["s2"]);
     expect(h.state.overlay).toMatchObject({ kind: "sessions", selectedIndex: 0 });
@@ -190,5 +192,83 @@ describe("OverlayHandlers", () => {
     expect(h.approvals).toEqual(["always"]);
     h.handlers.handleApprovalKey("", escape);
     expect(h.approvals).toEqual(["always", false]);
+  });
+});
+
+describe("approval quick answers", () => {
+  function approvalHarness(): Harness {
+    const h = harness();
+    h.state.overlay = {
+      kind: "approval",
+      approval: {
+        call: { name: "run_command", arguments: { command: "npm test" }, createdAt: "2026-09-24T00:00:00Z" },
+        level: 3,
+        description: "run the test suite",
+        workspace: "/workspace",
+        origin: { kind: "main" },
+      },
+      selectedIndex: 0,
+    };
+    return h;
+  }
+
+  it("answers approvals with single letters matching the readline semantics", () => {
+    const yes = approvalHarness();
+    yes.handlers.handleApprovalKey("y", key({}));
+    expect(yes.approvals).toEqual([true]);
+
+    const always = approvalHarness();
+    always.handlers.handleApprovalKey("a", key({}));
+    expect(always.approvals).toEqual(["always"]);
+
+    const no = approvalHarness();
+    no.handlers.handleApprovalKey("n", key({}));
+    expect(no.approvals).toEqual([false]);
+  });
+
+  it("ignores letters when a modifier is held", () => {
+    const h = approvalHarness();
+    h.handlers.handleApprovalKey("y", key({ ctrl: true }));
+    expect(h.approvals).toEqual([]);
+  });
+});
+
+describe("session delete confirmation", () => {
+  function sessionsHarness(): Harness {
+    const h = harness();
+    h.state.overlay = {
+      kind: "sessions",
+      query: "",
+      selectedIndex: 0,
+      options: h.sessionsLoaded,
+    };
+    return h;
+  }
+
+  it("defaults to Cancel when asking to delete a session", () => {
+    const h = sessionsHarness();
+    // Backspace/Del 触发删除请求(走确认层,不再直删)
+    h.handlers.handleSessionKey("", key({ delete: true }));
+    expect(h.state.overlay).toMatchObject({ kind: "session-delete-confirm", selectedIndex: 1 });
+  });
+
+  it("Enter on Cancel backs out with nothing deleted", async () => {
+    const h = sessionsHarness();
+    h.handlers.handleSessionKey("", key({ delete: true }));
+    await h.handlers.handleSessionDeleteConfirmKey("", enter);
+    expect(h.sessionsDeleted).toEqual([]);
+    expect(h.state.overlay.kind).toBe("sessions");
+  });
+
+  it("Backspace while Cancel is focused no longer deletes; only Enter on Delete deletes", async () => {
+    const h = sessionsHarness();
+    h.handlers.handleSessionKey("", key({ delete: true }));
+    await h.handlers.handleSessionDeleteConfirmKey("", key({ backspace: true }));
+    expect(h.sessionsDeleted).toEqual([]);
+
+    await h.handlers.handleSessionDeleteConfirmKey("", up);
+    await h.handlers.handleSessionDeleteConfirmKey("", enter);
+    expect(h.sessionsDeleted).toEqual(["s1"]);
+    expect(h.state.session.status).toBe("session deleted");
   });
 });

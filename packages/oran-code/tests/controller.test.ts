@@ -465,6 +465,12 @@ describe("TaskController", () => {
         expect(task.result).toBe("Recovered with a smaller step.");
         expect(invoked).toBe(false);
         expect(events.some((event) => event.type === "tool_result")).toBe(false);
+        // 截断提醒通过 logger 通道成为真实的 log 事件(TUI 此前看不到)。
+        expect(
+          events.some(
+            (event) => event.type === "log" && typeof event.message === "string" && event.message.includes("truncated"),
+          ),
+        ).toBe(true);
         expect(
           provider.requests[1]?.some(
             (message) =>

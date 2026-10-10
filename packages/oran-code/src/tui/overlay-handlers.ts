@@ -134,8 +134,9 @@ export class OverlayHandlers {
     if (key.leftArrow || key.upArrow) this.ctx.state.overlay = { ...overlay, selectedIndex: 0 };
     else if (key.rightArrow || key.downArrow) this.ctx.state.overlay = { ...overlay, selectedIndex: 1 };
     else if (key.escape) this.cancelProviderDeleteConfirmation();
-    else if (isSessionDeleteKey(input, key) || isSubmitKey(input, key)) {
-      if (isSessionDeleteKey(input, key) || overlay.selectedIndex === 0) {
+    else if (isSubmitKey(input, key)) {
+      // 同会话确认层:只在 Enter 落在 Delete 时才删除。
+      if (overlay.selectedIndex === 0) {
         this.deletingEntry = true;
         try {
           const deleted = await this.ctx.onProviderDeleted?.(overlay.providerName);
@@ -341,7 +342,8 @@ export class OverlayHandlers {
       kind: "session-delete-confirm",
       sessionId: selected.id,
       sessionName: selected.name,
-      selectedIndex: 0,
+      // 默认落在 Cancel,与 provider 删除确认一致——删除的缺省是"不做什么"。
+      selectedIndex: 1,
       returnSelectedIndex: this.ctx.state.overlay.selectedIndex,
       options: [...this.ctx.state.overlay.options],
     };
@@ -354,8 +356,10 @@ export class OverlayHandlers {
     if (key.leftArrow || key.upArrow) this.ctx.state.overlay = { ...overlay, selectedIndex: 0 };
     else if (key.rightArrow || key.downArrow) this.ctx.state.overlay = { ...overlay, selectedIndex: 1 };
     else if (key.escape) this.cancelSessionDeleteConfirmation();
-    else if (isSessionDeleteKey(input, key) || isSubmitKey(input, key)) {
-      if (isSessionDeleteKey(input, key) || overlay.selectedIndex === 0) {
+    else if (isSubmitKey(input, key)) {
+      // 只在 Enter 落在 Delete 时才删除。Backspace/Del 此前无视高亮直接删除,
+      // 在 Cancel 聚焦时一按就删——那条路被堵掉,只保留显式确认的 Enter。
+      if (overlay.selectedIndex === 0) {
         this.deletingEntry = true;
         try {
           const activeSessionId = this.ctx.state.session.sessionId;
@@ -449,6 +453,10 @@ export class OverlayHandlers {
     const next = key.upArrow ? Math.max(0, selected - 1) : key.downArrow ? Math.min(3, selected + 1) : selected;
     if (key.escape) this.ctx.resolveApproval(false);
     else if (isSubmitKey(input, key)) this.ctx.resolveApproval(approvalResponse(next));
+    // 快捷回答与 readline 端一致(y / a / n),避免用户只能纯方向键挪光标。
+    else if (!key.ctrl && !key.meta && input.toLowerCase() === "y") this.ctx.resolveApproval(true);
+    else if (!key.ctrl && !key.meta && input.toLowerCase() === "a") this.ctx.resolveApproval("always");
+    else if (!key.ctrl && !key.meta && input.toLowerCase() === "n") this.ctx.resolveApproval(false);
     else this.ctx.state.overlay = { ...this.ctx.state.overlay, selectedIndex: next };
     this.ctx.invalidate();
   }

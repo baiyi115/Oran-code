@@ -98,8 +98,13 @@ oran tasks
 | `Enter`                      | 提交输入或确认选中项                |
 | `Shift + Enter` / `Ctrl + J` | 输入框换行（多行输入）              |
 | `Up` / `Down`                | 浏览历史输入或选择浮层列表项        |
-| `Tab`                        | 自动补全斜杠命令与 `@file` 文件路径 |
-| `Esc`                        | 关闭当前浮层 / 取消焦点             |
+| `Tab`                        | 在斜杠命令 / `@file` 浮层中补全;空闲输入框切换 plan / auto 模式 |
+| `Shift + Tab`                | 循环思考强度(low / medium / high / xhigh)      |
+| `Ctrl + T`                   | 打开"最近活动"详情浮层(可滚动;再按关闭)     |
+| `Ctrl + Z` / `Ctrl + Y`      | 撤销 / 重做输入框编辑(误按 Esc 清空的草稿也能救回) |
+| `Ctrl + W`                   | 删除光标前一个词                               |
+| `Ctrl + Q`                   | 查看并取消排队中的 follow-up                   |
+| `Esc`                        | 关闭当前浮层 / 取消焦点(任务运行中连按两次取消任务) |
 | `Ctrl + C`                   | 中断当前生成或退出当前会话          |
 
 ### 常用命令 (Slash Commands)

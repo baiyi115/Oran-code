@@ -166,7 +166,13 @@ export class TaskController {
     this.approvalCallback = options.approvalCallback ?? (async () => false);
     this.eventCallback = options.eventCallback ?? (() => undefined);
     this.conversationCallback = options.conversationCallback ?? (() => undefined);
-    this.logger = options.logger ?? (() => undefined);
+    // 默认把 logger 接进事件通道:截断提醒/offload 失败/hook 失败这类
+    // "模型看不到但用户该看到"的通知成为真正的 log 事件(TUI/headless 均可见)。
+    this.logger =
+      options.logger ??
+      ((message) => {
+        void this.emit("log", { message }).catch(() => undefined);
+      });
     this.debugLogger = options.debugLogger ?? (() => undefined);
     this.conversation = cloneMessages(options.conversation ?? []);
     this.contextManager =
@@ -812,7 +818,11 @@ export class TaskController {
     try {
       await this.eventCallback(event as RuntimeEvent);
     } catch (error) {
-      this.logger(`event callback failed: ${error instanceof Error ? error.message : String(error)}`);
+      // log 事件自身的派发失败不再回写 logger:
+      // 默认 logger 会把 message 再发成 log 事件,回写会造成无限循环。
+      if (type !== "log") {
+        this.logger(`event callback failed: ${error instanceof Error ? error.message : String(error)}`);
+      }
     }
   }
 

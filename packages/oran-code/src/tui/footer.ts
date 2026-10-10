@@ -38,7 +38,9 @@ export function footerLines(state: TuiState, width: number): string[] {
   const jobBadge = runningJobCount > 0 ? `${runningJobCount} job${runningJobCount === 1 ? "" : "s"} running` : undefined;
   const status = explicitStatus(state);
 
-  const detail = [usage, queue, subagentBadge, jobBadge, status].filter(Boolean).join(" · ");
+  const detail = [usage, queue, permissionChip(state), contextChip(state), subagentBadge, jobBadge, status]
+    .filter(Boolean)
+    .join(" · ");
   const lines = [truncateVisible(primary, available)];
   if (!detail) return [...lines, abbreviatePath(workspace, available)];
 
@@ -135,6 +137,26 @@ function compactNumber(value: number): string {
 function formatRate(value: number): string {
   if (value < 10) return value.toFixed(1);
   return compactNumber(Math.round(value));
+}
+
+/**
+ * 权限模式徽标:bypass/readonly/plan/accept-edits 值得时刻可见
+ * (安全基础行不可"以为自己在 default");默认模式规整地显示 default。
+ */
+function permissionChip(state: TuiState): string | undefined {
+  const mode = state.session.permissionMode;
+  if (!mode) return undefined;
+  return `perm:${mode}`;
+}
+
+/** 上下文用量 ND% 指示(估算);≥80% 时兜底提示该收尾了。 */
+function contextChip(state: TuiState): string | undefined {
+  const estimate = state.session.contextEstimate;
+  const window = state.session.contextWindow;
+  if (!window || window <= 0) return undefined;
+  if (estimate === undefined) return undefined;
+  const percent = Math.min(99, Math.round((Math.max(0, estimate) / window) * 100));
+  return percent >= 80 ? `ctx ${percent}%!` : `ctx ${percent}%`;
 }
 
 function explicitStatus(state: TuiState): string | undefined {
