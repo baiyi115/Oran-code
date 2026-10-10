@@ -1,4 +1,4 @@
-import type { ComposerState } from "./types.js";
+import type { ComposerDraft, ComposerState } from "./types.js";
 import {
   graphemeLength,
   graphemeOffset,
@@ -37,6 +37,18 @@ const UNDO_COALESCE_MS = 300;
 const UNDO_LIMIT = 50;
 
 /**
+ * 一份可恢复的草稿。文本之外必须一起存光标与折叠粘贴的载荷:只存文本的话,
+ * ctrl+z 会把 [paste #N +M lines] 占位符当成正文,并把光标甩到全文末尾。
+ */
+function currentDraft(composer: ComposerState): ComposerDraft {
+  return {
+    text: composer.lines.join("\n"),
+    cursor: { ...composer.cursor },
+    pastes: structuredClone(composer.pastes),
+  };
+}
+
+/**
  * 记录一次"删除/插入/结构性修改"前的快照,用于撤销。
  * 短时间内的同类型操作(连续打字、连续删字)合并为一段,避免一个键占一层栈深。
  */
@@ -48,24 +60,26 @@ export function pushUndoSnapshot(composer: ComposerState, op: string, now = Date
     composer.undoMarker = { at: now, op };
     return;
   }
-  composer.undo.push(composer.lines.join("\n"));
+  composer.undo.push(currentDraft(composer));
   if (composer.undo.length > UNDO_LIMIT) composer.undo.shift();
   composer.undoMarker = { at: now, op };
   composer.redo.length = 0;
 }
 
-function applyUndoTarget(composer: ComposerState, value: string): void {
-  const lines = value.replace(/\r\n/g, "\n").split("\n");
+function applyUndoTarget(composer: ComposerState, draft: ComposerDraft): void {
+  const lines = draft.text.replace(/\r\n/g, "\n").split("\n");
   composer.lines = lines.length ? lines : [""];
-  const line = composer.lines.length - 1;
-  composer.cursor = { line, column: graphemeLength(composer.lines[line] ?? "") };
+  composer.pastes = structuredClone(draft.pastes);
+  const line = Math.min(Math.max(0, draft.cursor.line), composer.lines.length - 1);
+  const column = Math.min(draft.cursor.column, graphemeLength(composer.lines[line] ?? ""));
+  composer.cursor = { line, column };
   composer.preferredDisplayColumn = undefined;
 }
 
 export function composerUndo(composer: ComposerState): boolean {
   const previous = composer.undo.pop();
   if (previous === undefined) return false;
-  composer.redo.push(composer.lines.join("\n"));
+  composer.redo.push(currentDraft(composer));
   if (composer.redo.length > UNDO_LIMIT) composer.redo.shift();
   applyUndoTarget(composer, previous);
   composer.undoMarker = { at: 0, op: "restore" };
@@ -75,7 +89,7 @@ export function composerUndo(composer: ComposerState): boolean {
 export function composerRedo(composer: ComposerState): boolean {
   const next = composer.redo.pop();
   if (next === undefined) return false;
-  composer.undo.push(composer.lines.join("\n"));
+  composer.undo.push(currentDraft(composer));
   if (composer.undo.length > UNDO_LIMIT) composer.undo.shift();
   applyUndoTarget(composer, next);
   composer.undoMarker = { at: 0, op: "restore" };

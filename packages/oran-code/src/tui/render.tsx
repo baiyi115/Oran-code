@@ -60,7 +60,12 @@ export function ghostCommandSuggestion(state: TuiState, input: string): string {
   return candidate.name.slice(input.length);
 }
 
-export function renderOverlayLines(state: TuiState, commandLines: string[], width: number, capacity?: number): string[] {
+export function renderOverlayLines(
+  state: TuiState,
+  commandLines: string[],
+  width: number,
+  capacity?: number,
+): string[] {
   switch (state.overlay.kind) {
     case "models":
       return [
@@ -93,6 +98,8 @@ export function renderOverlayLines(state: TuiState, commandLines: string[], widt
       // 驱动窗口化,提示固定在第一行,内容默认从头部开始,可翻页。
       const bodyHeight = Math.max(1, (capacity ?? lines.length + 3) - 3);
       const maxOffset = Math.max(0, lines.length - bodyHeight);
+      // 键盘侧按同一个上限钳制(见 TuiState.detailsScrollMax)。
+      state.detailsScrollMax = maxOffset;
       const offset = Math.max(0, Math.min(overlay.scrollOffset ?? 0, maxOffset));
       const visible = lines.slice(offset, offset + bodyHeight);
       const hint = "PageUp/PageDown/↑↓ scroll · Ctrl+T/Esc Close";

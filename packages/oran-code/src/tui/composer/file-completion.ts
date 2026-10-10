@@ -27,11 +27,6 @@ export class WorkspaceFileIndex {
     this.staleAfterMs = Math.max(1, options.staleAfterMs ?? 15_000);
   }
 
-  invalidate(): void {
-    this.entries = undefined;
-    this.builtAt = 0;
-  }
-
   async refresh(): Promise<readonly string[]> {
     const existing = this.refreshPromise;
     if (existing) return existing;

@@ -49,11 +49,11 @@ describe("terminal commands", () => {
   });
 });
 
-  it("bundles keyboard shortcuts into command help", () => {
-    const help = commandHelp();
-    expect(help).toContain("/model");
-    expect(help).toContain("Ctrl+Z");
-    expect(help).toContain("y / a / n");
-    expect(help).toContain("Ctrl+T");
-    expect(help).toContain("PageUp");
-  });
+it("bundles keyboard shortcuts into command help", () => {
+  const help = commandHelp();
+  expect(help).toContain("/model");
+  expect(help).toContain("Ctrl+Z");
+  expect(help).toContain("y / n");
+  expect(help).toContain("Ctrl+T");
+  expect(help).toContain("PageUp");
+});

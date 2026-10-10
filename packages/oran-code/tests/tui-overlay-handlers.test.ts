@@ -212,18 +212,25 @@ describe("approval quick answers", () => {
     return h;
   }
 
-  it("answers approvals with single letters matching the readline semantics", () => {
+  it("answers approvals with y / n, and only those", () => {
     const yes = approvalHarness();
     yes.handlers.handleApprovalKey("y", key({}));
     expect(yes.approvals).toEqual([true]);
 
-    const always = approvalHarness();
-    always.handlers.handleApprovalKey("a", key({}));
-    expect(always.approvals).toEqual(["always"]);
-
     const no = approvalHarness();
     no.handlers.handleApprovalKey("n", key({}));
     expect(no.approvals).toEqual([false]);
+
+    // "always allow" has no single-key answer: the dialog often appears while the
+    // user is still typing, and one keystroke must not hand over a session-wide
+    // permission. It stays reachable with ↑↓ + Enter.
+    const always = approvalHarness();
+    always.handlers.handleApprovalKey("a", key({}));
+    expect(always.approvals).toEqual([]);
+    always.handlers.handleApprovalKey("", key({ downArrow: true }));
+    always.handlers.handleApprovalKey("", key({ downArrow: true }));
+    always.handlers.handleApprovalKey("\r", key({ return: true }));
+    expect(always.approvals).toEqual(["always"]);
   });
 
   it("ignores letters when a modifier is held", () => {

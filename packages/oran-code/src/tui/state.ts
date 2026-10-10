@@ -110,6 +110,7 @@ export function createTuiState(
     transcriptScroll: { offsetFromBottom: 0, followBottom: true },
     lastTranscriptLines: 0,
     lastTranscriptViewportLines: 0,
+    detailsScrollMax: 0,
   };
 }
 

@@ -321,7 +321,9 @@ export class OverlayHandlers {
       if (file) {
         const value = composerValue(this.ctx.state.composer);
         const cursor = composerCursorOffset(this.ctx.state.composer);
-        const replacement = `@${file}`;
+        // 带空格的路径要加引号:否则插进去的 @a b.txt 一遇到空格就被切断,
+        // 补全浮层关闭,引用也不再是一个整体。
+        const replacement = /\s/.test(file) ? `@"${file}"` : `@${file}`;
         const next = `${value.slice(0, this.ctx.state.overlay.tokenStart)}${replacement}${value.slice(cursor)}`;
         this.ctx.detachInputHistory();
         setComposerValue(this.ctx.state.composer, `${next} `);
@@ -453,9 +455,10 @@ export class OverlayHandlers {
     const next = key.upArrow ? Math.max(0, selected - 1) : key.downArrow ? Math.min(3, selected + 1) : selected;
     if (key.escape) this.ctx.resolveApproval(false);
     else if (isSubmitKey(input, key)) this.ctx.resolveApproval(approvalResponse(next));
-    // 快捷回答与 readline 端一致(y / a / n),避免用户只能纯方向键挪光标。
+    // 快捷回答与 readline 端一致(y / n)。这里刻意不提供单键"总是允许":审批弹窗
+    // 弹出时用户往往还在打字,一次误按就把整会话的授权交出去,而 y/n 误按只影响
+    // 这一次;要总是允许就用方向键选中后回车。
     else if (!key.ctrl && !key.meta && input.toLowerCase() === "y") this.ctx.resolveApproval(true);
-    else if (!key.ctrl && !key.meta && input.toLowerCase() === "a") this.ctx.resolveApproval("always");
     else if (!key.ctrl && !key.meta && input.toLowerCase() === "n") this.ctx.resolveApproval(false);
     else this.ctx.state.overlay = { ...this.ctx.state.overlay, selectedIndex: next };
     this.ctx.invalidate();

@@ -15,12 +15,12 @@ export const SHORTCUTS: readonly ShortcutGroup[] = [
   {
     topic: "Editing the prompt",
     lines: [
-      ["Enter", "提交输入(Shift+Enter 或 Ctrl+J 插入换行)"],
-      ["Ctrl+Z / Ctrl+Y", "撤销 / 重做;误清空草稿也能 ctrl+z 救回"],
+      ["Enter", "提交输入(要写多行就整段粘贴:折叠成占位符,提交时按原文发出)"],
+      ["Ctrl+Z / Ctrl+Y", "撤销 / 重做;光标位置与折叠的粘贴内容一并恢复"],
       ["Ctrl+W", "向前删除一个词"],
       ["Ctrl/Alt + ←/→", "按词移动光标;Home/End 到 当前行 首尾"],
       ["Ctrl+Q", "查看并取消排队中的 follow-up"],
-      ["@", "补全文件路径(@\"带空格的路径\" 也支持)"],
+      ["@", '补全文件路径(@"带空格的路径" 也支持)'],
     ],
   },
   {
@@ -29,8 +29,8 @@ export const SHORTCUTS: readonly ShortcutGroup[] = [
       ["PageUp / PageDown", "翻页(transcript 与 details 覆盖层都支持)"],
       ["Ctrl+↑ / Ctrl+↓", "滚 3 行"],
       ["滚轮", "滚动记录区(详情覆盖层同样适用;选中文字改用 Shift+拖选)"],
-      ["Ctrl+T", "打开“最近活动”详情(可滚动;再按关闭)"],
-      ["Esc(空闲)", "清空 composer(草稿可用 Ctrl+Z 恢复)"],
+      ["Ctrl+T", "打开“最近活动”详情(只展开最近一段;可滚动,再按关闭)"],
+      ["Esc(空闲)", "清空 composer(文本、光标与粘贴内容都可用 Ctrl+Z 恢复)"],
     ],
   },
   {
@@ -44,7 +44,7 @@ export const SHORTCUTS: readonly ShortcutGroup[] = [
   {
     topic: "Dialogs & approvals",
     lines: [
-      ["y / a / n", "审批快捷回答:允许一次 / 总是允许 / 拒绝"],
+      ["y / n", "审批快捷回答:允许一次 / 拒绝(“总是允许”用 ↑↓ 选中后回车)"],
       ["Esc", "关闭当前弹层;删除类确认默认落在 Cancel,只有 Enter 落在 Delete 才生效"],
     ],
   },
@@ -52,7 +52,7 @@ export const SHORTCUTS: readonly ShortcutGroup[] = [
 
 /** 排版成 help 文本使用的段落体,供 commandHelp 与 cli 帮助直接拼接。 */
 export function shortcutsHelp(): string {
-  return SHORTCUTS.map(
-    (group) => [`${group.topic}:`, ...group.lines.map(([key, description]) => `  ${key.padEnd(18)}${description}`)].join("\n"),
+  return SHORTCUTS.map((group) =>
+    [`${group.topic}:`, ...group.lines.map(([key, description]) => `  ${key.padEnd(18)}${description}`)].join("\n"),
   ).join("\n\n");
 }

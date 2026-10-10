@@ -4,12 +4,10 @@ import { hasActiveBackgroundTasks, isSessionBusy } from "./status-indicator.js";
 import { formatCompactDuration } from "./status-indicator.js";
 
 /**
- * Footer layout (bottom chrome):
- *   auto · high · model
- *   D:\workspace
- *   in 5008/out 239/cacheR 256
- *
- * Context percentage is intentionally omitted.
+ * Footer layout (bottom chrome): the mode line, then the workspace path with
+ * the current state beside it — token usage, queued follow-ups, permission mode,
+ * context usage, running subagents and shell jobs, and any user-facing status.
+ * When that detail no longer fits next to the path it moves to its own line.
  */
 export function footerLines(state: TuiState, width: number): string[] {
   const available = Math.max(1, Math.floor(width));
@@ -35,7 +33,8 @@ export function footerLines(state: TuiState, width: number): string[] {
       : queuedBgCount > 0
         ? `${queuedBgCount} subagent${queuedBgCount === 1 ? "" : "s"} queued`
         : undefined;
-  const jobBadge = runningJobCount > 0 ? `${runningJobCount} job${runningJobCount === 1 ? "" : "s"} running` : undefined;
+  const jobBadge =
+    runningJobCount > 0 ? `${runningJobCount} job${runningJobCount === 1 ? "" : "s"} running` : undefined;
   const status = explicitStatus(state);
 
   const detail = [usage, queue, permissionChip(state), contextChip(state), subagentBadge, jobBadge, status]

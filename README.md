@@ -97,35 +97,43 @@ is authoritative.
 
 ### Keyboard Shortcuts
 
-| Key                          | Action                                           |
-| :--------------------------- | :----------------------------------------------- |
-| `Enter`                      | Submit prompt or confirm selection               |
-| `Shift + Enter` / `Ctrl + J` | Multi-line input (newline)                       |
-| `Up` / `Down`                | Browse input history or navigate overlay options |
-| `Tab`                        | Complete slash / `@file` overlays; toggle plan / auto work mode when idle |
-| `Shift + Tab`                | Cycle the reasoning effort (low / medium / high / xhigh) |
-| `Ctrl + T`                   | Open the latest thought / tool details overlay (scrollable; Ctrl+T closes) |
-| `Ctrl + Z` / `Ctrl + Y`      | Undo / redo composer edits (idle-Esc clears are recoverable) |
-| `Ctrl + W`                   | Delete the word before the cursor                |
-| `Ctrl + Q`                   | Manage queued follow-ups                          |
-| `Esc`                        | Close active overlay / cancel focus (press twice while busy to cancel the task) |
-| `Ctrl + C`                   | Cancel current generation or exit                |
+| Key                     | Action                                                                          |
+| :---------------------- | :------------------------------------------------------------------------------ |
+| `Enter`                 | Submit prompt or confirm selection                                              |
+| `Ctrl + Z` / `Ctrl + Y` | Undo / redo composer edits (restores text, cursor, and pasted content)          |
+| `Up` / `Down`           | Browse input history or navigate overlay options                                |
+| `Tab`                   | Complete slash / `@file` overlays; toggle plan / auto work mode when idle       |
+| `Shift + Tab`           | Cycle the reasoning effort (low / medium / high / xhigh)                        |
+| `Ctrl + T`              | Open the latest segment's thought / tool details overlay (scrollable)           |
+| `Ctrl + W`              | Delete the word before the cursor                                               |
+| `Ctrl + Q`              | Manage queued follow-ups                                                        |
+| `Esc`                   | Close active overlay / cancel focus (press twice while busy to cancel the task) |
+| `Ctrl + C`              | Cancel current generation or exit                                               |
+
+Multi-line prompts are composed by pasting: the paste folds into a placeholder in the
+composer and is expanded back into the whole message on submit. There is no newline key —
+`Shift + Enter` is indistinguishable from `Enter` unless the terminal implements a
+modified-keys protocol, and a bare `Ctrl + J` cannot be told apart from the LF that some
+terminals send for `Enter`.
 
 ### Essential Slash Commands
 
-| Command         | Description                                                  |
-| :-------------- | :----------------------------------------------------------- |
-| `/connect`      | Manage model providers: list, add, edit, or remove them      |
-| `/model`        | Open model picker overlay to switch active model             |
-| `/plan`         | Switch to read-only Plan mode for safe workspace exploration |
-| `/undo`         | Immediately revert the most recent batch of file changes     |
-| `/session [id]` | Switch between active sessions or resume past sessions       |
-| `/new`          | Start a clean conversation session                           |
-| `/status`       | View token usage, active permissions, and MCP connections    |
-| `/tasks`        | List background subagent tasks (alias `/subagents`)          |
-| `/compact`      | Trigger manual context compaction to save tokens             |
-| `/clear`        | Clear terminal transcript output                             |
-| `/exit`         | Exit session                                                 |
+| Command                 | Description                                                  |
+| :---------------------- | :----------------------------------------------------------- |
+| `/connect`              | Manage model providers: list, add, edit, or remove them      |
+| `/model`                | Open model picker overlay to switch active model             |
+| `/plan`                 | Switch to read-only Plan mode for safe workspace exploration |
+| `/undo`                 | Immediately revert the most recent batch of file changes     |
+| `/rewind [N] [--files]` | Roll the conversation back to before an earlier user message |
+| `/resume`               | Continue the task a progress gate paused (gate off for it)   |
+| `/graph`                | Build the code dependency graph and print its summary        |
+| `/session [id]`         | Switch between active sessions or resume past sessions       |
+| `/new`                  | Start a clean conversation session                           |
+| `/status`               | View token usage, active permissions, and MCP connections    |
+| `/tasks`                | List background subagent tasks (alias `/subagents`)          |
+| `/compact`              | Trigger manual context compaction to save tokens             |
+| `/clear`                | Clear terminal transcript output                             |
+| `/exit`                 | Exit session                                                 |
 
 ---
 

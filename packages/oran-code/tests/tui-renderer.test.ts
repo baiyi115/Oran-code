@@ -278,7 +278,7 @@ describe("TuiTranscriptRenderer", () => {
       const rows = subagentTaskLines(tasks, 0, fixedNow, 100);
       expect(rows).toHaveLength(TASK_PANEL_MAX_ROWS);
       expect(rows[TASK_PANEL_MAX_ROWS - 1]).toEqual({
-        text: `… +${8 - (TASK_PANEL_MAX_ROWS - 1)} more (ctrl+t details)`,
+        text: `… +${8 - (TASK_PANEL_MAX_ROWS - 1)} more (/tasks for all)`,
         tone: "queued",
       });
     });

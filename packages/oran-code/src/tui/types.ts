@@ -106,6 +106,12 @@ export interface PasteBlock {
   text: string;
 }
 
+export interface ComposerDraft {
+  text: string;
+  cursor: CursorPosition;
+  pastes: PasteBlock[];
+}
+
 export interface ComposerState {
   lines: string[];
   cursor: CursorPosition;
@@ -115,9 +121,9 @@ export interface ComposerState {
   historyDraft: string;
   /** Folded paste payloads referenced by [paste #N +M lines] placeholders. */
   pastes: PasteBlock[];
-  /** 撤销/重做栈(完整文本快照,按段合并;见 composer.ts 的 UNDO_COALESCE_MS)。 */
-  undo: string[];
-  redo: string[];
+  /** 撤销/重做栈(整份草稿快照,按段合并;见 composer.ts 的 UNDO_COALESCE_MS)。 */
+  undo: ComposerDraft[];
+  redo: ComposerDraft[];
   /** 上次快照的时间与操作类型(同类型操作在时间阈值内合并为一段)。 */
   undoMarker?: { at: number; op: string } | undefined;
 }
@@ -225,6 +231,8 @@ export interface ToolMessage {
   output?: string;
   error?: string;
   expanded: boolean;
+  /** Latest progress note while the tool runs; cleared once it produces a result. */
+  progress?: string;
   /** 由结果 metadata 派生的语义徽标(cached/denied/hook/repaired/unavailable)。 */
   badges?: string[];
   taskId?: string;
@@ -422,6 +430,11 @@ export interface TuiState {
   transcriptScroll: TranscriptScrollState;
   lastTranscriptLines: number;
   lastTranscriptViewportLines: number;
+  /**
+   * details 覆盖层实际可滚到的最大偏移,由渲染侧按同一套窗口公式写入。
+   * 键盘处理读它而不是自己算:两侧算法不一致时,滚到底会有一长段"空按"。
+   */
+  detailsScrollMax: number;
 }
 
 export interface TuiEventSink {

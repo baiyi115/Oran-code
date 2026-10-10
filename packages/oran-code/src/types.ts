@@ -9,15 +9,7 @@ export type SessionTitleMode = "first-message" | "local" | "model";
 
 /** 模型请求失败的结构化分类,用于重试事件的诊断与展示。 */
 export type ModelRetryCategory =
-  | "rate_limit"
-  | "timeout"
-  | "network"
-  | "http_4xx"
-  | "http_5xx"
-  | "contract"
-  | "empty"
-  | "parse"
-  | "unknown";
+  "rate_limit" | "timeout" | "network" | "http_4xx" | "http_5xx" | "contract" | "empty" | "parse" | "unknown";
 
 export const REASONING_EFFORTS: readonly ReasoningEffort[] = ["low", "medium", "high", "xhigh"];
 export const PERMISSION_MODES: readonly PermissionMode[] = ["readonly", "default", "accept-edits", "plan", "bypass"];
@@ -385,6 +377,11 @@ export interface ToolExecutionContext {
         }>,
       ) => Promise<Record<string, string>>)
     | undefined;
+  /**
+   * Report coarse progress from a tool that can run for a while. Calls are
+   * advisory and may be dropped; a tool must not depend on them being delivered.
+   */
+  onProgress?: ((note: string) => void) | undefined;
 }
 
 export interface ToolDefinition {
@@ -468,6 +465,12 @@ export interface RuntimeEventPayloads {
   };
   tool_start: { call: ToolCall; index: number; permissionLevel: number };
   tool_result: { call: ToolCall; index: number; result: ToolResult };
+  /**
+   * Coarse progress from a tool that can run for a while (building the code
+   * graph, for instance). It is advisory only: it never changes the result and
+   * consumers may ignore it.
+   */
+  tool_progress: { call: ToolCall; note: string };
   verify: { results: VerificationResult[] };
   retry: {
     step: number;

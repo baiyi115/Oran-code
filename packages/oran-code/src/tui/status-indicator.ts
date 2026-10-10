@@ -65,19 +65,18 @@ export function subagentTaskLines(
   if (ordered.length === 0) return [];
 
   // "+N more" 折叠行本身要占一行,所以被藏起的任务数按 MAX-1 算。
-  const hidden =
-    ordered.length > TASK_PANEL_MAX_ROWS ? ordered.length - (TASK_PANEL_MAX_ROWS - 1) : 0;
+  const hidden = ordered.length > TASK_PANEL_MAX_ROWS ? ordered.length - (TASK_PANEL_MAX_ROWS - 1) : 0;
   const visible = hidden > 0 ? ordered.slice(0, TASK_PANEL_MAX_ROWS - 1) : ordered;
   const rows = visible.map((task) => buildTaskPanelRow(task, tick, now, width));
-  if (hidden > 0) rows.push({ text: `… +${hidden} more (ctrl+t details)`, tone: "queued" });
+  // ctrl+t 打开的是"最近活动"详情,看不到被折叠在这行里的任务;/tasks 才是
+  // 列出全部后台任务的入口,提示必须指向真正能看到它们的地方。
+  if (hidden > 0) rows.push({ text: `… +${hidden} more (/tasks for all)`, tone: "queued" });
   return rows;
 }
 
 function buildTaskPanelRow(task: TuiBackgroundTask, tick: number, now: number, width: number): TaskPanelRow {
   const role =
-    task.definitionName ||
-    (task.origin?.kind === "definition" ? task.origin.name : task.origin?.kind) ||
-    undefined;
+    task.definitionName || (task.origin?.kind === "definition" ? task.origin.name : task.origin?.kind) || undefined;
   const label = role && role !== task.name ? `${role} · ${task.name}` : task.name || "agent";
   const startedAt = Date.parse(task.startedAt);
   const endedAt = task.endedAt ? Date.parse(task.endedAt) : Number.NaN;
@@ -96,9 +95,10 @@ function buildTaskPanelRow(task: TuiBackgroundTask, tick: number, now: number, w
   } else {
     icon = task.status === "completed" ? "✓" : "✗";
     tone = task.status === "completed" ? "done" : "failed";
-    const total = Number.isFinite(startedAt) && Number.isFinite(endedAt)
-      ? ` ${formatCompactDuration(Math.max(0, endedAt - startedAt))}`
-      : "";
+    const total =
+      Number.isFinite(startedAt) && Number.isFinite(endedAt)
+        ? ` ${formatCompactDuration(Math.max(0, endedAt - startedAt))}`
+        : "";
     timing = `${task.status}${total}`;
   }
   // 计时尾缀优先保活:长描述只截断标签部分。
@@ -183,7 +183,8 @@ function workingLabel(state: TuiState): string {
     .reverse()
     .find((message) => message.kind === "tool" && message.status === "running");
   if (runningTool && runningTool.kind === "tool") {
-    return `Running ${toolDisplayName(runningTool.name)}`;
+    const note = runningTool.progress;
+    return `Running ${toolDisplayName(runningTool.name)}${note ? ` · ${truncateVisible(note, 60)}` : ""}`;
   }
   if (state.session.currentTool) {
     return `Running ${toolDisplayName(state.session.currentTool)}`;

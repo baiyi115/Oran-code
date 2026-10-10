@@ -103,6 +103,23 @@ export class ToolBatchExecutor {
 
   constructor(private readonly ports: ToolExecutorPorts) {}
 
+  /**
+   * The per-call context handed to a tool. Progress notes travel as runtime
+   * events so the UI can show them beside the running tool; they are advisory,
+   * so a note that cannot be delivered is dropped rather than failing the call.
+   */
+  private executionContextFor(task: Task, call: ToolCall): ToolExecutionContext {
+    const signal = this.ports.getAbortSignal();
+    return {
+      workspace: task.workspace,
+      ...(signal ? { signal } : {}),
+      ...(this.ports.askUser !== undefined ? { askUser: this.ports.askUser } : {}),
+      onProgress: (note: string): void => {
+        void this.ports.emit("tool_progress", { call, note }).catch(() => undefined);
+      },
+    };
+  }
+
   async runTools(
     task: Task,
     messages: Message[],
@@ -294,12 +311,7 @@ export class ToolBatchExecutor {
               const before = await fileHash(task.workspace, item.call);
               let result: ToolResult;
               try {
-                const executionContext: ToolExecutionContext = {
-                  workspace: task.workspace,
-                  ...(this.ports.getAbortSignal() ? { signal: this.ports.getAbortSignal()! } : {}),
-                  ...(this.ports.askUser !== undefined ? { askUser: this.ports.askUser } : {}),
-                };
-                result = await this.ports.registry.invoke(item.call, executionContext);
+                result = await this.ports.registry.invoke(item.call, this.executionContextFor(task, item.call));
               } catch (error) {
                 if (isAbortError(error) || this.ports.getAbortSignal()?.aborted) {
                   result = {
@@ -350,9 +362,7 @@ export class ToolBatchExecutor {
         // git-less mtime fingerprint cannot false-positive. Calls without hash
         // evidence (run_command) fall back to the batch workspace fingerprint.
         const batchChanged =
-          batchBefore !== undefined &&
-          batchAfter !== undefined &&
-          batchBefore.fingerprint !== batchAfter.fingerprint;
+          batchBefore !== undefined && batchAfter !== undefined && batchBefore.fingerprint !== batchAfter.fingerprint;
         for (const entry of results.values()) {
           if (!this.isPotentiallyMutating(entry.call)) continue;
           if (entry.hashChanged !== undefined) {
@@ -575,12 +585,7 @@ export class ToolBatchExecutor {
     const before = await fileHash(task.workspace, call);
     let result: ToolResult;
     try {
-      const executionContext: ToolExecutionContext = {
-        workspace: task.workspace,
-        ...(this.ports.getAbortSignal() ? { signal: this.ports.getAbortSignal()! } : {}),
-        ...(this.ports.askUser !== undefined ? { askUser: this.ports.askUser } : {}),
-      };
-      result = await this.ports.registry.invoke(call, executionContext);
+      result = await this.ports.registry.invoke(call, this.executionContextFor(task, call));
     } catch (error) {
       if (isAbortError(error) || this.ports.getAbortSignal()?.aborted) {
         result = {

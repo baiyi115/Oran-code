@@ -228,7 +228,8 @@ export class InkTuiApp {
     });
     const wrappedOutput = createSynchronizedWriteStream(this.options.output);
     this.inkInstance = this.renderInk(<InkRoot app={this} revision={this.renderRevision} />, {
-      stdin: wrappedInput as NodeJS.ReadStream,
+      // Ink 的 stdin 选项要的是 ReadStream;过滤层是 Transform,运行时按流接口使用。
+      stdin: wrappedInput as unknown as NodeJS.ReadStream,
       stdout: wrappedOutput,
       exitOnCtrlC: false,
     });
@@ -364,9 +365,8 @@ export class InkTuiApp {
     if (this.state.overlay.kind === "details") {
       const overlay = this.state.overlay;
       const offset = overlay.scrollOffset ?? 0;
-      const next = up
-        ? Math.max(0, offset - WHEEL_SCROLL_LINES)
-        : Math.min(Math.max(0, overlay.lines.length - 1), offset + WHEEL_SCROLL_LINES);
+      const maxOffset = this.detailsScrollMax();
+      const next = up ? Math.max(0, offset - WHEEL_SCROLL_LINES) : Math.min(maxOffset, offset + WHEEL_SCROLL_LINES);
       if (next !== offset) {
         setOverlay(this.state, { ...overlay, scrollOffset: next });
         this.invalidate();
@@ -448,6 +448,7 @@ export class InkTuiApp {
       const overlay = this.state.overlay;
       const offset = overlay.scrollOffset ?? 0;
       const delta = (): number => this.pageScrollDelta();
+      const maxOffset = this.detailsScrollMax();
       if (key.escape || (key.ctrl && input === "t")) {
         setOverlay(this.state, { kind: "none" });
         this.invalidate();
@@ -459,7 +460,10 @@ export class InkTuiApp {
         return;
       }
       if (key.pageDown) {
-        setOverlay(this.state, { ...overlay, scrollOffset: Math.min(Math.max(0, overlay.lines.length - 1), offset + delta()) });
+        setOverlay(this.state, {
+          ...overlay,
+          scrollOffset: Math.min(maxOffset, offset + delta()),
+        });
         this.invalidate();
         return;
       }
@@ -469,7 +473,10 @@ export class InkTuiApp {
         return;
       }
       if (key.downArrow) {
-        setOverlay(this.state, { ...overlay, scrollOffset: Math.min(Math.max(0, overlay.lines.length - 1), offset + 3) });
+        setOverlay(this.state, {
+          ...overlay,
+          scrollOffset: Math.min(maxOffset, offset + 3),
+        });
         this.invalidate();
         return;
       }
@@ -530,13 +537,12 @@ export class InkTuiApp {
       return;
     }
     if (isSubmitKey(input, key)) {
-      if (key.shift || (key.ctrl && (input === "j" || input === "\n"))) {
-        this.detachInputHistory();
-        insertText(this.state.composer, "\n");
-      } else void this.submit();
-    } else if (key.ctrl && input === "j") {
-      this.detachInputHistory();
-      insertText(this.state.composer, "\n");
+      // Enter 提交。Shift+Enter 在没开启 modified-keys 协议的终端里与 Enter 同
+      // 一个字节(CR),Ink 的 shift 标志只对单个大写字母为真;而 Ctrl+J 的 LF
+      // 与"某些终端用 LF 表示 Enter"无法区分——把它当换行键会让那些终端按 Enter
+      // 反而换行。所以这里不设换行键:多行草稿靠粘贴,折叠成占位符后提交时按原文
+      // 发出(见 expandPastes)。快捷键表与实现保持一致。
+      void this.submit();
     } else if (isDeleteBackward(input, key)) {
       this.detachInputHistory();
       deleteBackward(this.state.composer);
@@ -553,8 +559,7 @@ export class InkTuiApp {
     } else if (key.rightArrow) {
       if (key.ctrl || key.meta) moveWordForward(this.state.composer);
       else moveCursor(this.state.composer, "right");
-    }
-    else if (key.upArrow) {
+    } else if (key.upArrow) {
       if (this.canMoveComposerVertically("up")) moveCursor(this.state.composer, "up", this.editorWidth());
       else this.navigateInputHistory("older");
     } else if (key.downArrow) {
@@ -1190,6 +1195,14 @@ export class InkTuiApp {
     this.invalidate();
   }
 
+  /** details 覆盖层的滚动上限:取渲染侧写回的同一数值,两侧不再各算一套。 */
+  private detailsScrollMax(): number {
+    if (this.state.detailsScrollMax > 0) return this.state.detailsScrollMax;
+    // 渲染还没跑过时退回"整段可见",避免第一次按键就被钳到 0。
+    const overlay = this.state.overlay;
+    return overlay.kind === "details" ? overlay.lines.length : 0;
+  }
+
   private pageScrollDelta(): number {
     const rows = Math.max(1, this.options.output.rows || 24);
     const viewportLines = Math.max(1, this.state.lastTranscriptViewportLines || rows - 6);
@@ -1397,7 +1410,10 @@ function InkRoot({ app, revision }: { app: InkTuiApp; revision: number }): React
           commandItemCapacity,
         )
       : [];
-  const overlayLines = fitOverlayLines(renderOverlayLines(state, commandLines, width, overlayCapacity), overlayCapacity);
+  const overlayLines = fitOverlayLines(
+    renderOverlayLines(state, commandLines, width, overlayCapacity),
+    overlayCapacity,
+  );
   // Keep the mutable frame below the terminal height so Ink never enters its
   // clearTerminal paint path. The completed form is emitted to Static in full.
   const viewportLines = Math.max(1, rows - baseChromeLines - (overlayLines.length > 0 ? overlayLines.length + 1 : 0));
@@ -1429,8 +1445,7 @@ function InkRoot({ app, revision }: { app: InkTuiApp; revision: number }): React
     (overlayLines.length > 0 ? overlayLines.length + 1 : 0) +
     (visibleTranscriptLines.length === 0 && overlayLines.length === 0 ? 1 : 0);
   const frameEndOffset = frameHeight >= rows ? 1 : 2;
-  const parkUp =
-    footer.length + taskRows.length + frameEndOffset + Math.max(0, composerLineCount - 1 - cursor.row);
+  const parkUp = footer.length + taskRows.length + frameEndOffset + Math.max(0, composerLineCount - 1 - cursor.row);
   const parkColumn = 1 + 2 + Math.max(0, cursor.column);
   useEffect(() => {
     if (busy || state.overlay.kind === "approval" || state.overlay.kind === "question") {

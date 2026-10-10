@@ -245,7 +245,9 @@ function renderCollapsedSegment(segment: TranscriptSegment, width: number): stri
   const tools = `${segment.toolCount} tool${segment.toolCount === 1 ? "" : "s"}`;
   lines.push(
     ...wrapDisplayText(
-      `${ANSI.greenBold}◇${ANSI.reset} ${ANSI.toolBold}${tools}${ANSI.reset} ${ANSI.gray}· ctrl+t details${ANSI.reset}`,
+      // ctrl+t 只展开"最近一段";写 "ctrl+t details" 会让人以为这一行也能展开,
+      // 而这一段的成员行没有任何入口(见 openLatestActivityDetails)。
+      `${ANSI.greenBold}◇${ANSI.reset} ${ANSI.toolBold}${tools}${ANSI.reset} ${ANSI.gray}· ctrl+t: latest details${ANSI.reset}`,
       width,
     ),
   );

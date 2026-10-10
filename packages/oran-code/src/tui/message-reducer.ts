@@ -219,6 +219,13 @@ export function reduceRuntimeEvent(state: TuiState, event: RuntimeEvent): void {
       updateToolResult(state, event.call, event.result, event.taskId);
       state.session.currentTool = undefined;
       break;
+    case "tool_progress": {
+      // Attach to the row of the call it belongs to: in a batch several tools
+      // are running at once, so the newest note is not the one being displayed.
+      const tool = getToolMessage(state, toolCallKey(event.call), event.taskId);
+      if (tool?.kind === "tool") tool.progress = event.note;
+      break;
+    }
     case "verify":
       appendTranscriptMessage(state, { kind: "verification", results: event.results.map(redactVerification) });
       state.session.status = "verifying";
@@ -395,6 +402,8 @@ function updateToolResult(state: TuiState, call: ToolCall, result: ToolResult, t
   }
   const target = getToolMessage(state, callId, taskId);
   if (!target) return;
+  // A result ends the run those notes were describing.
+  delete target.progress;
   // 行已被 force-finish(如新任务取消)时,迟到的真实成功结果仍允许把
   // cancelled 升级为 success;其余终态不回退。
   if (target.status !== "running" && !(target.status === "cancelled" && result.ok)) return;
