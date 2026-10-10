@@ -168,7 +168,8 @@ export function commandHelp(commands: readonly SlashCommand[] = DEFAULT_COMMANDS
       return `  ${usage}  ${command.description}`;
     })
     .join("\n");
-  // 快捷键与 slash 命令是同一份"我能按什么"的可见性,别把帮助切成两半让用户猜。
+  // Shortcuts and slash commands answer the same "what can I press" question; don't split
+  // the help in two and leave the user guessing.
   return `${commandLines}\n\n${shortcutsHelp()}`;
 }
 

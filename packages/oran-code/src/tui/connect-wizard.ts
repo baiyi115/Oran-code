@@ -23,10 +23,11 @@ export interface ConnectWizardDeps {
 const INFO_FIELDS: readonly ConnectInfoField[] = ["baseURL", "apiKey", "protocol", "name"];
 
 /**
- * 「添加/编辑模型提供商」两屏向导:info 表单(baseURL/apiKey/protocol/name 同屏,
- * protocol 与 name 从 baseURL 自动推导) → models 多选。思考等级不在此询问,
- * 统一按 high 写入,端点拒绝时由 provider 层剥参回退。状态完全存放在
- * state.overlay 的 connect 变体。
+ * Two-screen "add/edit model provider" wizard: an info form (baseURL/apiKey/protocol/name on one
+ * screen, with protocol and name auto-derived from baseURL) → models multi-select. Reasoning
+ * effort is not asked here; it is written uniformly as high, and the provider layer strips the
+ * parameter when an endpoint rejects it. State lives entirely in the connect variant of
+ * state.overlay.
  */
 export class ConnectWizard {
   constructor(private readonly deps: ConnectWizardDeps) {}
@@ -87,14 +88,15 @@ export class ConnectWizard {
     if (this.deps.state.overlay.kind !== "connect") return;
     const overlay = this.deps.state.overlay;
 
-    // 左右键在 info 屏任意字段下都切换协议(文本字段不支持光标移动,无冲突)。
+    // Left/right switches the protocol on any field of the info screen (text fields have no
+    // cursor movement, so there is no conflict).
     if (key.leftArrow || key.rightArrow) {
       overlay.protocol = overlay.protocol === "anthropic" ? "openai" : "anthropic";
       overlay.protocolTouched = true;
       return;
     }
 
-    // Tab / 上下键在四个字段间移动光标。
+    // Tab / up/down move the cursor between the four fields.
     if (key.tab || key.upArrow || key.downArrow) {
       const offset = key.upArrow ? -1 : 1;
       const index = INFO_FIELDS.indexOf(overlay.activeField);
@@ -140,7 +142,7 @@ export class ConnectWizard {
     }
   }
 
-  /** baseURL 变化时自动推导 protocol 与 name,用户手动改过(预填编辑)则跳过。 */
+  /** Derive protocol and name when baseURL changes; skipped once the user edited them (prefill edit). */
   private autoDeriveFromBaseURL(): void {
     if (this.deps.state.overlay.kind !== "connect") return;
     const overlay = this.deps.state.overlay;
@@ -213,7 +215,7 @@ export class ConnectWizard {
     if (input === "e" || input === "E") {
       const selected = options[overlay.selectedIndex];
       if (selected) {
-        // 未指定(默认 high) → low → medium → high → xhigh → 回到未指定。
+        // unset (default high) → low → medium → high → xhigh → back to unset.
         const sequence: (ReasoningEffort | undefined)[] = [undefined, "low", "medium", "high", "xhigh"];
         const at = sequence.indexOf(selected.reasoningEffort);
         const next = sequence[(at + 1) % sequence.length];

@@ -139,8 +139,9 @@ function formatRate(value: number): string {
 }
 
 /**
- * 权限模式徽标:bypass/readonly/plan/accept-edits 值得时刻可见
- * (安全基础行不可"以为自己在 default");默认模式规整地显示 default。
+ * Permission-mode chip: bypass/readonly/plan/accept-edits deserve to be visible at all times
+ * (the safety baseline line must not let you think you are in default); the default mode displays
+ * default like any other.
  */
 function permissionChip(state: TuiState): string | undefined {
   const mode = state.session.permissionMode;
@@ -148,7 +149,7 @@ function permissionChip(state: TuiState): string | undefined {
   return `perm:${mode}`;
 }
 
-/** 上下文用量 ND% 指示(估算);≥80% 时兜底提示该收尾了。 */
+/** Context-usage percentage indicator (estimated); at ≥80% it appends a "!" to hint at wrapping up. */
 function contextChip(state: TuiState): string | undefined {
   const estimate = state.session.contextEstimate;
   const window = state.session.contextWindow;

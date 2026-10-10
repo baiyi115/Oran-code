@@ -1,9 +1,10 @@
 /**
- * 会话 CRUD 服务：列表 / 切换 / 新建 / 删除 / 重命名。
- * 从 TerminalSession 提取（loadSessionOptions/toSessionView/selectSession/
- * deleteSession/createSession/renameSession），行为保持不变。
- * 会话选择去重（sessionSelection）与切换/删除/新建流程一并内聚在本服务，
- * TerminalSession 通过端口提供状态读写与副作用回调。
+ * Session CRUD service: list / switch / create / delete / rename.
+ * Extracted from TerminalSession (loadSessionOptions/toSessionView/selectSession/
+ * deleteSession/createSession/renameSession), behavior unchanged.
+ * Session-selection deduplication (sessionSelection) and the switch/delete/create flows are
+ * cohesive in this service; TerminalSession supplies state reads/writes and side-effect callbacks
+ * through a port.
  */
 import type { ContextManager } from "./context-manager.js";
 import {
@@ -140,7 +141,7 @@ export class SessionCrudService {
     this.port.setCurrentSession(stored);
     this.port.bumpSessionGeneration();
     this.port.setConversation([]);
-    // 新建并挂载会话时清空 once 集合，同时清空通知队列残留。
+    // Creating and mounting a session clears the once set and any leftovers in the notification queue.
     this.port.resetHookOnce();
     await this.port.refreshSessionKnowledge();
     this.port.deleteContextManager(stored.id);

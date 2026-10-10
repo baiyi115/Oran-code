@@ -10,7 +10,8 @@ const FETCH_TIMEOUT_MS = 30_000;
 const MAX_REDIRECTS = 5;
 const MAX_HTML_BYTES = 2_000_000;
 
-/** 内网/回环地址判定:web_fetch 默认拒绝,避免把工作区数据打到元数据服务或本机管理端口。 */
+/** Private/loopback address detection: web_fetch refuses these by default, so workspace data
+ * cannot be sent to metadata services or local admin ports. */
 const PRIVATE_IPV4_PATTERNS = [
   /^0\./,
   /^10\./,
@@ -22,10 +23,11 @@ const PRIVATE_IPV4_PATTERNS = [
 ];
 
 /**
- * IPv6 字面量展开成 8 段 hextet。
- * 不能按字符串前缀判定 ::ffff: ——URL 解析器会把 `[::ffff:127.0.0.1]` 归一化成
- * `[::ffff:7f00:1]`,前缀匹配在这里拿不到点分形式;而且 6to4 / NAT64 / Teredo
- * 同样能把请求引回内网。展开后统一判定才不留缺口。
+ * Expand an IPv6 literal into 8 hextets.
+ * The `::ffff:` string prefix cannot be used for the test: the URL parser normalizes
+ * `[::ffff:127.0.0.1]` to `[::ffff:7f00:1]`, so a prefix match never sees the dotted form here;
+ * on top of that, 6to4 / NAT64 / Teredo can equally route a request back to the private network.
+ * Only after expansion can everything be judged uniformly, leaving no gap.
  */
 function parseIpv6Hextets(address: string): number[] | undefined {
   const zone = address.indexOf("%");
@@ -48,7 +50,7 @@ function parseIpv6Groups(section: string): number[] | undefined {
   const values: number[] = [];
   for (const [index, group] of groups.entries()) {
     if (group.includes(".")) {
-      // 点分尾巴只允许出现在最后一组(`::ffff:127.0.0.1`)。
+      // A dotted tail is only allowed in the last group (`::ffff:127.0.0.1`).
       if (index !== groups.length - 1) return undefined;
       const hextets = ipv4ToHextets(group);
       if (!hextets) return undefined;
@@ -68,19 +70,19 @@ function ipv4ToHextets(value: string): number[] | undefined {
   return [(a << 8) | b, (c << 8) | d];
 }
 
-/** 内嵌在这些 IPv6 编码里的 IPv4,取不出来就说明这个地址没有 IPv4 语义。 */
+/** The IPv4 embedded in these IPv6 encodings; if it cannot be extracted, this address has no IPv4 semantics. */
 function embeddedIpv4(hextets: readonly number[]): string | undefined {
   const [a = 0, b = 0, c = 0, d = 0, e = 0, f = 0, g = 0, h = 0] = hextets;
   const format = (hi: number, lo: number): string =>
     `${(hi >> 8) & 0xff}.${hi & 0xff}.${(lo >> 8) & 0xff}.${lo & 0xff}`;
   const leadingZeros = (count: number): boolean => hextets.slice(0, count).every((value) => value === 0);
-  // ::a.b.c.d(IPv4-compatible)与 ::ffff:a.b.c.d(IPv4-mapped),RFC 4291。
+  // ::a.b.c.d (IPv4-compatible) and ::ffff:a.b.c.d (IPv4-mapped), RFC 4291.
   if (leadingZeros(5) && (f === 0 || f === 0xffff)) return format(g, h);
-  // 64:ff9b::/96:NAT64 知名前缀。
+  // 64:ff9b::/96: the well-known NAT64 prefix.
   if (a === 0x64 && b === 0xff9b && c === 0 && d === 0 && e === 0 && f === 0) return format(g, h);
-  // 2002::/16:6to4,IPv4 在随后的 32 位。
+  // 2002::/16: 6to4, with the IPv4 address in the following 32 bits.
   if (a === 0x2002) return format(b, c);
-  // 2001:0000::/32:Teredo,末 32 位是取反后的客户端 IPv4。
+  // 2001:0000::/32: Teredo, whose last 32 bits are the bitwise-inverted client IPv4.
   if (a === 0x2001 && b === 0) return format(~g & 0xffff, ~h & 0xffff);
   return undefined;
 }
@@ -89,7 +91,7 @@ export function isPrivateAddress(address: string): boolean {
   if (isIPv4(address)) return PRIVATE_IPV4_PATTERNS.some((pattern) => pattern.test(address));
   if (!isIPv6(address)) return false;
   const hextets = parseIpv6Hextets(address);
-  // 自称 IPv6 却展开不了:宁可拒绝,不做放过。
+  // Claims to be IPv6 but cannot be expanded: refuse rather than let it through.
   if (!hextets) return true;
   const first = hextets[0] ?? 0;
   if (hextets.every((value) => value === 0)) return true; // ::
@@ -101,8 +103,9 @@ export function isPrivateAddress(address: string): boolean {
 }
 
 /**
- * 校验 URL 只指向公网 http(s) 地址。
- * 逐条检查 DNS 解析结果(包括字面量 IP),任何一条落在内网即拒绝。
+ * Verify that a URL points only at a public http(s) address.
+ * Every DNS resolution result (including literal IPs) is checked; if any one of them lands in the
+ * private network the URL is refused.
  */
 export async function assertFetchableUrl(rawUrl: string, options: { allowPrivateHosts?: boolean } = {}): Promise<URL> {
   let url: URL;
@@ -135,13 +138,14 @@ const BLOCK_TAGS =
   /<\/?(?:p|div|section|article|header|footer|main|aside|nav|br|hr|li|ul|ol|tr|table|thead|tbody|h[1-6]|pre|blockquote|figure|figcaption|form|details|summary)\b[^>]*>/gi;
 
 /**
- * 隐藏块的开/闭标签。两侧都用不含 `<`/`>` 的字符类,单次匹配不会跨标签,
- * 因此整个扫描是线性的(见 stripHiddenBlocks 的注释)。
+ * Open/close tags of hidden blocks. Both sides use character classes that exclude `<` and `>`, so
+ * a single match never spans tags and the whole scan is linear (see the comment on
+ * stripHiddenBlocks).
  */
 const HIDDEN_TAG =
   /<(script|style|noscript|template|svg|canvas|head)\b[^<>]*>|<\/(script|style|noscript|template|svg|canvas|head)\s*>/gi;
 
-/** 剥离 HTML 注释;未闭合的注释按规范延伸到串尾。 */
+/** Strip HTML comments; per the spec an unterminated comment extends to the end of the string. */
 function stripHtmlComments(html: string): string {
   let out = "";
   let cursor = 0;
@@ -156,13 +160,14 @@ function stripHtmlComments(html: string): string {
 }
 
 /**
- * 剥离 script/style/noscript/template/svg/canvas/head 整块。
+ * Strip whole script/style/noscript/template/svg/canvas/head blocks.
  *
- * 旧实现写的是 `<(tag)\b[^>]*>[\s\S]*?</\1>`,惰性量词遇到大量无闭合标签的
- * 页面会把每个起点都扫到串尾:实测 400KB 的 `<script>` 重复要 2.4 秒,而抓取
- * 上限是 2MB(>1 分钟),且清洗同步跑在事件循环上,会连带冻住 TUI。这里改成
- * 单遍线性扫描:一次正则走完,同名的嵌套按深度计数,未闭合的块按 HTML 规范
- * 丢弃到串尾。
+ * The old implementation wrote `<(tag)\b[^>]*>[\s\S]*?</\1>`; the lazy quantifier scans from
+ * every start position to the end of the string on pages with many unclosed tags: 400KB of
+ * repeated `<script>` measured 2.4 seconds, while the fetch ceiling is 2MB (>1 minute), and the
+ * cleanup runs synchronously on the event loop, freezing the TUI along with it. This is now a
+ * single-pass linear scan: one regex pass, same-name nesting counted by depth, and unclosed
+ * blocks discarded to the end of the string per the HTML spec.
  */
 function stripHiddenBlocks(html: string): string {
   let out = "";
@@ -194,9 +199,11 @@ function stripHiddenBlocks(html: string): string {
 }
 
 /**
- * 零依赖 HTML → 文本抽取。
- * 目标是让模型读到正文而不是标签:剥离脚本/样式/注释,块级标签转换为换行,
- * 解码实体,压缩空白。刻意不追求 renderer 级还原(readability 一类库会引入依赖)。
+ * Zero-dependency HTML → text extraction.
+ * The goal is for the model to read the body rather than the markup: strip scripts/styles/
+ * comments, turn block-level tags into newlines, decode entities, and squeeze whitespace.
+ * Deliberately not aiming for renderer-level fidelity (readability-style libraries would pull in
+ * dependencies).
  */
 export function htmlToText(html: string): string {
   const withoutHidden = stripHiddenBlocks(stripHtmlComments(html));
@@ -307,12 +314,15 @@ async function loadWebSettings(workspace: string): Promise<WebSettings | undefin
     const config = await loadConfig(workspace);
     return config.web;
   } catch {
-    // 配置读取失败不应让联网工具整体失效,按默认设置继续。
+    // A config read failure must not disable the web tools wholesale; carry on with the defaults.
     return undefined;
   }
 }
 
-/** web_search 的后端协议:tavily(POST + api_key)、searxng(GET + format=json)、brave(header 令牌)、google(Programmable Search)。 */
+/**
+ * Backend protocol for web_search: tavily (POST + api_key), searxng (GET + format=json),
+ * brave (header token), google (Programmable Search).
+ */
 interface SearchHit {
   title: string;
   url: string;
@@ -328,13 +338,15 @@ const SEARCH_PROVIDER_DEFAULTS: Readonly<Record<SearchProvider, string>> = {
   searxng: "",
 };
 
-/** 未显式指定后端时的推断:配了端点就按 searxng 解释(与既有行为一致),否则用 tavily。 */
+/** Inference when no backend is given explicitly: an endpoint configured means searxng
+ * (consistent with existing behaviour), otherwise tavily. */
 export function resolveSearchProvider(settings: WebSettings): SearchProvider {
   if (settings.searchProvider) return settings.searchProvider;
   return settings.searchEndpoint ? "searxng" : "tavily";
 }
 
-/** URL 归一化:只用于**判重**,不改变展示给模型的原始链接。 */
+/** URL normalization: used **only for deduplication**; the original link shown to the model is
+ * left unchanged. */
 export function normalizeResultUrl(raw: string): string {
   const trimmed = raw.trim();
   try {
@@ -351,14 +363,16 @@ export function normalizeResultUrl(raw: string): string {
   }
 }
 
-/** 跟踪参数:同一页面在这些参数上不同时应当视为同一条结果。 */
+/** Tracking parameters: the same page differing only in these should count as a single result. */
 const TRACKING_PARAM_PATTERN =
   /^(utm_.*|fbclid|gclid|dclid|msclkid|mc_cid|mc_eid|ref|ref_src|source|spm|from|igshid|si|_hsenc|_hsmi)$/;
 
 /**
- * 去重:按归一化 URL 合并重复结果,保留先出现的位置与标题,取更长的摘要。
- * 后端常把同一文档的多个入口(带跟踪参数 / 带尾斜杠 / www 前缀)并列返回,
- * 原样交给模型会重复占用上下文并误导它以为有多个来源。
+ * Deduplicate: merge duplicate results by normalized URL, keeping the position and title of the
+ * first occurrence and the longer snippet.
+ * Backends often return multiple entries for the same document side by side (with tracking
+ * parameters / a trailing slash / a www prefix); handing them to the model verbatim would waste
+ * context and mislead it into thinking there are several sources.
  */
 export function dedupeHits(hits: readonly SearchHit[]): { hits: SearchHit[]; duplicates: number } {
   const byKey = new Map<string, number>();
@@ -429,7 +443,7 @@ async function fetchTavily(query: string, limit: number, settings: WebSettings):
   return toHits(Array.isArray(data.results) ? data.results : []);
 }
 
-/** Brave Search API:GET + `X-Subscription-Token`,结果在 `web.results` 下。 */
+/** Brave Search API: GET + `X-Subscription-Token`, results under `web.results`. */
 async function fetchBrave(query: string, limit: number, settings: WebSettings): Promise<SearchHit[]> {
   if (!settings.searchApiKey) {
     throw new Error("web_search is not configured: set web.searchApiKey (brave) in the Oran config");
@@ -450,7 +464,7 @@ async function fetchBrave(query: string, limit: number, settings: WebSettings): 
   return toHits(Array.isArray(web.results) ? web.results : []);
 }
 
-/** Google Programmable Search:GET + key/cx,单次最多 10 条。 */
+/** Google Programmable Search: GET + key/cx, at most 10 results per call. */
 async function fetchGoogle(query: string, limit: number, settings: WebSettings): Promise<SearchHit[]> {
   if (!settings.searchApiKey || !settings.searchEngineId) {
     throw new Error(
@@ -487,7 +501,10 @@ async function fetchSearxng(query: string, limit: number, settings: WebSettings)
   return toHits(Array.isArray(data.results) ? data.results : []);
 }
 
-/** 各后端的结果字段名不同(tavily/searxng: url+content;brave: url+description;google: link+snippet)。 */
+/**
+ * Result field names differ per backend (tavily/searxng: url+content; brave: url+description;
+ * google: link+snippet).
+ */
 function toHits(values: readonly unknown[]): SearchHit[] {
   return values.map(toSearchHit).filter((hit): hit is SearchHit => hit !== undefined);
 }
@@ -544,7 +561,8 @@ export function registerWebTools(registry: { register(tool: ToolDefinition): voi
     },
     permissionLevel: 2,
     kind: "readonly",
-    // 联网内容是活数据:同一 URL 在不同时刻结果不同,不能参与只读结果缓存。
+    // Web content is live data: the same URL returns different results at different times, so it
+    // cannot take part in the readonly result cache.
     cacheable: false,
     maxOutputChars: 40_000,
     invoke: async (call, context) => {

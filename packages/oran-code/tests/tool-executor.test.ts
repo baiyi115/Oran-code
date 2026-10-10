@@ -504,7 +504,10 @@ function makeBatchCall(steps: unknown[], onFailure?: "abort" | "continue"): Tool
   return call("batch_tools", args);
 }
 
-/** 生产环境 batch_tools 由 registerBuiltinTools 必注册;测试 harness 里显式补上同形态桩。 */
+/**
+ * In production registerBuiltinTools always registers batch_tools; the test harness adds an
+ * explicit stub of the same shape.
+ */
 function batchToolStub(): ToolDefinition {
   return { ...makeTool(BATCH_TOOL_NAME, "command"), permissionLevel: 0, system: true };
 }
@@ -541,7 +544,7 @@ describe("ToolBatchExecutor batch_tools scripts", () => {
     expect(summary).toEqual({ workspaceMutated: false, readonlyOnly: false, mutatedCallIds: [] });
     expect(seen).toEqual([{ target: { path: "src/a.ts" }, note: 'got-{"path":"src/a.ts"}' }]);
 
-    // 折叠成一条 tool 消息,保持 assistant/toolCalls 配对不变式。
+    // Folded into a single tool message, preserving the assistant/toolCalls pairing invariant.
     expect(messages).toHaveLength(1);
     expect(messages[0]!.name).toBe("batch_tools");
     expect(messages[0]!.content).toContain("executed 2/2 step(s)");
@@ -560,7 +563,7 @@ describe("ToolBatchExecutor batch_tools scripts", () => {
       "consume",
       "batch_tools",
     ]);
-    // 脚本调用 + 两个步骤都计入循环历史。
+    // The script call plus both steps all count toward the loop history.
     expect(loopStub.record).toHaveBeenCalledTimes(3);
   });
 

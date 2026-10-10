@@ -83,7 +83,7 @@ function toolResponse(call: ToolCall): ModelStreamChunk[] {
   ];
 }
 
-/** 参数完整但 finish_reason 表明输出被上限截断:调用整体判败,不得执行。 */
+/** Arguments are complete, but finish_reason says the output was cut by the limit: the call fails and must not run. */
 function truncatedToolResponse(call: ToolCall): ModelStreamChunk[] {
   return [
     { type: "text_delta", text: "Let me write the file", streamed: true },
@@ -101,7 +101,7 @@ function truncatedToolResponse(call: ToolCall): ModelStreamChunk[] {
   ];
 }
 
-/** 纯文本被截断(没有任何工具调用):文本属于回答内容,可参与续写汇聚。 */
+/** Plain text was truncated (no tool calls at all): the text is answer content and can join continuation assembly. */
 function truncatedTextResponse(text: string): ModelStreamChunk[] {
   return [
     { type: "text_delta", text, streamed: true },
@@ -109,7 +109,7 @@ function truncatedTextResponse(text: string): ModelStreamChunk[] {
   ];
 }
 
-/** 截断且什么都没收到(例如在推理阶段被切断)。 */
+/** Truncated with nothing received at all (e.g. cut off during the reasoning phase). */
 function emptyTruncatedResponse(): ModelStreamChunk[] {
   return [{ type: "response_complete", streamed: true, finishReason: "length" }];
 }
@@ -465,7 +465,8 @@ describe("TaskController", () => {
         expect(task.result).toBe("Recovered with a smaller step.");
         expect(invoked).toBe(false);
         expect(events.some((event) => event.type === "tool_result")).toBe(false);
-        // 截断提醒通过 logger 通道成为真实的 log 事件(TUI 此前看不到)。
+        // The truncation notice reaches the logger channel as a real log event
+        // (the TUI could not see it before).
         expect(
           events.some(
             (event) => event.type === "log" && typeof event.message === "string" && event.message.includes("truncated"),
@@ -496,13 +497,15 @@ describe("TaskController", () => {
 
         expect(task.state).toBe("completed");
         expect(task.result).toBe("# Design\n\nThe first half of the answer\n\nand the second half.");
-        // 续写请求带着"接着写、不要重述"的指令,并告知已收到的字符数。
+        // The continuation request carries a "keep writing, do not restate" instruction and
+        // reports how many characters have been received so far.
         expect(
           provider.requests[1]?.some(
             (message) => typeof message.content === "string" && /about \d+ characters so far/.test(message.content),
           ),
         ).toBe(true);
-        // trace 里能看到这次续写(含收到的字符数与是否纯文本截断)。
+        // The trace shows this continuation, including the character count received and
+        // whether it was a plain-text truncation.
         expect(trace.exportTrace(task.id).steps.map((step) => step.kind)).toContain("model_truncated");
       } finally {
         await rm(workspace, { recursive: true, force: true });
@@ -527,7 +530,8 @@ describe("TaskController", () => {
         expect(task.result).toContain("chunk two");
         expect(task.result).toContain("chunk three");
         expect(task.result).toContain("the text above is incomplete");
-        // 收尾是 completed,但不再把已生成内容当成"任务失败"的一部分丢掉。
+        // The finish state is completed, but the generated content is no longer thrown away
+        // as part of a "task failure".
         expect(events.some((event) => event.type === "error")).toBe(false);
       } finally {
         await rm(workspace, { recursive: true, force: true });

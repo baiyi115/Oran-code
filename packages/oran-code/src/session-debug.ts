@@ -1,7 +1,7 @@
 /**
- * 会话级调试观测：调试日志文件写入 + 运行时流事件序列追踪。
- * 从 TerminalSession 提取（debugLogTail/debugStreamSequences/debugStreamTurns/
- * writeDebugLog/debugRuntimeStream），行为保持不变。
+ * Session-level debug observability: debug log file writing + runtime stream event sequence tracking.
+ * Extracted from TerminalSession (debugLogTail/debugStreamSequences/debugStreamTurns/
+ * writeDebugLog/debugRuntimeStream), behavior unchanged.
  */
 import { appendFile, mkdir } from "node:fs/promises";
 import { dirname, resolve } from "node:path";
@@ -10,7 +10,7 @@ import type { RuntimeEvent } from "./types.js";
 
 export type DebugLogSink = (message: string) => void;
 
-/** 调试日志串行写入 .oran/debug/agent.jsonl;未开启 ORAN_DEBUG 时为空操作。 */
+/** Debug log written serially to .oran/debug/agent.jsonl; a no-op unless ORAN_DEBUG is enabled. */
 export function createDebugLogSink(workspace: string): DebugLogSink {
   let tail: Promise<void> = Promise.resolve();
   return (message: string): void => {

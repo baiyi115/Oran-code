@@ -1,15 +1,15 @@
 /**
- * 上下文子系统的公开入口(facade)。
+ * Public entry point (facade) for the context subsystem.
  *
- * 实现位于 context/ 目录,按职责拆分:
- * - limits.ts     — 预算阈值常量
- * - estimator.ts  — token 估算与上下文窗口解析
- * - pruner.ts     — 工具结果 offload / microcompact / 近期原文保留
- * - spill.ts      — 工具结果落盘与占位文本
- * - compaction.ts — LLM 压缩(摘要契约、恢复消息、触发编排)
- * - manager.ts    — ContextManager facade:跨轮状态与锁
+ * The implementation lives in context/ and is split by responsibility:
+ * - limits.ts     — budget threshold constants
+ * - estimator.ts  — token estimation and context-window resolution
+ * - pruner.ts     — tool-result offload / microcompact / recent-verbatim retention
+ * - spill.ts      — spilling tool results to disk and placeholder text
+ * - compaction.ts — LLM compaction (summary contract, recovery message, trigger orchestration)
+ * - manager.ts    — ContextManager facade: cross-turn state and locks
  *
- * 外部调用方(turn-requester / tool-executor / session* / subagent)继续从这里导入。
+ * External callers (turn-requester / tool-executor / session* / subagent) keep importing from here.
  */
 export { CONTEXT_LIMITS } from "./context/limits.js";
 export { ContextManager } from "./context/manager.js";

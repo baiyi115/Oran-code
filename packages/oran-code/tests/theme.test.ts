@@ -15,12 +15,12 @@ describe("resolveColorMode", () => {
     expect(resolveColorMode({ ORAN_THEME: "light" })).toBe("light");
     expect(resolveColorMode({ ORAN_THEME: " DARK " })).toBe("dark");
     expect(resolveColorMode({ ORAN_THEME: "mono" })).toBe("mono");
-    // 无法识别的值回落到探测
+    // Unrecognized values fall back to detection
     expect(resolveColorMode({ ORAN_THEME: "solarized", COLORFGBG: "0;15" })).toBe("light");
   });
 
   it("detects light backgrounds from COLORFGBG", () => {
-    // rxvt 惯例:fg;bg,16 色背景 8-15 为浅色
+    // rxvt convention: fg;bg; in the 16-color palette a background of 8-15 is light
     expect(resolveColorMode({ COLORFGBG: "0;15" })).toBe("light");
     expect(resolveColorMode({ COLORFGBG: "15;0" })).toBe("dark");
     expect(resolveColorMode({ COLORFGBG: "default;default" })).toBe("dark");

@@ -33,8 +33,8 @@ export class StructuredSubagentScope {
     if (options.continueAfterParentExit) return unsupportedContinueAfterParentExit();
     const id = options.taskId ?? `fork-${randomUUID()}`;
     const abortController = options.abortController ?? new AbortController();
-    // fork 与后台任务同样受并发上限约束:一批 N 个 agent 调用不应同时打满
-    // N 个模型请求,超出的排队等待。
+    // Forks are constrained by the same concurrency cap as background tasks: a batch of N agent
+    // calls must not fire N model requests at once; the excess waits in the queue.
     let resolve!: (result: SubagentRunResult) => void;
     let reject!: (error: unknown) => void;
     const promise = new Promise<SubagentRunResult>((res, rej) => {
@@ -154,7 +154,7 @@ export class StructuredSubagentScope {
   }
 
   cancelAll(): void {
-    // 排队中的 fork 还没有真实 promise,必须在这里落定,否则等待方会永久挂起。
+    // A queued fork has no real promise yet, so it must be settled here; otherwise the waiter hangs forever.
     for (const entry of [...this.queue]) {
       entry.task.status = "cancelled";
       entry.task.endedAt = new Date().toISOString();

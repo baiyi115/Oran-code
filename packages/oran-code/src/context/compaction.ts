@@ -38,9 +38,10 @@ export interface RecoveryCoverage {
 }
 
 /**
- * 增量摘要的携带量:上一条摘要正文与它的覆盖统计。
- * 有它时只把"上一条摘要 + 新对话"交给模型做更新,而不是把摘要再摘要一遍,
- * 避免摘要经过多轮压缩逐层失真(经久会话里的主要信息损失来源)。
+ * Payload carried across incremental summarization: the previous summary body and its coverage stats.
+ * When present, only "previous summary + new conversation" is handed to the model for an update,
+ * rather than summarizing the summary again, which would make it drift through repeated rounds of
+ * compaction (the main source of information loss in long-lived sessions).
  */
 interface SummaryCarryover {
   summary: string;
@@ -52,8 +53,9 @@ const SUMMARY_REJECTED_RESPONSE_CHARS = 2_000;
 const SUMMARY_ATTEMPTS = CONTEXT_LIMITS.summaryAttempts;
 
 /**
- * 压缩流程借用的宿主能力。
- * 由 ContextManager 提供:它持有跨轮状态(账本、锚点、最近文件、自动失败计数)。
+ * Host capabilities the compaction flow borrows.
+ * Provided by ContextManager, which owns the cross-turn state (ledger, anchor, recent files,
+ * automatic-failure counter).
  */
 export interface CompactionHost {
   estimateTokens(messages: readonly Message[], tools: readonly Record<string, unknown>[]): number;
@@ -82,7 +84,8 @@ export async function compactConversation(
   try {
     const prefix = source.filter(isStableRequestPrefix);
     const history = source.filter((message) => !isTransientRequestMessage(message));
-    // 上一条摘要就是锚点:把它整体携带进新摘要,只对锚点之后的新消息做增量更新。
+    // The previous summary is the anchor: carry it into the new summary as a whole and apply
+    // incremental updates only to the new messages that follow the anchor.
     const carryover = readSummaryCarryover(history);
     const fresh = carryover ? history.filter((message) => promptBlock(message) !== "context-summary") : history;
     const summarized = await requestSummary(fresh, options.provider, options.contextWindow, options.signal, carryover);
@@ -95,7 +98,8 @@ export async function compactConversation(
       metadata: {
         promptBlock: "context-summary",
         contextManaged: true,
-        // 覆盖统计随摘要一起携带:下一次压缩据此做增量更新并继续累计。
+        // Coverage stats ride along with the summary: the next compaction uses them to do an
+        // incremental update and keeps accumulating.
         summaryCoverage: {
           coveredMessages: totalCovered,
           droppedGroups: totalDroppedGroups,
@@ -114,8 +118,9 @@ export async function compactConversation(
     const recent = selectRecentRawMessages(summarized.coveredMessages, options.contextWindow);
     const compacted = [...cloneMessages(prefix), summaryMessage, recoveryMessage, ...recent];
 
-    // 防御性保障:下游模型(Gemini/Anthropic/OpenAI)均严格要求对话在系统提示词之后
-    // 首条业务消息必须为 user 角色。若 recent 为空或首条非系统消息非 user,补入恢复引导 user 消息。
+    // Defensive safeguard: downstream models (Gemini/Anthropic/OpenAI) all strictly require that
+    // the first business message after the system prompt be a user-role message. If `recent` is
+    // empty, or the first non-system message is not user, splice in a recovery lead-in user message.
     const firstNonSystemIndex = compacted.findIndex((message) => message.role !== "system");
     if (firstNonSystemIndex === -1) {
       compacted.push({
@@ -192,7 +197,7 @@ export function buildRecoveryMessage(input: {
   ].join("\n");
 }
 
-/** 读取上一条摘要作为增量锚点:正文 + 累计覆盖统计。 */
+/** Read the previous summary as the incremental anchor: body + accumulated coverage stats. */
 function readSummaryCarryover(history: readonly Message[]): SummaryCarryover | undefined {
   const summaryMessage = history.find((message) => promptBlock(message) === "context-summary");
   if (!summaryMessage) return undefined;
@@ -209,7 +214,10 @@ function readSummaryCarryover(history: readonly Message[]): SummaryCarryover | u
   };
 }
 
-/** 从旧摘要的第 6 节回收 <user-message> 块,供增量摘要继续携带。 */
+/**
+ * Reclaim the <user-message> blocks from section 6 of the old summary so incremental
+ * summarization keeps carrying them forward.
+ */
 function extractVerbatimUserMessages(summaryText: string): string[] {
   const messages: string[] = [];
   for (const match of summaryText.matchAll(/<user-message\b[^>]*>([\s\S]*?)<\/user-message>/g)) {
@@ -245,9 +253,9 @@ export function isPromptTooLongError(error: unknown): boolean {
   const status = (error as { status?: unknown } | undefined)?.status;
   const statusCode = (error as { statusCode?: unknown } | undefined)?.statusCode;
   if (status === 413 || statusCode === 413) return true;
-  // 覆盖主流 provider 的溢出措辞:OpenAI "maximum context length"、
-  // Anthropic "prompt is too long"、Gemini 系 "input token count ... exceeds
-  // the maximum number of tokens" 等;413 状态码单独判定如上。
+  // Covers the overflow wording of mainstream providers: OpenAI "maximum context length",
+  // Anthropic "prompt is too long", Gemini-family "input token count ... exceeds
+  // the maximum number of tokens", etc.; status 413 is handled separately above.
   return /(prompt(?:[_\s-]+is)?[_\s-]+too[_\s-]+long|context[_\s-]?length[_\s-]?exceeded|maximum context length|context window.{0,50}(?:exceed|too (?:large|long)|limit)|too many (?:input )?tokens|input.{0,30}too long|input token count.{0,80}exceed|exceeds the maximum (?:number of )?tokens|request too large.{0,30}token)/i.test(
     fragments.join(" "),
   );
@@ -266,9 +274,10 @@ async function requestSummary(
   let groups = groupConversation(messages);
   let droppedGroups = 0;
   let dropRound = 0;
-  // 兼容端点(如 Gemini 系)经常漏 <summary> 标签或只回一句空话;直接把
-  // 压缩失败抛回主循环会让会话每轮都在"压缩失败"里耗尽 token 预算,
-  // 所以带纠错反馈重试若干次,仍失败才向上抛。
+  // Compatibility endpoints (the Gemini family, for instance) often drop the <summary> tag or answer
+  // with a single empty phrase; throwing the compaction failure straight back to the main loop would
+  // burn the token budget on "compaction failed" every turn, so retry a few times with corrective
+  // feedback and only throw upward once that still fails.
   let rejected: { text: string; reason: string } | undefined;
   for (let attempt = 0; groups.length; attempt += 1) {
     const coveredMessages = groups.flatMap((group) => cloneMessages(group));
@@ -443,8 +452,9 @@ function extractSummary(text: string, coveredMessages: readonly Message[], carry
   const summaryMatch = /<summary>\s*([\s\S]*?)\s*<\/summary>/i.exec(text);
   let summaryText = summaryMatch?.[1]?.trim();
   if (!summaryText) {
-    // 闭合标签缺失时取 <summary> 之后到结尾的内容;模型常把 "</summary>"
-    // 截断或整个忘掉,只有开标签的响应仍然可用。
+    // When the closing tag is missing, take the content from after <summary> to the end; models
+    // often truncate or forget "</summary>" entirely, and a response with only the opening tag is
+    // still usable.
     const openMatch = /<summary>\s*([\s\S]*)$/i.exec(text);
     summaryText = openMatch?.[1]?.replace(/<\/summary[^>]*>?\s*$/i, "").trim();
   }
@@ -455,8 +465,10 @@ function extractSummary(text: string, coveredMessages: readonly Message[], carry
     throw summaryRejected(text, "context compaction response did not contain a non-empty <summary> block");
   }
   summaryText = stripCodeFence(summaryText);
-  // 大段对话被压成一句空话等于静默丢上下文,宁可让压缩失败走重试/告警。
-  // CJK 摘要信息密度更高,同等内容字符数显著少于英文,阈值相应放宽。
+  // Squeezing a long conversation into one empty phrase is tantamount to silently dropping context;
+  // better to let compaction fail into a retry/warning. CJK summaries pack more information per
+  // character, so the same content needs markedly fewer characters than English and the threshold
+  // is relaxed to match.
   const shortThreshold = HAS_CJK_PATTERN.test(summaryText) ? 80 : 150;
   if (coveredMessages.length >= 10 && summaryText.length < shortThreshold) {
     throw summaryRejected(
@@ -480,8 +492,9 @@ function extractSummary(text: string, coveredMessages: readonly Message[], carry
   // Section matching with graceful degradation: if a section heading is missing,
   // inject a placeholder heading rather than discarding the entire compaction.
   // The model may produce slight heading variations; we recover what we can.
-  // 匹配优先级:英文标题精确匹配 → 序号匹配(1. / 1、 / 1)),标题文本
-  // 允许是任意语言——摘要契约不能依赖模型输出英文小节名。
+  // Match priority: exact English heading match → ordinal match (1. / 1、 / 1)), since the heading
+  // text may be in any language — the summary contract cannot depend on the model emitting English
+  // section names.
   const headings = sectionNames.map((name, index) => {
     const number = index + 1;
     const patterns = [
@@ -517,8 +530,9 @@ function extractSummary(text: string, coveredMessages: readonly Message[], carry
     }
   }
 
-  // 增量摘要时,上一轮已收录的用户消息(以 <user-message> 块保存在旧摘要里)
-  // 必须先于本轮消息进入第 6 节,否则最早的用户原话会随压缩逐轮丢失。
+  // For incremental summarization, user messages already captured in the previous round (kept as
+  // <user-message> blocks in the old summary) must enter section 6 before this round's messages;
+  // otherwise the earliest user wording is lost compaction by compaction.
   const carriedUserMessages = carryover ? extractVerbatimUserMessages(carryover.summary) : [];
   const userMessageContents = [
     ...carriedUserMessages,
@@ -546,7 +560,7 @@ function extractSummary(text: string, coveredMessages: readonly Message[], carry
 function recoverSummaryWithoutTags(text: string): string | undefined {
   const rawText = text.trim();
   if (!rawText) return undefined;
-  // 路径一:英文 "Main Requests" 标题(旧契约)。
+  // Path one: the English "Main Requests" heading (the old contract).
   const heading = /(?:^|\n)\s*(?:#{1,6}\s*)?(?:\d+\.\s*)?Main Requests\b[^\n]*/i.exec(rawText);
   if (heading?.index !== undefined) {
     // If the model wrapped the draft in <analysis> after the heading, stop there.
@@ -555,9 +569,10 @@ function recoverSummaryWithoutTags(text: string): string | undefined {
     const recovered = stripCodeFence(rawText.slice(heading.index, end).trim());
     if (recovered) return recovered;
   }
-  // 路径二(语言无关):剥掉 <analysis> 草稿后,剩余部分只要呈现结构化
-  // 形态(≥2 个 markdown 标题或编号列表项,不要求任何特定语言)就整体
-  // 作为摘要采用——缺失的小节随后会注入占位标题,不会丢内容。
+  // Path two (language-agnostic): after stripping the <analysis> draft, accept the remainder as the
+  // summary wholesale as long as it looks structured (≥2 markdown headings or numbered list items,
+  // with no particular language required) — missing sections get placeholder headings injected
+  // afterwards, so no content is lost.
   const withoutAnalysis = rawText
     .replace(/<analysis>[\s\S]*?<\/analysis>/gi, "")
     .replace(/<analysis>[\s\S]*/i, "")
@@ -581,7 +596,10 @@ function truncateResponse(text: string): string {
     : text;
 }
 
-/** 摘要被拒:错误对象附带原始响应,重试时作为纠错反馈回传给模型。 */
+/**
+ * Summary rejected: the error object carries the raw response so a retry can hand it back to the
+ * model as corrective feedback.
+ */
 function summaryRejected(text: string, message: string): Error {
   const error: Error & { responseText?: string } = new Error(message);
   error.responseText = text;

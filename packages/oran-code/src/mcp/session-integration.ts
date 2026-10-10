@@ -5,7 +5,7 @@ import type { McpManager } from "./manager.js";
 export interface McpSessionIntegrationDependencies {
   readonly workspace: string;
   readonly config: () => UserConfig;
-  /** 返回会话当前对话数组;注入的 system 消息直接原地 push/splice。 */
+  /** Returns the session's current conversation array; injected system messages are pushed/spliced in place. */
   readonly conversation: () => Message[];
   readonly persistSession: () => void;
   readonly onError: (message: string) => void;
@@ -13,9 +13,10 @@ export interface McpSessionIntegrationDependencies {
 }
 
 /**
- * MCP 与交互会话的集成层:惰性连接、工具注册、以及把 server 指令/
- * 工具发现提示/连接失败信息以 context-managed system 消息注入对话。
- * 从 TerminalSession 提取,行为保持不变。
+ * Integration layer between MCP and the interactive session: lazy connection, tool registration,
+ * and injection of server instructions / tool-discovery hints / connection failures into the
+ * conversation as context-managed system messages.
+ * Extracted from TerminalSession; behaviour is unchanged.
  */
 export class McpSessionIntegration {
   private manager: McpManager | undefined;
@@ -54,12 +55,12 @@ export class McpSessionIntegration {
     return this.manager?.toolCount ?? 0;
   }
 
-  /** manager 是否已构造(即连接流程至少完成过一次初始化)。 */
+  /** Whether the manager has been constructed (i.e. the connect flow has initialized at least once). */
   get started(): boolean {
     return this.manager !== undefined;
   }
 
-  /** 触发后台连接,不等待完成。 */
+  /** Trigger the background connection without waiting for it to complete. */
   start(): void {
     if (this.manager || this.ready) return;
     this.ready = (async () => {
@@ -89,8 +90,9 @@ export class McpSessionIntegration {
           message.metadata?.promptBlock === "mcp-instructions" && message.metadata.mcpServer === instruction.server,
       );
       if (exists) continue;
-      // 远端 server 返回的指令是不可信外部内容;显式标注来源与边界,
-      // 降低被服务端提示注入直接当成运营方指令执行的风险。
+      // Instructions returned by a remote server are untrusted external content; label the origin
+      // and the boundary explicitly to lower the risk of a server-side prompt injection being
+      // executed as if it were operator instructions.
       conversation.push({
         role: "system",
         content: [

@@ -1,10 +1,12 @@
 /**
- * shell 输出的确定性后处理管线。
+ * Deterministic post-processing pipeline for shell output.
  *
- * 目标是让模型读到**信息**而不是终端噪音:ANSI 颜色、重复刷屏行、尾随空行
- * 都不携带信息,却会实打实占用上下文预算。
- * 刻意保持保守:只做无歧义的清洗,不做"猜测式"摘要(例如把测试结果折叠成结论),
- * 因为这类启发式一旦猜错就是静默丢信息。
+ * The goal is for the model to read **information** rather than terminal noise: ANSI colors,
+ * repeatedly repainted lines, and trailing blank lines carry no information, yet they genuinely
+ * eat into the context budget.
+ * Deliberately conservative: only unambiguous cleanup, no "guessing" summaries (such as folding
+ * test results into a verdict), because a heuristic like that silently drops information the
+ * moment it guesses wrong.
  */
 
 const ANSI_PATTERN =
@@ -15,8 +17,10 @@ export function stripAnsi(text: string): string {
 }
 
 /**
- * 连续重复行折叠:同一行重复 3 次及以上时压成一行并标注次数。
- * 典型来源是进度条、逐行日志、重复的警告——保留一条即可表达全部信息。
+ * Collapse consecutive repeated lines: a line repeated 3 or more times is squeezed into one line
+ * annotated with the count.
+ * Typical sources are progress bars, line-by-line logs, and repeated warnings — keeping a single
+ * line conveys all of the information.
  */
 export function collapseRepeatedLines(text: string, minRepeat = 3): string {
   const lines = text.split("\n");
@@ -36,7 +40,7 @@ export function collapseRepeatedLines(text: string, minRepeat = 3): string {
   return output.join("\n");
 }
 
-/** run_command 的默认后处理:清洗 ANSI → 折叠重复行 → 去掉尾部空行。 */
+/** Default post-processing for run_command: strip ANSI → collapse repeated lines → drop trailing blank lines. */
 export function compactShellOutput(text: string): string {
   if (!text) return text;
   return collapseRepeatedLines(stripAnsi(text)).replace(/\n+$/, "");

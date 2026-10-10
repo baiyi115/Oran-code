@@ -17,11 +17,11 @@ export interface AgentDefinition {
   readonly workMode?: WorkMode;
   readonly forceBackground?: boolean;
   readonly isolationMode?: AgentIsolationMode;
-  /** 预留字段:已解析并校验,当前运行时尚未消费。 */
+  /** Reserved field: parsed and validated, but not yet consumed by the runtime. */
   readonly skills?: readonly string[];
-  /** 预留字段:已解析并校验,当前运行时尚未消费。 */
+  /** Reserved field: parsed and validated, but not yet consumed by the runtime. */
   readonly memory?: boolean;
-  /** 预留字段:已解析并校验,当前运行时尚未消费。 */
+  /** Reserved field: parsed and validated, but not yet consumed by the runtime. */
   readonly mcpServers?: readonly string[];
   readonly scope: AgentDefinitionScope;
   readonly filePath?: string;

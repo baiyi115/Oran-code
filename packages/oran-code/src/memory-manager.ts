@@ -5,8 +5,9 @@ import { mkdir, readFile, readdir, rename, stat, unlink, writeFile } from "node:
 import { isRecord } from "./types.js";
 import { compatibleUserDataPath, projectHash, userMemoryRoot, USER_DATA_DIRECTORY } from "./paths.js";
 
-// yaml 只服务于记忆笔记的 frontmatter;同步 API 无法 await 动态导入,
-// 改为首次调用时经 require 同步加载,避免 46ms 的 yaml 进入交互启动关键模块图。
+// yaml is used only for memory-note frontmatter; a synchronous API cannot await a dynamic
+// import, so it is loaded synchronously through require on first use, keeping the 46ms yaml
+// load out of the critical module graph for interactive startup.
 const requireYaml = createRequire(import.meta.url);
 let yamlModule: typeof import("yaml") | undefined;
 function yaml(): typeof import("yaml") {
@@ -245,8 +246,9 @@ async function listMarkdownFiles(directory: string): Promise<string[]> {
 async function atomicWrite(path: string, content: string): Promise<void> {
   const temporary = resolve(dirname(path), `.${basename(path)}.${randomUUID()}.tmp`);
   await writeFile(temporary, content, "utf8");
-  // Windows 上目标文件可能被杀软/索引器短暂占用:先重试 rename,最后才考虑
-  // 删除目标再重试——顺序反了会在第二次 rename 也失败时丢掉原文件。
+  // On Windows the target file may be briefly held by an antivirus scanner or indexer: retry
+  // rename first, and only delete the target and retry as a last resort — doing it the other way
+  // around loses the original file if the second rename also fails.
   try {
     await rename(temporary, path);
   } catch {

@@ -113,9 +113,10 @@ function obtain(key: string): GrammarHost | undefined {
       clearTimeout(pending.timer);
       if (entry.pending.size === 0) settle(key, entry);
       if (message.retry === true) {
-        // 这门语法在本进程里已经不可信(见 runtime.parseSource):杀掉宿主让父
-        // 进程换一个新的,并记住这门语法之后每个请求都换新进程 —— 否则每个请求
-        // 都要白费一次解析才发现语法坏了。
+        // This grammar is no longer trustworthy in this process (see runtime.parseSource): kill the
+        // host so the parent spawns a new one, and remember that from now on every request for this
+        // grammar gets a fresh process — otherwise each request would waste a parse before
+        // discovering the grammar is broken.
         freshProcessLanguages.add(key);
         retire(key, entry);
         pending.reject(new Error(message.error ?? "parse host needs a fresh process"));
@@ -123,7 +124,7 @@ function obtain(key: string): GrammarHost | undefined {
       }
       if (message.ok) pending.resolve(message.result);
       else pending.reject(new Error(message.error ?? "parse host error"));
-      // 已知只能解析一次的语法:这个请求服务完就换进程。
+      // A grammar already known to parse only once: swap in a new process once this request is served.
       if (freshProcessLanguages.has(key) && entry.pending.size === 0) retire(key, entry);
     }
   });

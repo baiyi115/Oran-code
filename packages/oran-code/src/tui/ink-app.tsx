@@ -94,10 +94,10 @@ export function staticTranscriptCount(messages: readonly TranscriptMessage[]): n
 // selection. Clear every common tracking mode in case a previous process exited
 // before restoring the terminal.
 const RESTORE_NATIVE_MOUSE = "\x1b[?1003l\x1b[?1002l\x1b[?1000l\x1b[?1015l\x1b[?1006l\x1b[?1005l";
-/** 滚轮一次事件滚动 transcript 的行数。 */
+/** How many transcript lines one wheel event scrolls. */
 const WHEEL_SCROLL_LINES = 3;
 const INK_PAINT_BARRIER_MS = 40;
-/** boundary/terminal 事件等待渲染提交的上限;超时兜底放行并补一次渲染。 */
+/** Max wait for boundary/terminal events to see a render commit; on timeout it proceeds and re-renders. */
 const RENDER_WAIT_TIMEOUT_MS = 1_000;
 
 /**
@@ -228,7 +228,7 @@ export class InkTuiApp {
     });
     const wrappedOutput = createSynchronizedWriteStream(this.options.output);
     this.inkInstance = this.renderInk(<InkRoot app={this} revision={this.renderRevision} />, {
-      // Ink 的 stdin 选项要的是 ReadStream;过滤层是 Transform,运行时按流接口使用。
+      // Ink's stdin option wants a ReadStream; the filter layer is a Transform, used as a stream here.
       stdin: wrappedInput as unknown as NodeJS.ReadStream,
       stdout: wrappedOutput,
       exitOnCtrlC: false,
@@ -291,7 +291,7 @@ export class InkTuiApp {
     this.invalidate();
   }
 
-  /** 后台任务数据源允许 Promise(子代理 runtime / shell jobs 的初始化都是异步的)。 */
+  /** The background-task source may be a Promise (subagent runtime / shell job init are async). */
   private preloadBackgroundTasks(): void {
     const result = this.options.getBackgroundTasks?.();
     if (result === undefined) {
@@ -302,7 +302,7 @@ export class InkTuiApp {
       this.state.session.backgroundTasks = result;
       return;
     }
-    // Promise 型数据源(子代理 runtime 初始化也是异步),落地后刷新徽标。
+    // Promise-typed source (subagent runtime init is async too); refresh the badge once it lands.
     void Promise.resolve(result)
       .then((tasks) => {
         this.state.session.backgroundTasks = tasks;
@@ -354,9 +354,10 @@ export class InkTuiApp {
   }
 
   /**
-   *  stdin 过滤层(createBracketedPasteStream 的 onMouse)已经把鼠标上报从字节
-   *  流里截走,这里拿到的是结构化事件:只消费滚轮,点击/移动上报无害吞掉。
-   *  代价是原生文本选择改走 Shift+拖选(pi 同款取舍,help 里有说明)。
+   * The stdin filter layer (createBracketedPasteStream's onMouse) has already taken mouse reports
+   * out of the byte stream, so structured events arrive here: only wheel events are consumed,
+   * click/move reports are harmlessly swallowed. The price is that native text selection moves to
+   * Shift+drag (the same trade-off as pi, documented in help).
    */
   private handleTerminalMouse(event: TerminalMouseEvent): void {
     if (this.destroyed || (event.button & 64) === 0) return;
@@ -385,8 +386,9 @@ export class InkTuiApp {
       this.requestExit();
       return;
     }
-    // Esc 取消当前任务：连按两次（1.2s 内）才真正取消，第一次仅提示确认。
-    // 菜单/弹窗打开时 Esc 仍归对应 handler；空闲时 Esc 仅清空输入框。
+    // Esc cancels the current task: two presses (within 1.2s) really cancel it, the first one only
+    // asks for confirmation. While a menu/dialog is open Esc still belongs to its handler; when
+    // idle, Esc only clears the input box.
     if (key.escape && this.state.overlay.kind === "none" && (this.isBlocked() || isSessionBusy(this.state))) {
       const now = Date.now();
       if (now - this.lastEscapeCancelAt < 1200) {
@@ -537,11 +539,12 @@ export class InkTuiApp {
       return;
     }
     if (isSubmitKey(input, key)) {
-      // Enter 提交。Shift+Enter 在没开启 modified-keys 协议的终端里与 Enter 同
-      // 一个字节(CR),Ink 的 shift 标志只对单个大写字母为真;而 Ctrl+J 的 LF
-      // 与"某些终端用 LF 表示 Enter"无法区分——把它当换行键会让那些终端按 Enter
-      // 反而换行。所以这里不设换行键:多行草稿靠粘贴,折叠成占位符后提交时按原文
-      // 发出(见 expandPastes)。快捷键表与实现保持一致。
+      // Enter submits. In terminals without the modified-keys protocol, Shift+Enter arrives as the
+      // same byte as Enter (CR), and Ink's shift flag is only true for a single uppercase letter;
+      // Ctrl+J's LF cannot be told apart from "some terminals send LF for Enter" — treating it as a
+      // newline key would make those terminals insert a newline on Enter. So no newline key is bound
+      // here: multiline drafts come from paste, and once folded into a placeholder they are
+      // submitted verbatim (see expandPastes). The shortcut table matches the implementation.
       void this.submit();
     } else if (isDeleteBackward(input, key)) {
       this.detachInputHistory();
@@ -656,8 +659,9 @@ export class InkTuiApp {
   }
 
   /**
-   * 对话级回退:把转写区截断到第 N 个用户消息之前。
-   * 只动展示层——会话历史与持久化由 TerminalSession 负责,两者按同一"用户轮次"口径对齐。
+   * Conversation-level rewind: truncate the transcript to just before the Nth user message.
+   * Display layer only — session history and persistence belong to TerminalSession, and the two are
+   * aligned on the same "user turn" definition.
    */
   rewindToUserMessage(userMessageCount: number): void {
     let seen = 0;
@@ -959,10 +963,11 @@ export class InkTuiApp {
     // deltas collapse into one frame; boundary events explicitly wait here.
     queueMicrotask(() => {
       const revision = this.renderRevision;
-      // 捕获后立即释放调度位:Ink reconciler/stdout 写入的提交窗口内新到的
-      // invalidate 必须重新排队渲染。否则窗口内被吞掉的 revision 永远没有
-      // 提交帧,等待它的 flushPendingRender waiter 会把运行时事件永久挂起
-      // (表现为任务完成后 TUI 不再推进,直到手动停止触发 destroy 兜底)。
+      // Release the scheduling slot immediately after capturing: an invalidate arriving inside the
+      // commit window of the Ink reconciler/stdout write must queue a render again. Otherwise a
+      // revision swallowed inside that window never gets a commit frame, and the flushPendingRender
+      // waiter for it would suspend runtime events forever (seen as the TUI not advancing after a
+      // task completes, until a manual stop trips the destroy fallback).
       this.renderScheduled = false;
       if (this.destroyed || !this.inkInstance) {
         this.resolveRenderWaiters(revision);
@@ -1001,8 +1006,8 @@ export class InkTuiApp {
         const timer = setTimeout(() => {
           const index = this.renderWaiters.findIndex((waiter) => waiter.resolve === settle);
           if (index >= 0) this.renderWaiters.splice(index, 1);
-          // 兜底:提交帧迟迟未到时不得让运行时事件挂在渲染上;
-          // 强制补一次渲染,让可能被吞掉的 revision 也有提交机会。
+          // Fallback: a late commit frame must not leave runtime events hanging on the render;
+          // force one extra render so a possibly swallowed revision still gets a chance to commit.
           this.options.onRenderDebug?.({
             phase: "render_wait_timeout",
             revision,
@@ -1195,10 +1200,11 @@ export class InkTuiApp {
     this.invalidate();
   }
 
-  /** details 覆盖层的滚动上限:取渲染侧写回的同一数值,两侧不再各算一套。 */
+  /** Scroll limit for the details overlay: the value the render side writes back, not a second formula. */
   private detailsScrollMax(): number {
     if (this.state.detailsScrollMax > 0) return this.state.detailsScrollMax;
-    // 渲染还没跑过时退回"整段可见",避免第一次按键就被钳到 0。
+    // Before the renderer has run, fall back to "whole segment visible" so the first keypress is
+    // not clamped to 0.
     const overlay = this.state.overlay;
     return overlay.kind === "details" ? overlay.lines.length : 0;
   }
@@ -1307,12 +1313,12 @@ function errorMessage(error: unknown): string {
   return formatErrorMessage(error);
 }
 
-/** ink 的 color prop 在 exactOptionalPropertyTypes 下不接受显式 undefined;单色主题时按需省略。 */
+/** ink's color prop rejects an explicit undefined under exactOptionalPropertyTypes; omit it in mono. */
 function colorProps(color: string | undefined): { color: string } | Record<string, never> {
   return color !== undefined ? { color } : {};
 }
 
-/** 子代理面板行的配色:running 高亮,queued 衰减,done 成功绿,failed 危险红。 */
+/** Colors for subagent panel rows: running highlighted, queued dimmed, done success green, failed danger red. */
 function taskRowColorProps(tone: TaskPanelTone): Record<string, string | boolean> {
   switch (tone) {
     case "running":
@@ -1370,7 +1376,7 @@ function InkRoot({ app, revision }: { app: InkTuiApp; revision: number }): React
   const footer = footerLines(state, width);
   const summary = workSummaryLine(state);
   const workingLine = workingIndicatorLine(state, spinnerTick);
-  // 输入框下方的逐任务子代理面板:任务是什么、进行到什么程度,一眼可读。
+  // Per-task subagent panel below the input box: what each task is and how far along, at a glance.
   const taskRows = subagentTaskLines(state.session.backgroundTasks ?? [], spinnerTick, Date.now(), width);
   useEffect(() => {
     if (!activeSpinner) return;

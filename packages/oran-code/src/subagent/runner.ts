@@ -73,8 +73,8 @@ export class SubagentRunner {
     const usage: Record<string, number> = {};
     const assistantText: string[] = [];
     const baseConversation = options.parentConversation ?? options.conversation ?? [];
-    // 消息对象入列后不可变,浅拷贝数组即可隔离 push/splice;对大上下文做
-    // 深克隆对并行 fork 是纯粹的 CPU/GC 浪费。
+    // Message objects are immutable once queued, so a shallow array copy is enough to isolate
+    // push/splice; deep-cloning a large context for parallel forks is pure CPU/GC waste.
     let conversation = [...baseConversation];
     let controller: TaskController | undefined;
     let executionWorkspace = this.deps.workspace;
@@ -135,7 +135,7 @@ export class SubagentRunner {
             addUsage(usage, event.usage);
           }
           if (event.type === "assistant_abort") {
-            // 取消前的部分用量也要入账,与主循环口径一致。
+            // Partial usage accrued before the cancellation must still be counted, matching the main loop.
             addUsage(usage, event.usage ?? {});
           }
           await this.emitEvent({

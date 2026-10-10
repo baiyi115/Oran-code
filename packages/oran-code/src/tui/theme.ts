@@ -1,11 +1,13 @@
 /**
  * Terminal theme: muted citrus for focus, warm neutrals for dense content.
  *
- * 为尽可能兼容各类终端环境,模块加载时按环境做一次三选一:
- * - mono:NO_COLOR 已设置(https://no-color.org),只保留字重/斜体等非颜色样式;
- * - light:浅色背景(COLORFGBG 探测或 ORAN_THEME 显式指定),用更深的同系色调;
- * - dark:默认深色调色板。
- * 显式覆盖优先级:NO_COLOR > ORAN_THEME > COLORFGBG > dark。
+ * To stay compatible with as many terminal environments as possible, the module picks one of
+ * three modes from the environment at load time:
+ * - mono: NO_COLOR is set (https://no-color.org); keeps non-color styles such as weight/italic;
+ * - light: light background (detected via COLORFGBG or set explicitly with ORAN_THEME), using
+ *   deeper shades of the same hues;
+ * - dark: the default dark palette.
+ * Explicit override precedence: NO_COLOR > ORAN_THEME > COLORFGBG > dark.
  */
 
 export type ColorMode = "dark" | "light" | "mono";
@@ -14,7 +16,7 @@ export function resolveColorMode(env: Record<string, string | undefined> = proce
   if (env.NO_COLOR !== undefined) return "mono";
   const explicit = env.ORAN_THEME?.trim().toLowerCase();
   if (explicit === "light" || explicit === "dark" || explicit === "mono") return explicit;
-  // COLORFGBG 为 "fg;bg":16 色背景 0-7 深、8-15 浅;未设置或不认识的值一律按深色。
+  // COLORFGBG is "fg;bg": 16-color backgrounds 0-7 are dark, 8-15 light; unset or unknown is dark.
   const colorfgbg = env.COLORFGBG;
   if (colorfgbg) {
     const bg = Number.parseInt(colorfgbg.split(";").pop() ?? "", 10);
@@ -23,7 +25,7 @@ export function resolveColorMode(env: Record<string, string | undefined> = proce
   return "dark";
 }
 
-/** 语义层配色:ink 组件用。字段可为 undefined(继承终端默认前景色)。 */
+/** Semantic palette used by ink components. Fields may be undefined (inherit the terminal fg). */
 export interface ThemePalette {
   accent: string | undefined;
   accentDim: string | undefined;
@@ -58,7 +60,7 @@ const DARK_PALETTE: ThemePalette = {
   surface: undefined,
 };
 
-/** 浅色背景:同色相加深,保证白底可读。 */
+/** Light background: same hues darkened so they stay readable on white. */
 const LIGHT_PALETTE: ThemePalette = {
   accent: "#A35B22",
   accentDim: "#7C4519",
@@ -76,7 +78,7 @@ const LIGHT_PALETTE: ThemePalette = {
   surface: undefined,
 };
 
-/** 单色:全部交给终端默认前景色,层级靠字重维持。 */
+/** Mono: everything uses the terminal default foreground; hierarchy comes from font weight. */
 const MONO_PALETTE: ThemePalette = {
   accent: undefined,
   accentDim: undefined,
@@ -94,7 +96,7 @@ const MONO_PALETTE: ThemePalette = {
   surface: undefined,
 };
 
-/** 预渲染转义码(Static / live text blobs)。 */
+/** Pre-rendered escape codes (Static / live text blobs). */
 export interface AnsiPalette {
   reset: string;
   bold: string;
@@ -117,7 +119,7 @@ export interface AnsiPalette {
 }
 
 function ansiPalette(code: (n: number) => string, mode: ColorMode): AnsiPalette {
-  // mono 保留字重样式,颜色码置空。
+  // mono keeps the weight styles and blanks the color codes.
   if (mode === "mono") {
     return {
       reset: "\u001b[0m",
@@ -149,7 +151,7 @@ function ansiPalette(code: (n: number) => string, mode: ColorMode): AnsiPalette 
     underline: "\u001b[4m",
     strike: "\u001b[9m",
     // Muted xterm-256 colors preserve hierarchy without turning the transcript
-    // into a rainbow. 深色用中亮调,浅色切到同色相的深色 256 色。
+    // into a rainbow. Dark uses mid-bright tones; light switches to deeper 256-color hues.
     orange: code(dark ? 172 : 130),
     orangeBold: `\u001b[1m${code(dark ? 172 : 130)}`,
     amber: code(dark ? 179 : 136),

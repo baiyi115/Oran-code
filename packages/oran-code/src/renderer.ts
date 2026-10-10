@@ -99,12 +99,12 @@ export class TerminalRenderer implements SessionRenderer {
   assistantDelta(text: string): void {
     if (!text) return;
     if (!this.assistantOpen) this.assistantStart("", "turn");
-    // 与 TUI 路径一致:普通终端同样对模型输出做密钥脱敏。
+    // Same as the TUI path: the plain terminal also redacts secrets from model output.
     text = redactSecretText(text);
     this.assistantText += text;
-    // Buffer incomplete lines so raw markdown fragments ("####文字...") never
-    // stream into the terminal one character at a time. A line is flushed as
-    // soon as its newline arrives.
+    // Buffer incomplete lines so raw markdown fragments (a heading glued to its
+    // own text, say) never stream into the terminal one character at a time. A
+    // line is flushed as soon as its newline arrives.
     this.assistantLineBuffer += text;
     this.flushCompletedAssistantLines();
   }

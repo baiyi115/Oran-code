@@ -27,7 +27,7 @@ afterEach(async () => {
   );
 });
 
-/** 建一个本地 HTTP 服务并把工作区配置为允许访问回环地址(测试专用)。 */
+/** Spin up a local HTTP server and configure the workspace to allow loopback access (test-only). */
 async function startFixtureServer(
   handler: (
     url: URL,
@@ -215,7 +215,7 @@ describe("web tools", () => {
           }),
         };
       });
-      // 端点需要 fixture 的端口,只能等服务起来之后再写进配置。
+      // The endpoint needs the fixture's port, so it can only be written to config after the server is up.
       await writeFile(
         join(workspace, ".oran", "config.json"),
         JSON.stringify({
@@ -314,7 +314,7 @@ describe("web tools", () => {
         expect(result.ok).toBe(true);
         expect(result.output).toContain('results="2"');
         expect(result.output).toContain('deduped="1"');
-        // 合并后保留更长的摘要,并只保留先出现的位置。
+        // After merging, the longer snippet is kept and only the first-seen position is retained.
         expect(result.output).toContain("a much longer snippet");
         expect(result.output).not.toContain("short\n");
         expect(result.summary).toContain("1 duplicate merged");

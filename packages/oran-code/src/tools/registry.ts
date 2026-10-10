@@ -1,14 +1,18 @@
 import type { ToolCall, ToolDefinition, ToolExecutionContext, ToolResult } from "../types.js";
 
-/** 内置工具注册的共享上下文：供各工具族注册函数使用（模式与 registerWorktreeTools 的注入一致）。 */
+/**
+ * Shared context for builtin tool registration: used by each tool family's register function
+ * (same injection pattern as registerWorktreeTools).
+ */
 export interface ToolFactoryContext {
-  /** 工作区根目录（绝对路径）。 */
+  /** Workspace root directory (absolute path). */
   readonly root: string;
-  /** 计划目录相对 workspace 的展示路径（write_plan 描述使用）。 */
+  /** Display path of the plan directory relative to the workspace (used in the write_plan description). */
   readonly planDirectory: string;
-  /** 当前生效的 workspace 根：优先取执行上下文，缺省回退 root。 */
+  /** Currently effective workspace root: taken from the execution context when available,
+   * otherwise falls back to root. */
   activeRoot(context?: ToolExecutionContext): string;
-  /** 解析 workspace 相对路径，越界即抛错。 */
+  /** Resolve a workspace-relative path; throws when it escapes the workspace. */
   pathFor(context: ToolExecutionContext | undefined, raw: unknown): string;
 }
 
@@ -85,17 +89,19 @@ export class ToolRegistry {
       };
     }
     const result = await tool.invoke(call, context);
-    // 后处理(可选)在中央截断之前执行:先去噪再限量,避免 ANSI 序列与重复行
-    // 消耗截断预算。清洗失败不影响结果,回退原始输出。
+    // Optional post-processing runs before the central truncation: denoise first, then cap, so
+    // ANSI sequences and repeated lines do not eat into the truncation budget. A failed cleanup
+    // does not affect the result; the raw output is kept.
     if (tool.postprocess && result.output) {
       try {
         result.output = tool.postprocess(result.output);
       } catch {
-        // 清洗是尽力而为:失败时保留原始输出。
+        // Cleanup is best-effort: on failure the raw output is kept.
       }
     }
-    // 中央执行 maxOutputChars:工具各自声明,但个别路径(如超长单行文件)
-    // 可能漏截,这里兜底,避免超大输出挤爆上下文。
+    // Central enforcement of maxOutputChars: each tool declares its own, but some paths (such as
+    // extremely long single-line files) can slip through, so this is the backstop that keeps huge
+    // output from blowing up the context.
     const limit = tool.maxOutputChars;
     if (limit !== undefined && result.output && result.output.length > limit) {
       const head = result.output.slice(0, Math.floor(limit * 0.7));

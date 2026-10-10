@@ -58,13 +58,15 @@ interface DeferredToolRecord {
 export interface ToolBatchExecutionSummary {
   workspaceMutated: boolean;
   readonlyOnly: boolean;
-  /** 本批被判定为真的改动过工作区的调用 id（no-op 写入不在内），供进展采集使用。 */
+  /** Ids of calls in this batch judged to genuinely mutate the workspace (no-op writes excluded),
+   *  used for progress collection. */
   mutatedCallIds: readonly string[];
 }
 
 /**
- * 工具执行器与 TaskController 之间的端口。controller 保留事件、持久化、
- * hook、可见性过滤等横切能力,executor 只负责批量编排与结果记录。
+ * Port between the tool executor and TaskController. controller keeps cross-cutting capabilities
+ * such as events, persistence, hooks and visibility filtering; the executor only handles batch
+ * orchestration and result recording.
  */
 export interface ToolExecutorPorts {
   readonly config: RuntimeConfig;
@@ -95,8 +97,9 @@ export interface ToolExecutorPorts {
 }
 
 /**
- * 工具批执行器:连续 readonly 调用并发成批、写/命令串行、审批前置、
- * 结果延迟记录(整批结束后统一卸载)。从 TaskController 提取,行为不变。
+ * Tool batch executor: consecutive readonly calls are batched concurrently, writes/commands run
+ * serially, approvals come first, and results are recorded lazily (flushed as a whole once the
+ * batch finishes). Extracted from TaskController, behavior unchanged.
  */
 export class ToolBatchExecutor {
   private deferredRecords: DeferredToolRecord[] | undefined;
@@ -196,8 +199,9 @@ export class ToolBatchExecutor {
           continue;
         }
 
-        // batch_tools 脚本:由执行器特判解释,每个步骤走完整的单调用管线,
-        // 结果折叠成一条聚合 tool 消息,不再逐调用产生模型轮次。
+        // batch_tools script: interpreted specially by the executor; each step goes through the
+        // full single-call pipeline, and results are folded into one aggregated tool message, so no
+        // per-call model turn is produced.
         if (batch.length === 1 && batch[0]!.call.name === BATCH_TOOL_NAME) {
           const { index, call } = batch[0]!;
           const batchMutated = await this.runBatchScript(task, messages, call, index, loop);
@@ -286,8 +290,9 @@ export class ToolBatchExecutor {
           number,
           { call: ToolCall; result: ToolResult; duration: number; mutated: boolean; hashChanged?: boolean | undefined }
         >();
-        // 指纹按批取前后各一次;逐调用前后各跑一次 git status 在大仓库上代价过高。
-        // snapshot 同时携带状态行列表,用于生成执行回执。
+        // The fingerprint is taken once before and once after the batch; running git status before
+        // and after each call is too costly on large repositories.
+        // snapshot also carries the status line list, used to build the execution receipt.
         const batchBefore = executable.some((item) => this.isPotentiallyMutating(item.call))
           ? await workspaceSnapshot(task.workspace)
           : undefined;
@@ -407,9 +412,10 @@ export class ToolBatchExecutor {
   }
 
   /**
-   * 解释执行 batch_tools 调用:步骤按序执行,前序输出供后续参数引用;失败
-   * 按脚本的 on_failure 策略处理。取消时抛出中断,由上层 reconcile 统一补
-   * 齐消息配对。返回值指示脚本是否改动了工作区。
+   * Interprets a batch_tools call: steps run in order, earlier outputs are available for later
+   * arguments to reference, and failures follow the script's on_failure policy. On cancellation an
+   * interruption is thrown and the upper layer reconciles message pairing. The return value says
+   * whether the script mutated the workspace.
    */
   private async runBatchScript(
     task: Task,
@@ -456,7 +462,8 @@ export class ToolBatchExecutor {
       return false;
     }
     loop.record(call);
-    // 脚本自身的开始标记行:步骤行之前给出 batch_tools 调用,聚合结果在最后闭合。
+    // The script's own start marker: the batch_tools call is emitted before the step lines, and the
+    // aggregated result closes at the end.
     await this.ports.emit("tool_start", {
       call,
       index,
@@ -500,9 +507,10 @@ export class ToolBatchExecutor {
   }
 
   /**
-   * 脚本单步执行:镜像单调用批处理的准备与执行语义(hook、可见性、计划模式、
-   * 授权、只读缓存、文件指纹),但结果不写入消息流——步骤输出仅进入聚合结
-   * 果,由 batch_tools 的单条 tool 消息回传,保持 assistant/toolCalls 配对。
+   * Executes one script step: mirrors the prepare/execute semantics of single-call batching (hook,
+   * visibility, plan mode, authorization, readonly cache, file fingerprint), but the result is not
+   * written to the message stream — step output goes only into the aggregated result, which is
+   * returned by batch_tools' single tool message, keeping the assistant/toolCalls pairing intact.
    */
   private async executeBatchStep(
     task: Task,
@@ -516,7 +524,8 @@ export class ToolBatchExecutor {
     const kind = tool ? (tool.kind ?? inferToolKind(step.tool)) : "command";
     const call: ToolCall = {
       name: step.tool,
-      // 校验后的脚本参数本身是对象;替换只发生在值内部,结构保持 Record。
+      // The validated script arguments are already an object; substitution happens only inside
+      // values, so the Record structure is preserved.
       arguments: substituteStepArguments(step.arguments, (id) => stepOutputs.get(id)) as Record<string, unknown>,
       createdAt: new Date().toISOString(),
     };
@@ -927,7 +936,8 @@ export class ToolBatchExecutor {
 
 const WORKSPACE_CHANGES_RECEIPT_LIMIT = 40;
 
-/** 变异调用后把工作区变更清单追加到结果尾部,省去模型下一轮的探查调用。 */
+/** Appends the workspace change list to the end of the result after a mutating call, sparing the
+ *  model a probe call next turn. */
 function withWorkspaceChangesReceipt(
   result: ToolResult,
   before: readonly string[],

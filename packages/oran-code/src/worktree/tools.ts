@@ -1,6 +1,6 @@
 /**
- * Worktree 工具：enter_worktree / exit_worktree（F1-F2、F18-F19）。
- * 两个工具均标记为按需暴露（deferred），初始工具清单不含它们（N1）。
+ * Worktree tools: enter_worktree / exit_worktree (F1-F2, F18-F19).
+ * Both tools are marked deferred, so they are absent from the initial tool list (N1).
  */
 import { resolve } from "node:path";
 import type { ToolDefinition, ToolResult } from "../types.js";
@@ -14,7 +14,7 @@ import {
 } from "./lifecycle.js";
 import { isSafeBranchName, isValidSlug, shortBranchName, slugRuleDescription } from "./safety.js";
 
-/** F18：注册两个按需暴露的 Worktree 工具。 */
+/** F18: register the two deferred worktree tools. */
 export function registerWorktreeTools(
   registry: { register(tool: ToolDefinition): void },
   fallbackWorkspace: string,
@@ -23,7 +23,7 @@ export function registerWorktreeTools(
   registry.register(exitWorktreeDefinition(fallbackWorkspace));
 }
 
-/** F19：这两个工具默认不暴露，通过 search_tools 按关键词发现后解锁。 */
+/** F19: these two tools are not exposed by default; search_tools unlocks them after a keyword match. */
 export const WORKTREE_TOOL_NAMES: readonly string[] = ["enter_worktree", "exit_worktree"];
 
 function enterWorktreeDefinition(fallbackWorkspace: string): ToolDefinition {

@@ -1,6 +1,7 @@
 /**
- * 兼容两类中止信号:标准 DOMException 与常见 fetch 实现抛出的
- * `Error({ name: "AbortError" })`。判定取最宽语义,避免漏判取消。
+ * Handles both kinds of abort signal: the standard DOMException and the
+ * `Error({ name: "AbortError" })` that common fetch implementations throw. The check takes the
+ * broadest reading so a cancellation is never missed.
  */
 export function isAbortError(error: unknown): boolean {
   return (

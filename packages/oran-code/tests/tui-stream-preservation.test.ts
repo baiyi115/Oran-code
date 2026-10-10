@@ -19,7 +19,7 @@ function event(value: Record<string, unknown>): RuntimeEvent {
 }
 
 function visible(lines: string): string {
-  // eslint-disable-next-line no-control-regex -- 控制字符是刻意匹配的目标（ANSI 转义/文本清洗）
+  // eslint-disable-next-line no-control-regex -- control chars are the intended target (ANSI escapes / sanitizing)
   return lines.replace(/\x1B\[[0-?]*[ -/]*[@-~]/g, "");
 }
 

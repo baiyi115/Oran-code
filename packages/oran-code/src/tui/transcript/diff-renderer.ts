@@ -3,7 +3,8 @@ import { ANSI } from "../theme.js";
 
 export function renderDiff(value: string, width: number, expanded: boolean): string[] {
   const lines = stripTerminalMarkup(value).replace(/\r\n/g, "\n").split("\n").filter(Boolean);
-  // 折叠态显示前 6 行;扩展态(details)给头尾各一段,避免长 diff 的尾部改动看不到。
+  // Collapsed shows the first 6 lines; expanded (details) keeps a head and a tail slice so the
+  // end of a long diff stays visible.
   const head = expanded ? 20 : 6;
   const tail = expanded ? 8 : 0;
   const shown =

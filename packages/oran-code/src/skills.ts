@@ -180,8 +180,9 @@ export class SkillLoader {
   }
 
   private persistentCachePath(): string {
-    // 缓存必须放在用户目录而不是仓库内:仓库可写意味着被提交的缓存文件
-    // 能为协作者伪造任意 skill body,绕过 SKILL.md 内容校验(缓存投毒)。
+    // The cache must live in the user directory, not inside the repository: a writable
+    // repository means a committed cache file could forge an arbitrary skill body for
+    // collaborators, bypassing the SKILL.md content validation (cache poisoning).
     return resolve(userDataRoot(), "cache", "skills", projectHash(this.workspace), "skills-v1.json");
   }
 
@@ -366,7 +367,8 @@ async function parseSkillContent(
   if (closing < 0) return undefined;
 
   try {
-    // yaml 仅在真正解析 SKILL.md 头部时加载,避免其进入交互启动的关键模块图。
+    // yaml is imported only when the SKILL.md front matter is actually parsed, keeping it out
+    // of the critical module graph for interactive startup.
     const { parseDocument } = await import("yaml");
     const document = parseDocument(lines.slice(1, closing).join("\n"), { uniqueKeys: true });
     if (document.errors.length > 0) return undefined;
@@ -425,8 +427,9 @@ async function readSkillSource(source: string, workspace: string): Promise<strin
     let response: Response;
     let currentUrl = source;
     try {
-      // 无上限的响应体会把任意远端内容整个读进内存;redirect 手动跟随,
-      // 防止 https 源经 302 降级到 http 绕过明文拒绝。
+      // An unbounded response body would read arbitrary remote content into memory in full;
+      // redirects are followed manually so an https source cannot downgrade to http via a 302
+      // and slip past the plaintext refusal.
       response = await fetch(source, { signal: AbortSignal.timeout(30_000), redirect: "manual" });
       for (let redirects = 0; response.status >= 300 && response.status < 400; redirects += 1) {
         if (redirects >= 5) throw new Error("too many redirects");

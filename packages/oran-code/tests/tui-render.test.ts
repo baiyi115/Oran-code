@@ -215,7 +215,8 @@ describe("diff head/tail preview", () => {
 
   it("keeps the folded preview compact for non-expanded diffs", () => {
     const lines = renderDiff(diff, 80, false);
-    // 折叠态保留 6 行头部 + 明确的剩余行数提示(折叠也不该假装内容完整)。
+    // The folded form keeps 6 header lines plus an explicit hidden-line count
+    // (folding should not pretend the content is complete).
     expect(lines.length).toBeLessThan(10);
     expect(lines.join("\n")).toContain("34 lines hidden");
     expect(lines.join("\n")).toContain("change 6");

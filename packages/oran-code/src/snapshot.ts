@@ -31,7 +31,8 @@ export interface SnapshotStorePort {
   begin(sessionId: string, task: Task): Promise<void>;
   finalize(task: Task): Promise<void>;
   undoLatest(sessionId: string): Promise<{ ok: boolean; output: string }>;
-  /** 回滚到指定任务开始之前的状态,并把该任务及之后的所有快照标记为 undone。 */
+  /** Rolls back to the state before the given task started, marking that task and every
+   * snapshot after it as undone. */
   restoreBefore(sessionId: string, taskId: string): Promise<{ ok: boolean; output: string }>;
   list(sessionId?: string): Promise<readonly SnapshotManifest[]>;
 }
@@ -120,7 +121,8 @@ export class SnapshotStore implements SnapshotStorePort {
     }
     if (!manifest) return { ok: false, output: "No undoable Agent file change snapshot exists in this session." };
     if (!manifest.postTree) return { ok: false, output: "The latest snapshot is incomplete and cannot be undone." };
-    // manifest 落在仓库内,内容可能被篡改;恢复目标必须仍位于根工作区内。
+    // The manifest lives inside the repository, so its contents may have been tampered
+    // with; the restore target must still be inside the root workspace.
     try {
       assertContained(this.rootWorkspace, manifest.workspace);
     } catch {
@@ -167,13 +169,14 @@ export class SnapshotStore implements SnapshotStorePort {
   }
 
   /**
-   * 回滚到 `taskId` 这次任务**开始之前**的文件状态。
+   * Restores the file state from **before** the task `taskId` started.
    *
-   * 与 `undoLatest` 的差别:目标不是"最近一批",而是"某个更早的轮次",因此
-   * 必须同时撤销它之后的所有 Agent 改动,并先验证整条快照链自洽:
-   * 同一个 HEAD、chain 上每个 manifest 都已完成、当前文件仍是链尾状态。
-   * 任一条不成立即拒绝,理由与 `undoLatest` 一致:宁可让用户用 Git 排查,
-   * 也不猜一个可能更糟的状态覆盖回去。
+   * The difference from `undoLatest`: the target is not "the most recent batch" but "some
+   * earlier turn", so every Agent change after it must be undone too, and the whole
+   * snapshot chain has to be verified as self-consistent first: the same HEAD, every
+   * manifest on the chain completed, and the current files still at the chain tail state.
+   * If any of that fails, refuse — for the same reason as `undoLatest`: better to let the
+   * user investigate with Git than to guess at a state that may only be worse.
    */
   async restoreBefore(sessionId: string, taskId: string): Promise<{ ok: boolean; output: string }> {
     const ascending = [...(await this.list(sessionId))].reverse();

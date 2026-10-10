@@ -21,9 +21,9 @@ export interface TuiAppOptions {
   getSessionName?: () => string;
   getApprovalPolicy?: () => "ask" | "all";
   getFollowUpCount?: () => number;
-  /** 后台子代理与 shell 作业的实时列表(异步数据源,允许 Promise)。 */
+  /** Live list of background subagents and shell jobs (async source, Promise allowed). */
   getBackgroundTasks?: () => readonly TuiBackgroundTask[] | Promise<readonly TuiBackgroundTask[]>;
-  /** 会话当前的上下文用量估算(tokens),用于 footer 的 ctx% 指示。 */
+  /** Current session context-usage estimate (tokens), used by the footer's ctx% indicator. */
   getContextEstimate?: () => number | undefined;
   onInput: (value: string) => Promise<void>;
   onCancel: () => boolean;
@@ -121,10 +121,10 @@ export interface ComposerState {
   historyDraft: string;
   /** Folded paste payloads referenced by [paste #N +M lines] placeholders. */
   pastes: PasteBlock[];
-  /** 撤销/重做栈(整份草稿快照,按段合并;见 composer.ts 的 UNDO_COALESCE_MS)。 */
+  /** Undo/redo stacks (whole-draft snapshots, coalesced per run; see UNDO_COALESCE_MS in composer.ts). */
   undo: ComposerDraft[];
   redo: ComposerDraft[];
-  /** 上次快照的时间与操作类型(同类型操作在时间阈值内合并为一段)。 */
+  /** Time and op kind of the last snapshot (same-kind ops within the threshold coalesce into one run). */
   undoMarker?: { at: number; op: string } | undefined;
 }
 
@@ -150,7 +150,7 @@ export interface UsageState {
 export interface TuiBackgroundTask {
   readonly id: string;
   readonly name: string;
-  /** 后台来源:子代理(缺省)或 shell 作业。展示文案按此区分。 */
+  /** Background origin: subagent (default) or shell job. Display wording distinguishes the two. */
   readonly kind?: "subagent" | "job" | undefined;
   readonly origin?: SubagentOrigin | undefined;
   readonly definitionName?: string | undefined;
@@ -158,7 +158,7 @@ export interface TuiBackgroundTask {
   readonly startedAt: string;
   readonly endedAt?: string | undefined;
   readonly error?: string | undefined;
-  /** 任务输出(完成后的结果文本,供详情视图展示)。 */
+  /** Task output (result text once finished, shown in the details view). */
   readonly output?: string | undefined;
 }
 
@@ -173,7 +173,7 @@ export interface TuiSessionState {
   permissionMode: PermissionMode;
   reasoningEffort: ReasoningEffort;
   contextWindow?: number;
-  /** 当前会话上下文的估算 token 数(估出 ctx% 用)。 */
+  /** Estimated token count of the current session context (used to derive ctx%). */
   contextEstimate?: number | undefined;
   approvalPolicy: "ask" | "all";
   taskState: TaskState | "ready";
@@ -233,7 +233,7 @@ export interface ToolMessage {
   expanded: boolean;
   /** Latest progress note while the tool runs; cleared once it produces a result. */
   progress?: string;
-  /** 由结果 metadata 派生的语义徽标(cached/denied/hook/repaired/unavailable)。 */
+  /** Semantic badges derived from the result metadata (cached/denied/hook/repaired/unavailable). */
   badges?: string[];
   taskId?: string;
 }
@@ -296,7 +296,7 @@ export type OverlayState =
       options: string[];
       loading: boolean;
       tokenStart: number;
-      /** 触发时是 @fragment 还是 @" ...(带空格路径),决定补全是否带引号。 */
+      /** Whether the trigger was @fragment or @" ... (spaced path); decides if completion is quoted. */
       quoted: boolean;
     }
   | { kind: "approval"; approval: ApprovalDetails; selectedIndex: number }
@@ -304,7 +304,7 @@ export type OverlayState =
       kind: "details";
       title: string;
       lines: string[];
-      /** 从底部算起的滚动距离:0 = 贴近内容开头,>0 = 向上滚动。 */
+      /** Scroll distance from the bottom: 0 = at the start of the content, >0 = scrolled up. */
       scrollOffset?: number;
     }
   | {
@@ -315,7 +315,7 @@ export type OverlayState =
       baseURL: string;
       apiKey: string;
       protocol: "openai" | "anthropic" | "";
-      /** 用户手动改过 name/protocol 后,不再随 baseURL 自动推导。 */
+      /** Once the user edits name/protocol by hand, they no longer auto-derive from baseURL. */
       nameTouched: boolean;
       protocolTouched: boolean;
       models: ConnectModelOption[];
@@ -347,7 +347,10 @@ export type ConnectInfoField = "baseURL" | "apiKey" | "protocol" | "name";
 export interface ConnectModelOption {
   id: string;
   contextWindow?: number;
-  /** 向导内用 E 手动指定的思考等级;缺省走默认 high(端点拒绝时运行时回退)。 */
+  /**
+   * Reasoning effort set by hand with E in the wizard; when unset the default high is written
+   * (and the runtime falls back if the endpoint rejects it).
+   */
   reasoningEffort?: ReasoningEffort;
   selected: boolean;
 }
@@ -357,12 +360,12 @@ export interface ConnectInput {
   baseURL: string;
   apiKey: string;
   protocol: "openai" | "anthropic";
-  /** 向导不再统一询问,未指定时按 high 写入并在运行时按需回退。 */
+  /** The wizard no longer asks; when unset, high is written and rolled back at runtime as needed. */
   reasoningEffort?: ReasoningEffort;
   models: ConnectModelOption[];
 }
 
-/** `/connect <provider>` 预填编辑时携带的已有配置。 */
+/** Existing configuration carried along by `/connect <provider>` prefill editing. */
 export interface ConnectPrefill {
   providerName: string;
   baseURL: string;
@@ -431,8 +434,10 @@ export interface TuiState {
   lastTranscriptLines: number;
   lastTranscriptViewportLines: number;
   /**
-   * details 覆盖层实际可滚到的最大偏移,由渲染侧按同一套窗口公式写入。
-   * 键盘处理读它而不是自己算:两侧算法不一致时,滚到底会有一长段"空按"。
+   * Maximum offset the details overlay can actually scroll to, written by the render side with
+   * the same windowing formula.
+   * Keyboard handling reads it instead of recomputing: when the two algorithms disagree,
+   * scrolling to the bottom leaves a long stretch of dead key presses.
    */
   detailsScrollMax: number;
 }

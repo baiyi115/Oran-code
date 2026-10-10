@@ -1,7 +1,8 @@
 /**
- * 薄 barrel：模型协议适配按协议拆分在 ./provider/ 目录下
- * （openai.ts / anthropic.ts + errors/sse/transport/catalog 共享层）。
- * 保留同名文件以维持既有 import 路径（含 session.ts 的动态 import("./provider.js")）不变。
+ * Thin barrel: model protocol adapters are split by protocol under ./provider/
+ * (openai.ts / anthropic.ts plus the shared errors/sse/transport/catalog layer).
+ * Keeping a file of the same name preserves existing import paths, including
+ * session.ts's dynamic import("./provider.js").
  */
 export {
   AnthropicProvider,

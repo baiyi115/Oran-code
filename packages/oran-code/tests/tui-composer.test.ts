@@ -69,7 +69,7 @@ describe("composer undo / redo", () => {
   it("undo and redo round-trip through typed text", () => {
     const state = createComposerState();
     insertText(state, "hello ");
-    // 同类型输入在短时间内合并入一段:一次 undo 把整段文本全部撤销。
+    // Same-type input within a short window merges into one segment: a single undo reverts the whole run.
     insertText(state, "world");
 
     expect(composerUndo(state)).toBe(true);

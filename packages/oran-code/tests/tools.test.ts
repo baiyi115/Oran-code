@@ -107,7 +107,7 @@ describe("builtin tools", () => {
       const registry = new ToolRegistry();
       registerBuiltinTools(registry, workspace);
 
-      // 核心读写、修改与命令工具默认常驻暴露
+      // Core read/write, edit and command tools stay exposed by default
       expect(registry.isExposed("git_status")).toBe(true);
       expect(registry.isExposed("get_diff")).toBe(true);
       expect(registry.isExposed("write_file")).toBe(true);
@@ -115,7 +115,7 @@ describe("builtin tools", () => {
       expect(registry.isExposed("apply_patch")).toBe(true);
       expect(registry.isExposed("run_command")).toBe(true);
 
-      // 实验性/低频扩展工具(如 worktree 工具)按需延迟暴露
+      // Experimental / low-frequency extension tools (e.g. the worktree tools) are deferred on demand
       expect(registry.isExposed("enter_worktree")).toBe(false);
 
       // Direct invocation before activation is rejected

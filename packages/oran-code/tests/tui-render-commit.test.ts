@@ -3,11 +3,12 @@ import { InkTuiApp } from "../src/tui/ink-app.js";
 import type { TuiAppOptions } from "../src/tui/types.js";
 
 /**
- * 渲染提交调度的回归测试:在不启动真实 Ink 的情况下驱动
- * invalidate / flushPendingRender 的真实事件循环时序。
- * 背景:提交窗口(Ink reconciler/stdout 写入期间)内被吞掉的 revision
- * 永远没有提交帧,等待它的 assistant_end waiter 会把运行时事件永久挂起,
- * 表现为任务完成后 TUI 不推进、直到手动停止才显示 Done。
+ * Regression test for render-commit scheduling: drives the real event-loop timing of
+ * invalidate / flushPendingRender without starting real Ink.
+ * Background: a revision swallowed inside the commit window (while Ink's reconciler / stdout
+ * write is running) never gets a commit frame, and the assistant_end waiter waiting on it
+ * suspends runtime events forever -- the TUI stops advancing after the task finishes and only
+ * shows Done once the user stops it manually.
  */
 
 interface RenderInternals {
@@ -33,7 +34,7 @@ function makeApp(): { app: InkTuiApp; internals: RenderInternals } {
     render: (() => ({ unmount: () => {} })) as never,
   });
   const internals = app as unknown as RenderInternals;
-  // 绕过真实 Ink,但保留 rerender/setImmediate 的真实时序。
+  // Bypass real Ink, but keep the real timing of rerender/setImmediate.
   internals.inkInstance = { rerender: () => {}, unmount: () => {} };
   return { app, internals };
 }
@@ -42,12 +43,12 @@ describe("TUI render commit scheduling", () => {
   it("commits revisions bumped inside the ink commit window (regression: assistant_end deadlock)", async () => {
     const { app, internals } = makeApp();
     try {
-      internals.invalidate(); // revision 1 进入调度
-      await Promise.resolve(); // microtask 捕获 revision 1,进入提交窗口
-      internals.invalidate(); // 提交窗口内 revision 涨到 2;修复前这次渲染被吞掉
+      internals.invalidate(); // revision 1 enters scheduling
+      await Promise.resolve(); // the microtask captures revision 1 and enters the commit window
+      internals.invalidate(); // inside the commit window revision rises to 2 (swallowed before the fix)
 
-      const pending = app.flushPendingRender("terminal"); // 注册 revision 2 的 waiter
-      await pending; // 修复前:此 promise 永远挂起
+      const pending = app.flushPendingRender("terminal"); // register a waiter for revision 2
+      await pending; // before the fix this promise hung forever
       expect(internals.committedRenderRevision).toBe(2);
     } finally {
       app.destroy();
@@ -57,13 +58,13 @@ describe("TUI render commit scheduling", () => {
   it("releases boundary waits instead of hanging when a commit never arrives", async () => {
     const { app, internals } = makeApp();
     try {
-      // 模拟 revision 已推进但提交帧永远缺失(退化场景)。
+      // Simulate a revision that has advanced while the commit frame never arrives (degraded case).
       internals.renderRevision = 7;
       const started = Date.now();
       await app.flushPendingRender("terminal");
       expect(Date.now() - started).toBeLessThan(5_000);
-      // 兜底路径强制补了一次渲染,committed 应追上 revision
-      // (补渲染本身会使 revision 再 +1,因此是 >= 而非精确相等)。
+      // The fallback path forces one extra render, so committed should catch up with revision
+      // (the extra render itself bumps revision again, hence >= rather than exact equality).
       expect(internals.committedRenderRevision).toBeGreaterThanOrEqual(7);
     } finally {
       app.destroy();
@@ -74,7 +75,7 @@ describe("TUI render commit scheduling", () => {
     const { app, internals } = makeApp();
     try {
       internals.invalidate();
-      // normal 类型不注册 waiter,即使 revision 尚未提交也立即返回。
+      // The normal kind registers no waiter and returns immediately even if revision has not committed yet.
       await expect(app.flushPendingRender("normal")).resolves.toBeUndefined();
     } finally {
       app.destroy();

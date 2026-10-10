@@ -82,9 +82,10 @@ describe("per-language resolution", () => {
 
   beforeAll(async () => {
     index = await buildGraph(workspace, await scanSources(workspace));
-    // 这个 fixture 覆盖 13 门语言,每个语法一个宿主进程 + 一次 wasm 加载;冷启动
-    // 实测约 12s,已超过 vitest 默认的 10s hook 超时(与本机负载有关,与代码无关)。
-    // 只放宽这一处,其余用例继续保持默认上限。
+    // This fixture covers 13 languages, one host process plus one wasm load per grammar.
+    // Measured cold start is about 12s, past vitest's default 10s hook timeout (this depends
+    // on machine load, not on the code). Only this one is loosened; the other cases keep the
+    // default limit.
   }, 60_000);
 
   it("rust: mod + crate:: resolve, inline mod does not, bare crates stay external", () => {
@@ -131,9 +132,10 @@ describe("per-language resolution", () => {
   });
 
   it("lua: dotted module names map to files", () => {
-    // 这条断言先于具体编辑边:先把"没有任何文件解析失败"钉住,否则一次解析失败
-    // 会表现为"某个文件没有边",让人误以为是解析语义的问题(lua 的 wasm 在同一
-    // 进程里只能解析一次,曾经就是这样静默丢掉 import 的)。
+    // This assertion comes before the specific edges: pin down that no file failed to parse
+    // first, otherwise one parse failure shows up as "a file has no edges" and looks like a
+    // parsing-semantics bug (lua's wasm can only parse once per process, which is how imports
+    // were silently dropped before).
     expect(index.unparsed ?? []).toEqual([]);
     expect(index.imports["main.lua"]).toEqual(["util/sub.lua"]);
   });

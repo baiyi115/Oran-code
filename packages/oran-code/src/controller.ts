@@ -84,19 +84,23 @@ export type RuntimeEventCallback = (event: RuntimeEvent) => void | Promise<void>
 export type RuntimeLogger = (message: string) => void;
 export type ConversationCallback = (messages: readonly Message[]) => void;
 
-/** 同一任务内允许的"输出被截断后继续"次数;超过即用已收到的文本收尾。 */
+/** Number of "continue after output was truncated" allowances within one task; past this limit the
+ *  text received so far is used to wrap up. */
 const MAX_TRUNCATION_RECOVERIES = 2;
 
 /**
- * 纯文本截断:截断消息没有任何工具调用(既没交付、也没被丢弃)。
- * 只有这种截断的文本才属于回答内容,可以参与续写汇聚;带工具调用的截断,
- * 文本多半只是"我接下来要做什么"的前言,混进最终答案会失真。
+ * Pure-text truncation: the truncated message has no tool calls at all (nothing delivered, nothing
+ * dropped).
+ * Only text from this kind of truncation belongs to the answer and can take part in continuation
+ * assembly; when a truncated message carries tool calls, the text is mostly a preamble of "what I
+ * am about to do", and mixing it into the final answer would misrepresent it.
  */
 function isTextOnlyTruncation(response: ModelResponse): boolean {
   return response.toolCalls.length === 0 && (response.truncatedToolCalls ?? 0) === 0;
 }
 
-/** 用已收到的文本收尾时附在结果末尾的说明:任务按 completed 结束,但内容不完整。 */
+/** Note appended to the end of the result when wrapping up with the text received so far: the task
+ *  ends as completed, but the content is incomplete. */
 function truncationNote(times: number): string {
   return `\n\n[output truncated by the output token limit ${times} time(s); the text above is incomplete]`;
 }
@@ -119,13 +123,15 @@ export interface TaskControllerOptions {
   stablePromptModules?: OptionalSystemPromptModules;
   runtimeReminders?: () => readonly string[];
   toolFilter?: (tool: ToolDefinition) => boolean;
-  /** Hook 引擎端口。缺省时不启用任何 Hook 事件。 */
+  /** Hook engine port. No Hook events are enabled when it is absent. */
   hookEngine?: HookEnginePort;
-  /** 最近一条用户提示文本，供 Hook 条件/命令使用。 */
+  /** Text of the most recent user prompt, for Hook conditions/commands. */
   hookUserPrompt?: string;
-  /** 上一任务已执行的调用历史，用于跨任务延续的重复调用守卫。 */
+  /** Tool call history already executed in the previous task, for the duplicate-call guard that
+   *  carries across tasks. */
   previousToolCalls?: ToolCall[];
-  /** 上一任务只读工具的成功结果缓存，重复模型调用直接回填，不重复执行。 */
+  /** Cache of successful readonly-tool results from the previous task; a repeated model call is
+   *  filled in directly instead of being re-executed. */
   previousReadonlyResults?: ReadonlyMap<string, ToolResult>;
   /** Optional per-session file checkpoint store used by /undo. */
   snapshotStore?: SnapshotStorePort;
@@ -172,14 +178,17 @@ export class TaskController {
   private readonly snapshotSessionId: string | undefined;
   private readonly getSteeringMessages: (() => Promise<string[]> | string[]) | undefined;
   private readonly resumedGoalFingerprint: string | undefined;
-  /** 已注入过的电平型警告,按“上一轮仍然成立的条件”判定上升沿。 */
+  /** Level-type warnings already injected; a rising edge is judged by "the condition still held in
+   *  the previous turn". */
   private activeLevelSignals = new Set<string>();
   private readonly pendingSteeringMessages: string[] = [];
-  /** 模型输出被截断时的纠偏提醒,在下一轮请求前注入一次。 */
+  /** Correction reminder for truncated model output, injected once before the next request. */
   private pendingTruncationNotice: string | undefined;
-  /** 本任务的截断恢复次数:超过上限即用已收到的文本收尾,避免无界重试。 */
+  /** Truncation recovery count for this task: past the limit the text received so far wraps up the
+   *  task, avoiding unbounded retries. */
   private truncationRecoveries = 0;
-  /** 纯文本截断各段(按到达顺序),用于收尾时汇聚成完整度最高的结果。 */
+  /** Pure-text truncation chunks (in arrival order), used to assemble the most complete result when
+   *  wrapping up. */
   private truncatedTextChunks: string[] = [];
   private loop: AgentLoop | undefined;
   private abortController: AbortController | undefined;
@@ -208,8 +217,9 @@ export class TaskController {
     this.approvalCallback = options.approvalCallback ?? (async () => false);
     this.eventCallback = options.eventCallback ?? (() => undefined);
     this.conversationCallback = options.conversationCallback ?? (() => undefined);
-    // 默认把 logger 接进事件通道:截断提醒/offload 失败/hook 失败这类
-    // "模型看不到但用户该看到"的通知成为真正的 log 事件(TUI/headless 均可见)。
+    // Wire the logger into the event channel by default: notifications such as truncation reminders,
+    // offload failures and hook failures -- the "model cannot see but the user should" kind -- become
+    // real log events (visible in both the TUI and headless).
     this.logger =
       options.logger ??
       ((message) => {
@@ -341,7 +351,7 @@ export class TaskController {
       await this.emit("error", { message: formatErrorMessage(error) });
       throw error;
     } finally {
-      // 会话结束：确保异常路径也能触发
+      // Session end: make sure it also fires on exceptional paths
       await this.fireHook({ event: "session_end", workspace: task.workspace, model: this.config.model.model });
       try {
         await this.snapshotStore?.finalize(task);
@@ -368,7 +378,8 @@ export class TaskController {
         : `User message:\n${task.prompt}`;
     const turnConversation: Message[] = [
       ...cloneMessages(this.conversation),
-      // taskId 让对话轮次与文件快照 manifest 对齐,/rewind --files 才能精确回滚到本轮之前。
+      // taskId aligns the conversation turn with the file snapshot manifest, so /rewind --files can
+      // roll back precisely to before this turn.
       { role: "user", content: userContent, metadata: { taskId: task.id } },
     ];
     this.syncConversation(turnConversation);
@@ -462,7 +473,7 @@ export class TaskController {
           );
         }
       }
-      // 轮次开始：通知队列已并入本轮系统提醒后派发
+      // Turn start: dispatched after the notification queue has been merged into this turn's reminders
       await this.fireHook({
         event: "turn_start",
         workspace: task.workspace,
@@ -520,10 +531,11 @@ export class TaskController {
           throw new EmptyModelResponseError();
         }
         if (response.truncated) {
-          // 输出被上限截断:内容不完整,既不能当最终答案,也不能执行其工具调用
-          // (turn-requester 已丢弃截断消息的全部调用)。纯文本截断先记下来,给模型
-          // 一次显式纠偏机会;预算耗尽时用已收到的文本收尾,而不是把生成的内容
-          // 连同失败一起丢掉。
+          // Output truncated by the limit: the content is incomplete, so it can neither be the final
+          // answer nor have its tool calls executed (turn-requester already dropped every call in a
+          // truncated message). A pure-text truncation is recorded first, giving the model one
+          // explicit chance to correct course; when the budget runs out, the text received so far
+          // wraps up the task, rather than throwing away what was generated along with the failure.
           this.truncationRecoveries += 1;
           const reason = response.finishReason ?? "length";
           if (isTextOnlyTruncation(response) && response.text.trim()) {
@@ -607,7 +619,8 @@ export class TaskController {
             const planText = extractPlanText(response.text) || response.text.trim();
             const last = messages[messages.length - 1];
             if (last?.role === "assistant") {
-              // 以替换代替就地改写:克隆缓存按对象身份生效,改写会使其失真。
+              // Replace instead of mutating in place: the clone cache keys on object identity, so
+              // mutating it would corrupt the cache.
               messages[messages.length - 1] = { ...last, content: planText };
               this.syncConversation(messages);
             }
@@ -638,8 +651,9 @@ export class TaskController {
           });
           const preExecutionNoProgress = loop.noProgressDiagnosticForNextCalls(nonReadonlyCalls);
           if (preExecutionNoProgress) {
-            // 只伪造被阻止的写入/命令调用;同批的只读调用并没有被阻止,留给
-            // 修复路径补齐配对,避免转写出现与事实不符的 "blocked" 结果。
+            // Only fake the blocked write/command calls; the readonly calls in the same batch were not
+            // blocked, so they are left to the repair path to complete the pairing, avoiding a
+            // "blocked" result in the transcript that does not match the facts.
             this.recordNoProgressBlock(task, nonReadonlyCalls, preExecutionNoProgress);
             await this.toolExecutor.reconcileToolCalls(
               task,
@@ -699,7 +713,8 @@ export class TaskController {
           // The model finished calling tools and returned its final response.
           // Complete the task directly without running any verification harness.
           this.throwIfCancelled();
-          // 之前若有纯文本截断,最后一段是它的续写:拼成完整回答再收尾。
+          // If a pure-text truncation happened earlier, this last chunk continues it: assemble the
+          // full answer before wrapping up.
           task.result = this.assembleTruncatedText(response.text);
           transitionTask(task, "completed");
           await this.persist(task);
@@ -801,7 +816,8 @@ export class TaskController {
     return this.trace.appendStep(taskId, kind, payload);
   }
 
-  /** 消息入列后视为不可变;按对象身份缓存深克隆,同步只对新消息付费。 */
+  /** Messages are treated as immutable once enqueued; deep clones are cached by object identity, so
+   *  a sync only pays for new messages. */
   private readonly conversationClones = new WeakMap<Message, Message>();
 
   private cachedClone(message: Message): Message {
@@ -1153,8 +1169,9 @@ export class TaskController {
   }
 
   /**
-   * 把截断续写各段与最后一段拼成结果。
-   * 没有截断续写时就是最后一段本身;有续写时顺序即到达顺序,段间用空行分隔。
+   * Assembles the truncated-continuation chunks and the last chunk into the result.
+   * With no truncation continuations this is the last chunk itself; with them, the order is arrival
+   * order and chunks are separated by a blank line.
    */
   private assembleTruncatedText(finalText = ""): string {
     const parts = [...this.truncatedTextChunks];
@@ -1197,8 +1214,8 @@ export class TaskController {
     try {
       await this.eventCallback(event as RuntimeEvent);
     } catch (error) {
-      // log 事件自身的派发失败不再回写 logger:
-      // 默认 logger 会把 message 再发成 log 事件,回写会造成无限循环。
+      // A failed dispatch of a log event is not written back to the logger: the default logger turns
+      // the message into another log event, and writing back would loop forever.
       if (type !== "log") {
         this.logger(`event callback failed: ${error instanceof Error ? error.message : String(error)}`);
       }
@@ -1220,12 +1237,13 @@ export class TaskController {
     try {
       await this.hookEngine.dispatch(ctx);
     } catch (error) {
-      // Hook 自身失败只记日志，绝不中断主流程
+      // A failing Hook is only logged; it never interrupts the main flow
       this.logger(`hook ${ctx.event} dispatch failed: ${error instanceof Error ? error.message : String(error)}`);
     }
   }
 
-  /** 工具调用前派发，命中拦截即返回拒绝结果（带前缀「被 Hook 拒绝：<原因>」）。 */
+  /** Dispatched before a tool call; on interception it returns a denial result whose output carries
+   *  the hook's denial prefix followed by the reason (see the result built below). */
   private async checkBeforeToolHook(task: Task, call: ToolCall): Promise<ToolResult | undefined> {
     if (!this.hookEngine) return undefined;
     try {

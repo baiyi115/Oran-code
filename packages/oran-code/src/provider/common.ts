@@ -1,14 +1,18 @@
-/** Anthropic 与 OpenAI 兼容两条转换路径共享的收尾逻辑。 */
+/** Finalization logic shared by the Anthropic and OpenAI-compatible conversion paths. */
 
 import type { ProviderRequestOptions } from "../types.js";
 
-/** 非流式 complete() 的默认整体超时:挂起的端点不能无限占住压缩、标题、记忆等辅助调用。 */
+/**
+ * Default overall timeout for non-streaming complete(): a hung endpoint must not occupy
+ * auxiliary calls such as compaction, titles and memory extraction forever.
+ */
 export const DEFAULT_COMPLETE_TIMEOUT_MS = 300_000;
 
 /**
- * 合并调用方 signal 与非流式整体超时。超时以 AbortSignal.timeout 实现,
- * fetch 会以 `TimeoutError` 而非 `AbortError` 拒绝,不会与用户取消混淆,
- * 因此上层重试逻辑可以把超时当作普通临时故障处理。
+ * Merge the caller's signal with the non-streaming overall timeout. The timeout is implemented
+ * with AbortSignal.timeout, so fetch rejects with `TimeoutError` rather than `AbortError` and
+ * cannot be confused with a user cancellation; the retry logic upstream can therefore treat a
+ * timeout as an ordinary transient failure.
  */
 export function completeRequestSignal(
   options?: ProviderRequestOptions,
@@ -23,8 +27,9 @@ export function completeRequestSignal(
 }
 
 /**
- * 运行时提醒统一合并到对话末尾的 user 消息上,避免逐轮变化的提醒文本
- * 就地改写历史消息而击穿稳定前缀缓存。没有 user 消息时追加一条。
+ * Runtime reminders are merged onto the trailing user message so that per-turn reminder text
+ * does not rewrite history in place and break the stable prefix cache. When there is no user
+ * message, one is appended.
  */
 export function appendTailReminder(conversation: Array<Record<string, unknown>>, reminderText: string): void {
   if (!reminderText) return;

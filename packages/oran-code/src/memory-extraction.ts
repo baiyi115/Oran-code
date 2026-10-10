@@ -5,15 +5,18 @@ import type { Message, ModelConfig, ModelProvider } from "./types.js";
 export interface MemoryExtractionDependencies {
   readonly memoryManager: MemoryManager;
   readonly providerFactory: (model: ModelConfig) => ModelProvider;
-  /** 当前会话 id;笔记落盘后仅在对应会话激活时提示。 */
+  /**
+   * The current session id; once notes are written to disk, the notification is only shown
+   * while that session is active.
+   */
   readonly currentSessionId: () => string | undefined;
   readonly onNotesSaved: (sessionId: string, noteIds: readonly string[]) => void;
 }
 
 /**
- * 后台记忆提取调度器:对话快照增量 ≥40 字符才触发,提取器单飞 +
- * 最新覆盖合并,任务集合在 shutdown 时被等待。从 TerminalSession 提取,
- * 行为保持不变。
+ * Background memory-extraction scheduler: it fires only once the conversation snapshot has grown
+ * by ≥40 characters, the extractor is single-flight with latest-wins coalescing, and the job set
+ * is awaited on shutdown. Extracted from TerminalSession; behaviour is unchanged.
  */
 export class MemoryExtractionScheduler {
   private extractor: MemoryExtractor | undefined;
@@ -42,7 +45,7 @@ export class MemoryExtractionScheduler {
     );
   }
 
-  /** shutdown 先等待初始化 promise,防止迟到的 SQLite/模型句柄泄漏。 */
+  /** Shutdown awaits the init promise first, so a late SQLite/model handle does not leak. */
   init(): Promise<MemoryExtractor> | undefined {
     return this.extractorInit;
   }

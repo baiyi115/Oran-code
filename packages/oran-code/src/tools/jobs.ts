@@ -3,7 +3,7 @@ import { formatPreservingTail, startCommand, type CommandOutcome, type RunningCo
 
 export type ShellJobStatus = "running" | "exited" | "failed" | "killed";
 
-/** 后台作业的快照:工具输出、通知与 TUI 列表都基于它渲染。 */
+/** Snapshot of a background job: tool output, notifications, and the TUI list are all rendered from it. */
 export interface ShellJobSnapshot {
   id: string;
   command: string;
@@ -24,7 +24,7 @@ function escapeAttribute(value: string): string {
   return value.replaceAll("&", "&amp;").replaceAll('"', "&quot;");
 }
 
-/** 作业生命周期通知文本:由 session 在下轮请求前或任务收尾时注入。 */
+/** Job lifecycle notification text: injected by the session before the next request or when the task wraps up. */
 export function shellJobNotification(job: ShellJobSnapshot): string {
   const combined = `${job.stdout}${job.stderr}`;
   const output =
@@ -77,7 +77,7 @@ class ShellJob {
     });
   }
 
-  /** 作业收尾(退出或被杀)后才 resolve;用于 wait_seconds 语义。 */
+  /** Resolves only once the job settles (exited or killed); backs the wait_seconds semantics. */
   settled(): Promise<void> {
     return this.completion;
   }
@@ -106,10 +106,11 @@ class ShellJob {
 }
 
 /**
- * 进程内后台作业表。
+ * In-process background job table.
  *
- * 与 `BackgroundAgentTaskManager`(子代理池)平行:shell 作业只活在当前进程,
- * 不做跨重启持久化(进程都没了,子进程也失去意义),进程退出时统一清理。
+ * Parallel to `BackgroundAgentTaskManager` (the subagent pool): shell jobs live only in the
+ * current process and are not persisted across restarts (once the process is gone, child
+ * processes are meaningless anyway); they are all cleaned up on process exit.
  */
 export class ShellJobManager {
   private readonly jobs = new Map<string, ShellJob>();
@@ -123,7 +124,10 @@ export class ShellJobManager {
     return this.track({ command: options.command, cwd: options.cwd, running });
   }
 
-  /** 超时晋升:前台命令到点不杀,直接接管为后台作业(输出与句柄原样保留)。 */
+  /**
+   * Timeout promotion: a foreground command is not killed at the deadline but adopted as a
+   * background job (output and handle preserved as-is).
+   */
   adopt(options: { command: string; cwd: string; running: RunningCommand }): ShellJobSnapshot {
     return this.track(options);
   }
@@ -143,7 +147,7 @@ export class ShellJobManager {
     return [...this.jobs.values()].map((job) => job.snapshot());
   }
 
-  /** 等待作业收尾;`waitMs` 为 0 时只做一次快照。 */
+  /** Wait for the job to settle; with `waitMs` of 0 this only takes a single snapshot. */
   async wait(id: string, waitMs: number): Promise<ShellJobSnapshot | undefined> {
     const job = this.jobs.get(id);
     if (!job) return undefined;
@@ -179,7 +183,7 @@ export class ShellJobManager {
     }
   }
 
-  /** 取出尚未通知过的终态作业(每个作业只通知一次)。 */
+  /** Take the terminal jobs not yet notified (each job is notified only once). */
   drainNotifications(): ShellJobSnapshot[] {
     const notifications: ShellJobSnapshot[] = [];
     for (const job of this.jobs.values()) {
@@ -190,13 +194,13 @@ export class ShellJobManager {
     return notifications;
   }
 
-  /** 有作业仍在运行时返回列表(供 /status 之类的展示)。 */
+  /** Returns the list while jobs are still running (for displays such as /status). */
   running(): ShellJobSnapshot[] {
     return this.list().filter((job) => job.status === "running");
   }
 }
 
-/** 工具输出里的作业摘要:复用 formatPreservingTail 的头尾保留策略。 */
+/** Job summary inside tool output: reuses formatPreservingTail's head/tail retention strategy. */
 export function formatJobOutput(job: ShellJobSnapshot, maxChars = 16_000): string {
   const combined = formatPreservingTail(`${job.stdout}${job.stderr}`, maxChars);
   return [
@@ -213,9 +217,10 @@ export function formatJobOutput(job: ShellJobSnapshot, maxChars = 16_000): strin
 let defaultManager: ShellJobManager | undefined;
 
 /**
- * 进程级默认作业表。
- * 工具注册表在会话内会被多次重建(cli/agent/session/TUI 命令各建一次),
- * 作业必须跨这些注册表实例存活,所以默认实例挂在进程上而不是注册表上。
+ * Process-level default job table.
+ * The tool registry is rebuilt several times within a session (once each for cli/agent/session
+ * and TUI commands), and jobs must survive those registry instances, so the default instance
+ * hangs off the process rather than off a registry.
  */
 export function shellJobs(): ShellJobManager {
   if (!defaultManager) {

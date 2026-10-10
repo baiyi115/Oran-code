@@ -28,7 +28,7 @@ export function isSessionBusy(state: TuiState): boolean {
   });
 }
 
-/** 子代理任务面板的颜色语义(渲染层映射到 COLORS)。 */
+/** Color semantics for the subagent task panel (the render layer maps them to COLORS). */
 export type TaskPanelTone = "running" | "queued" | "done" | "failed";
 
 export interface TaskPanelRow {
@@ -36,15 +36,16 @@ export interface TaskPanelRow {
   readonly tone: TaskPanelTone;
 }
 
-/** 面板渲染行数上限;更老的任务折叠成 "+N more"。 */
+/** Max rows the panel renders; older tasks collapse into "+N more". */
 export const TASK_PANEL_MAX_ROWS = 6;
-/** 刚结束的子代理在面板里停留的窗口(看得见"刚完成/刚失败"的那一下)。 */
+/** How long a just-finished subagent lingers in the panel (so "just done/just failed" is visible). */
 export const TASK_PANEL_RECENT_DONE_MS = 60_000;
 
 /**
- * 输入框下方的逐任务子代理面板(Claude Code 风格):每个后台子代理一行,
- * 带状态图标、角色·任务描述与时间口径(running=已用,finished=总耗时)。
- * shell 作业不在这里,仍由状态行的 jobs 徽标承担。
+ * Per-task subagent panel below the input box (Claude Code style): one row per background
+ * subagent, with a status icon, role·task description and a timing convention (running=elapsed
+ * so far, finished=total duration). Shell jobs are not here; the status line's jobs badge
+ * covers those.
  */
 export function subagentTaskLines(
   tasks: readonly TuiBackgroundTask[],
@@ -64,12 +65,12 @@ export function subagentTaskLines(
   const ordered = [...active, ...finished];
   if (ordered.length === 0) return [];
 
-  // "+N more" 折叠行本身要占一行,所以被藏起的任务数按 MAX-1 算。
+  // The "+N more" row occupies a line itself, so the hidden count is computed against MAX-1.
   const hidden = ordered.length > TASK_PANEL_MAX_ROWS ? ordered.length - (TASK_PANEL_MAX_ROWS - 1) : 0;
   const visible = hidden > 0 ? ordered.slice(0, TASK_PANEL_MAX_ROWS - 1) : ordered;
   const rows = visible.map((task) => buildTaskPanelRow(task, tick, now, width));
-  // ctrl+t 打开的是"最近活动"详情,看不到被折叠在这行里的任务;/tasks 才是
-  // 列出全部后台任务的入口,提示必须指向真正能看到它们的地方。
+  // ctrl+t opens the "recent activity" details, which cannot show tasks collapsed into that row;
+  // /tasks is the entry point listing every background task, so the hint must point there.
   if (hidden > 0) rows.push({ text: `… +${hidden} more (/tasks for all)`, tone: "queued" });
   return rows;
 }
@@ -101,14 +102,14 @@ function buildTaskPanelRow(task: TuiBackgroundTask, tick: number, now: number, w
         : "";
     timing = `${task.status}${total}`;
   }
-  // 计时尾缀优先保活:长描述只截断标签部分。
+  // Keep the timing suffix alive: a long description only truncates the label part.
   const suffix = ` · ${timing}`;
   const prefix = `${icon} `;
   const budget = Math.max(8, width - prefix.length - suffix.length);
   return { text: `${prefix}${truncateVisible(label.replace(/\s+/g, " ").trim(), budget)}${suffix}`, tone };
 }
 
-/** 后台 shell 作业(dev server / 构建)的活体指示:与子代理分开计数与措辞。 */
+/** Live indicator for background shell jobs (dev server / build): counted and worded apart from subagents. */
 export function formatBackgroundJobsIndicator(
   tasks: readonly TuiBackgroundTask[],
   now = Date.now(),
@@ -128,8 +129,8 @@ export function formatBackgroundJobsIndicator(
 
 /**
  * Live "working" line rendered above the composer while a task is active.
- * Example: "⠋ Working... 2.4s" or "⠋ Running Bash 1.1s".子代理进度归
- * 输入框下方的逐任务面板,这里只保留 shell 作业徽标。
+ * Example: "⠋ Working... 2.4s" or "⠋ Running Bash 1.1s". Subagent progress belongs to the
+ * per-task panel below the input box; only the shell-job badge is kept here.
  */
 export function workingIndicatorLine(state: TuiState, tick: number, now = Date.now()): string | undefined {
   const frame = spinnerFrame(tick);

@@ -23,7 +23,8 @@ describe("shell output pipeline", () => {
 
   it("combines both steps and trims trailing blank lines", () => {
     const raw = ["\u001b[32mok\u001b[0m", "ok", "ok", "ok", "", ""].join("\n");
-    // 去 ANSI 后第一行与后续三行相同,共四次重复,折叠为一行并标注次数。
+    // After stripping ANSI the first line matches the next three: four repeats total, collapsed
+    // into one line annotated with the count.
     expect(compactShellOutput(raw)).toBe(["ok", "[... line repeated 4 times ...]"].join("\n"));
   });
 

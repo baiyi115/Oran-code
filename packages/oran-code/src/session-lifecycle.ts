@@ -5,7 +5,7 @@ import { isAutomaticSessionName } from "./session-naming.js";
 
 import type { SessionOption, SessionView } from "./tui/types.js";
 
-/** 由配置与 approve-all 推导初始权限模式。 */
+/** Derives the initial permission mode from the config and approve-all. */
 export function configuredPermissionMode(config: UserConfig, approveAll: boolean): PermissionMode {
   if (config.agent?.workMode === "plan") return "plan";
   return config.agent?.permissionMode ?? (approveAll ? "bypass" : "default");
@@ -18,11 +18,13 @@ export function workModeForPermission(mode: PermissionMode): WorkMode {
 export const SESSION_GAP_REMINDER_DAYS = 7;
 
 /**
- * 会话生命周期的纯映射逻辑,与 TerminalSession 的状态编排分离。
- * 有状态的切换/持久化流程仍留在 session(它们本就是会话核心职责)。
+ * Pure mapping logic for the session lifecycle, kept separate from TerminalSession's state
+ * orchestration.
+ * Stateful switch/persistence flows stay in session (those are core session responsibilities anyway).
  */
 
-/** StoredSession → TUI 会话视图;显示名与活动模型引用由调用方解析后传入。 */
+/** StoredSession → TUI session view; display name and active model reference are resolved by the
+ *  caller and passed in. */
 export function toSessionView(
   stored: StoredSession,
   options: {
@@ -45,7 +47,7 @@ export function toSessionView(
   };
 }
 
-/** 会话列表 → 选择器选项;显示名经回调解析(依赖标题模式)。 */
+/** Session list → selector options; the display name is resolved through a callback (title-mode aware). */
 export function sessionOptionsFromStore(
   sessions: readonly StoredSession[],
   currentSessionId: string | undefined,
@@ -60,7 +62,7 @@ export function sessionOptionsFromStore(
   }));
 }
 
-/** 冷启动可复用的"空白会话"判定:自动命名且确认没有任何消息体。 */
+/** Reusable-on-cold-start "blank session" test: automatically named and confirmed to have no message body. */
 export function isReusableBlankSession(session: StoredSession): boolean {
   if (!isAutomaticSessionName(session) || session.messages.length !== 0) return false;
   // Prefer the derived archive counter written while the body was known.
@@ -71,7 +73,7 @@ export function isReusableBlankSession(session: StoredSession): boolean {
   return false;
 }
 
-/** 距上次活动 ≥N 天的会话在恢复时注入的时间敏感提醒。 */
+/** The time-sensitive reminder injected when resuming a session inactive for ≥N days. */
 export function createSessionGapReminder(updatedAt: string, now = new Date()): Message | undefined {
   const previous = Date.parse(updatedAt);
   if (!Number.isFinite(previous)) return undefined;

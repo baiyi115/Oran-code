@@ -3,7 +3,7 @@ import type { ToolRegistry } from "./registry.js";
 import { TOOL_SEARCH_ALIASES } from "./predicates.js";
 import { intArg } from "./fs-helpers.js";
 
-/** 按需工具发现：搜索未激活的 deferred 工具，或用 select:<name> 精确解锁（F19）。 */
+/** On-demand tool discovery: search inactive deferred tools, or unlock exactly with select:<name> (F19). */
 export function registerSearchTools(registry: ToolRegistry): void {
   registry.register({
     name: "search_tools",

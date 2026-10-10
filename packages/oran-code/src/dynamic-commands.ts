@@ -5,7 +5,8 @@ import { CommandRegistry, type SlashCommand } from "./commands.js";
 import { compatibleUserDataPath, projectStateRoot } from "./paths.js";
 import { isRecord } from "./types.js";
 
-// 与 memory-manager 同理:同步 API 无法 await 动态导入,首次调用时经 require 加载 yaml。
+// Same as memory-manager: a synchronous API cannot await a dynamic import, so yaml is loaded via
+// require on the first call.
 const requireYaml = createRequire(import.meta.url);
 let yamlModule: typeof import("yaml") | undefined;
 function yaml(): typeof import("yaml") {
@@ -94,7 +95,7 @@ export function renderDynamicCommand(body: string, argument: string): string {
   ARGUMENT_PLACEHOLDER.lastIndex = 0;
   if (ARGUMENT_PLACEHOLDER.test(normalizedBody)) {
     ARGUMENT_PLACEHOLDER.lastIndex = 0;
-    // 用函数形式替换,避免参数里的 $&/$' 等被当成替换模式展开。
+    // Use a function replacer so $& / $' inside the argument are not expanded as replacement patterns.
     return normalizedBody.replace(ARGUMENT_PLACEHOLDER, () => normalizedArgument);
   }
   if (!normalizedArgument) return normalizedBody;

@@ -69,7 +69,7 @@ describe("compaction trigger", () => {
       let content = "a".repeat(560_000);
       let messages: Message[] = [{ role: "user", content }];
       let estimate = manager.estimateTokens(messages, []);
-      // 调整到"已过 80% 触发点、尚未到 W−O−headroom"的区间。
+      // Tune into the "past the 80% trigger, not yet at W−O−headroom" range.
       while (estimate < Math.floor(contextWindow * CONTEXT_LIMITS.automaticWindowFraction)) {
         content += "a".repeat(3_500);
         messages = [{ role: "user", content }];
@@ -88,7 +88,8 @@ describe("compaction trigger", () => {
     try {
       const manager = new ContextManager({ workspace, conversation: [] });
       const messages: Message[] = [{ role: "user", content: "small" }];
-      // 小窗口下 W−O−headroom 为负,阈值退化为 1,压缩仍会立即触发(既有语义)。
+      // For a small window W−O−headroom goes negative, so the threshold degrades to 1 and
+      // compaction still fires immediately (existing semantics).
       expect(manager.shouldAutoCompact(messages, 10_000)).toBe(true);
     } finally {
       await rm(workspace, { recursive: true, force: true });
@@ -99,7 +100,8 @@ describe("compaction trigger", () => {
 describe("recent raw retention", () => {
   it("scales the retained tail with the context window", () => {
     const messages: Message[] = [];
-    // 每轮约 4KB:总历史明显超过固定 12k token 预算,但小于 200k 窗口的 16%。
+    // Each turn is about 4KB: total history clearly exceeds the fixed 12k token budget, but
+    // stays below 16% of the 200k window.
     for (let index = 0; index < 20; index += 1) {
       messages.push(
         { role: "user", content: `User message:\nrequest ${index} ${"u".repeat(2_000)}` },
@@ -132,10 +134,11 @@ describe("incremental compaction", () => {
       });
       expect(provider.requests[0]?.[1]?.content).not.toContain("<existing-summary>");
       const firstSummary = first.messages.find((message) => message.metadata?.promptBlock === "context-summary");
-      // 6 轮 = 12 条消息,覆盖统计按消息计数。
+      // 6 turns = 12 messages; coverage counts by message.
       expect(firstSummary?.metadata?.summaryCoverage).toMatchObject({ coveredMessages: 12 });
 
-      // 第二批消息追加后再次压缩:请求里应携带上一份摘要,而不是把摘要再次摘要。
+      // Compact again after appending the second batch: the request should carry the previous
+      // summary rather than summarizing the summary again.
       const second: Message[] = [...first.messages, ...turn(6), ...turn(7)];
       const result = await manager.compact({
         messages: second,
@@ -151,7 +154,7 @@ describe("incremental compaction", () => {
 
       const summary = result.messages.find((message) => message.metadata?.promptBlock === "context-summary");
       const summaryText = String(summary?.content ?? "");
-      // 第 6 节保留旧用户消息原话 + 新消息,覆盖统计继续累计。
+      // Section 6 keeps the old user message verbatim plus the new message; coverage keeps accumulating.
       expect(summaryText).toContain("request 0");
       expect(summaryText).toContain("request 6");
       const coverage = summary?.metadata?.summaryCoverage as { coveredMessages?: number; droppedGroups?: number };

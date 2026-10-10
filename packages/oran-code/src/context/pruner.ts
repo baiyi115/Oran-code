@@ -23,8 +23,9 @@ export interface ToolResultOffloadResult {
 }
 
 /**
- * offload 账本:跨轮冻结的替换文本、已见 id 与失败计数。
- * 由调用方(ContextManager)持有并跨轮复用,保证同一 id 只有一条终态替换文本。
+ * Offload ledger: replacement text frozen across turns, ids already seen, and failure counts.
+ * Held by the caller (ContextManager) and reused across turns, guaranteeing that an id has only
+ * one final replacement text.
  */
 export interface PrunerLedger {
   readonly seenIds: Set<string>;
@@ -32,7 +33,10 @@ export interface PrunerLedger {
   readonly offloadFailures: Map<string, number>;
 }
 
-/** 落盘回调:返回落盘相对路径,失败返回 undefined(调用方保留原文)。 */
+/**
+ * Spill callback: returns the relative path written to disk, or undefined on failure (the caller
+ * then keeps the verbatim text).
+ */
 export type SpillToolResult = (id: string, content: string) => Promise<string | undefined>;
 
 interface ToolCandidate {
@@ -59,14 +63,17 @@ export function isTransientRequestMessage(message: Message): boolean {
 }
 
 /**
- * 应用活跃上下文的工具结果上限。
+ * Applies the active-context tool-result limits.
  *
- * 两段策略,按阈值分层、互不重叠:
- * 1. microcompact(确定性、无 LLM):清空"早期且中等大小"工具结果的正文,
- *    只留字节数与读回路径——这些结果本不会触发 offload,长会话里会无限累积;
- * 2. offload(按单条/单轮预算):超限结果落盘并保留预览。
+ * Two-stage strategy, layered by threshold and non-overlapping:
+ * 1. microcompact (deterministic, no LLM): clear the body of "early and medium-sized" tool
+ *    results, keeping only the byte count and the read-back path — these results would never
+ *    trigger offload and would otherwise accumulate without bound in a long session;
+ * 2. offload (per-result/per-round budget): over-limit results are spilled to disk with a
+ *    preview kept.
  *
- * 替换文本写入 ledger 冻结,保证同一 id 只有一条终态替换文本。
+ * The replacement text is written to the ledger and frozen, guaranteeing that an id has only one
+ * final replacement text.
  */
 export async function offloadConversation(
   ledger: PrunerLedger,
@@ -111,8 +118,8 @@ export async function offloadConversation(
         continue;
       }
       if (ledger.seenIds.has(id) && (!isHistoricalRound || bytes <= CONTEXT_LIMITS.historicalToolResultBytes)) {
-        // seen id 免于重复 offload;但历史轮的超限内容不受豁免,否则历史轮
-        // 会随轮次推移永久超出预算。
+        // A seen id is exempt from repeated offload; over-limit content from historical rounds is
+        // not, otherwise those rounds would stay permanently over budget as turns go by.
         retainedBytes += bytes;
         continue;
       }
@@ -172,7 +179,8 @@ export async function offloadConversation(
 }
 
 /**
- * 在一轮工具结果发布给 trace/UI/会话之前应用活跃上下文上限。
+ * Applies the active-context limits before a round of tool results is published to the trace, UI,
+ * or conversation.
  */
 export async function offloadCandidates(
   ledger: PrunerLedger,
@@ -243,11 +251,14 @@ export async function offloadCandidates(
 }
 
 /**
- * microcompact:清空"早期且足够大"的工具结果正文。
+ * microcompact: clear the body of "early and large enough" tool results.
  *
- * - 只作用于最近 `microcompactKeepResults` 条之外的记录,当前轮与近期结果保持原文;
- * - 小于 `microcompactMinBytes` 的结果保持原样(清空小结果只丢信息、不省预算);
- * - 清空前先落盘,失败即保留原文,因此清空永远不造成不可恢复的信息丢失。
+ * - Only touches records older than the most recent `microcompactKeepResults`; the current round
+ *   and recent results keep their verbatim text;
+ * - Results smaller than `microcompactMinBytes` are left as-is (clearing a small result only loses
+ *   information without saving budget);
+ * - Content is spilled to disk before being cleared, and a failed spill keeps the verbatim text,
+ *   so clearing never causes unrecoverable information loss.
  */
 async function microcompactConversation(
   ledger: PrunerLedger,
@@ -289,9 +300,9 @@ function isCompleteToolUnit(unit: Message[]): boolean {
 }
 
 /**
- * 压缩后保留的最近原文。
- * 预算 = max(recentRawTokens 下限, window × recentRawFraction);未提供窗口时用固定下限,
- * 保证既有调用方的行为不变。
+ * Recent verbatim text retained after compaction.
+ * Budget = max(the recentRawTokens floor, window × recentRawFraction); when no window is given the
+ * fixed floor applies, keeping the behaviour of existing callers unchanged.
  */
 export function selectRecentRawMessages(messages: readonly Message[], contextWindow?: number): Message[] {
   const rawMessages = messages.filter((message) => promptBlock(message) !== "context-summary");
@@ -324,8 +335,9 @@ export function selectRecentRawMessages(messages: readonly Message[], contextWin
     start -= 1;
     const unit = units[start]!;
     const unitTokens = estimatedRequestTokens(unit, []);
-    // 单个超大 unit(如带 50KB 工具输出)不该把整个 recent 预算吃光:
-    // 在已保有至少一个单位且满足最小消息数时,丢弃这个超大单位。
+    // A single oversized unit (say one carrying 50KB of tool output) should not eat the whole
+    // recent budget: once at least one unit is retained and the minimum message count is met,
+    // discard this oversized unit.
     if (start < units.length - 1 && count >= CONTEXT_LIMITS.recentRawMessages && tokens + unitTokens > tokenBudget) {
       start += 1;
       break;
@@ -334,18 +346,21 @@ export function selectRecentRawMessages(messages: readonly Message[], contextWin
     count += unit.length;
   }
 
-  // 保证 recent 消息片段必须从合法的 user 轮开始:
-  // 如果当前选取的起点落在了某个 turn 中途(如孤儿 assistant 工具调用或 tool 结果),
-  // 绝不能直接作为压缩后非系统消息的开头(Gemini/Anthropic/OpenAI 均要求对话由 user 开启)。
+  // The recent slice must start at a legitimate user turn: if the chosen start lands mid-turn (an
+  // orphaned assistant tool call or tool result, say), it must never become the head of the
+  // post-compaction non-system messages (Gemini/Anthropic/OpenAI all require the conversation to be
+  // opened by user).
   if (start < units.length && units[start]?.[0]?.role !== "user") {
-    // 优先向后查找:若当前位置之后存在 user 消息,说明候选集越界拖入了更早 turn 的末尾片段;
-    // 丢弃更早 turn 的孤儿单元,从最近一个合法的 user 轮开始保留。
+    // Search forward first: if a user message exists after the current position, the candidate set
+    // overreached and pulled in the tail of an earlier turn; drop that earlier turn's orphaned units
+    // and retain from the nearest legitimate user turn.
     const forwardUserIndex = units.findIndex((unit, idx) => idx >= start && unit[0]?.role === "user");
     if (forwardUserIndex !== -1) {
       start = forwardUserIndex;
     } else {
-      // 若向后没有 user 消息(说明整个候选区间处于同一个超长 turn 内部),
-      // 向前倒推至开启当前 turn 的 user 消息,保证该 turn 的完整性与合法起始角色。
+      // If there is no user message further on (meaning the whole candidate range sits inside one
+      // very long turn), walk backwards to the user message that opened the current turn, keeping
+      // that turn whole and starting on a legitimate role.
       let backwardUserIndex = -1;
       for (let i = start - 1; i >= 0; i--) {
         if (units[i]?.[0]?.role === "user") {

@@ -37,8 +37,9 @@ const UNDO_COALESCE_MS = 300;
 const UNDO_LIMIT = 50;
 
 /**
- * 一份可恢复的草稿。文本之外必须一起存光标与折叠粘贴的载荷:只存文本的话,
- * ctrl+z 会把 [paste #N +M lines] 占位符当成正文,并把光标甩到全文末尾。
+ * A restorable draft. Beyond the text it must also carry the cursor and the collapsed-paste
+ * payloads: with text alone, ctrl+z would treat the [paste #N +M lines] placeholder as body text
+ * and throw the cursor to the end of the document.
  */
 function currentDraft(composer: ComposerState): ComposerDraft {
   return {
@@ -49,13 +50,15 @@ function currentDraft(composer: ComposerState): ComposerDraft {
 }
 
 /**
- * 记录一次"删除/插入/结构性修改"前的快照,用于撤销。
- * 短时间内的同类型操作(连续打字、连续删字)合并为一段,避免一个键占一层栈深。
+ * Record a snapshot taken before a delete/insert/structural modification, for undo.
+ * Same-kind operations within a short window (continuous typing, continuous deleting) coalesce
+ * into one entry so a single keystroke does not occupy a whole stack level.
  */
 export function pushUndoSnapshot(composer: ComposerState, op: string, now = Date.now()): void {
   const last = composer.undoMarker;
-  // 相邻同类**编辑**操作(连续打字/连续删字)合并为一段;"set"类整段覆盖
-  // (清空/恢复/替换)是离散的用户操作,永远各占一层,否则刚清的草稿救不回来。
+  // Adjacent same-kind **edit** operations (continuous typing/deleting) coalesce into one entry;
+  // "set" whole-buffer replacements (clear/restore/replace) are discrete user actions that always
+  // get their own level, or a just-cleared draft could not be rescued.
   if (last && op === last.op && op !== "set" && now - last.at < UNDO_COALESCE_MS && composer.undo.length) {
     composer.undoMarker = { at: now, op };
     return;
@@ -100,7 +103,7 @@ function isWordChar(value: string): boolean {
   return value.length > 0 && /[A-Za-z0-9_]/.test(value);
 }
 
-/** 从 column 处向前找"当前词"的左边界(与 moveWordBackward 的语义一致)。 */
+/** Find the left boundary of the "current word" scanning back from column (matches moveWordBackward). */
 function wordBackwardIndex(symbols: readonly string[], column: number): number {
   while (column > 0 && !isWordChar(symbols[column - 1] ?? "")) column -= 1;
   while (column > 0 && isWordChar(symbols[column - 1] ?? "")) column -= 1;
@@ -109,7 +112,7 @@ function wordBackwardIndex(symbols: readonly string[], column: number): number {
 
 export function moveWordBackward(composer: ComposerState): void {
   const symbols = graphemes(composer.lines[composer.cursor.line] ?? "");
-  // 先跨过光标前的非词字符,再把当前词跳到词头(readline 惯例的起跳语义)。
+  // First cross the non-word chars before the cursor, then jump to the word's head (readline semantics).
   composer.cursor.column = wordBackwardIndex(symbols, composer.cursor.column);
   composer.preferredDisplayColumn = undefined;
 }
@@ -117,14 +120,14 @@ export function moveWordBackward(composer: ComposerState): void {
 export function moveWordForward(composer: ComposerState): void {
   const symbols = graphemes(composer.lines[composer.cursor.line] ?? "");
   let column = composer.cursor.column;
-  // 先过当前词的剩余部分,再过非词字符,落到"下一词开头"。
+  // Consume the rest of the current word, then the non-word chars, landing at the next word's start.
   while (column < symbols.length && isWordChar(symbols[column] ?? "")) column += 1;
   while (column < symbols.length && !isWordChar(symbols[column] ?? "")) column += 1;
   composer.cursor.column = column;
   composer.preferredDisplayColumn = undefined;
 }
 
-/** 按词删除(readline 的 Ctrl+W);无跨行合并,与 deleteBackward 的行合并语义一致。 */
+/** Delete by word (readline's Ctrl+W); no cross-line merge, matching deleteBackward's line merge. */
 export function deleteWordBackward(composer: ComposerState): void {
   if (composer.cursor.column === 0) {
     deleteBackward(composer);

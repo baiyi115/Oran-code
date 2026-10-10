@@ -37,8 +37,9 @@ const BUDGET_COMPACTION_GROWTH_FACTOR = 1.25;
 const BUDGET_COMPACTION_COOLDOWN_TURNS = 3;
 
 /**
- * provider 流协议契约违规(响应完成后仍发事件、重复完成标记等)。
- * 契约违规重试同一响应没有意义,streamWithRetry 对它立即失败。
+ * Provider stream protocol contract violation (still emitting events after the response completed,
+ * duplicate completion markers, etc.). Retrying the same response on a contract violation is
+ * pointless, so streamWithRetry fails it immediately.
  */
 export class ProviderContractError extends Error {
   constructor(message: string) {
@@ -48,8 +49,9 @@ export class ProviderContractError extends Error {
 }
 
 /**
- * 模型请求管线与 TaskController 之间的端口。controller 保留事件、hook、
- * 会话同步与诊断通道,requester 负责上下文准备、压缩决策与流式消费。
+ * Port between the model request pipeline and TaskController. controller keeps events, hooks,
+ * session sync and diagnostic channels; the requester handles context preparation, compaction
+ * decisions and stream consumption.
  */
 export interface TurnRequesterPorts {
   readonly config: RuntimeConfig;
@@ -68,8 +70,10 @@ export interface TurnRequesterPorts {
 }
 
 /**
- * 单轮模型请求管线:上下文卸载/压缩决策 → 重试流式调用 → 事件流消费。
- * 轮次计数、压缩冷却等每任务状态由本类持有。从 TaskController 提取,行为不变。
+ * Single-turn model request pipeline: context offload/compaction decision → retryable streaming call
+ * → event stream consumption.
+ * Per-task state such as turn counting and compaction cooldown is owned by this class. Extracted
+ * from TaskController, behavior unchanged.
  */
 export class TurnRequester {
   private turnSequence = 0;
@@ -265,7 +269,8 @@ export class TurnRequester {
         replacementCount: 0,
         message,
       });
-      // 失败信息已经作为 context_compaction failed 事件进入转写区,不再重复发系统行。
+      // The failure is already in the transcript as a context_compaction failed event; do not
+      // repeat it with a system line.
     }
     return managedMessages;
   }
@@ -282,8 +287,9 @@ export class TurnRequester {
       this.ports.throwIfCancelled();
       try {
         const response = await this.streamResponse(messages, loop, step, source, attempt, tools);
-        // 空响应(部分兼容端点会瞬时出现)按可重试错误处理,参与退避循环,
-        // 而不是直接让整个任务失败。
+        // An empty response (which some compatible endpoints emit transiently) is treated as a
+        // retryable error and takes part in the backoff loop, rather than failing the whole task
+        // outright.
         if (!response.text.trim() && !response.toolCalls.length && !response.truncated) {
           throw new EmptyModelResponseError();
         }
@@ -336,7 +342,8 @@ export class TurnRequester {
             delayMs,
           }),
         );
-        // 重试已经在 retry 事件里可见,logger 通道留给"模型看不到但用户该看到"的通知。
+        // Retries are already visible as retry events; the logger channel is reserved for
+        // notifications "the model cannot see but the user should".
         await sleepWithSignal(delayMs, this.ports.getAbortSignal());
       }
     }
@@ -363,12 +370,13 @@ export class TurnRequester {
     let toolCallChunkCount = 0;
     const usage: Record<string, number> = {};
     const reasoningParts: string[] = [];
-    /** Anthropic thinking 块的签名,仅用于下一轮回放,不产生 UI 事件。 */
+    /** Signature of an Anthropic thinking block, used only for replay on the next turn; produces no UI event. */
     const reasoningSignatures: string[] = [];
     let streamed = false;
     let finishReason: string | undefined;
     let responseCompleted = false;
-    /** 解析层已丢弃的截断调用数(provider 报上来的),与 requester 兜底丢弃数合计。 */
+    /** Truncated calls already dropped by the parse layer (as reported by the provider), summed with
+     *  the requester's own fallback drop count. */
     let providerDroppedToolCalls = 0;
     try {
       const requestFingerprint = fingerprintRequest(messages);
@@ -452,16 +460,18 @@ export class TurnRequester {
         throw new ProviderContractError("provider stream ended without a response_complete event");
       loop.recordModelElapsed(Math.max(1, Date.now() - modelStartedAt));
       loop.recordUsage(usage);
-      // 输出上限截断:文本与工具调用都可能不完整。端点仍可能给出"能解析"的
-      // 参数,直接执行会带来语义残缺的副作用,因此截断消息的所有调用整体判败,
-      // 并把截断标记上抛给 controller 决定收尾方式。
+      // Output-limit truncation: both text and tool calls may be incomplete. The endpoint can still
+      // supply arguments that "parse", and executing them would add semantically incomplete side
+      // effects, so every call in a truncated message is failed as a whole, and the truncation flag
+      // is propagated up to controller to decide how to wrap up.
       const truncated = isTruncatedFinishReason(finishReason);
       let droppedTruncatedCalls = 0;
       if (truncated && completedToolCalls.size) {
         droppedTruncatedCalls = completedToolCalls.size;
         completedToolCalls.clear();
       }
-      // 解析层丢弃的调用也计入总数:调用方据此区分纯文本截断与调用截断。
+      // Calls dropped by the parse layer also count toward the total: the caller uses that to tell a
+      // pure-text truncation from a call truncation.
       droppedTruncatedCalls += providerDroppedToolCalls;
       const normalizedCalls = [...completedToolCalls.entries()]
         .sort(([left], [right]) => left - right)
@@ -561,7 +571,8 @@ export class TurnRequester {
         );
       }
       const aborted = isAbortError(error) || this.ports.getAbortSignal()?.aborted;
-      // 流中途失败前已经收到的用量也要入账,否则 token 预算会系统性低估。
+      // Usage already received before a mid-stream failure must be booked too, otherwise the token
+      // budget would systematically under-count.
       loop.recordUsage(usage);
       // A non-cancellation model error is reported by the outer `error` event.
       // Emitting assistant_abort as well makes the TUI show the same failure

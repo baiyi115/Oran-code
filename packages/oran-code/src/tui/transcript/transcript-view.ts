@@ -245,8 +245,8 @@ function renderCollapsedSegment(segment: TranscriptSegment, width: number): stri
   const tools = `${segment.toolCount} tool${segment.toolCount === 1 ? "" : "s"}`;
   lines.push(
     ...wrapDisplayText(
-      // ctrl+t 只展开"最近一段";写 "ctrl+t details" 会让人以为这一行也能展开,
-      // 而这一段的成员行没有任何入口(见 openLatestActivityDetails)。
+      // ctrl+t expands only the "latest segment"; saying "ctrl+t details" would suggest this row
+      // can expand, while the segment's member rows have no entry point (see openLatestActivityDetails).
       `${ANSI.greenBold}◇${ANSI.reset} ${ANSI.toolBold}${tools}${ANSI.reset} ${ANSI.gray}· ctrl+t: latest details${ANSI.reset}`,
       width,
     ),
@@ -278,8 +278,9 @@ function messageSignature(message: TranscriptMessage): string {
     case "thought":
       return `thought:${message.streaming ? 1 : 0}:${message.expanded ? 1 : 0}:${message.durationMs ?? ""}`;
     case "tool":
-      // 输出全文拼进签名会在每次重绘(120ms)时拷贝巨量字符串;状态/摘要
-      // 与长度足以覆盖所有真实变更(它们总是伴随状态转换发生)。
+      // Concatenating the full output into the signature would copy huge strings on every repaint
+      // (120ms); status/summary plus the length cover all real changes (they always accompany a
+      // state transition).
       return [
         "tool",
         message.status,

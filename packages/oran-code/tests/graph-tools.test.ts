@@ -7,9 +7,10 @@ import { registerAllLanguages } from "../src/graph/languages/all.js";
 import { coveredLanguageLabels } from "../src/graph/languages/registry.js";
 
 /**
- * 工具层是模型了解"图谱覆盖什么"的唯一入口。这段文本已经漂移过一次:
- * 91b4469 把注册表铺到 19 门语言,而描述仍写着三门,模型于是在其他语言里
- * 退回 grep —— 不报错、只少用。这几条断言守的就是这个接缝。
+ * The tool layer is the model's only entry point into "what the graph covers". This text has
+ * drifted once already: 91b4469 grew the registry to 19 languages while the description still
+ * said three, so the model fell back to grep in the other languages -- no error, just less use.
+ * These assertions guard that seam.
  */
 const workspaces: string[] = [];
 
@@ -64,8 +65,8 @@ describe("code_impact tool surface", () => {
     });
     const result = await registryFor(workspace).invoke(call("code_impact", { path: "src/a.ts", mode: "tests" }));
     expect(result.ok).toBe(true);
-    // 首行两个数必须取自同一个集合:此前 total 取自过滤后的测试集、direct
-    // 取自未过滤的全集,会打出"1 total, 2 direct"。
+    // Both numbers on the first line must come from the same set: total used to come from the
+    // filtered test set while direct came from the unfiltered full set, printing "1 total, 2 direct".
     expect(result.output).toContain(": 1 total, 1 direct");
   });
 });

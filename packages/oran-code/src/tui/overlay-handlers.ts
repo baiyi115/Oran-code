@@ -9,8 +9,8 @@ import { formatErrorMessage } from "../error-format.js";
 import { isSessionDeleteKey, isSubmitKey } from "./keys.js";
 
 /**
- * Overlay 键处理状态机与 InkTuiApp 之间的上下文。app 保留渲染调度、composer
- * 主编辑、会话恢复与提交;handlers 只负责 overlay 的打开/选择/确认。
+ * Context between the overlay key state machine and InkTuiApp. The app keeps render scheduling,
+ * composer editing, session restore and submit; the handlers only open/select/confirm overlays.
  */
 export interface OverlayHandlerContext {
   readonly state: TuiState;
@@ -23,7 +23,7 @@ export interface OverlayHandlerContext {
   readonly loadProviders?: () => Promise<import("./types.js").ProviderOption[]>;
   readonly onProviderSelected?: (name: string) => Promise<boolean | void>;
   readonly onProviderDeleted?: (name: string) => Promise<boolean>;
-  /** 供应商列表里的新增入口:打开空白连接向导。 */
+  /** The add entry in the provider list: opens a blank connect wizard. */
   readonly openConnect?: () => void;
   readonly loadFollowUps?: () => Promise<import("./types.js").FollowUpOption[]> | import("./types.js").FollowUpOption[];
   readonly onFollowUpCancelled?: (id: string) => Promise<boolean> | boolean;
@@ -35,16 +35,16 @@ export interface OverlayHandlerContext {
   submit(forcedCommand?: string): Promise<void>;
   handleComposerKey(input: string, key: Key): void;
   detachInputHistory(): void;
-  /** Esc 关闭命令面板时记录当前输入,避免打字时面板重弹。 */
+  /** Records the current input when Esc closes the command palette, so typing does not reopen it. */
   noteDismissedCommandInput(value: string): void;
   resolveApproval(response: ApprovalResponse): void;
   resolveQuestion(answers: Record<string, string>): void;
 }
 
 /**
- * 命令面板/模型/会话/文件补全/follow-up/审批 overlay 的键状态机。
- * 从 InkTuiApp 提取,行为保持不变;互斥的选中索引统一存放在
- * state.overlay.selectedIndex。
+ * Key state machine for the command palette/model/session/file-completion/follow-up/approval
+ * overlays. Extracted from InkTuiApp with behavior unchanged; the mutually exclusive selection
+ * index lives in state.overlay.selectedIndex.
  */
 export class OverlayHandlers {
   private followUpBusy = false;
@@ -71,7 +71,7 @@ export class OverlayHandlers {
     this.ctx.invalidate();
   }
 
-  /** 供应商管理列表:/connect 无参入口。行数 = 供应商数 + 1(新增入口行)。 */
+  /** Provider management list: the no-argument entry point of /connect. Rows = providers + 1 (add row). */
   async openProviders(): Promise<void> {
     if (this.ctx.rejectIfBlocked("finish or cancel the current task before managing providers")) return;
     if (!this.ctx.loadProviders) return;
@@ -135,7 +135,7 @@ export class OverlayHandlers {
     else if (key.rightArrow || key.downArrow) this.ctx.state.overlay = { ...overlay, selectedIndex: 1 };
     else if (key.escape) this.cancelProviderDeleteConfirmation();
     else if (isSubmitKey(input, key)) {
-      // 同会话确认层:只在 Enter 落在 Delete 时才删除。
+      // Same as the session confirm layer: delete only when Enter lands on Delete.
       if (overlay.selectedIndex === 0) {
         this.deletingEntry = true;
         try {
@@ -148,7 +148,8 @@ export class OverlayHandlers {
               options: [...options],
             };
           }
-          // 失败时 handler 已给出错误信息,留在确认层由用户取消。
+          // On failure the handler has already surfaced the error; stay on the confirm layer so the
+          // user can cancel.
         } catch (error) {
           this.ctx.state.session.status = formatErrorMessage(error);
           this.cancelProviderDeleteConfirmation();
@@ -321,8 +322,8 @@ export class OverlayHandlers {
       if (file) {
         const value = composerValue(this.ctx.state.composer);
         const cursor = composerCursorOffset(this.ctx.state.composer);
-        // 带空格的路径要加引号:否则插进去的 @a b.txt 一遇到空格就被切断,
-        // 补全浮层关闭,引用也不再是一个整体。
+        // A path with spaces must be quoted: otherwise the inserted @a b.txt is cut at the first
+        // space, the completion popup closes, and the reference is no longer a single unit.
         const replacement = /\s/.test(file) ? `@"${file}"` : `@${file}`;
         const next = `${value.slice(0, this.ctx.state.overlay.tokenStart)}${replacement}${value.slice(cursor)}`;
         this.ctx.detachInputHistory();
@@ -344,7 +345,8 @@ export class OverlayHandlers {
       kind: "session-delete-confirm",
       sessionId: selected.id,
       sessionName: selected.name,
-      // 默认落在 Cancel,与 provider 删除确认一致——删除的缺省是"不做什么"。
+      // Defaults to Cancel, matching the provider delete confirmation — the default for deleting
+      // is "do nothing".
       selectedIndex: 1,
       returnSelectedIndex: this.ctx.state.overlay.selectedIndex,
       options: [...this.ctx.state.overlay.options],
@@ -359,8 +361,9 @@ export class OverlayHandlers {
     else if (key.rightArrow || key.downArrow) this.ctx.state.overlay = { ...overlay, selectedIndex: 1 };
     else if (key.escape) this.cancelSessionDeleteConfirmation();
     else if (isSubmitKey(input, key)) {
-      // 只在 Enter 落在 Delete 时才删除。Backspace/Del 此前无视高亮直接删除,
-      // 在 Cancel 聚焦时一按就删——那条路被堵掉,只保留显式确认的 Enter。
+      // Delete only when Enter lands on Delete. Backspace/Del used to delete regardless of the
+      // highlight, so a single press with Cancel focused deleted it — that route is closed, leaving
+      // only the explicit Enter confirmation.
       if (overlay.selectedIndex === 0) {
         this.deletingEntry = true;
         try {
@@ -455,9 +458,10 @@ export class OverlayHandlers {
     const next = key.upArrow ? Math.max(0, selected - 1) : key.downArrow ? Math.min(3, selected + 1) : selected;
     if (key.escape) this.ctx.resolveApproval(false);
     else if (isSubmitKey(input, key)) this.ctx.resolveApproval(approvalResponse(next));
-    // 快捷回答与 readline 端一致(y / n)。这里刻意不提供单键"总是允许":审批弹窗
-    // 弹出时用户往往还在打字,一次误按就把整会话的授权交出去,而 y/n 误按只影响
-    // 这一次;要总是允许就用方向键选中后回车。
+    // Quick answers match the readline side (y / n). A single-key "always allow" is deliberately
+    // not offered: the user is often still typing when the approval dialog pops up, and one
+    // mistyped key would hand over the whole session's authorization, whereas a mistyped y/n only
+    // affects this one call; to always allow, select it with the arrow keys and press Enter.
     else if (!key.ctrl && !key.meta && input.toLowerCase() === "y") this.ctx.resolveApproval(true);
     else if (!key.ctrl && !key.meta && input.toLowerCase() === "n") this.ctx.resolveApproval(false);
     else this.ctx.state.overlay = { ...this.ctx.state.overlay, selectedIndex: next };

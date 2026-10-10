@@ -7,7 +7,7 @@ export type ReasoningEffort = "low" | "medium" | "high" | "xhigh";
 export type ToolKind = "readonly" | "write" | "command";
 export type SessionTitleMode = "first-message" | "local" | "model";
 
-/** 模型请求失败的结构化分类,用于重试事件的诊断与展示。 */
+/** Structured classification of model request failures, for diagnosing and displaying retry events. */
 export type ModelRetryCategory =
   "rate_limit" | "timeout" | "network" | "http_4xx" | "http_5xx" | "contract" | "empty" | "parse" | "unknown";
 
@@ -23,8 +23,9 @@ export function isRecord(value: unknown): value is Record<string, unknown> {
 }
 
 /**
- * 输出上限导致的截断标记(OpenAI 系 length、Anthropic max_tokens)。
- * 截断响应的文本与工具调用都可能不完整,调用方需按"整体判败"处理。
+ * Truncation markers caused by an output limit (OpenAI-style length, Anthropic max_tokens).
+ * Both the text and the tool calls of a truncated response may be incomplete, so callers
+ * must treat it as an outright failure.
  */
 export function isTruncatedFinishReason(value: string | undefined): boolean {
   return value === "length" || value === "max_tokens";
@@ -124,11 +125,13 @@ export interface Message {
   toolCallId?: string;
   metadata?: Record<string, unknown>;
   /**
-   * 上一轮模型输出的推理文本。请求体中默认不回传：OpenAI 兼容端点的
-   * reasoning_content 只在端点明确要求时才带上（见 ModelConfig.reasoningEchoRequired）。
+   * Reasoning text from the previous model output. It is not sent back in the request body
+   * by default: an OpenAI-compatible endpoint's reasoning_content is only included when the
+   * endpoint explicitly asks for it (see ModelConfig.reasoningEchoRequired).
    */
   reasoning?: string;
-  /** Anthropic 扩展思考的签名，与 reasoning 一起构成可回放的 thinking 块。 */
+  /** Signature of an Anthropic extended-thinking block; with reasoning it forms a replayable
+   * thinking block. */
   reasoningSignature?: string;
 }
 
@@ -142,14 +145,16 @@ export interface ModelResponse {
   finishReason?: string;
   streamed: boolean;
   /**
-   * 输出被输出上限截断(finishReason 为 length/max_tokens)。
-   * 截断响应的内容不完整:调用方不得当作最终答案,也不得执行其工具调用。
+   * The output was cut off by the output limit (finishReason is length/max_tokens).
+   * A truncated response is incomplete: callers must not treat it as a final answer nor
+   * execute its tool calls.
    */
   truncated?: boolean;
   /**
-   * 因截断而**被丢弃**的工具调用数量(provider 解析层与 requester 兜底层的合计)。
-   * 用来区分"纯文本被截断"(文本属于回答内容,可续写汇聚)与"工具调用被截断"
-   * (文本多半只是前言,不应混进最终答案)。
+   * Number of tool calls **discarded** because of truncation (provider parsing layer and
+   * requester fallback layer combined). It separates "plain text was truncated" (the text
+   * is part of the answer and can be continued and merged) from "tool calls were truncated"
+   * (the text is mostly just a preamble and must not mix into the final answer).
    */
   truncatedToolCalls?: number;
 }
@@ -163,7 +168,7 @@ export interface ModelResponse {
 export type ModelStreamChunk =
   | { type: "text_delta"; text: string; streamed: boolean }
   | { type: "reasoning_delta"; text: string; streamed: boolean }
-  /** Anthropic thinking 块的签名：只用于回放，不产生任何 UI 事件。 */
+  /** Signature of an Anthropic thinking block: used for replay only, it emits no UI events. */
   | { type: "reasoning_signature"; signature: string; streamed: boolean }
   | { type: "tool_call_complete"; toolCall: ToolCallComplete; streamed: boolean }
   | { type: "usage"; usage: Record<string, number>; streamed: boolean }
@@ -171,7 +176,8 @@ export type ModelStreamChunk =
       type: "response_complete";
       streamed: boolean;
       finishReason?: string;
-      /** 解析层在截断时丢弃的工具调用数量(见 ModelResponse.truncatedToolCalls)。 */
+      /** Number of tool calls the parsing layer dropped on truncation (see
+       * ModelResponse.truncatedToolCalls). */
       droppedToolCalls?: number;
     };
 
@@ -204,11 +210,12 @@ export interface ModelConfig {
   maxTokens: number;
   contextWindow?: number;
   reasoningEffort?: ReasoningEffort;
-  /** 该端点拒绝 reasoning_effort 参数时置位，请求体不再携带。 */
+  /** Set when the endpoint rejects the reasoning_effort parameter; the body then omits it. */
   reasoningEffortDisabled?: boolean;
   /**
-   * 该端点要求把历史 assistant 消息的 reasoning_content 原样回传时置位。
-   * 只在进程内记忆（由 400 探测得来），不写入用户配置文件。
+   * Set when the endpoint requires the reasoning_content of historical assistant messages
+   * to be echoed back verbatim. Remembered in-process only (learned from a 400 probe); it is
+   * not written to the user config file.
    */
   reasoningEchoRequired?: boolean;
   options?: Record<string, unknown>;
@@ -294,22 +301,23 @@ export interface UserConfig {
 }
 
 /**
- * 联网工具(web_fetch / web_search)设置。
- * 搜索能力默认不开启:配置了 searchApiKey(或端点)才暴露 web_search。
+ * Settings for the web tools (web_fetch / web_search).
+ * Search is off by default: web_search is only exposed once searchApiKey (or an endpoint)
+ * has been configured.
  */
 export interface WebSettings {
-  /** 关闭后不注册任何联网工具。 */
+  /** When disabled, no web tool is registered at all. */
   enabled?: boolean;
-  /** 搜索后端协议,默认 tavily。 */
+  /** Search backend protocol, tavily by default. */
   searchProvider?: "tavily" | "searxng" | "brave" | "google";
-  /** 搜索端点;searxng 必填,其余后端缺省用各自官方地址。 */
+  /** Search endpoint; required for searxng, the other backends default to their official URL. */
   searchEndpoint?: string;
   searchApiKey?: string;
-  /** Google Programmable Search 的引擎 ID(cx),provider=google 时必填。 */
+  /** Engine ID (cx) for Google Programmable Search; required when provider=google. */
   searchEngineId?: string;
-  /** 单次抓取交给模型的字符上限,默认 32000。 */
+  /** Character cap for a single fetch handed to the model, 32000 by default. */
   fetchMaxChars?: number;
-  /** 允许访问回环/内网地址,默认 false(SSRF 防护)。 */
+  /** Allow access to loopback/private addresses, false by default (SSRF protection). */
   allowPrivateHosts?: boolean;
 }
 
@@ -400,8 +408,9 @@ export interface ToolDefinition {
 
   maxOutputChars: number;
   /**
-   * 可选的输出后处理,在中央截断之前执行(先清洗再限量)。
-   * 只用于确定性清洗(如 shell 的 ANSI/重复行);异常会被忽略并回退到原始输出。
+   * Optional output post-processing, run before the central truncation (clean first, then
+   * cap). Meant for deterministic cleanup only (such as the shell's ANSI codes/duplicate
+   * lines); an exception is ignored and the original output is used instead.
    */
   postprocess?: ((output: string) => string) | undefined;
   invoke: (call: ToolCall, context?: ToolExecutionContext) => Promise<ToolResult>;
@@ -451,7 +460,7 @@ export interface RuntimeEventPayloads {
     attempt: number;
     message: string;
     finishReason?: string;
-    /** 中止前已收到的部分用量,供调用方入账。 */
+    /** Partial usage already received before the abort, for the caller to record. */
     usage?: Record<string, number>;
   };
   plan: { plan: string; streamed?: boolean; complete?: boolean };
@@ -479,7 +488,7 @@ export interface RuntimeEventPayloads {
     nextAttempt: number;
     maxRetries: number;
     message: string;
-    /** 结构化失败分类,便于诊断与按类统计。 */
+    /** Structured failure category, for diagnosis and per-category counting. */
     category?: ModelRetryCategory;
   };
   context_compaction: {

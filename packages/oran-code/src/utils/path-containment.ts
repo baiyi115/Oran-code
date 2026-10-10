@@ -2,14 +2,15 @@ import { lstat, realpath } from "node:fs/promises";
 import { dirname, isAbsolute, relative, resolve, sep } from "node:path";
 
 /**
- * 路径包含判断的统一实现。
+ * Unified implementation of path-containment checks.
  *
- * - `isWithinPath` / `comparablePath`:大小写策略随平台(win32 折叠、posix 敏感),
- *   用于权限沙箱等跨平台语义必须一致的场景;
- * - `isRelativeWithin` / `resolveWithinRoot`:纯词法判断,不折叠大小写、不解析
- *   symlink,用于同盘绝对路径之间的快速包含校验;
- * - `resolvePhysicalPath`:向上寻找最近存在的祖先做 realpath 后拼回不存在的
- *   尾部,得到 symlink 解析后的物理路径。
+ * - `isWithinPath` / `comparablePath`: case policy follows the platform (folded on win32,
+ *   case-sensitive on posix), for scenarios such as permission sandboxes where cross-platform
+ *   semantics must agree;
+ * - `isRelativeWithin` / `resolveWithinRoot`: purely lexical checks that neither fold case nor
+ *   resolve symlinks, for fast containment validation between absolute paths on the same drive;
+ * - `resolvePhysicalPath`: walks up to the nearest existing ancestor, realpaths it, then re-appends
+ *   the nonexistent tail to get the physical path with symlinks resolved.
  */
 
 export function comparablePath(path: string): string {
@@ -28,7 +29,10 @@ export function isRelativeWithin(root: string, candidate: string): boolean {
   return rel === "" || (!isAbsolute(rel) && rel !== ".." && !rel.startsWith(`..${sep}`) && !rel.startsWith("../"));
 }
 
-/** 把输入解析为 root 之内的绝对路径,逃逸即抛错;label 用于错误信息。 */
+/**
+ * Resolve the input to an absolute path inside root, throwing on escape; label names the value in
+ * the error message.
+ */
 export function resolveWithinRoot(root: string, raw: string, label = "path"): string {
   const candidate = resolve(root, raw);
   if (!isRelativeWithin(root, candidate)) {
@@ -38,8 +42,8 @@ export function resolveWithinRoot(root: string, raw: string, label = "path"): st
 }
 
 /**
- * input 为绝对路径时 base 被忽略;为相对路径时相对 base 解析。
- * 解析失败(非 ENOENT 的 stat 错误等)返回 undefined。
+ * When input is absolute, base is ignored; when it is relative, it resolves against base.
+ * A failed resolution (a stat error other than ENOENT, for example) returns undefined.
  */
 export async function resolvePhysicalPath(input: string, base?: string): Promise<string | undefined> {
   const absolute = resolve(base ?? ".", input);

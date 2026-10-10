@@ -1,6 +1,7 @@
 /**
- * 薄 barrel：工具实现按族拆分在 ./tools/ 目录下（registry/predicates/各工具族）。
- * 保留同名文件以维持既有 import 路径（含 session.ts 的动态 import("./tools.js")）不变。
+ * Thin barrel: tool implementations are split by family under ./tools/ (registry/predicates and
+ * the individual tool families). The file keeps the same name so existing import paths stay
+ * unchanged, including session.ts's dynamic import("./tools.js").
  */
 export { ToolRegistry, registerBuiltinTools } from "./tools/index.js";
 export type { ToolFactoryContext } from "./tools/registry.js";

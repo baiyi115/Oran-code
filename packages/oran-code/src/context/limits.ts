@@ -1,6 +1,7 @@
 /**
- * 上下文预算与 spill 的集中阈值口径。
- * 压缩、offload、近期保留、token 估算共用这一份常量,避免各处漂移。
+ * Central threshold definitions for context budgeting and spill.
+ * Compaction, offload, recent-retention, and token estimation all share this one set of constants
+ * so they cannot drift apart.
  */
 export const CONTEXT_LIMITS = Object.freeze({
   singleToolResultBytes: 80_000,
@@ -12,27 +13,48 @@ export const CONTEXT_LIMITS = Object.freeze({
   manualSafetyTokens: 3_000,
   recentRawTokens: 12_000,
   recentRawMessages: 5,
-  /** 压缩后保留的最近原文比例:取 window × 该比例与 recentRawTokens 的较大者。 */
+  /**
+   * Fraction of the window kept as recent verbatim text after compaction: the larger of
+   * window × this fraction and recentRawTokens.
+   */
   recentRawFraction: 0.16,
-  /** 自动压缩的窗口比例上限:大窗口下提前到 window × 80% 触发,而不是压到临界。 */
+  /**
+   * Window-fraction ceiling for automatic compaction: with a large window it fires early at
+   * window × 80% instead of compressing right at the limit.
+   */
   automaticWindowFraction: 0.8,
   recentFileCount: 5,
   recentFileTokens: 8_000,
   automaticFailureLimit: 3,
   summaryDirectDrops: 3,
   summaryDropFraction: 0.2,
-  /** 单轮压缩内摘要请求的最大尝试次数:失败响应会作为纠错反馈追加后重试。 */
+  /**
+   * Maximum summarization attempts within a single compaction: a failed response is appended as
+   * corrective feedback and retried.
+   */
   summaryAttempts: 3,
   charactersPerToken: 3.5,
-  /** CJK 字符按 1 token/字 保守估算(常见中文 tokenizer 为 1~1.5 字/token)。 */
+  /**
+   * CJK characters estimated conservatively at 1 token/character (common Chinese tokenizers give
+   * 1~1.5 characters/token).
+   */
   cjkTokensPerCharacter: 1.0,
   previewBytes: 8_192,
   previewLines: 80,
-  /** microcompact:保留最近多少条工具结果的原文,更早的清空正文(依然可落盘读回)。 */
+  /**
+   * microcompact: how many of the most recent tool results keep their verbatim text; older ones
+   * have their body cleared (they can still be read back from disk).
+   */
   microcompactKeepResults: 8,
-  /** microcompact:小于该字节数的历史结果不值得清空,保持原文。 */
+  /**
+   * microcompact: historical results smaller than this byte count are not worth clearing and keep
+   * their verbatim text.
+   */
   microcompactMinBytes: 4_000,
 });
 
-/** 单条工具结果的落盘失败重试上限:超过后放行,避免磁盘持续失败时每轮重试。 */
+/**
+ * Retry ceiling for spilling a single tool result to disk: past it the result is let through,
+ * avoiding a retry every turn while the disk keeps failing.
+ */
 export const MAX_OFFLOAD_FAILURES = 3;

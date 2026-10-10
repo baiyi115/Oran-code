@@ -157,7 +157,8 @@ describe("OverlayHandlers", () => {
     expect(h.state.overlay).toMatchObject({ kind: "sessions", selectedIndex: 1 });
 
     // Confirm deletes and rebuilds the list with a clamped index.
-    // 删除确认默认落在 Cancel(变更于本次一致性改造),先把高亮挪到 Delete 再 Enter。
+    // The delete confirm defaults to Cancel (changed in this consistency pass); move the
+    // highlight to Delete before pressing Enter.
     h.handlers.handleSessionKey("d", key({ ctrl: true }));
     h.handlers.handleSessionDeleteConfirmKey("", up);
     await h.handlers.handleSessionDeleteConfirmKey("", enter);
@@ -254,7 +255,7 @@ describe("session delete confirmation", () => {
 
   it("defaults to Cancel when asking to delete a session", () => {
     const h = sessionsHarness();
-    // Backspace/Del 触发删除请求(走确认层,不再直删)
+    // Backspace/Del trigger a delete request (goes through the confirm layer, no longer a direct delete)
     h.handlers.handleSessionKey("", key({ delete: true }));
     expect(h.state.overlay).toMatchObject({ kind: "session-delete-confirm", selectedIndex: 1 });
   });

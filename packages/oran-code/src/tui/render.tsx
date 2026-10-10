@@ -13,7 +13,7 @@ import { visualLines } from "./composer.js";
 import { renderConnectLines } from "./connect-wizard.js";
 import type { TuiState } from "./types.js";
 
-/** 纯渲染函数集:输入 (state, width),输出 ANSI 字符串行或 React 片段。 */
+/** Pure render helpers: take (state, width), return ANSI string lines or React fragments. */
 
 export function oranWelcomeLines(state: TuiState, availableWidth: number): string[] {
   const model = welcomeModelLabel(state);
@@ -94,11 +94,12 @@ export function renderOverlayLines(
     case "details": {
       const overlay = state.overlay;
       const lines = overlay.lines;
-      // 此前只显示前 capacity 行,连关闭提示都被一起裁掉;现在由 scrollOffset
-      // 驱动窗口化,提示固定在第一行,内容默认从头部开始,可翻页。
+      // This used to show only the first capacity lines, so even the close hint was cut off; now
+      // scrollOffset drives windowing, the hint stays on the first line, content starts at the
+      // head by default, and it can be paged.
       const bodyHeight = Math.max(1, (capacity ?? lines.length + 3) - 3);
       const maxOffset = Math.max(0, lines.length - bodyHeight);
-      // 键盘侧按同一个上限钳制(见 TuiState.detailsScrollMax)。
+      // Keyboard handling clamps to the same limit (see TuiState.detailsScrollMax).
       state.detailsScrollMax = maxOffset;
       const offset = Math.max(0, Math.min(overlay.scrollOffset ?? 0, maxOffset));
       const visible = lines.slice(offset, offset + bodyHeight);
@@ -212,7 +213,7 @@ export function fileQuery(
   cursor: number,
 ): { query: string; start: number; quoted: boolean } | undefined {
   const before = value.slice(0, cursor);
-  // 两种触发形态:@fragment 与 @"带空格的路径(闭引号可选)。
+  // Two trigger forms: @fragment and @"a spaced path (the closing quote is optional).
   const match = before.match(/(?:^|\s)@("([^"]*)"?|([^\s@]*))$/);
   if (!match || match.index === undefined) return undefined;
   return {
@@ -222,7 +223,7 @@ export function fileQuery(
   };
 }
 
-/** 把 {inverse} 文本标记解析成 ink 的反白 <Text>,让选择态穿过字符串渲染管线。 */
+/** Parse {inverse} text markers into ink's inverse <Text> so selection survives the string pipeline. */
 export function HighlightedLine({ value }: { value: string }): React.JSX.Element {
   const parts: React.ReactNode[] = [];
   const pattern = /\{inverse\}([\s\S]*?)\{\/inverse\}/g;

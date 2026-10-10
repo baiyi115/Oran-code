@@ -45,8 +45,8 @@ export function questionDialogLines(
   if (activeOption?.preview && activeOption.preview.trim()) {
     lines.push("", "Preview:", dimHorizontalRule(Math.min(safeWidth, 40)));
     const previewRawLines = activeOption.preview.split("\n").filter((line) => line.trim());
-    // 与工具输出同一套做法:头部 5 行 + 省略提示 + 尾部 3 行;只截前 8 行一定会
-    // 丢掉预览真正的尾部信息(结论/决策几乎都在最末)。
+    // Same scheme as tool output: 5 head lines + an omission marker + 3 tail lines; showing only
+    // the first 8 lines always drops the real tail of the preview (conclusions sit at the end).
     const HEAD = 5;
     const TAIL = 3;
     const shown =
@@ -62,7 +62,8 @@ export function questionDialogLines(
     }
   }
 
-  // Esc 的实际行为是"按首选项兜底作答",提示必须跟行为一致,否则用户不敢按。
+  // Esc really means "answer from the first option"; the hint must match the behavior or users
+  // will not dare press it.
   lines.push(
     "",
     isMulti

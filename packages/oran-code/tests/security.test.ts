@@ -110,7 +110,7 @@ describe("PermissionPolicy", () => {
   it("auto-approves compound read-only commands including fd-dup redirects", async () => {
     const root = await makeWorkspace();
     const policy = new PermissionPolicy(permissionConfig(root));
-    // 截图场景:git 查询组合后台分隔符与 2>&1,不应触发审批。
+    // Screenshot scenario: a git query combining a background separator with 2>&1 must not trigger approval.
     expect(
       await policy.decide(
         call("run_command", { command: "git log --oneline @{u}..HEAD 2>&1 & git status --porcelain=v1" }),

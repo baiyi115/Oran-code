@@ -32,8 +32,9 @@ interface PermissionRule {
   match: "exact" | "glob";
 }
 
-// 危险命令判定基于分词后的 AST(引号已被剥除、按命令逐条检查),
-// 避免 `git "reset" --hard` 这类引号绕过和 `+refspec` 强推漏网。
+// Dangerous-command detection works on the tokenized AST (quotes already stripped, each
+// command checked individually), so quote bypasses like `git "reset" --hard` and force
+// pushes via `+refspec` do not slip through.
 const FORK_BOMB_PATTERN = /:\s*\(\s*\)\s*\{\s*:\s*\|\s*:\s*&\s*\}\s*;\s*:/;
 const WINDOWS_VARIABLE_EXPANSION = /%[^%\s]*%/;
 
@@ -227,22 +228,26 @@ export function parseShellCommand(input: string): ShellCompoundNode {
         index += 1;
         continue;
       }
-      // 单个 & 是后台分隔符,与分号同义;否则 "git log & git status" 会被并进
-      // 同一条命令的参数里,结构判断随之失真。
+      // A lone & is a background separator, synonymous with a semicolon; otherwise
+      // "git log & git status" would be folded into one command's arguments and the
+      // structural check would be distorted.
       if (char === "&") {
         tokens.push({ type: "op", value: ";" });
         index += 1;
         continue;
       }
-      // 未加引号的圆括号是控制操作符(子 shell 或函数定义)。不断开时 "(rm -rf /)"
-      // 会被切成可执行名 "(rm"、参数 "/)",可执行名比对与根目录匹配同时落空;这里
-      // 断开分词,并把整条命令标记为含子 shell,使其无法被只读白名单自动放行。
+      // Unquoted parentheses are control operators (subshell or function definition).
+      // Without splitting here "(rm -rf /)" is cut into the executable name "(rm" and the
+      // argument "/)", missing both the executable-name comparison and the root-directory
+      // match; so split the tokenization and mark the whole command as containing a
+      // subshell, keeping it out of the read-only whitelist's automatic allowance.
       if (char === "(" || char === ")") {
         hasGlobalSubshell = true;
         index += 1;
         continue;
       }
-      // "2>&1" 是 fd 复制而非文件写入:记为 fdDup,后续只读判定据此放行。
+      // "2>&1" is an fd duplication, not a file write: recorded as fdDup, on which the
+      // later read-only check allows it.
       if (char === ">" && text[index + 1] === "&") {
         tokens.push({ type: "redirect", op: ">", fdDup: true });
         index += 2;
@@ -453,7 +458,8 @@ function isSafeCommandNode(cmd: ShellCommandNode): boolean {
   return false;
 }
 
-/** 无条件只读的可执行文件:只产出 stdout,不写文件系统、不进入交互模式。 */
+/** Unconditionally read-only executables: they only produce stdout, never write to the
+ * filesystem and never enter an interactive mode. */
 const READ_ONLY_EXECUTABLES: ReadonlySet<string> = new Set([
   "pwd",
   "ls",
@@ -500,10 +506,11 @@ const GIT_READ_ONLY_SUBCOMMANDS: ReadonlySet<string> = new Set([
 
 const NULL_DEVICE_TARGETS: ReadonlySet<string> = new Set(["/dev/null", "nul"]);
 
-/** 这些 git 子命令会输出补丁并应用仓库配置的 textconv/ext-diff 驱动。 */
+/** These git subcommands emit patches and therefore apply the repository's configured
+ * textconv/ext-diff drivers. */
 const PATCH_CAPABLE_GIT_SUBCOMMANDS: ReadonlySet<string> = new Set(["diff", "log", "show"]);
 
-/** `-c diff.<name>.command=...` 会在命令行上现场注册外部 diff 驱动。 */
+/** `-c diff.<name>.command=...` registers an external diff driver right on the command line. */
 const INLINE_DIFF_DRIVER_ARG = /^diff\.[\w.-]+\.(?:command|textconv)(?:=|$)/i;
 
 function gitInlineDiffDriverConfig(args: readonly string[]): boolean {
@@ -516,9 +523,10 @@ function gitInlineDiffDriverConfig(args: readonly string[]): boolean {
 }
 
 /**
- * AST 级只读判定:整条命令的每个管道段都必须命中只读白名单,fd 复制
- * (2>&1)与丢弃到空设备(>/dev/null)放行,其余重定向一律视为写操作。
- * 判定失败只会回落到正常审批,不会放大权限。
+ * AST-level read-only check: every pipeline segment of the whole command must match the
+ * read-only whitelist, fd duplication (2>&1) and discarding to the null device (>/dev/null)
+ * are allowed, and every other redirect counts as a write. A failed check only falls back to
+ * normal approval; it never widens permissions.
  */
 export function isReadOnlyShellCommand(ast: ShellCompoundNode): boolean {
   if (ast.hasParseError || ast.hasSubshell || ast.pipelines.length === 0) return false;
@@ -538,8 +546,8 @@ function isReadOnlyCommandNode(cmd: ShellCommandNode): boolean {
 }
 
 function isReadOnlyRipgrepCommand(cmd: ShellCommandNode): boolean {
-  // `rg --pre <cmd>` 会对每个被搜文件执行任意程序,与 find 的 -exec 同类,
-  // 连同 `--pre=x` 与 `--pre-glob` 取值形式一起拒绝。
+  // `rg --pre <cmd>` runs an arbitrary program against every file it searches, the same class
+  // as find's -exec, so the `--pre=x` and `--pre-glob` value forms are rejected with it.
   return !cmd.args.some((arg) => /^--pre(?:-glob)?(?:=|$)/.test(arg));
 }
 
@@ -556,13 +564,15 @@ function isReadOnlyGitCommand(cmd: ShellCommandNode): boolean {
   if (full.includes("--output") || full.includes("--ext-diff") || full.includes("--textconv")) return false;
   if (GIT_READ_ONLY_SUBCOMMANDS.has(sub)) return true;
 
-  // 条件放行的子命令:仅在确证只读的调用形态下放行,其余回落审批。
+  // Conditionally allowed subcommands: allowed only in invocation shapes that are provably
+  // read-only; everything else falls back to approval.
   if (sub === "branch") {
     const hasMutation = cmd.args.some((arg) =>
       /^(?:-[dDmMfFcC]|--(?:delete|move|rename|force|copy|edit|set-upstream|unset-upstream))/.test(arg),
     );
     if (hasMutation) return false;
-    // `git branch <name>` 会创建分支:仅放行无参或带显式列表旗标的形态。
+    // `git branch <name>` creates a branch: allow only the form with no arguments or with an
+    // explicit listing flag.
     if (rest.length === 0) return true;
     return rest.some((arg) => /^(?:-l|--list|-a|-r|-v|-vv|--all|--remotes)$/.test(arg));
   }
@@ -592,9 +602,10 @@ export class PermissionPolicy {
   private diffDriverCache: { workspace: string; checkedAt: number; hasDrivers: boolean } | undefined;
 
   /**
-   * 只读白名单的最后一道守卫:Windows 上 %VAR% 会在解析前展开(可能注入
-   * 元字符),git 的补丁类子命令会应用仓库配置的 textconv/ext-diff 外部
-   * 驱动。命中任一情形就不自动放行,回落正常审批。
+   * The final guard behind the read-only whitelist: on Windows %VAR% expands before parsing
+   * (and can inject metacharacters), and git's patch-producing subcommands apply the external
+   * textconv/ext-diff drivers configured in the repository. If either case applies, do not
+   * auto-allow; fall back to normal approval.
    */
   private async canAutoAllowShellCommand(command: string, ast: ShellCompoundNode): Promise<boolean> {
     if (process.platform === "win32" && WINDOWS_VARIABLE_EXPANSION.test(command)) return false;
@@ -622,15 +633,16 @@ export class PermissionPolicy {
     }
     let hasDrivers: boolean;
     try {
-      // 只查仓库本地配置:系统/全局作用域的驱动(如 Git for Windows 自带的
-      // astextplain)不受攻击者控制,纳入检查会让所有 git diff 退回审批。
+      // Only the repository-local config is inspected: system/global-scope drivers (such as
+      // the astextplain bundled with Git for Windows) are not attacker-controlled, and
+      // including them would send every git diff back to approval.
       const stdout = await new Promise<string>((resolve, reject) => {
         execFile(
           "git",
           ["config", "--local", "--get-regexp", "^diff\\..*\\.(command|textconv)$"],
           { cwd: this.config.workspace, timeout: 2000 },
           (error, stdout) => {
-            // 退出码 1 表示无匹配,属于正常情况。
+            // Exit code 1 means no match, which is a normal case.
             if (error && (error as { code?: number }).code !== 1) reject(error);
             else resolve(stdout);
           },
@@ -684,7 +696,8 @@ export class PermissionPolicy {
     }
 
     if (kind !== "command" && resolvedPath !== undefined) {
-      // allowedRoots 在会话内基本不变,按内容键记忆化物理解析,免去每次调用的 lstat 链。
+      // allowedRoots hardly change within a session, so the physical resolution is memoized
+      // on a content key, sparing the lstat chain on every call.
       const rootsKey = this.config.allowedRoots.join("\u0000");
       if (this.resolvedRoots?.key !== rootsKey) {
         this.resolvedRoots = {
@@ -805,7 +818,8 @@ function isSafeCommand(command: string): boolean {
   if (!prefix) return false;
   if (/\bgit\b[\s\S]*(?:--output(?:=|\s|$)|--ext-diff\b|--textconv\b)/i.test(normalized)) return false;
   if (prefix === "git branch") {
-    // `git branch <name>` 会创建分支:除变异旗标外,还必须是无参或带显式列表旗标。
+    // `git branch <name>` creates a branch: besides the mutation flags, the command must also
+    // be argument-less or carry an explicit listing flag.
     const rest = normalized.slice(prefix.length).trim();
     const hasMutationFlag =
       /(?:^|\s)(?:-[^-\s]*[dDmMfF]|--(?:delete|move|rename|force|copy|edit|set-upstream|unset-upstream))(?:=|\s|$)/i.test(
@@ -834,8 +848,9 @@ function extractPath(call: ToolCall): string | undefined {
 
 function extractRuleContent(call: ToolCall, kind: ToolKind): string {
   if (kind === "command") {
-    // run_command 用命令文本本身;其余 command 类工具(MCP、batch_tools 等)
-    // 没有天然的规则内容,退回空串会让"永久允许"写下匹配一切调用的空规则。
+    // run_command uses the command text itself; the other command-kind tools (MCP,
+    // batch_tools, ...) have no natural rule content, and falling back to an empty string
+    // would make "always allow" write an empty rule that matches every call.
     if (canonicalTool(call.name) !== "run_command") return globSafeArguments(call.arguments, "text");
     return typeof call.arguments.command === "string" ? call.arguments.command.trim() : "";
   }
@@ -853,8 +868,8 @@ function extractRuleContent(call: ToolCall, kind: ToolKind): string {
 }
 
 function globSafeArguments(value: unknown, mode: "path" | "text" = "path"): string {
-  // JSON 里的 / 与 \ 会截断 glob 的单段匹配,先转义,保证 `tool(*)` 这类
-  // 用户规则在转义后的内容上仍然成立。
+  // A / or \ inside JSON would cut a single-segment glob match short, so escape them first;
+  // that keeps user rules such as `tool(*)` working against the escaped content.
   const encoded = stableArguments(value);
   return mode === "text" ? encoded : encoded.replace(/\\/g, "\\\\").replace(/\//g, "\\/");
 }

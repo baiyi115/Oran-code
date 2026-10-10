@@ -86,8 +86,9 @@ export class TeamManager {
     if (!team) return { ok: false, output: `Unknown team ${teamName}. Create it with team_create first.` };
     const memberName = uniqueMemberName(team, deriveMemberName(description));
     if (!this.runtime) {
-      // 运行时由 coordinator 在任务装配时 attach;尚未 attach 时宁可拒绝,
-      // 也不安装只认得本次 definition 的临时闭包(那会让后续 resume 静默失败)。
+      // The runtime is attached by the coordinator during task assembly; when it is not attached
+      // yet, refusing is better than installing a temporary closure that only knows this one
+      // definition (that would make a later resume fail silently).
       return { ok: false, output: "team runtime is not attached yet; start a task before spawning teammates" };
     }
     const member: TeamMember = {
@@ -265,7 +266,10 @@ export class TeamManager {
     await this.stateStore?.saveTeams([...this.teams.values()].map(serializeTeam));
   }
 
-  /** 中间态(创建团队、入队、投递)落盘走防抖,完成/中断边界仍立即持久化。 */
+  /**
+   * Intermediate states (creating a team, enqueueing, delivery) are debounced to disk; the
+   * completion/interruption boundaries are still persisted immediately.
+   */
   private schedulePersist(): void {
     this.stateStore?.scheduleSaveTeams([...this.teams.values()].map(serializeTeam));
   }

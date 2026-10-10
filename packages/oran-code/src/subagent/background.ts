@@ -118,7 +118,7 @@ export class BackgroundAgentTaskManager {
       },
     });
 
-    // 卡死的子任务会永久占用并发槽;超时中止并标记 timed_out。
+    // A stuck subagent would hold a concurrency slot forever; abort it on timeout and mark it timed_out.
     let settled = false;
     const settle = (result: SubagentRunResult): void => {
       if (settled) return;
@@ -347,7 +347,10 @@ export class BackgroundAgentTaskManager {
     await this.stateStore?.saveBackground(this.list().map(serializeTask));
   }
 
-  /** 中间态(登记任务、消费通知)落盘走防抖,终态仍立即持久化。 */
+  /**
+   * Intermediate states (registering a task, consuming a notification) are debounced to disk;
+   * terminal states are still persisted immediately.
+   */
   private schedulePersist(): void {
     this.stateStore?.scheduleSaveBackground(this.list().map(serializeTask));
   }
@@ -357,7 +360,8 @@ const NOTIFICATION_OUTPUT_LIMIT = 16_000;
 
 export function backgroundTaskNotification(task: BackgroundAgentTask): string {
   const raw = task.output ?? task.error ?? "No result was produced.";
-  // 子任务输出可能非常大,原样注入会挤占父会话上下文;详情用 task_detail 查看。
+  // Subagent output can be very large, and injecting it verbatim would crowd out the parent
+  // conversation's context; use task_detail to read the full text.
   const output =
     raw.length > NOTIFICATION_OUTPUT_LIMIT
       ? `${raw.slice(0, NOTIFICATION_OUTPUT_LIMIT)}\n...[truncated ${raw.length - NOTIFICATION_OUTPUT_LIMIT} chars]`

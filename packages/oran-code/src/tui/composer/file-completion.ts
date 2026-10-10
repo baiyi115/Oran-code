@@ -4,7 +4,7 @@ import { resolve } from "node:path";
 export interface WorkspaceFileIndexOptions {
   readonly ignoredNames?: readonly string[];
   readonly maxEntries?: number;
-  /** 索引过期时间(毫秒);过期后下一次 search 重新扫描,默认 15 秒。 */
+  /** Index TTL in milliseconds; the next search rescans once it expires. Defaults to 15 seconds. */
   readonly staleAfterMs?: number;
 }
 
@@ -37,7 +37,7 @@ export class WorkspaceFileIndex {
     return promise;
   }
 
-  /** 建好的索引在 TTL 内直接复用;过期前的下一次 search 重新扫描。 */
+  /** Reuse the built index while it is within the TTL; the first search after expiry rescans. */
   async search(query: string, limit = 200): Promise<string[]> {
     const entries =
       this.entries && Date.now() - this.builtAt <= this.staleAfterMs ? this.entries : await this.refresh();

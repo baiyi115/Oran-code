@@ -8,7 +8,7 @@ export interface RecentFile {
   readAt: string;
 }
 
-/** 落盘位置:`<workspace>/<stateDirectory>/sessions/<processSessionId>/tool-results/`。 */
+/** Spill location: `<workspace>/<stateDirectory>/sessions/<processSessionId>/tool-results/`. */
 export interface SpillTarget {
   workspace: string;
   stateDirectory: string;
@@ -64,8 +64,9 @@ export function formatRecentFile(file: RecentFile): string {
 }
 
 /**
- * 工具结果全文落盘,返回相对路径。
- * EEXIST 时按内容比对判定可否复用;其余失败返回 undefined,由调用方决定是否保留原文。
+ * Spill a tool result's full text to disk and return the relative path.
+ * On EEXIST the content is compared to decide whether the existing file can be reused; any other
+ * failure returns undefined, leaving the caller to decide whether to keep the verbatim text.
  */
 export async function spillToolResult(target: SpillTarget, id: string, content: string): Promise<string | undefined> {
   if (!isSafeToolCallId(id)) return undefined;
@@ -89,8 +90,10 @@ export async function spillToolResult(target: SpillTarget, id: string, content: 
 }
 
 /**
- * 清空占位符(microcompact 用):只留字节数、路径与读回提示,没有正文预览。
- * 用于早期工具结果——正文不值得占用活跃上下文,但仍可随时读回。
+ * Cleared placeholder (used by microcompact): keeps only the byte count, the path, and a read-back
+ * hint, with no body preview.
+ * Used for early tool results — their body is not worth the active context, but it can still be
+ * read back at any time.
  */
 export function buildClearedReplacement(bytes: number, relativePath: string): string {
   return [

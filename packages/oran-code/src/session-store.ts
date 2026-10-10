@@ -46,7 +46,7 @@ export interface StoredSession {
 type StoredSessionState = Omit<StoredSession, "conversation">;
 export interface SessionStateRecord {
   type: "state";
-  /** 归档记录 schema 版本;读取侧对缺省(旧文件)按 v1 处理。 */
+  /** Archive record schema version; the reader treats a missing value (old files) as v1. */
   version?: 1;
   timestamp: string;
   session: StoredSessionState;
@@ -308,8 +308,9 @@ export class SessionStore {
       const prompt = firstConversationPrompt(after);
       if (prompt) next.archiveTitle = truncateSessionName(prompt, 48);
     }
-    // 纯元数据更新不追加 state 记录:state 记录一多,下次打开就会触发全量
-    // 归档重写;元数据以 sidecar 为准即可。
+    // A metadata-only update does not append a state record: too many state records would trigger a
+    // full archive rewrite the next time the session is opened, and the sidecar is authoritative for
+    // metadata anyway.
     next.archiveSize = await this.persistRecordsAndState(
       id,
       changes.length ? [...changes, stateRecord(next, now)] : [],
@@ -381,7 +382,8 @@ export class SessionStore {
       const id = name.slice(0, -6);
       try {
         if ((await stat(path)).mtimeMs >= cutoff) continue;
-        // 另一个实例可能仍持有该会话(心跳未过期),宁可留着下次再清。
+        // Another instance may still hold this session (its heartbeat has not expired); better to
+        // leave it for the next cleanup.
         if (await this.hasFreshLock(id)) continue;
         await unlink(path);
         try {
@@ -475,7 +477,7 @@ export class SessionStore {
     return resolve(this.directory, `${id}.lock`);
   }
 
-  /** 活跃实例心跳:cleanExpired 据此跳过仍被其他进程使用的会话。 */
+  /** Active-instance heartbeat: cleanExpired uses it to skip sessions still in use by other processes. */
   private async touchSessionLock(id: string): Promise<void> {
     try {
       const lock = this.lockPath(id);
@@ -483,7 +485,7 @@ export class SessionStore {
       if (info && Date.now() - info.mtimeMs < 60_000) return;
       await writeFile(lock, String(process.pid), "utf8");
     } catch {
-      // 心跳失败不影响持久化主路径。
+      // A failed heartbeat does not affect the main persistence path.
     }
   }
 
@@ -491,7 +493,8 @@ export class SessionStore {
     try {
       const info = await stat(this.lockPath(id));
       if (Date.now() - info.mtimeMs >= 120_000) return false;
-      // 本进程自己写的锁不代表其他实例还在用;cleanExpired 会同步清掉本地状态。
+      // A lock written by this process does not mean another instance is still using it; cleanExpired
+      // clears the local state too.
       const owner = Number.parseInt((await readFile(this.lockPath(id), "utf8")).trim(), 10);
       return Number.isFinite(owner) && owner !== process.pid;
     } catch {
@@ -971,8 +974,8 @@ function isSafeSessionId(id: string): boolean {
   return /^[A-Za-z0-9._-]+$/.test(id) && id !== "." && id !== "..";
 }
 function normalizeWorkspace(workspace: string): string {
-  // posix 路径区分大小写,只有 win32 才折叠;统一小写会让两个仅大小写
-  // 不同的工作区在 Linux 上互相串会话。
+  // POSIX paths are case-sensitive and only win32 folds case; lowercasing unconditionally would let
+  // two workspaces differing only in case share each other's sessions on Linux.
   return comparablePath(resolve(workspace).replace(/[\\/]+$/, ""));
 }
 function isStoredSession(value: unknown): value is StoredSession {

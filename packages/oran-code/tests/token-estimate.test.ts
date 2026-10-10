@@ -11,7 +11,7 @@ describe("script-aware token estimation", () => {
     const messages: Message[] = [{ role: "user", content: "plain ascii engineering request about tooling".repeat(20) }];
     const estimate = manager().estimateTokens(messages, []);
     const bytes = Buffer.byteLength(JSON.stringify({ messages, tools: [] }), "utf8");
-    // ASCII: 与旧公式同量级(允许 ±20% 的 JSON 结构开销扰动)。
+    // ASCII: same order of magnitude as the old formula (allowing ±20% noise from JSON structure overhead).
     expect(estimate).toBeGreaterThan((bytes / 3.5) * 0.8);
     expect(estimate).toBeLessThan((bytes / 3.5) * 1.2);
   });
@@ -23,7 +23,7 @@ describe("script-aware token estimation", () => {
     const bytes = Buffer.byteLength(JSON.stringify({ messages, tools: [] }), "utf8");
     const cjkCharacters = (content.match(/[\u2E80-\u9FFF\uF900-\uFAFF\uFF00-\uFFEF]/g) ?? []).length;
     expect(cjkCharacters).toBeGreaterThan(100);
-    // 旧算法:bytes/3.5 系统性低估;新算法至少按 1 token/字 保底。
+    // Old algorithm: bytes/3.5 systematically underestimates; the new one floors at 1 token per character.
     expect(estimate).toBeGreaterThanOrEqual(Math.ceil(bytes / 3.5));
     expect(estimate).toBeGreaterThanOrEqual(cjkCharacters);
   });
@@ -32,11 +32,12 @@ describe("script-aware token estimation", () => {
     const m = manager();
     const ascii: Message[] = [{ role: "user", content: "review the workspace and report findings".repeat(10) }];
     const anchorEstimate = m.estimateTokens(ascii, []);
-    // 用与估算一致的 usage 建锚:后续同载荷应精确回归锚点值。
+    // Anchor with a usage matching the estimate: the same payload afterwards should return
+    // exactly the anchor value.
     m.recordUsage({ input_tokens: anchorEstimate }, ascii, []);
     expect(m.estimateTokens(ascii, [])).toBe(anchorEstimate);
 
-    // 追加大量中文:CJK 增量按新斜率计,必须高于旧字节斜率的增量。
+    // Append a lot of Chinese: the CJK increment uses the new slope and must exceed the old byte-slope increment.
     const grown: Message[] = [
       ...ascii,
       { role: "user", content: "补充一段很长的中文说明以推动上下文增长,验证锚点斜率修正生效。".repeat(10) },

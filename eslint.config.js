@@ -14,10 +14,10 @@ export default tseslint.config(
       globals: { ...globals.node },
     },
     rules: {
-      // CLI 与调试工具允许直接输出与进程退出。
+      // The CLI and its debug tooling are allowed to print and exit directly.
       "no-console": "off",
       "no-process-exit": "off",
-      // 前缀下划线的有意未使用参数（测试桩、端口适配层）不告警。
+      // A leading underscore marks an intentionally unused parameter (test stubs, port adapters).
       "@typescript-eslint/no-unused-vars": ["error", { argsIgnorePattern: "^_", varsIgnorePattern: "^_" }],
     },
   },
@@ -28,14 +28,15 @@ export default tseslint.config(
     },
   },
   {
-    // 这两个模块的职责就是匹配终端控制字节(ESC/BEL),no-control-regex 在这里是噪音。
+    // These two modules exist to match terminal control bytes (ESC/BEL); no-control-regex is noise here.
     files: ["packages/oran-code/src/tui/terminal-streams.ts", "packages/oran-code/src/tools/output-pipeline.ts"],
     rules: {
       "no-control-regex": "off",
     },
   },
   {
-    // 测试里的 any 用于探查私有状态、空 async 生成器用于桩实现,均为惯用法。
+    // In tests, any is used to inspect private state and an empty async generator stands in for a
+    // stub; both are idioms here.
     files: ["packages/**/tests/**/*.ts"],
     rules: {
       "@typescript-eslint/no-explicit-any": "off",

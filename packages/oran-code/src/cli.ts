@@ -407,8 +407,9 @@ async function printConfigFile(path: string, showSecrets: boolean, primaryPath?:
 const SECRET_KEY_PATTERN = /api[_-]?key|token|secret|password|authorization|credential/i;
 
 function maskSecrets(value: unknown, key?: string): unknown {
-  // 除 apiKey 外,mcpServers.*.env / headers 等任意命中敏感键名的字符串值
-  // 一并掩码,避免凭据经 `oran config get` 进入终端或日志。
+  // Beyond apiKey, any string value whose key matches a sensitive name — including
+  // mcpServers.*.env / headers — is masked as well, so credentials cannot reach the terminal
+  // or logs through `oran config get`.
   if (key && SECRET_KEY_PATTERN.test(key)) {
     if (typeof value !== "string") return "***";
     return value.length > 6 ? `${value.slice(0, 3)}...${value.slice(-3)}` : "***";
@@ -547,7 +548,7 @@ export async function runCli(argv = process.argv.slice(2)): Promise<void> {
   }
 }
 
-// 兼容 npm/pnpm 全局 link 的软链入口：realpath 双向比较。
+// Symlink entry point compatible with an npm/pnpm global link: compare realpaths both ways.
 if (process.argv[1]) {
   try {
     const entryReal = realpathSync(process.argv[1]);
@@ -556,6 +557,6 @@ if (process.argv[1]) {
       void runCli();
     }
   } catch {
-    // 入口缺失时 realpath 可能抛错，不应阻断 CLI 启动。
+    // realpath can throw when the entry point is missing; that must not block CLI startup.
   }
 }

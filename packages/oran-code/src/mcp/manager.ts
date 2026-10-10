@@ -67,7 +67,7 @@ export class McpManager {
     if (this.connectPromise) return this.connectPromise;
     const attempt = this.connectAll();
     this.connectPromise = attempt;
-    // 全部 server 都失败时允许后续重试,否则本次会话永远无法再连接。
+    // When every server failed, allow a later retry; otherwise this session could never connect again.
     void attempt.then(() => {
       if (this.connectPromise === attempt && this.servers.size === 0) this.connectPromise = undefined;
     });
@@ -206,7 +206,8 @@ export class McpManager {
       const transport = createTransport(config, this.workspace);
       client = new Client({ name: "oran-code", version: "0.1.0" });
       this.pendingClients.add(client);
-      // 挂起的 stdio/HTTP server 不能无限占用启动流程:握手与工具列表都限时。
+      // A hung stdio/HTTP server must not occupy the startup path forever: both the handshake and
+      // the tool listing are time-bounded.
       await withTimeout(client.connect(transport), MCP_CONNECT_TIMEOUT_MS, `${name}: connect timed out`);
       const listed = await withTimeout(client.listTools(), MCP_CONNECT_TIMEOUT_MS, `${name}: listTools timed out`);
       const instructions = client.getInstructions()?.trim();
@@ -219,8 +220,8 @@ export class McpManager {
       };
       this.pendingClients.delete(client);
       this.servers.set(name, server);
-      // stdio 子进程或远端连接崩溃后,失效的 client/工具必须立即下线,
-      // 否则调用只会打到死连接上。
+      // Once a stdio child process or remote connection dies, the stale client and tools must be
+      // taken offline immediately; otherwise calls only hit a dead connection.
       client.onclose = () => {
         if (this.closed) return;
         if (this.servers.get(name) === server) this.removeServer(name);
@@ -228,8 +229,8 @@ export class McpManager {
       };
       for (const remote of listed.tools) {
         const fullName = `${MCP_TOOL_PREFIX}${sanitizeName(name)}__${sanitizeName(remote.name)}`;
-        // 消毒后的名字可能碰撞(`a.b` 与 `a_b` 同名);静默覆盖会让调用打到
-        // 错误的远端工具,这里宁可跳过并记录失败。
+        // Sanitized names can collide (`a.b` and `a_b` both become `a_b`); silently overwriting
+        // would route calls to the wrong remote tool, so skip and record the failure instead.
         if (this.tools.has(fullName)) {
           this.connectionFailures.push({ name, error: `duplicate tool name after sanitization: ${fullName}` });
           continue;

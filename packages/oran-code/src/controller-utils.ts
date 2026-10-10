@@ -51,7 +51,10 @@ export function isRetryableModelStatus(status: number): boolean {
   return status === 408 || status === 429 || status >= 500;
 }
 
-/** 模型返回了空响应(部分兼容端点的瞬时空 completion):按可重试错误处理。 */
+/**
+ * The model returned an empty response (some compatible endpoints emit a transient empty
+ * completion): treat it as a retryable error.
+ */
 export class EmptyModelResponseError extends Error {
   constructor() {
     super("model returned an empty response");
@@ -59,7 +62,10 @@ export class EmptyModelResponseError extends Error {
   }
 }
 
-/** 完成的工具调用参数无法解析(非法 JSON / 非法结构),调用不可执行。 */
+/**
+ * A completed tool call whose arguments cannot be parsed (invalid JSON / invalid structure);
+ * the call is not executable.
+ */
 export class ToolCallParseError extends Error {
   constructor(message: string, options?: ErrorOptions) {
     super(message, options);
@@ -71,8 +77,10 @@ const NETWORK_FAILURE_PATTERN =
   /fetch failed|network|econnreset|econnrefused|econnaborted|enotfound|eai_again|etimedout|socket hang up|other side closed|premature close|undici/i;
 
 /**
- * 把模型请求失败归类到稳定类别,供重试事件、诊断与按类统计复用。
- * 分类只回答"发生了哪类失败",不改变重试决策(决策仍在 streamWithRetry)。
+ * Classifies model-request failures into stable categories, reused by retry events, diagnostics
+ * and per-category statistics.
+ * The classification only answers "which kind of failure happened"; it does not change the retry
+ * decision (that still lives in streamWithRetry).
  */
 export function classifyModelRetry(error: unknown): ModelRetryCategory {
   if (error instanceof ModelRequestError) {
@@ -84,7 +92,8 @@ export function classifyModelRetry(error: unknown): ModelRetryCategory {
   if (error instanceof SseIdleTimeoutError) return "timeout";
   if (error instanceof EmptyModelResponseError) return "empty";
   if (error instanceof ToolCallParseError) return "parse";
-  // ProviderContractError 定义在 turn-requester(流协议违规),取名字避免反向依赖。
+  // ProviderContractError is defined in turn-requester (stream protocol violation); matching on
+  // the name avoids a reverse dependency.
   if (error instanceof Error && error.name === "ProviderContractError") return "contract";
   if (error instanceof Error && NETWORK_FAILURE_PATTERN.test(error.message)) return "network";
   return "unknown";
@@ -94,7 +103,7 @@ const RETRY_BACKOFF_BASE_MS = 500;
 const RETRY_BACKOFF_MAX_MS = 8_000;
 
 /** Exponential retry delay with a small jitter so concurrent clients do not retry in lockstep.
- *  服务端给出 Retry-After 时优先遵循(封顶 120s)。 */
+ *  A server-provided Retry-After takes precedence (capped at 120s). */
 export function modelRetryDelayMs(attempt: number, random = Math.random, retryAfterMs?: number): number {
   if (retryAfterMs !== undefined && retryAfterMs > 0) {
     return Math.min(120_000, retryAfterMs) + Math.floor(Math.max(0, Math.min(1, random())) * 250);
@@ -129,7 +138,7 @@ export function ensureCallId(call: ToolCall, contextManager: ContextManager): st
   return id;
 }
 
-/** 从工具参数中提取文件路径，供 Hook 条件匹配与环境变量注入。 */
+/** Extracts a file path from the tool arguments, for Hook condition matching and env-var injection. */
 export function extractToolFilePath(call: ToolCall): string {
   for (const key of ["path", "file_path", "target_path"]) {
     const value = call.arguments[key];
@@ -186,18 +195,20 @@ export function tokenBudgetMessage(loop: AgentLoop, budget: number): string {
 }
 
 export function withRuntimeReminders(messages: readonly Message[], reminders: readonly string[]): Message[] {
-  // 浅拷贝即可:消息对象入列后不可变,这里只追加 reminder,不改写元素。
+  // A shallow copy is enough: message objects are immutable once enqueued, so this only appends
+  // a reminder without rewriting elements.
   const copy = [...messages];
-  // 运行时提醒追加到请求末尾（而非插在对话之前）：每轮变化的提醒文本不再击穿
-  // 稳定前缀 [system + 对话] 的字节一致性，DeepSeek/OpenAI 前缀缓存可覆盖整段对话。
+  // Runtime reminders are appended at the end of the request (instead of before the conversation):
+  // per-turn reminder text no longer breaks the byte-identity of the stable prefix
+  // [system + conversation], letting DeepSeek/OpenAI prefix caching cover the whole conversation.
   if (reminders.length) copy.push(systemReminderMessage(reminders));
   return copy;
 }
 
 /**
- * 把模型回复转成 assistant 消息。推理输出一并保留：DeepSeek thinking 模式
- * 要求下一轮请求回传 reasoning_content，Anthropic 扩展思考要求回放带签名的
- * thinking 块，两者都从这里取数据。
+ * Converts a model reply into an assistant message. Reasoning output is preserved too: DeepSeek
+ * thinking mode requires reasoning_content to be sent back with the next request, and Anthropic
+ * extended thinking requires replaying signed thinking blocks; both read their data from here.
  */
 export function assistantMessage(response: ModelResponse): Message {
   return {
@@ -332,11 +343,12 @@ export function inferToolKind(name: string): "readonly" | "write" | "command" {
 
 export interface WorkspaceSnapshot {
   fingerprint: string;
-  /** `git status --porcelain` 行列表;git 不可用时为空(此时无回执信息)。 */
+  /** The `git status --porcelain` line list; empty when git is unavailable (no receipt info then). */
   entries: readonly string[];
 }
 
-/** 指纹与状态行一次取齐:执行回执需要变更前后两份行列表做差集。 */
+/** Fetches the fingerprint and status lines in one pass: the execution receipt needs
+ *  before/after line lists to compute a difference. */
 export async function workspaceSnapshot(root: string): Promise<WorkspaceSnapshot> {
   try {
     const result = await execFileAsync("git", ["-C", root, "status", "--porcelain=v1", "--untracked-files=all"], {
@@ -356,7 +368,7 @@ export async function workspaceFingerprint(root: string): Promise<string> {
   return (await workspaceSnapshot(root)).fingerprint;
 }
 
-/** 状态行差集:新增/变更行原样列出,消失的行以 `-` 前缀标记。 */
+/** Status-line difference: added/changed lines are listed as-is, vanished lines get a `-` prefix. */
 export function diffWorkspaceEntries(before: readonly string[], after: readonly string[]): readonly string[] {
   const beforeSet = new Set(before);
   const afterSet = new Set(after);

@@ -96,8 +96,10 @@ export class AgentStateStore {
   }
 
   /**
-   * 中间态写入:内存立即更新,磁盘写入防抖 500ms 合并。
-   * 崩溃最多丢失窗口内的中间状态,restore 会将其标记为 interrupted。
+   * Intermediate-state write: memory is updated immediately and disk writes are coalesced with a
+   * 500ms debounce.
+   * A crash loses at most the intermediate state inside that window, which restore marks as
+   * interrupted.
    */
   scheduleSaveBackground(tasks: readonly PersistedBackgroundTask[]): void {
     void this.mutate(
@@ -167,7 +169,10 @@ export class AgentStateStore {
     await mutation;
   }
 
-  /** 定时器到点后经串行链写入当前内存快照,避免旧快照覆盖新快照。 */
+  /**
+   * Once the timer fires, write the current in-memory snapshot through the serial chain so an
+   * old snapshot cannot overwrite a newer one.
+   */
   private scheduleWrite(): void {
     if (this.persistTimer) return;
     this.persistTimer = setTimeout(() => {
@@ -175,7 +180,7 @@ export class AgentStateStore {
       const job = this.mutationTail.then(() => this.writeSnapshot()).catch(() => undefined);
       this.mutationTail = job;
     }, PERSIST_DEBOUNCE_MS);
-    // 保持进程可退出;flush/shutdown 负责最后的落盘。
+    // Keep the process exitable; flush/shutdown is responsible for the final write to disk.
     this.persistTimer.unref?.();
   }
 

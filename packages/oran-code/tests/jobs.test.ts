@@ -38,7 +38,8 @@ describe("background shell jobs", () => {
       expect(collected.output).toContain("job-ok");
       expect(collected.output).toContain('status="exited"');
 
-      // 终态作业恰好通知一次,通知文本可注入下一轮请求。
+      // A job in a terminal state notifies exactly once, and the notification text can be
+      // injected into the next request.
       const notifications = jobs.drainNotifications();
       expect(notifications).toHaveLength(1);
       expect(shellJobNotification(notifications[0]!)).toContain("<job-notification>");
@@ -57,7 +58,7 @@ describe("background shell jobs", () => {
         timeout: 1,
       });
 
-      // 超时不杀进程:结果里给出作业 id,并明确要求不要重跑。
+      // A timeout does not kill the process: the result carries the job id and explicitly says not to re-run it.
       expect(result.ok).toBe(false);
       expect(result.summary).toContain("still running as background job");
       expect(result.error).toContain("Do not re-run it");

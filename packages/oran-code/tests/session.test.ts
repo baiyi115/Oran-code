@@ -97,9 +97,9 @@ describe("TerminalSession", () => {
     }
   });
 
-  // 这条用例把一次完整任务跑过 session(真实定时器 + readline),实测在整套用例
-  // 并行时接近 5s,正好卡在 vitest 默认超时上;它断言的是行为而非速度,所以给
-  // 它一个显式上限,避免负载一高就随机变红。
+  // This case runs a full task through the session (real timers + readline); measured at close
+  // to 5s when the whole suite runs in parallel, right at vitest's default timeout. It asserts
+  // behavior, not speed, so it gets an explicit limit instead of turning red at random under load.
   it("selects a model from the freshly loaded project catalog", async () => {
     const workspace = await mkdtemp(join(tmpdir(), "liteagent-session-"));
     const projectConfig = join(workspace, ".oran", "config.json");
@@ -294,7 +294,7 @@ describe("TerminalSession", () => {
         { role: "assistant", content: "handled second request" },
       ];
 
-      // 无参数只列出可回退的轮次(steering 不算独立轮次)。
+      // With no argument it lists only the turns that can be rewound to (steering is not a separate turn).
       const listing = await internal.rewindConversation("");
       expect(listing.ok).toBe(true);
       expect(listing.output).toContain("1. first request");
@@ -311,7 +311,8 @@ describe("TerminalSession", () => {
         "handled steering",
       ]);
 
-      // 回退结果被持久化:归档里不再包含被丢弃轮次的内容,保留的轮次仍在。
+      // The rewind is persisted: the archive no longer contains the content of the dropped
+      // turns, while the kept turns are still there.
       const sessionsDir = userSessionsRoot(workspace);
       const archives = (await readdir(sessionsDir)).filter((name) => name.endsWith(".jsonl"));
       expect(archives.length).toBeGreaterThan(0);
@@ -320,7 +321,7 @@ describe("TerminalSession", () => {
       expect(archiveText).not.toContain("second request");
       expect(archiveText).toContain("first request");
 
-      // 越界与非法参数被明确拒绝。
+      // Out-of-range and invalid arguments are explicitly rejected.
       const invalid = await internal.rewindConversation("9");
       expect(invalid.ok).toBe(false);
       expect(invalid.output).toContain("Invalid rewind target");

@@ -1,6 +1,7 @@
 /**
- * 纯文件系统读取 Git 状态（F7-F11、N4）。
- * 本模块绝不启动 git 子进程；任何异常按 spec 返回空值。
+ * Pure filesystem reads of Git state (F7-F11, N4).
+ * This module never spawns a git subprocess; every failure returns the empty value the spec
+ * calls for.
  */
 import { lstat, readFile } from "node:fs/promises";
 import { isAbsolute, resolve } from "node:path";
@@ -19,7 +20,7 @@ export interface ParsedHead {
   readonly sha?: string;
 }
 
-/** F7：解析仓库根的 git 目录位置。不存在或不可解析时返回空。 */
+/** F7: resolve the location of the git directory from the repo root. Returns undefined when absent or unparseable. */
 export async function resolveGitDir(repoRoot: string): Promise<string | undefined> {
   const marker = resolve(repoRoot, ".git");
   let stats;
@@ -43,7 +44,7 @@ export async function resolveGitDir(repoRoot: string): Promise<string | undefine
   return isAbsolute(raw) ? raw : resolve(repoRoot, raw);
 }
 
-/** Worktree git 目录通过 commondir 指向共享 git 目录；缺失时视为自身。 */
+/** A worktree's git directory points at the shared git directory via commondir; if absent, use itself. */
 export async function resolveCommondir(gitDir: string): Promise<string> {
   try {
     const content = (await readFile(resolve(gitDir, "commondir"), "utf8")).trim();
@@ -54,7 +55,7 @@ export async function resolveCommondir(gitDir: string): Promise<string> {
   }
 }
 
-/** F10：HEAD 文件内容解析。 */
+/** F10: parse the contents of the HEAD file. */
 export function parseHeadFile(content: string): ParsedHead | undefined {
   const trimmed = content.trim();
   if (trimmed.startsWith("ref: ")) {
@@ -66,7 +67,7 @@ export function parseHeadFile(content: string): ParsedHead | undefined {
   return undefined;
 }
 
-/** F8/F9：直接从文件系统读取 Worktree HEAD 的 commit 与分支。 */
+/** F8/F9: read the worktree HEAD's commit and branch directly from the filesystem. */
 export async function readWorktreeHead(repoRoot: string): Promise<WorktreeHead> {
   try {
     const gitDir = await resolveGitDir(repoRoot);
@@ -95,7 +96,7 @@ export async function readWorktreeHead(repoRoot: string): Promise<WorktreeHead> 
   }
 }
 
-/** F11：ref 解析——先松散 ref，再 packed-refs，最后回退 commondir。 */
+/** F11: ref resolution — loose refs first, then packed-refs, and finally a commondir fallback. */
 export async function resolveRef(ref: string, gitDir: string, commonDir: string): Promise<string> {
   if (!isSafeRefName(ref)) return "";
   const candidates = [resolve(gitDir, ref), resolve(commonDir, ref)];

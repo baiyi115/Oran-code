@@ -7,7 +7,7 @@ export class SseIdleTimeoutError extends Error {
 
 export class ModelRequestError extends Error {
   readonly status: number;
-  /** 服务端要求的退避时长(毫秒),来自 Retry-After 响应头;无则 undefined。 */
+  /** Backoff duration in milliseconds requested by the server, from the Retry-After header; undefined if absent. */
   readonly retryAfterMs: number | undefined;
   constructor(status: number, detail: string, retryAfterMs?: number) {
     super(`model API returned ${status}: ${detail}`);
@@ -17,7 +17,7 @@ export class ModelRequestError extends Error {
   }
 }
 
-/** 解析 Retry-After(秒数或 HTTP 日期),无法识别时返回 undefined。 */
+/** Parse Retry-After (a number of seconds or an HTTP date); returns undefined when unrecognized. */
 export function retryAfterMsFromResponse(response: Response): number | undefined {
   const header = response.headers.get("retry-after");
   if (!header) return undefined;

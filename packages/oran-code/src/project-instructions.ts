@@ -172,8 +172,9 @@ async function expandIncludes(content: string, source: string, depth: number, co
 
 function resolveInclude(reference: string, source: string, context: ExpandContext): string | undefined {
   if (reference === "~") return undefined;
-  // ~/ 与绝对路径 include 是有意支持的能力(用户指令引用 home/全局文件);
-  // 相对路径仍必须留在工作区内,防止顺着 include 向上逃逸。
+  // Includes via ~/ and absolute paths are a deliberately supported capability (user
+  // instructions referencing home/global files); relative paths must still stay inside the
+  // workspace, so an include cannot escape upwards.
   if (reference.startsWith("~/") || reference.startsWith("~\\")) return resolve(context.userHome, reference.slice(2));
   if (isAbsolute(reference)) return resolve(reference);
   const target = resolve(dirname(source), reference);

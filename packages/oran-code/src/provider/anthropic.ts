@@ -114,7 +114,7 @@ export class AnthropicProvider implements ModelProvider {
             const reasoning = typeof delta.thinking === "string" ? delta.thinking : "";
             if (reasoning) yield { type: "reasoning_delta", text: reasoning, streamed: true };
           } else if (deltaType === "signature_delta" || typeof delta.signature === "string") {
-            // 签名只用于回放 thinking 块,不参与展示。
+            // The signature is only used to replay thinking blocks; it is never displayed.
             const signature = typeof delta.signature === "string" ? delta.signature : "";
             if (signature) yield { type: "reasoning_signature", signature, streamed: true };
           } else if (deltaType === "input_json_delta" || typeof delta.partial_json === "string") {
@@ -257,7 +257,8 @@ function toAnthropicMessages(messages: Message[]): {
   for (const message of messages) {
     if (message.role === "system") {
       if (message.metadata?.promptBlock === "runtime-reminder") {
-        // 合并到对话尾部，避免逐轮变化击穿稳定前缀缓存。
+        // Merge into the tail of the conversation so that per-turn changes do not
+        // invalidate the stable prefix cache.
         const reminderText = message.content?.trim();
         if (reminderText) tailReminders.push(reminderText);
         continue;
@@ -274,7 +275,8 @@ function toAnthropicMessages(messages: Message[]): {
     if (message.role === "tool") {
       pendingToolResults.push({
         type: "tool_result",
-        // 与 assistant 侧 tool_use 的 id fallback 保持同一方案,否则配不上对会 400。
+        // Use the same id fallback scheme as the assistant-side tool_use, otherwise the
+        // pair fails to match and the API returns 400.
         tool_use_id: message.toolCallId ?? `call_${message.name ?? "unknown"}`,
         content: message.content ?? "",
         is_error: false,
@@ -289,9 +291,12 @@ function toAnthropicMessages(messages: Message[]): {
     }
     if (message.role === "assistant") {
       const content: Record<string, unknown>[] = [];
-      // 扩展思考的回放契约:thinking 块必须带原签名、且排在内容最前。
-      // 缺签名的推理文本不能回放(带 thinking 不带 signature 会被直接 400)。
-      // 注意:安全策略抹除的 redacted_thinking 块(只有 data、没有文本)不在回放范围内。
+      // Extended-thinking replay contract: a thinking block must carry its original signature
+      // and come first in the content.
+      // Reasoning text without a signature cannot be replayed (a thinking block with no
+      // signature is a hard 400).
+      // Note: redacted_thinking blocks removed by a safety policy (data only, no text) are
+      // not part of the replay.
       if (message.reasoning && message.reasoningSignature) {
         content.push({ type: "thinking", thinking: message.reasoning, signature: message.reasoningSignature });
       }
@@ -304,17 +309,19 @@ function toAnthropicMessages(messages: Message[]): {
           input: call.arguments ?? {},
         });
       }
-      // 空内容且无 toolCalls 的 assistant 消息会被 API 以空 text block 拒绝(400
-      // 且不可重试),直接跳过。
+      // An assistant message with empty content and no toolCalls is rejected by the API as an
+      // empty text block (400, not retryable), so skip it outright.
       if (!content.length) continue;
       conversation.push({ role: "assistant", content });
     }
   }
   flushToolResults();
   if (tailReminders.length) appendTailReminder(conversation, tailReminders.join("\n\n"));
-  // 长会话在倒数第二个 user 消息处加一个稳定断点:末尾断点每轮都会失效,
-  // 这个断点让上一轮之前的前缀始终可复用。Anthropic 全请求最多 4 个
-  // cache_control:system 块 + tools 1 个 + 稳定断点 + 末尾断点,超出即不加。
+  // For long conversations, place a stable breakpoint on the second-to-last user message: the
+  // trailing breakpoint is invalidated every turn, whereas this one keeps the prefix before the
+  // previous turn reusable. An Anthropic request allows at most 4 cache_control entries:
+  // system blocks + 1 for tools + this stable breakpoint + the trailing breakpoint. Beyond that,
+  // skip it.
   const existingBreakpoints = system.filter((block) => block.cache_control).length + 1;
   if (userMessageIndices.length >= 2 && conversation.length > 12 && existingBreakpoints + 2 <= 4) {
     const anchor = conversation[userMessageIndices[userMessageIndices.length - 2]!];
@@ -362,7 +369,8 @@ function parseAnthropicMessage(data: Record<string, unknown>, streamed: boolean)
   }
   const usage = numericUsage(data.usage);
   const finishReason = typeof data.stop_reason === "string" ? data.stop_reason : undefined;
-  // 被 max_tokens 截断的响应里 tool_use 输入可能不完整,整体丢弃并打上截断标记。
+  // In a response truncated by max_tokens the tool_use input may be incomplete: drop it
+  // entirely and mark the response as truncated.
   const truncated = isTruncatedFinishReason(finishReason);
   return {
     text: textParts.join(""),

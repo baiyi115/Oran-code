@@ -1,4 +1,4 @@
-/** 工具名到界面短标签的统一映射,工作行与 transcript 工具行共用。 */
+/** Single mapping from tool name to short UI label, shared by work rows and transcript tool rows. */
 export function toolDisplayName(name: string): string {
   switch (name) {
     case "read_file":

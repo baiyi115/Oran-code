@@ -13,8 +13,9 @@ afterEach(async () => {
 
 describe("migrateUserDataOutOfWorkspace", () => {
   it("skips migration when the user data root lives inside the workspace (e.g. home-directory workspace)", async () => {
-    // 复现:在主目录启动 oran 时,~/.oran 就在 workspace/.oran 之内,
-    // 修复前会把 sessions 目录 rename 进自身而抛 EINVAL。
+    // Reproduction: when oran is started in the home directory, ~/.oran sits inside
+    // workspace/.oran, and before the fix it renamed the sessions directory into itself,
+    // throwing EINVAL.
     const workspace = await mkdtemp(join(tmpdir(), "oran-paths-"));
     roots.push(workspace);
     const userRoot = join(workspace, ".oran");
@@ -23,7 +24,7 @@ describe("migrateUserDataOutOfWorkspace", () => {
 
     await expect(migrateUserDataOutOfWorkspace(workspace)).resolves.toBeUndefined();
 
-    // 跳过迁移:原目录保持原位,未被改名。
+    // Migration is skipped: the original directory stays put and is not renamed.
     const projectRootEntries = await readdir(join(projectStateRoot(workspace)));
     expect(projectRootEntries).toContain("sessions");
   });
@@ -39,7 +40,8 @@ describe("migrateUserDataOutOfWorkspace", () => {
 
     await migrateUserDataOutOfWorkspace(workspace);
 
-    // 迁出后项目目录不再有 sessions,数据落到用户目录的哈希子目录。
+    // After moving out, the project directory no longer has sessions; the data lands in the
+    // hashed subdirectory under the user directory.
     const projectRootEntries = await readdir(projectStateRoot(workspace));
     expect(projectRootEntries).not.toContain("sessions");
     const userSessions = await readdir(userSessionsRoot(workspace));

@@ -79,8 +79,8 @@ async function executeHttp(
   };
   const body = JSON.stringify(bodyContext);
   const headers: Record<string, string> = { "content-type": "application/json", ...(action.headers ?? {}) };
-  // 不带超时的 fetch 会永久阻塞 agent 循环(端点挂起不响应);超时由 deps.fetch
-  // 以 { ok:false, status:0 } 形式返回。
+  // A fetch without a timeout would block the agent loop forever (a hung endpoint never
+  // responds); deps.fetch reports the timeout as { ok:false, status:0 }.
   const timeoutMs = action.timeoutMs ?? defaultTimeoutMs;
   const {
     ok,

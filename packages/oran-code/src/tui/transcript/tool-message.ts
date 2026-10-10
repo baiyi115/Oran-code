@@ -22,7 +22,8 @@ export function renderToolMessage(message: ToolMessage, width: number, liveTick 
   const call = argument
     ? `${ANSI.toolBold}${label}${ANSI.reset} ${ANSI.gray}${argument}${ANSI.reset}`
     : `${ANSI.toolBold}${label}${ANSI.reset}`;
-  // 已完成调用显示总耗时;运行中的显示已用时间(long tool 卡哪步一眼可见)。
+  // A finished call shows its total duration; a running one shows elapsed time (so a long tool's
+  // stuck step is visible at a glance).
   const duration =
     message.durationMs !== undefined
       ? `  ${ANSI.gray}${formatDuration(message.durationMs)}${ANSI.reset}`
@@ -55,8 +56,9 @@ export function renderToolMessage(message: ToolMessage, width: number, liveTick 
   const output = message.error || message.output || "";
   const changeDiff = writeToolDiff(message);
   if (message.expanded && output && !changeDiff) {
-    // 只显示前 12 行会丢掉长输出真正值钱的部分(失败栈、汇总行几乎总在尾部),
-    // 所以改为"头部 8 行 + 省略提示 + 尾部 4 行",头尾可见、细节再 ctrl+t 看。
+    // Showing only the first 12 lines drops the valuable part of long output (failure stacks and
+    // summary lines almost always sit at the end), so it became "8 head lines + an omission
+    // marker + 4 tail lines"; head and tail stay visible, ctrl+t gives the detail.
     const preview = output.split(/\r?\n/).filter(Boolean);
     const HEAD = 8;
     const TAIL = 4;
@@ -126,8 +128,8 @@ function writeToolDiff(message: ToolMessage): string | undefined {
 }
 
 function toolArgumentSummary(message: ToolMessage): string {
-  // agent/team_spawn 的 description 参数就是"这个子代理在干什么";缺了它,
-  // 并行子代理只会渲染成几行无法区分的 agent + 秒数。
+  // The description argument of agent/team_spawn is what this subagent is doing; without it,
+  // parallel subagents render as indistinguishable rows of agent + seconds.
   if (message.name === "agent" || message.name === "team_spawn") {
     const role = stringArgument(message.arguments.subagent_type) ?? stringArgument(message.arguments.team_name);
     const description = stringArgument(message.arguments.description);

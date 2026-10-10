@@ -1,6 +1,6 @@
 /**
- * Worktree 生命周期（F3-F6、F13-F17、N2/N4）。
- * 纯文件系统读取之外的动作允许启动 git 子进程。
+ * Worktree lifecycle (F3-F6, F13-F17, N2/N4).
+ * Actions beyond pure filesystem reads are allowed to spawn a git subprocess.
  */
 import { execFile } from "node:child_process";
 import { copyFile, cp, lstat, mkdir, readFile, readdir, symlink } from "node:fs/promises";
@@ -35,19 +35,19 @@ export interface EnsureWorktreeResult {
   readonly warnings: readonly string[];
 }
 
-/** G4：Worktree 落盘目录统一为仓库内不被追踪的 .oran/worktrees/<slug>。 */
+/** G4: the on-disk worktree directory is uniformly the untracked .oran/worktrees/<slug> inside the repo. */
 export function worktreeDirectory(repoRoot: string, slug: string): string {
   assertValidSlug(slug);
   return resolve(repoRoot, ".oran", "worktrees", slug);
 }
 
-/** G4：分支名固定 worktree-<slug>。 */
+/** G4: the branch name is always worktree-<slug>. */
 export function worktreeBranch(slug: string): string {
   assertValidSlug(slug);
   return `worktree-${slug}`;
 }
 
-/** F3：解析当前所在的 git 仓库根。 */
+/** F3: resolve the root of the git repository we are currently in. */
 export async function resolveRepoRoot(workspace: string): Promise<string> {
   const result = await execFileAsync("git", ["-C", workspace, "rev-parse", "--show-toplevel"], {
     encoding: "utf8",
@@ -58,7 +58,7 @@ export async function resolveRepoRoot(workspace: string): Promise<string> {
   return resolve(root);
 }
 
-/** F3：按 slug 创建 Worktree（含快速恢复）。 */
+/** F3: create a worktree for the slug (including fast resume). */
 export async function ensureWorktree(workspace: string, slug: string): Promise<EnsureWorktreeResult> {
   const repoRoot = await resolveRepoRoot(workspace);
   const path = worktreeDirectory(repoRoot, slug);
@@ -67,7 +67,8 @@ export async function ensureWorktree(workspace: string, slug: string): Promise<E
   let head: string;
   let warnings: readonly string[] = [];
   if (await exists(path)) {
-    // 快速恢复必须证明目录属于当前仓库，避免把任意同名目录当成隔离工作区。
+    // Fast resume must prove the directory belongs to this repository, so an arbitrary
+    // same-named directory is never mistaken for the isolated workspace.
     if (!(await isRegisteredWorktree(repoRoot, path, branch))) {
       throw new Error(`existing worktree path is not registered for branch ${branch}: ${path}`);
     }
@@ -83,7 +84,7 @@ export async function ensureWorktree(workspace: string, slug: string): Promise<E
   return { info: { path, branch, head, repoRoot }, warnings };
 }
 
-/** F4：清理 Worktree——两步独立容错，任一抛错不传递给调用方。 */
+/** F4: clean up a worktree — two steps, each tolerated independently; a throw never reaches the caller. */
 export async function cleanupWorktree(repoRoot: string, worktreePath: string, branch: string): Promise<CleanupResult> {
   const steps: CleanupStep[] = [];
   const removeResult = await tolerate(() => runGit(repoRoot, ["worktree", "remove", "--force", worktreePath]));
@@ -102,9 +103,9 @@ export async function cleanupWorktree(repoRoot: string, worktreePath: string, br
 }
 
 /**
- * 启动清扫:回收崩溃遗留的孤儿 worktree。只清理本仓库 `.oran/worktrees/` 下
- * 已注册且分支为 `worktree-<slug>`、且 slug 不在保护名单中的条目;任何失败
- * 都只跳过,不抛错。
+ * Startup sweep: reclaim orphan worktrees left behind by a crash. Only entries under this
+ * repository's `.oran/worktrees/` that are registered with a `worktree-<slug>` branch and whose
+ * slug is not protected are cleaned; any failure is skipped rather than thrown.
  */
 export async function sweepOrphanWorktrees(
   workspace: string,
@@ -152,12 +153,12 @@ export async function sweepOrphanWorktrees(
     }
     await flush();
   } catch {
-    // 清扫是 best-effort:仓库不可用或 git 失败时静默跳过。
+    // The sweep is best-effort: skip silently when the repository is unavailable or git fails.
   }
   return removed;
 }
 
-/** F5：变更检测——fail-closed。 */
+/** F5: change detection — fail-closed. */
 export async function hasChanges(worktreePath: string, baseline: string): Promise<boolean> {
   try {
     const status = await execFileAsync("git", ["-C", worktreePath, "status", "--porcelain"], {
@@ -173,7 +174,7 @@ export async function hasChanges(worktreePath: string, baseline: string): Promis
   }
 }
 
-/** F6：可拼接到 prompt 的 Worktree 提示文本。 */
+/** F6: worktree hint text that can be appended to the prompt. */
 export function worktreePromptText(worktreePath: string, repoRoot: string): string {
   return [
     "You are working inside an isolated Git worktree.",
@@ -184,8 +185,9 @@ export function worktreePromptText(worktreePath: string, repoRoot: string): stri
 }
 
 /**
- * F13-F17：创建后初始化，best-effort。
- * 每个子步骤独立容错，单步失败只记录警告，不影响后续步骤与创建主路径（N2）。
+ * F13-F17: post-creation initialization, best-effort.
+ * Each sub-step is tolerated on its own: a single failure is recorded as a warning only, and
+ * neither later steps nor the main creation path are affected (N2).
  */
 export async function initializeWorktree(repoRoot: string, worktreePath: string): Promise<readonly string[]> {
   const warnings: string[] = [];
@@ -198,9 +200,9 @@ export async function initializeWorktree(repoRoot: string, worktreePath: string)
   return warnings;
 }
 
-// ---------------------------------------------------------------- 初始化子步骤
+// ---------------------------------------------------------------- Initialization sub-steps
 
-/** F14：按白名单复制项目级 orancode 配置目录，跳过运行时数据。 */
+/** F14: copy the project-level orancode config directories per the whitelist, skipping runtime data. */
 async function copyProjectConfigDirectory(repoRoot: string, worktreePath: string): Promise<void> {
   const sourceRoot = resolve(repoRoot, ".oran");
   const targetRoot = resolve(worktreePath, ".oran");
@@ -229,7 +231,7 @@ function isConfigEntry(name: string): boolean {
   return name.startsWith("AGENTS") || name.startsWith("INSTRUCTIONS");
 }
 
-/** F15：配置 Worktree 内 hooks 路径——项目 hooks 优先，回退默认 hooks。 */
+/** F15: configure the hooks path inside the worktree — project hooks first, default hooks as fallback. */
 async function configureHooksPath(repoRoot: string, worktreePath: string): Promise<void> {
   const candidates = [resolve(repoRoot, ".oran", "hooks"), resolve(repoRoot, ".git", "hooks")];
   let hooksPath: string | undefined;
@@ -243,13 +245,13 @@ async function configureHooksPath(repoRoot: string, worktreePath: string): Promi
   try {
     await runGit(worktreePath, ["config", "--worktree", "core.hooksPath", hooksPath]);
   } catch {
-    // 旧仓库未启用 worktree config 时先开启扩展再重试。
+    // A repository that has not enabled worktree config must turn the extension on before retrying.
     await runGit(repoRoot, ["config", "extensions.worktreeConfig", "true"]);
     await runGit(worktreePath, ["config", "--worktree", "core.hooksPath", hooksPath]);
   }
 }
 
-/** F16：软链大型依赖目录（当前约定根目录 node_modules）。 */
+/** F16: symlink the large dependency directory (currently the root node_modules by convention). */
 async function linkLargeDependencyDirectories(repoRoot: string, worktreePath: string): Promise<void> {
   const source = resolve(repoRoot, "node_modules");
   const target = resolve(worktreePath, "node_modules");
@@ -262,7 +264,7 @@ async function linkLargeDependencyDirectories(repoRoot: string, worktreePath: st
   }
 }
 
-/** F17：按 .worktreeinclude 逐行复制被忽略但运行需要的文件或目录。 */
+/** F17: copy the ignored-but-required files or directories listed line by line in .worktreeinclude. */
 async function copyWorktreeIncludeEntries(repoRoot: string, worktreePath: string): Promise<void> {
   const listPath = resolve(repoRoot, ".worktreeinclude");
   let content: string;
@@ -297,7 +299,7 @@ async function copyWorktreeIncludeEntries(repoRoot: string, worktreePath: string
   }
 }
 
-// ---------------------------------------------------------------- 内部工具
+// ---------------------------------------------------------------- Internal helpers
 
 function assertValidSlug(slug: string): void {
   if (!isValidSlug(slug)) throw new Error(`invalid worktree slug: ${slug || "(empty)"}. ${slugRuleDescription()}`);

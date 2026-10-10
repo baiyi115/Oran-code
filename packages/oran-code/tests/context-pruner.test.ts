@@ -11,7 +11,7 @@ function ledger(): PrunerLedger {
   return { seenIds: new Set(), replacements: new Map(), offloadFailures: new Map() };
 }
 
-/** 一轮 = assistant 工具调用 + 对应 tool 结果,便于构造"历史轮"。 */
+/** One round = an assistant tool call plus its tool result, for building "historical rounds". */
 function toolRound(id: string, content: string): Message[] {
   return [
     {
@@ -70,7 +70,7 @@ describe("microcompact", () => {
         if (index < 3) {
           expect(message.content).toContain("<cleared-tool-result>");
           expect(message.content).toContain(`.oran/tool-results/call_${index}`);
-          // 原文仍然落盘可读回。
+          // The original text is still on disk and can be read back.
           expect(writer.spilled.get(`call_${index}`)).toContain(`#${index}`);
           const onDisk = await readFile(join(workspace, `.oran/tool-results/call_${index}`), "utf8");
           expect(onDisk).toBe(writer.spilled.get(`call_${index}`));

@@ -187,8 +187,9 @@ export class AgentLoop {
   }
 
   /**
-   * 本轮记录过的调用与结果,按发生顺序。executionHistory 有 50 条上限且从头部
-   * 丢弃,拿它的下标切"本轮"在长任务上会切出空数组,所以本轮单独留一份。
+   * Calls and results recorded for this turn, in order of occurrence. executionHistory is capped
+   * at 50 entries and drops from the head, so slicing "this turn" out of it by index can yield an
+   * empty array on long tasks; the current turn therefore keeps its own copy.
    */
   turnExecutionRecords(): ReadonlyArray<{ call: ToolCall; result: ToolResult }> {
     return this.turnExecutions;

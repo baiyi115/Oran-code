@@ -15,9 +15,9 @@ const DEFAULT_READ_LIMIT = 200;
 const MAX_READ_LINE_CHARS = 2_000;
 const DEFAULT_GLOB_LIMIT = 200;
 const DEFAULT_SEARCH_LIMIT = 200;
-/** 灾难性回溯需要长输入;超长行只匹配前缀。 */
+/** Catastrophic backtracking needs long input; over-long lines are matched on the prefix only. */
 const SEARCH_MAX_LINE_LENGTH = 4_096;
-/** 搜索总时间预算,超时返回部分结果。 */
+/** Total time budget for a search; on timeout partial results are returned. */
 const SEARCH_TIME_BUDGET_MS = 2_000;
 
 const pathSchema = {
@@ -117,7 +117,8 @@ export function registerReadTools(registry: { register(tool: ToolDefinition): vo
         const width = String(startIndex + slice.length).length;
         const numbered = slice.map((line, index) => {
           const lineNo = String(startIndex + index + 1).padStart(width, " ");
-          // 超长单行(如压缩过的 JS)截断,避免一行撑爆整个输出预算。
+          // Truncate an over-long single line (e.g. minified JS) so one line cannot blow the whole
+          // output budget.
           const text =
             line.length > MAX_READ_LINE_CHARS ? `${line.slice(0, MAX_READ_LINE_CHARS)}...[line truncated]` : line;
           return `${lineNo}|${text}`;
@@ -310,7 +311,8 @@ export function registerReadTools(registry: { register(tool: ToolDefinition): vo
             : undefined;
         const hits: string[] = [];
         let total = 0;
-        // 模型提供的正则可能有灾难性回溯:长行截断 + 总时间预算双保险。
+        // A model-supplied regex may backtrack catastrophically: truncating long lines plus a
+        // total time budget give two layers of protection.
         const startedAt = Date.now();
         let timedOut = false;
         await walkFiles(base, async (filePath) => {
@@ -367,7 +369,8 @@ export function registerReadTools(registry: { register(tool: ToolDefinition): vo
       parameters: { type: "object", properties: {} },
       permissionLevel: 0,
       kind: "readonly",
-      // 高频只读工具常驻暴露:延迟发现省下的两个 schema 换不来一整轮模型往返。
+      // High-frequency readonly tools stay exposed: the two schemas saved by deferring discovery
+      // are not worth a whole extra model round trip.
       maxOutputChars: 16_000,
       invoke: async (_call, context) => {
         try {

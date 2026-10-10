@@ -2,7 +2,7 @@ import { exec, execFile, spawn } from "node:child_process";
 import { resolvePhysicalPath, isWithinPath } from "../utils/path-containment.js";
 import { resolveWorkspacePath } from "./fs-helpers.js";
 
-/** 单条命令/作业保留的输出上限:超出后固定保留头尾,中段丢弃。 */
+/** Output ceiling kept for one command/job: past it the head and tail are kept and the middle dropped. */
 const COMMAND_OUTPUT_LIMIT = 200_000;
 const COMMAND_OUTPUT_HEAD = 96_000;
 const COMMAND_OUTPUT_TAIL = 96_000;
@@ -37,33 +37,36 @@ export function formatPreservingTail(output: string, maxChars = 32_000, headChar
   return `${output.slice(0, headLen)}${separator}${output.slice(output.length - tailLen)}`;
 }
 
-/** 一次命令执行的结果:非零退出码与信号终止都不是异常,由调用方判定。 */
+/** Result of one command execution: a non-zero exit code or signal termination is not an
+ * exception; the caller decides how to treat it. */
 export interface CommandOutcome {
   stdout: string;
   stderr: string;
   exitCode: number | null;
   signal: NodeJS.Signals | null;
-  /** spawn 阶段失败(如工作目录不存在)时的错误。 */
+  /** Error when the spawn phase fails (e.g. the working directory does not exist). */
   spawnError?: string;
 }
 
 /**
- * 已启动命令的句柄。
- * 与一次性 `exec` 的差别:**输出全程流式累计、超时不自动杀进程**,
- * 因此调用方可以在超时后把它晋升为后台作业继续收割。
+ * Handle to an already-started command.
+ * Differs from a one-shot `exec`: **output accumulates as a stream throughout and a timeout does
+ * not kill the process**, so the caller can promote it to a background job after a timeout and
+ * keep reaping it.
  */
 export interface RunningCommand {
   readonly pid: number | undefined;
-  /** 进程退出(或被杀死)后 resolve。 */
+  /** Resolves once the process exits (or is killed). */
   readonly exited: Promise<CommandOutcome>;
-  /** 累积输出的当前快照;进程仍在运行时也可以安全调用。 */
+  /** Current snapshot of the accumulated output; safe to call while the process is still running. */
   snapshot(): CommandOutcome;
-  /** 是否已经退出。 */
+  /** Whether the process has already exited. */
   readonly finished: boolean;
   kill(): void;
 }
 
-/** 输出缓冲:超过上限后保留头尾,中段丢弃并计数,避免长任务吃爆内存。 */
+/** Output buffer: past the ceiling the head and tail are kept while the middle is dropped and
+ * counted, so a long-running task cannot blow up memory. */
 class OutputCollector {
   private buffer = "";
   private head: string | undefined;
@@ -93,9 +96,10 @@ class OutputCollector {
 }
 
 /**
- * 启动一条命令并持续累积输出。
- * POSIX 下使用独立进程组(detached),`killProcessTree` 的 `-pid` 才能真正杀掉整棵树;
- * Windows 下由 `taskkill /T` 负责树清理,不需要 detached。
+ * Start a command and keep accumulating its output.
+ * On POSIX an independent process group (detached) is used so that `killProcessTree`'s `-pid`
+ * can really kill the whole tree; on Windows `taskkill /T` handles tree cleanup, so detached is
+ * not needed.
  */
 export function startCommand(
   command: string,
@@ -231,7 +235,7 @@ export function executeCommandWithProcessTree(
   });
 }
 
-/** 解析 run_command 的可选 cwd：词法包含 + symlink 物理包含双重防护。 */
+/** Resolve run_command's optional cwd: two-layer protection through lexical and physical (symlink) containment. */
 export async function resolveCommandCwd(root: string, raw: unknown): Promise<string> {
   if (raw === undefined || raw === null || raw === "") return root;
   if (typeof raw !== "string") throw new Error("cwd must be a string path relative to the workspace root");

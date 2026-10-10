@@ -67,12 +67,12 @@ function overlay(h: WizardHarness) {
   return overlay;
 }
 
-/** 逐字符输入(不带任何键标志)。 */
+/** Type character by character (with no key flags). */
 function type(h: WizardHarness, text: string) {
   for (const character of text) h.wizard.handleKey(character, key());
 }
 
-/** 输入 baseURL 并回车进入 models 步,等待模型拉取完成。 */
+/** Enter the baseURL and press Return to reach the models step, then wait for the model fetch to finish. */
 async function goToModels(h: WizardHarness, baseURL = "https://x.io/v1") {
   h.wizard.open();
   type(h, baseURL);
@@ -122,19 +122,19 @@ describe("ConnectWizard", () => {
     type(h, "https://api.anthropic.com");
     expect(overlay(h)).toMatchObject({ providerName: "api-anthropic-com", protocol: "anthropic" });
 
-    h.wizard.handleKey("", left); // 手动切成 openai 后不再自动覆盖
+    h.wizard.handleKey("", left); // once switched to openai manually, it is no longer auto-overwritten
     expect(overlay(h).protocol).toBe("openai");
     type(h, "x");
     expect(overlay(h).protocol).toBe("openai");
 
-    // 切到 name 字段手动改名,之后 baseURL 再变也不会覆盖 name。
+    // Switch to the name field and rename it manually; later baseURL changes no longer overwrite name.
     h.wizard.handleKey("", down); // apiKey
     h.wizard.handleKey("", down); // protocol
     h.wizard.handleKey("", down); // name
     for (let i = overlay(h).providerName.length; i > 0; i--) h.wizard.handleKey("", backspace);
     type(h, "my");
     expect(overlay(h).providerName).toBe("my");
-    h.wizard.handleKey("", down); // 回到 baseURL
+    h.wizard.handleKey("", down); // back to baseURL
     type(h, "/v9");
     expect(overlay(h).baseURL).toBe("https://api.anthropic.comx/v9");
     expect(overlay(h).providerName).toBe("my");
@@ -175,12 +175,12 @@ describe("ConnectWizard", () => {
     });
     h.wizard.handleKey("", enter);
     await new Promise((resolve) => setTimeout(resolve, 0));
-    // 远端列表合并后保留已保存模型的勾选状态与逐模型 effort
+    // After merging the remote list, the saved models keep their checked state and per-model effort
     expect(overlay(h).models).toEqual([
       { id: "gpt-4o", selected: true, reasoningEffort: "low" },
       { id: "gpt-4o-mini", selected: true, contextWindow: 128_000 },
     ]);
-    // 逐模型 effort 随 payload 一起提交
+    // Per-model effort is submitted along with the payload
     h.wizard.handleKey("", tab); // tab on models step = confirm
     await new Promise((resolve) => setTimeout(resolve, 0));
     expect(h.submitted[0]?.models).toEqual([
@@ -199,7 +199,7 @@ describe("ConnectWizard", () => {
     h.wizard.handleKey("e", key()); // -> high
     h.wizard.handleKey("e", key()); // -> xhigh
     expect(overlay(h).models[0]?.reasoningEffort).toBe("xhigh");
-    h.wizard.handleKey("e", key()); // xhigh -> 未指定(默认 high)
+    h.wizard.handleKey("e", key()); // xhigh -> unset (defaults to high)
     expect(overlay(h).models[0]).not.toHaveProperty("reasoningEffort");
   });
 

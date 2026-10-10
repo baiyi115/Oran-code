@@ -99,8 +99,9 @@ export class MarkdownRenderer {
   }
 
   private scanStableLines(value: string): void {
-    // 空白行才天然构成块边界;长段落会一直留在 tail 里被逐 delta 全量重解析。
-    // 超过阈值后提前提交,只保留最后几行等待回流,视觉影响可忽略。
+    // Only blank lines form natural block boundaries; a long paragraph would stay in the tail and
+    // be fully re-parsed on every delta. Past the threshold it is committed early, holding back
+    // only the last few lines for reflow, which is visually negligible.
     const COMMIT_THRESHOLD_CHARS = 8_000;
     const HOLD_BACK_LINES = 3;
     const holdBack: number[] = [];
@@ -239,7 +240,7 @@ function renderMarkdownInternal(value: string, safeWidth: number, options: Markd
       continue;
     }
 
-    // eslint-disable-next-line no-control-regex -- 控制字符是刻意匹配的目标（ANSI 转义/文本清洗）
+    // eslint-disable-next-line no-control-regex -- control chars are the intended match (ANSI escape/text cleanup)
     const unordered = /^(\s*)[-*+][ \t]+(.+)$/.exec(line) ?? /^(\s*)[-*+](?=[^\x00-\x7f])(.+)$/.exec(line);
     if (unordered) {
       const indent = listIndent(unordered[1] ?? "");
@@ -255,7 +256,7 @@ function renderMarkdownInternal(value: string, safeWidth: number, options: Markd
       continue;
     }
 
-    // eslint-disable-next-line no-control-regex -- 控制字符是刻意匹配的目标（ANSI 转义/文本清洗）
+    // eslint-disable-next-line no-control-regex -- control chars are the intended match (ANSI escape/text cleanup)
     const ordered = /^(\s*)(\d+)[.)][ \t]+(.+)$/.exec(line) ?? /^(\s*)(\d+)[.)](?=[^\x00-\x7f])(.+)$/.exec(line);
     if (ordered) {
       const indent = "  ".repeat(listIndent(ordered[1] ?? ""));
@@ -286,7 +287,7 @@ function renderMarkdownInternal(value: string, safeWidth: number, options: Markd
 
 function parseHeading(value: string): Heading | undefined {
   const standard = /^\s{0,3}(#{1,6})[ \t]+(.+?)\s*#*\s*$/.exec(value);
-  // eslint-disable-next-line no-control-regex -- 控制字符是刻意匹配的目标（ANSI 转义/文本清洗）
+  // eslint-disable-next-line no-control-regex -- control chars are the intended match (ANSI escape/text cleanup)
   const compactCjk = /^\s{0,3}(#{1,6})(?=[^\x00-\x7f])(.+?)\s*#*\s*$/.exec(value);
   const match = standard ?? compactCjk;
   if (!match) return undefined;
@@ -297,8 +298,9 @@ function parseHeading(value: string): Heading | undefined {
 }
 
 /**
- * 块级语法(标题/列表)只在行首生效;模型常把标题或列表项挤进段落行,
- * 在围栏外按句子终止符把它们拆到独立行。表格行不拆,风险过高。
+ * Block syntax (headings/lists) only takes effect at the start of a line; models often squeeze a
+ * heading or list item into a paragraph line, so outside fences they are split onto their own
+ * lines at sentence terminators. Table rows are not split: too risky.
  */
 const INLINE_BLOCK_SPLIT = /(?<=[。！？!?"”』」)\]])\s+(?=#{1,6}(?:\s|[\u4E00-\u9FFF])|[-*+]\s|\d+[.)]\s)/g;
 

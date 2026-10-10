@@ -4,7 +4,7 @@ import { stringOption } from "./transport.js";
 
 export type RemoteProviderProtocol = "openai" | "anthropic";
 
-/** 已配置 provider 的协议推导:供列表展示与预填编辑共用。 */
+/** Protocol resolution for an already-configured provider, shared by list display and pre-filled edits. */
 export function resolveProviderProtocolFor(providerName: string, options: ProviderOptions): RemoteProviderProtocol {
   return resolveProviderProtocol({
     provider: providerName,

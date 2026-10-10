@@ -15,24 +15,33 @@ import { createStreamingRequest, modelResponseChunks, numericUsage, requestOptio
 import { appendTailReminder, completeRequestSignal } from "./common.js";
 
 /**
- * 端点明确拒绝 reasoning_effort 参数时的报错文本(如
- * "Unrecognized request argument: reasoning_effort")。要求 "reasoning" 与
- * "effort" 同时出现,才不会被 reasoning_content 之类的 400 误判。
+ * Error text returned when an endpoint explicitly rejects the reasoning_effort parameter (e.g.
+ * "Unrecognized request argument: reasoning_effort"). Both "reasoning" and "effort" must appear
+ * together, so that unrelated 400s, such as ones about reasoning_content, are not misclassified.
  */
 const REASONING_EFFORT_REJECTED = /\breasoning[\s_-]?effort\b/i;
-/** 400 必须同时提到 reasoning_content 和"必须回传"语义,才认作回传要求。 */
+/**
+ * A 400 is only taken as an echo demand when it mentions reasoning_content together with
+ * a "must be sent back" requirement.
+ */
 const REASONING_CONTENT_MENTIONED = /reasoning_content/i;
 const REASONING_ECHO_HINT = /pass(?:ed)?[ _]?back|required|must be|missing|expect(?:ed)?/i;
 
 export class OpenAICompatibleProvider implements ModelProvider {
   private readonly endpoint: string;
-  /** 端点对 reasoning_effort 返回 400 后置位,后续请求体不再携带该参数。 */
+  /** Set once the endpoint returns 400 for reasoning_effort; later request bodies omit that parameter. */
   private reasoningBlocked = false;
-  /** 端点要求回传 reasoning_content 后置位,后续请求体带上历史推理文本。 */
+  /** Set once the endpoint demands reasoning_content back; later request bodies include the historical reasoning. */
   private reasoningEcho = false;
-  /** 剥参回退发生时通知上层(用于持久化结论),失败不影响请求本身。 */
+  /**
+   * Notifies the caller when the dropped-parameter fallback fires (so the conclusion can be
+   * persisted); a failure does not affect the request itself.
+   */
   onReasoningUnsupported?: () => void | Promise<void>;
-  /** 探测到端点要求回传推理内容时通知上层,由上层在当前进程内记住。 */
+  /**
+   * Notifies the caller when the endpoint turns out to demand reasoning content back, so the
+   * requirement can be remembered for the current process.
+   */
   onReasoningEchoRequired?: () => void | Promise<void>;
 
   constructor(private readonly config: ModelConfig) {
@@ -43,11 +52,13 @@ export class OpenAICompatibleProvider implements ModelProvider {
   }
 
   /**
-   * 发出请求,并让两类可自愈的 400 各回退一次:
-   * - 端点拒绝 reasoning_effort → 剥掉该参数重发(结论写入用户配置,后续会话不再发送);
-   * - 端点要求回传 reasoning_content → 带上历史推理重发(只在当前进程内记住:
-   *   这是这次对话的上下文要求,不是用户配置,不能落盘)。
-   * 两条规则互斥,其余 400 原样抛出。
+   * Send the request, giving each of the two self-healing 400s a single retry:
+   * - endpoint rejects reasoning_effort → drop that parameter and resend (the conclusion is
+   *   written into the user config, so later sessions stop sending it);
+   * - endpoint demands reasoning_content back → resend with the historical reasoning (remembered
+   *   only within the current process: this is a context requirement of this conversation, not
+   *   a user setting, so it must not be persisted).
+   * The two rules are mutually exclusive; any other 400 is thrown as-is.
    */
   private async postWithReasoningFallback(send: () => Promise<Response>): Promise<Response> {
     let response = await send();
@@ -116,15 +127,18 @@ export class OpenAICompatibleProvider implements ModelProvider {
       )) {
         for (const update of parseOpenAiStreamEvent(event, state)) yield update;
       }
-      // 部分兼容实现不返回 finish_reason=tool_calls(或根本没有 finish_reason);
-      // 流结束时若有累积未发射的工具调用,统一补发,避免静默丢弃。
-      // 但输出被上限截断时参数 JSON 很可能残缺,不能补发(解析会失败并进入
-      // 无谓的重试循环);截断标记由上游按"整体判败"处理。
+      // Some compatible implementations do not return finish_reason=tool_calls (or no
+      // finish_reason at all); if calls accumulated without being emitted by the time the stream
+      // ends, emit them all, rather than dropping them silently.
+      // When the output was cut off by the limit, however, the arguments JSON is probably
+      // incomplete and must not be emitted (parsing would fail and enter a pointless retry loop);
+      // the truncation flag is handled upstream as an overall failure.
       if (!state.emittedCalls && state.calls.size && !isTruncatedFinishReason(state.finishReason)) {
         yield* openAiToolCallChunks(state);
       }
-      // 缺 finish_reason 视为异常流(有测试锁定该契约),上游按失败处理,
-      // 而不是为缺失的收尾事件合成一个默认值。
+      // A missing finish_reason means a broken stream (a test locks in this contract); it is
+      // treated as a failure upstream instead of synthesizing a default for the missing
+      // terminal event.
       if (state.finishReason === undefined) {
         throw new Error("OpenAI-compatible stream ended without a finish_reason");
       }
@@ -147,7 +161,10 @@ export class OpenAICompatibleProvider implements ModelProvider {
     await this.onReasoningUnsupported?.();
   }
 
-  /** 端点要求回传推理内容(配置里已记住,或本次会话刚探测到)。 */
+  /**
+   * The endpoint demands reasoning content be echoed back (already remembered in config, or
+   * just discovered in this session).
+   */
   private echoesReasoning(): boolean {
     return this.reasoningEcho || this.config.reasoningEchoRequired === true;
   }
@@ -196,7 +213,7 @@ export class OpenAICompatibleProvider implements ModelProvider {
   }
 }
 
-/** 400 报错文本是否在要求回传 reasoning_content。 */
+/** Whether a 400 error text is demanding that reasoning_content be echoed back. */
 function isReasoningEchoDemand(detail: string): boolean {
   return REASONING_CONTENT_MENTIONED.test(detail) && REASONING_ECHO_HINT.test(detail);
 }
@@ -265,8 +282,8 @@ function parseOpenAiStreamEvent(event: string, state: OpenAiStreamState): ModelS
   return updates;
 }
 
-/** 运行时提醒移到对话真正的末尾(与 Anthropic 路径一致),避免逐轮变化的
- *  揕醒文本就地改写历史消息而击穿稳定前缀缓存。 */
+/** Move runtime reminders to the actual end of the conversation (matching the Anthropic path) so
+ *  that per-turn reminder text does not rewrite history in place and break the stable prefix cache. */
 function toOpenAiMessages(messages: readonly Message[], echoReasoningContent: boolean): Record<string, unknown>[] {
   const result: Record<string, unknown>[] = [];
   const tailReminders: string[] = [];
@@ -297,7 +314,8 @@ function toApiMessage(message: Message, echoReasoningContent: boolean): Record<s
       function: { name: call.name, arguments: JSON.stringify(call.arguments) },
     }));
   }
-  // 只有端点明确要求时才回传:严格端点对未知参数直接 400,默认带上反而更脆。
+  // Echo it back only when the endpoint explicitly demands it: strict endpoints 400 on unknown
+  // parameters, so sending it by default is more fragile.
   if (echoReasoningContent && message.role === "assistant" && message.reasoning) {
     result.reasoning_content = message.reasoning;
   }
@@ -309,8 +327,9 @@ function parseCompletion(data: Record<string, unknown>, streamed: boolean): Mode
   const choice = choices[0] as Record<string, unknown> | undefined;
   const message = (choice?.message ?? {}) as Record<string, unknown>;
   const finishReason = typeof choice?.finish_reason === "string" ? choice.finish_reason : undefined;
-  // 截断响应的工具调用参数可能残缺(或 JSON 本身就不完整导致解析失败),
-  // 整体丢弃并打上截断标记,由上游决定收尾方式。
+  // Tool-call arguments in a truncated response may be incomplete (or the JSON may itself be
+  // malformed enough to fail parsing), so drop them all and set the truncation flag; the caller
+  // decides how to wrap up.
   const truncated = isTruncatedFinishReason(finishReason);
   const toolCalls =
     !truncated && Array.isArray(message.tool_calls)
@@ -326,7 +345,8 @@ function parseCompletion(data: Record<string, unknown>, streamed: boolean): Mode
     streamed,
     ...(finishReason !== undefined ? { finishReason } : {}),
     ...(truncated ? { truncated: true } : {}),
-    // 截断时把被丢弃的调用数报上去:调用方据此区分"纯文本被截断"与"调用被截断"。
+    // Report the count of dropped calls when truncated: callers use it to tell "text-only
+    // truncation" apart from "truncated tool calls".
     ...(truncated && Array.isArray(message.tool_calls) && message.tool_calls.length
       ? { truncatedToolCalls: message.tool_calls.length }
       : {}),

@@ -110,7 +110,8 @@ export class HookEngine {
       if (rule.config.event !== ctx.event) continue;
       if (rule.config.once && (this.onceFired.has(rule.onceKey) || this.onceInFlight.has(rule.onceKey))) continue;
       if (!evaluateCondition(rule.condition, ctx)) continue;
-      // once 在动作成功执行后才消费(runRule 内),失败不烧掉唯一一次机会。
+      // A once rule is consumed only after the action succeeds (inside runRule); a failure does
+      // not burn the single chance.
       yield rule;
     }
   }

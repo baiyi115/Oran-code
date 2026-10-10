@@ -37,9 +37,10 @@ export interface ContextManagerOptions {
 }
 
 /**
- * 分层上下文管理 facade:持有跨轮状态(账本、用量锚点、最近文件、自动失败计数),
- * 具体职责下沉到 context/ 子模块 —— estimator(估算)、pruner(offload/microcompact)、
- * spill(落盘)、compaction(LLM 压缩)。
+ * Layered context-management facade: owns the cross-turn state (ledger, usage anchor, recent
+ * files, automatic-failure counter), while the actual responsibilities live in the context/
+ * submodules — estimator (estimation), pruner (offload/microcompact), spill (disk spill),
+ * compaction (LLM compaction).
  */
 export class ContextManager {
   readonly processSessionId = PROCESS_SESSION_ID;
@@ -58,12 +59,13 @@ export class ContextManager {
   private compactionTail: Promise<void> = Promise.resolve();
   private readonly compactionHost: CompactionHost;
 
-  /** 预算提醒档位:只在跨档时提醒一次,压缩后清零。 */
+  /** Budget notice level: warn only once when a level is crossed, reset to zero after compaction. */
   private usageNoticeLevel = 0;
 
   /**
-   * 同一轮里多个调用点会对同一批消息反复估算;串行化全量 JSON 的成本,
-   * 这里按元素对象身份(消息入列后不可变)记忆化最近一次原始估算。
+   * Within one turn, several call sites estimate the same message batch over and over; serializing
+   * the full JSON is costly, so memoize the most recent raw estimate keyed by element object
+   * identity (messages are immutable once queued).
    */
   private estimateMemo: { messages: readonly Message[]; tools: unknown; tokens: number } | undefined;
 
@@ -95,8 +97,9 @@ export class ContextManager {
   }
 
   /**
-   * 上下文用量可视性:模型对剩余额度无感知,接近压缩阈值时注入提醒,
-   * 让它主动收尾而不是被动触发压缩。
+   * Context-usage visibility: the model has no sense of its remaining budget, so inject a reminder
+   * when the compaction threshold is approaching, letting it wrap up on its own instead of being
+   * compacted passively.
    */
   contextUsageReminder(model: ModelConfig, messages: readonly Message[]): string | undefined {
     const window = this.resolveContextWindow(model);
@@ -203,8 +206,9 @@ export class ContextManager {
   ): boolean {
     if (this.autoCompactionDisabled) return false;
     const threshold = contextWindow - CONTEXT_LIMITS.summaryOutputTokens - CONTEXT_LIMITS.automaticSafetyTokens;
-    // 大窗口下提前到 window × 80% 触发:压到临界才动会在压缩期间顶到上限,
-    // 而压缩本身还要发一次请求。小窗口下 W−O−headroom 才是真正的约束。
+    // With a large window, fire early at window × 80%: waiting until the limit means hitting the
+    // ceiling during compaction, and compaction itself still sends a request. With a small window,
+    // W−O−headroom is the real constraint.
     const windowBudget = Math.floor(contextWindow * CONTEXT_LIMITS.automaticWindowFraction);
     return this.estimateTokens(messages, tools) >= Math.max(1, Math.min(windowBudget, threshold));
   }

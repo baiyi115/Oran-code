@@ -2,7 +2,7 @@ import type { ProviderOption } from "./types.js";
 import { highlightSelection } from "./overlay/select-list.js";
 import { truncateVisible, visibleWidth } from "./text-width.js";
 
-/** 供应商列表与删除确认 overlay 的渲染。 */
+/** Rendering for the provider list and delete-confirmation overlays. */
 
 export function providersListLines(options: readonly ProviderOption[], selectedIndex: number, width: number): string[] {
   const current = options.find((option) => option.isCurrent);
@@ -16,7 +16,7 @@ export function providersListLines(options: readonly ProviderOption[], selectedI
   options.forEach((option, index) => {
     lines.push(highlightSelection(`  ${providerOptionLabel(option, Math.max(1, width - 4))}`, index === selectedIndex));
   });
-  // 末行固定为新增入口,选中它按 Enter/A 都会打开空白向导。
+  // The last row is always the add entry; Enter/A on it opens a blank wizard.
   lines.push(highlightSelection("  + Add provider", selectedIndex === options.length));
   return lines;
 }

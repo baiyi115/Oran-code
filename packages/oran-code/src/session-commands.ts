@@ -28,8 +28,9 @@ export interface BackgroundTaskSnapshot {
 }
 
 /**
- * 命令路由与 TerminalSession 之间的端口。session 保留全部执行能力
- * (任务、会话、模型、MCP、快照),router 只做解析、分发与纯本地输出。
+ * Port between the command router and TerminalSession. session keeps every execution capability
+ * (tasks, sessions, models, MCP, snapshots); the router only parses, dispatches and emits purely
+ * local output.
  */
 export interface SessionCommandContext {
   readonly workspace: string;
@@ -54,10 +55,11 @@ export interface SessionCommandContext {
   currentSessionId(): string | undefined;
   undoLatestChanges(): Promise<{ ok: boolean; output: string }>;
   rewindConversation(argument: string): Promise<{ ok: boolean; output: string }>;
-  /** /resume:继续被进度门禁暂停的任务(该轮沿用暂停那次的任务身份)。 */
+  /** /resume: resumes a task paused by the progress gate (that turn reuses the task identity from
+   *  the paused run). */
   resumeProgressTask(): Promise<{ ok: boolean; output: string }>;
   requestExit(): void;
-  /** /status 与 /mcp 的共享视图;调用方负责先确保 MCP 就绪。 */
+  /** Shared view for /status and /mcp; the caller is responsible for ensuring MCP is ready first. */
   mcpStatus(): Promise<McpStatusSnapshot>;
   toolCountForCurrentMode(): Promise<number>;
   usageSummary(): { inputTokens?: number; outputTokens?: number };
@@ -70,8 +72,8 @@ export interface SessionCommandContext {
 }
 
 /**
- * slash 命令路由:解析 → 分类(skill/prompt/isolated/local/ui action)→
- * 经端口分发。从 TerminalSession.handleCommand 提取,行为保持不变。
+ * Slash command router: parse → classify (skill/prompt/isolated/local/ui action) →
+ * dispatch through the port. Extracted from TerminalSession.handleCommand, behavior unchanged.
  */
 export class SessionCommandRouter {
   constructor(private readonly ctx: SessionCommandContext) {}

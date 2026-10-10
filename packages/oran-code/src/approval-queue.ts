@@ -14,15 +14,16 @@ export interface PendingApproval {
 }
 
 export interface ApprovalQueueDependencies {
-  /** TUI 启动时会替换 renderer,因此经 getter 获取当前实例。 */
+  /** The TUI replaces the renderer at startup, so the current instance comes from a getter. */
   readonly renderer: () => SessionRenderer;
-  /** readline 或 TUI 至少其一可用时才允许排队呈现审批。 */
+  /** Approvals may be queued for presentation only when readline or the TUI is available. */
   readonly isInteractive: () => boolean;
 }
 
 /**
- * FIFO 审批队列。同一时刻只呈现队首审批;主任务取消时按来源批量取消。
- * 从 TerminalSession 提取,行为保持不变。
+ * FIFO approval queue. Only the head of the queue is presented at any time; when the
+ * main task is cancelled, approvals are cancelled in bulk by origin.
+ * Extracted from TerminalSession with behaviour unchanged.
  */
 export class ApprovalQueue {
   private readonly pending: PendingApproval[] = [];

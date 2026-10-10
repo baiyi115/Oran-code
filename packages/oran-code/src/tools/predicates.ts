@@ -1,7 +1,7 @@
 import type { ToolDefinition } from "../types.js";
 import { WORKTREE_TOOL_NAMES } from "../worktree/tools.js";
 
-/** 工具搜索别名表：与工具名单同一来源，供 search_tools 评分与精确解锁使用。 */
+/** Tool search alias table: same source as the tool list, used by search_tools for scoring and exact activation. */
 export const TOOL_SEARCH_ALIASES: Readonly<Record<string, readonly string[]>> = {
   list_files: ["ls", "dir", "directory", "folder", "browse", "列出", "目录"],
   read_file: ["cat", "view", "open", "read", "读取", "查看"],

@@ -3,7 +3,10 @@ import { isRecord } from "../types.js";
 import { redactSecretText } from "../formatting.js";
 
 export const BATCH_TOOL_NAME = "batch_tools";
-/** 单个脚本允许的最大步骤数:步骤间没有轮次推进,必须用硬上限防止无界执行。 */
+/**
+ * Maximum steps allowed in a single script: no turn boundary advances between steps, so a hard
+ * cap is required to prevent unbounded execution.
+ */
 export const MAX_BATCH_STEPS = 32;
 
 const REF_KEY = "$ref";
@@ -39,7 +42,10 @@ export interface BatchScriptRun {
   abortedAt?: string;
 }
 
-/** 脚本参数不符合契约时抛出;消息面向模型,需能据此自行修正。 */
+/**
+ * Thrown when script arguments violate the contract; the message is model-facing, so it must
+ * carry enough detail for the model to correct the call itself.
+ */
 export class BatchScriptError extends Error {
   constructor(message: string) {
     super(message);
@@ -48,8 +54,9 @@ export class BatchScriptError extends Error {
 }
 
 /**
- * 解析并校验 batch_tools 脚本参数。引用只允许指向更早的步骤(无前向引用、
- * 无自引用),因此校验通过后解释器按序执行即可满足任何数据依赖。
+ * Parse and validate batch_tools script arguments. References may only point at earlier steps
+ * (no forward references, no self-references), so once validation passes the interpreter can
+ * execute in order and satisfy any data dependency.
  */
 export function parseBatchScript(raw: unknown): BatchScriptSpec {
   if (!isRecord(raw)) throw new BatchScriptError("batch_tools arguments must be an object");
@@ -86,7 +93,10 @@ export function parseBatchScript(raw: unknown): BatchScriptSpec {
   return { steps, onFailure };
 }
 
-/** 收集参数中出现的全部步骤引用:整值占位 {"$ref":"id"} 与字符串内插 "${id}"。 */
+/**
+ * Collect every step reference appearing in the arguments: whole-value placeholders
+ * {"$ref":"id"} and string interpolations "${id}".
+ */
 export function* collectStepRefs(value: unknown): Generator<string> {
   if (Array.isArray(value)) {
     for (const item of value) yield* collectStepRefs(item);
@@ -111,9 +121,10 @@ function normalizeRefToken(token: string): string {
 }
 
 /**
- * 深度替换步骤参数中的引用。整值 {"$ref":"id"} 替换为被引用步骤的输出
- * (可解析为 JSON 时给出对象,否则保持字符串);字符串内插替换为输出原文。
- * 解析不到引用时保留占位原样,便于定位而不是静默损坏参数。
+ * Deeply substitute references in the step arguments. A whole-value {"$ref":"id"} is replaced by
+ * the referenced step's output (an object when it parses as JSON, otherwise the string);
+ * string interpolations are replaced by the raw output. A reference that cannot be resolved is
+ * left as the placeholder, so it is easy to locate rather than silently corrupting the arguments.
  */
 export function substituteStepArguments(value: unknown, resolve: (stepId: string) => string | undefined): unknown {
   if (Array.isArray(value)) return value.map((item) => substituteStepArguments(item, resolve));
@@ -146,8 +157,9 @@ function parseIfJson(text: string): unknown {
 }
 
 /**
- * 把各步骤结果折叠成一条面向模型的聚合输出。已执行的步骤按序给出状态与
- * 内容;中止时列出被跳过的步骤,模型据此决定下一步而不需要补发调用。
+ * Fold the per-step results into a single model-facing aggregate output. Executed steps are
+ * listed in order with status and content; on abort the skipped steps are listed too, so the
+ * model can decide what to do next without re-sending a call.
  */
 export function formatBatchScriptResult(run: BatchScriptRun): ToolResult {
   const failedCount = run.steps.filter((step) => !step.ok).length;
@@ -163,7 +175,8 @@ export function formatBatchScriptResult(run: BatchScriptRun): ToolResult {
     const status = step.ok ? "ok" : "FAILED";
     const duration = step.durationMs === undefined ? "" : ` (${step.durationMs}ms)`;
     lines.push("", `=== step ${step.id} [${step.tool}] ${status}${duration} ===`);
-    // 步骤输出可能携带凭据(命令回显、报错信息),聚合进上下文前统一脱敏。
+    // Step output can carry credentials (command echo, error text); redact uniformly before
+    // aggregating into the context.
     if (step.error) lines.push(`error: ${redactSecretText(step.error)}`);
     if (step.output?.trim()) lines.push(redactSecretText(step.output.trimEnd()));
     else if (!step.error && step.summary) lines.push(redactSecretText(step.summary));
@@ -183,8 +196,9 @@ export function formatBatchScriptResult(run: BatchScriptRun): ToolResult {
 }
 
 /**
- * batch_tools 的注册占位:真实执行由 ToolBatchExecutor 特判展开,每个步骤
- * 走完整的权限/hook/缓存管线。invoke 仅在执行器未接管的场景防御性报错。
+ * Registration placeholder for batch_tools: the real execution is expanded by a special case in
+ * ToolBatchExecutor, sending each step through the full permission/hook/cache pipeline. invoke
+ * only raises a defensive error in the scenarios the executor has not taken over.
  */
 export function registerBatchTools(registry: { register(tool: ToolDefinition): void }): void {
   registry.register({

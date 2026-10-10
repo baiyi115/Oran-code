@@ -13,10 +13,11 @@ export function normalizeTokenUsage(usage: Record<string, number>): TokenUsage {
   const cacheReadTokens = cacheNumberFrom(usage, "cache_read_input_tokens", "cache_read_tokens", "cached_tokens");
   const cacheWriteTokens = cacheNumberFrom(usage, "cache_creation_input_tokens", "cache_write_tokens");
   const inputTokens = reportedInput ?? (reportedTotal === undefined ? 0 : Math.max(0, reportedTotal - outputTokens));
-  // 与 context-manager 的 usageTotal 口径一致:无显式 total 时把缓存读写
-  // 也计入,否则开了 prompt cache 后 token budget 会系统性低估。
-  // OpenAI 系字段(prompt/completion)的 cached_tokens 是 prompt_tokens 的子集,
-  // 不得再加进 total;Anthropic 系的 cache_read 与 input_tokens 互斥,正常累加。
+  // Matches the usageTotal convention in context-manager: with no explicit total, cache reads
+  // and writes count too, otherwise the token budget is systematically underestimated once
+  // prompt caching is enabled. For OpenAI-style fields (prompt/completion) cached_tokens is a
+  // subset of prompt_tokens and must not be added into the total; for Anthropic-style fields
+  // cache_read and input_tokens are disjoint, so adding them normally is correct.
   const isOpenAiShape = usage.prompt_tokens !== undefined || usage.completion_tokens !== undefined;
   const totalTokens =
     reportedTotal ??

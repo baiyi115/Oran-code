@@ -92,7 +92,8 @@ describe("ContextManager tool-result offloading", () => {
   it("offloads the largest result first when a tool round exceeds the per-round byte budget", async () => {
     await withWorkspace(async (workspace) => {
       const manager = new ContextManager({ workspace });
-      // 每项都低于单条上限,只有整轮超预算才触发卸载;卸载最大一项后应回到预算内。
+      // Every item is under the per-item cap, so only the whole round exceeding budget triggers
+      // offload; offloading the largest item should bring it back within budget.
       const largestBytes = Math.floor(CONTEXT_LIMITS.toolRoundBytes * 0.22);
       const mediumBytes = Math.floor(CONTEXT_LIMITS.toolRoundBytes * 0.205);
       expect(largestBytes).toBeLessThan(CONTEXT_LIMITS.singleToolResultBytes);

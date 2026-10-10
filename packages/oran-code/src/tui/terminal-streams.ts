@@ -5,19 +5,20 @@ export const END_SYNCHRONIZED_OUTPUT = "\x1b[?2026l";
 export const ENABLE_BRACKETED_PASTE = "\x1b[?2004h";
 export const DISABLE_BRACKETED_PASTE = "\x1b[?2004l";
 /**
- * Button press/release + SGR extended coordinates,小号范围:只接管点击与
- * 滚轮,不抓 motion(1002/1003)以控制帧率;代价是原生文本选择需 Shift+拖选。
+ * Button press/release + SGR extended coordinates, a small scope: only clicks and the wheel are
+ * handled, motion (1002/1003) is left alone to keep the frame rate down; the price is that
+ * native text selection needs Shift+drag.
  */
 export const ENABLE_MOUSE_REPORTING = "\x1b[?1000h\x1b[?1006h";
 
 export interface TerminalMouseEvent {
-  /** SGR button code;bit 6 (64) marks wheel events,bit 0-1 = direction/button。 */
+  /** SGR button code; bit 6 (64) marks wheel events, bits 0-1 = direction/button. */
   readonly button: number;
   /** 0-based column. */
   readonly x: number;
   /** 0-based row. */
   readonly y: number;
-  /** SGR release report ('m' terminator);滚轮事件通常只有 press。 */
+  /** SGR release report ('m' terminator); wheel events usually only send press. */
   readonly release: boolean;
 }
 
@@ -28,7 +29,7 @@ export interface TerminalInputHooks {
 const BRACKETED_PASTE_START = "\x1b[200~";
 const BRACKETED_PASTE_END = "\x1b[201~";
 
-/** 拦截为 40ms 内的跨 chunk 拆分兜底;超时按普通按键透传,避免吞掉真实输入。 */
+/** Held prefix flushes after 40ms; past that it passes through as plain keys so real input survives. */
 const MOUSE_PREFIX_FLUSH_MS = 40;
 
 const SGR_MOUSE_SEQUENCE = /\x1b\[<(\d+);(\d+);(\d+)([Mm])/g;
@@ -40,8 +41,9 @@ interface MouseStripResult {
 }
 
 /**
- * 从原始输入块中剥离完整的鼠标上报(SGR 1006 与旧版 X10 编码),返回剩余
- * 按键文本与解析后的事件。只识别完整序列;不完整的前缀由调用方跨 chunk 缓冲。
+ * Strip complete mouse reports (SGR 1006 and legacy X10 encodings) from a raw input chunk and
+ * return the remaining key text plus the parsed events. Only complete sequences are recognized;
+ * incomplete prefixes are buffered across chunks by the caller.
  */
 function stripMouseSequences(text: string): MouseStripResult {
   const events: TerminalMouseEvent[] = [];
@@ -66,9 +68,9 @@ function stripMouseSequences(text: string): MouseStripResult {
   return { text: clean, events };
 }
 
-/** 找出 chunk 尾部可能是鼠标序列开头的部分(跨 chunk 拆分时交给下一次读取)。 */
+/** Find the chunk-tail part that may start a mouse sequence (handed to the next read when split). */
 function trailingMousePrefix(text: string): string {
-  // 一次键盘输入打不出这些前缀;延迟 40ms 透传不会影响手感。
+  // A single keystroke cannot produce these prefixes; delaying 40ms before passing through is fine.
   const sgr = /\x1b\[<[0-9;]*$/.exec(text);
   if (sgr) return sgr[0];
   const legacy = /\x1b\[M[\s\S]{0,2}$/.exec(text);
@@ -79,8 +81,9 @@ function trailingMousePrefix(text: string): string {
 }
 
 /**
- * 透传签名刻意放宽：chunk/encoding/cb 的实际组合由调用方决定，拦截层不做静态约束。
- * 必须 bind，否则裸函数调用会丢掉 write 依赖的 stream 上下文。
+ * The pass-through signature is deliberately loose: the actual chunk/encoding/cb combination is
+ * decided by the caller and the intercepting layer adds no static constraint.
+ * It must be bound, otherwise a bare call loses the stream context that write depends on.
  */
 type RawWrite = (chunk: unknown, encoding?: unknown, cb?: unknown) => boolean;
 
@@ -125,9 +128,10 @@ export function createSynchronizedWriteStream(target: NodeJS.WriteStream): NodeJ
  * with the escape sequences stripped out. This prevents multiline pastes from
  * prematurely firing Enter / keypress handlers before the full paste arrives.
  *
- * 附带(可选)的鼠标上报拦截:开启 1006h 后终端会往 stdin 写 SGR/X10 鼠标
- * 序列,Ink 的 keypress 解析器会把它们拆成一串垃圾按键灌进 composer,所以
- * 必须在到达 Ink 之前剥离并交给 onMouse。粘帖帧内的字节一律放行。
+ * Optional extra mouse-report interception: once 1006h is enabled the terminal writes SGR/X10
+ * mouse sequences to stdin, and Ink's keypress parser would split them into a stream of garbage
+ * keys fed to the composer, so they must be stripped and handed to onMouse before reaching Ink.
+ * Bytes inside a paste frame are always passed through.
  */
 export function createBracketedPasteStream(source: NodeJS.ReadableStream, hooks?: TerminalInputHooks): Transform {
   let inPaste = false;
@@ -141,7 +145,7 @@ export function createBracketedPasteStream(source: NodeJS.ReadableStream, hooks?
     transform(chunk, _encoding, callback) {
       let str = typeof chunk === "string" ? chunk : (chunk as Buffer).toString("utf8");
 
-      // 把"粘帖帧外"的一段做完鼠标清洗再吐出;帧内字节是数据,一律放行。
+      // Mouse-clean an "outside a paste frame" segment before pushing it; in-frame bytes are data.
       const pushOutsidePaste = (segment: string): void => {
         if (!hooks?.onMouse) {
           if (segment) this.push(segment);
@@ -154,14 +158,14 @@ export function createBracketedPasteStream(source: NodeJS.ReadableStream, hooks?
           try {
             hooks.onMouse(event);
           } catch {
-            // 观察者异常不得阻塞输入管线
+            // An observer exception must not stall the input pipeline.
           }
         }
         const held = trailingMousePrefix(text);
         if (held) {
           mousePrefix = held;
           if (mouseFlushTimer) clearTimeout(mouseFlushTimer);
-          // 前缀不完整就等待下一个 chunk;超时的前缀按真实按键放行。
+          // An incomplete prefix waits for the next chunk; a timed-out prefix is released as real keys.
           mouseFlushTimer = setTimeout(() => {
             if (mousePrefix) {
               transform.push(mousePrefix);
@@ -217,7 +221,7 @@ export function createBracketedPasteStream(source: NodeJS.ReadableStream, hooks?
       callback();
     },
     flush(callback) {
-      // 源收尾时把挂起的鼠标前缀按普通按键放行,绝不能静默丢失用户输入。
+      // On source end, release a pending mouse prefix as plain keys; user input is never dropped silently.
       if (mousePrefix) {
         this.push(mousePrefix);
         mousePrefix = "";

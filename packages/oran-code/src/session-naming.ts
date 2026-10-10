@@ -1,4 +1,4 @@
-/** 会话命名与提示词标题派生:从 session-store 拆出的纯函数层。 */
+/** Session naming and prompt-title derivation: the pure-function layer split out of session-store. */
 import type { Message } from "./types.js";
 import type { StoredSession } from "./session-store.js";
 import type { SessionTitleMode } from "./types.js";

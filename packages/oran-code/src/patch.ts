@@ -196,8 +196,9 @@ function findMatch(lines: readonly string[], probe: readonly string[], declared:
     if (matchesAt(lines, probe, position, (a, b) => a === b)) return position;
   }
 
-  // Pass 2: Exact match across entire file. 多个匹配时取最接近声明位置的,
-  // 而不是盲取首个——重复上下文(空行、括号)会让首个匹配落在错误位置。
+  // Pass 2: Exact match across entire file. With several matches take the one closest to
+  // the declared position rather than blindly the first — repeated context (blank lines,
+  // brackets) would land the first match in the wrong place.
   const totalHi = lines.length - probe.length;
   const exactMatches: number[] = [];
   for (let position = 0; position <= totalHi; position += 1) {

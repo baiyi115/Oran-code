@@ -1,6 +1,6 @@
 import type { Key } from "ink";
 
-/** 键判定的统一实现:Ink 的 Key 标志在各终端表现不一,集中兼容。 */
+/** Unified key predicates: Ink's Key flags differ per terminal, so compatibility lives here. */
 
 export function isSubmitKey(input: string, key: Key): boolean {
   // Ink only marks CR as return; some terminals still deliver bare LF on Enter.

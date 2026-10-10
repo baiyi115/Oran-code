@@ -73,7 +73,8 @@ export function projectConfigPath(workspace: string): string {
   return resolve(workspace, PROJECT_STATE_DIRECTORY, "config.json");
 }
 
-/** 历史遗留的项目级配置目录(.liteagent 与 .litecode 都兼容读取,存在的生效)。 */
+/** Legacy project-level config directories (.liteagent and .litecode are both read for
+ * compatibility; whichever exists takes effect). */
 export function legacyProjectConfigPaths(workspace: string): string[] {
   return [
     resolve(workspace, LEGACY_PROJECT_CONFIG_DIRECTORY, "config.json"),
@@ -171,7 +172,8 @@ function normalizeSubagentSettings(value: unknown): SubagentSettings | undefined
   return forkWaitTimeoutMs === undefined ? {} : { forkWaitTimeoutMs };
 }
 
-/** 联网工具设置:只做形状校验,端点合法性在工具调用时判定。 */
+/** Web tool settings: only the shape is validated here; endpoint validity is judged at
+ * tool-call time. */
 function normalizeWebSettings(value: unknown): WebSettings | undefined {
   if (value === undefined) return undefined;
   if (!value || typeof value !== "object" || Array.isArray(value)) {
@@ -459,7 +461,8 @@ export async function loadConfig(workspace?: string): Promise<UserConfig> {
   return config;
 }
 
-/** 单个配置文件损坏不应导致无法启动:降级为默认值并给出可操作的警告。 */
+/** A single corrupt config file must not prevent startup: fall back to the defaults and
+ * print an actionable warning. */
 async function readConfigTolerant(path: string): Promise<UserConfig> {
   try {
     return await readConfig(path);
@@ -480,7 +483,8 @@ export async function saveConfig(config: UserConfig, path = userConfigPath()): P
   await mkdir(dirname(path), { recursive: true });
   const payload = JSON.stringify(toFileShape(config), null, 2) + "\n";
   await writeFile(path, payload, "utf8");
-  // 配置文件含 API key 等明文凭据;mode 只在创建时生效,已存在的文件单独 chmod。
+  // The config file holds plaintext credentials such as API keys; mode only takes effect at
+  // creation time, so an existing file is chmod'ed separately.
   if (process.platform !== "win32") await chmod(path, 0o600).catch(() => undefined);
 }
 

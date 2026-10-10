@@ -2,8 +2,9 @@ import type { Message, ModelConfig } from "../types.js";
 import { CONTEXT_LIMITS } from "./limits.js";
 
 /**
- * provider 实报 usage 建立的锚点。
- * 后续估算以锚点为基准、用混合估算差值同时修正斜率与偏移。
+ * Anchor established from provider-reported usage.
+ * Later estimates use the anchor as their baseline, and the hybrid-estimate delta corrects both
+ * slope and offset.
  */
 export interface UsageAnchor {
   tokens: number;
@@ -52,7 +53,8 @@ export function estimatedRequestTokens(
   const payload = JSON.stringify({ messages, tools });
   const bytes = Buffer.byteLength(payload, "utf8");
   const cjkCharacters = payload.match(CJK_CHARACTER_PATTERN)?.length ?? 0;
-  // CJK 字符按保守 token 系数独立计;其余字节沿用 3.5 字节/token。
+  // CJK characters are counted separately with a conservative tokens-per-character factor;
+  // the remaining bytes keep the 3.5 bytes/token rule.
   const cjkBytes = cjkCharacters * 3;
   const cjkTokens = cjkCharacters * CONTEXT_LIMITS.cjkTokensPerCharacter;
   const otherTokens = Math.max(0, bytes - cjkBytes) / CONTEXT_LIMITS.charactersPerToken;
@@ -61,5 +63,8 @@ export function estimatedRequestTokens(
 
 const CJK_CHARACTER_PATTERN = /[\u2E80-\u9FFF\uF900-\uFAFF\uFF00-\uFFEF]/g;
 
-/** 摘要长度校验用:判断文本是否含 CJK 字符(信息密度不同,阈值不同)。 */
+/**
+ * Used by summary-length validation: whether the text contains CJK characters (different
+ * information density, hence a different threshold).
+ */
 export const HAS_CJK_PATTERN = /[\u2E80-\u9FFF\uF900-\uFAFF]/;

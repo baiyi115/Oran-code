@@ -1,9 +1,10 @@
 /**
- * 用户可见的键盘快捷键总表。
+ * The master table of user-visible keyboard shortcuts.
  *
- * `/help` 与 cli 启动帮助共用这份数据(ZCode 风格的可发现性:用户不需要
- * 背键位,查一下就知道能按什么)。修改键位绑定时同步更新这张表,否则提示
- * 会与实现再次漂移——这个问题过去已经发生过几次(见 README 的 Tab 段)。
+ * `/help` and the cli startup help share this data (ZCode-style discoverability: users
+ * should not have to memorise keybindings, they can look them up). Update this table
+ * whenever a binding changes, otherwise the hints drift away from the implementation
+ * once more — that has already happened several times (see the Tab section in the README).
  */
 
 export interface ShortcutGroup {
@@ -50,7 +51,8 @@ export const SHORTCUTS: readonly ShortcutGroup[] = [
   },
 ];
 
-/** 排版成 help 文本使用的段落体,供 commandHelp 与 cli 帮助直接拼接。 */
+/** Renders the table as the paragraph body used by help text, for commandHelp and the cli
+ * help to concatenate directly. */
 export function shortcutsHelp(): string {
   return SHORTCUTS.map((group) =>
     [`${group.topic}:`, ...group.lines.map(([key, description]) => `  ${key.padEnd(18)}${description}`)].join("\n"),

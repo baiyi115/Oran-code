@@ -10,15 +10,17 @@ export interface SessionTitleServiceDependencies {
   readonly providerFactory: (model: ModelConfig) => ModelProvider;
   readonly config: () => UserConfig;
   readonly titleMode: () => SessionTitleMode;
-  /** 与会话持久化共用的串行写队列;任务异常被吞掉并返回 undefined。 */
+  /** Serial write queue shared with session persistence; task exceptions are swallowed, returning undefined. */
   readonly runSerialSessionWrite: <T>(task: () => Promise<T>) => Promise<T | undefined>;
-  /** 会话记录被更新后回写内存中的 currentSession;persisted 为 true 时同时刷新 TUI。 */
+  /** Writes the updated session record back to the in-memory currentSession; also refreshes the
+   *  TUI when persisted is true. */
   readonly onSessionUpdated: (session: StoredSession, options: { refreshTui: boolean }) => void;
 }
 
 /**
- * 会话标题的后台生成服务(model 模式)。从 TerminalSession 提取,
- * 行为保持不变:每会话只尝试一次、标题模型低温短输出、结果经串行链落盘。
+ * Background session-title generation service (model mode). Extracted from TerminalSession,
+ * behavior unchanged: one attempt per session, low-temperature short output from the title model,
+ * result persisted through the serial chain.
  */
 export class SessionTitleService {
   private readonly jobs = new Set<Promise<void>>();

@@ -510,8 +510,8 @@ export class TerminalSession {
   async run(): Promise<void> {
     if (!existsSync(this.workspace)) throw new Error(`workspace does not exist: ${this.workspace}`);
     const isTty = supportsTui(this.input, this.output);
-    // TUI 模式提前预热 ink/react 模块图(纯 CPU 的模块编译),
-    // 与状态目录迁移、历史恢复的 IO 重叠,缩短首帧时间。
+    // In TUI mode, warm up the ink/react module graph ahead of time (pure-CPU module compilation),
+    // overlapping with the IO of state-directory migration and history restore to shorten time to first frame.
     const inkReady = isTty ? loadInkApp() : undefined;
     if (inkReady) void inkReady.catch(() => undefined);
     await ensureProjectStateRoot(this.workspace);
@@ -644,7 +644,7 @@ export class TerminalSession {
     }
   }
 
-  /** 首次需要时构造 Hook 引擎，并为当前任务绑定 Subagent Runner。 */
+  /** Builds the Hook engine on first need and binds a Subagent Runner for the current task. */
   private async ensureHookEngine(runner: SubagentRunner): Promise<HookEngine | undefined> {
     const runtime = await this.ensureAgentRuntime();
     const subAgentExecutor: HookSubAgentExecutor = async (prompt, context) => {
@@ -696,12 +696,13 @@ export class TerminalSession {
         subAgentExecutor,
       });
       this.hookEngine = built.engine;
-      // 校验错误聚合后通过会话系统提示一次性呈现
+      // Validation errors are aggregated and presented in a single pass through a session system prompt
       if (!this.hookWarningsShown && built.errors.length) {
         this.hookWarningsShown = true;
         const lines = built.errors.map((e) => `Hook 配置警告：#${e.index}${e.id ? ` (${e.id})` : ""} ${e.message}`);
         this.renderer.error(lines.join("\n"));
-        // 校验错误通过会话内系统提示消息呈现给模型，前缀固定为 "Hook 配置警告："。
+        // Validation errors are presented to the model as an in-session system prompt message, with
+        // the same fixed warning prefix the user-facing lines above carry.
         this.conversation.push({
           role: "system",
           content: lines.join("\n"),
@@ -812,7 +813,8 @@ export class TerminalSession {
     });
     const hookEngine = await this.ensureHookEngine(runner);
     const consumedBackgroundNotifications: string[] = [];
-    // 只读缓存跨提示复用前,先确认工作区在两次提示之间没有被外部改动。
+    // Before reusing the readonly cache across prompts, confirm the workspace was not changed
+    // externally between the two prompts.
     if (this.previousReadonlyResults !== undefined && this.previousWorkspaceFingerprint !== undefined && !isolated) {
       const current = await workspaceFingerprint(this.workspace).catch(() => undefined);
       if (current === undefined || current !== this.previousWorkspaceFingerprint) {
@@ -841,8 +843,8 @@ export class TerminalSession {
                 this.currentSession?.id !== sessionId
               )
                 return;
-              // controller 的 syncConversation 传来的已是 cloneMessages 私有副本,
-              // 这里浅拷贝数组即可隔离后续 push/splice,免去每轮一次全量深拷贝。
+              // What controller's syncConversation passes in is already a private cloneMessages copy,
+              // so a shallow array copy here isolates later push/splice, avoiding a full deep clone each turn.
               this.conversation = [...messages];
               this.scheduleTuiSessionPersist();
             },
@@ -1152,7 +1154,7 @@ export class TerminalSession {
 
   private async restoreStoredSession(stored: StoredSession, restoreModel: boolean): Promise<void> {
     this.sessionGeneration += 1;
-    // 重新挂载会话时清空 once 集合，并丢弃上一任务遗留的通知。
+    // Remounting a session clears the once set and discards notifications left over from the previous task.
     this.hookEngine?.resetOnce();
     this.hookEngine?.drainNotices();
     this.currentSession = structuredClone(stored);
@@ -1234,8 +1236,9 @@ export class TerminalSession {
   }
 
   /**
-   * 端点对 reasoning_effort 返回 400 后的持久化:写入用户配置并在内存中标记,
-   * 之后的请求不再携带该参数。尽力而为,失败不影响已完成的剥参重试。
+   * Persistence after the endpoint returns 400 for reasoning_effort: write it to the user config and
+   * mark it in memory so later requests no longer carry the parameter. Best-effort; a failure does
+   * not affect the parameter-stripping retry that was already completed.
    */
   private async handleReasoningUnsupported(model: ModelConfig): Promise<void> {
     const reference = formatModelReference(model);
@@ -1257,9 +1260,11 @@ export class TerminalSession {
   }
 
   /**
-   * 端点要求回传 reasoning_content 时的处理:只在当前进程内记住,不写用户配置。
-   * 这是某次对话的上下文要求(上一轮推理必须原样带回),不是端点能力缺陷,
-   * 落盘会污染以后所有会话。
+   * Handling for when the endpoint requires reasoning_content to be echoed back: remembered only in
+   * the current process, never written to the user config.
+   * This is a context requirement of one conversation (the previous turn's reasoning must be sent
+   * back verbatim), not an endpoint capability defect, and persisting it would pollute every future
+   * session.
    */
   private handleReasoningEchoRequired(model: ModelConfig): void {
     if (this.model?.provider === model.provider && this.model?.model === model.model) {
@@ -1271,7 +1276,7 @@ export class TerminalSession {
     );
   }
 
-  /** 斜杠命令 handler 的端口:提供状态读写与副作用回调。 */
+  /** Port for the slash command handlers: state reads/writes plus side-effect callbacks. */
   private handlersPort(): SessionCommandHandlersPort {
     return {
       workspace: this.workspace,
@@ -1355,7 +1360,8 @@ export class TerminalSession {
     const sessionId = session.id;
     const sessionGeneration = this.sessionGeneration;
     const taskGeneration = this.taskGeneration;
-    // filter 产生的新数组即可:消息对象入列后不可变,store 侧会自行 cloneMessages。
+    // The new array produced by filter is enough: message objects are immutable once enqueued, and
+    // the store runs cloneMessages itself.
     const conversation = this.conversation.filter(
       (message) => message.metadata?.promptBlock !== "session-gap-reminder",
     );
@@ -1452,7 +1458,7 @@ export class TerminalSession {
     }
     this.renderer.render(event);
     await this.tui?.flushPendingRender(renderCommitKind(event));
-    // 流式 delta 不触发持久化,等边界事件再落盘。
+    // Streaming deltas do not trigger persistence; wait for a boundary event to write to disk.
     if (event.type !== "assistant_delta" && event.type !== "thought_delta") this.scheduleTuiSessionPersist();
   }
 
@@ -1460,8 +1466,9 @@ export class TerminalSession {
     if (this.sessionPersistTimer) return;
     this.sessionPersistTimer = setTimeout(() => {
       this.sessionPersistTimer = undefined;
-      // 定时持久化只写元数据和会话;TUI 快照由显式调用(会话切换/退出等)写入,
-      // 避免流式期间反复序列化整份转写。
+      // The timed persistence writes only metadata and the session; the TUI snapshot is written by
+      // explicit calls (session switch/exit, etc.), avoiding repeated serialization of the whole
+      // transcript during streaming.
       void this.persistTuiSession(false);
     }, 250);
   }
@@ -1658,7 +1665,8 @@ export class TerminalSession {
     });
   }
 
-  /** 统一的注册表构建:builtin 常驻,MCP/Skill 系统工具按需。 */
+  /** Unified registry construction: builtin tools stay resident; MCP/Skill system tools are loaded
+   *  on demand. */
   private async buildToolRegistry(
     options: { skillTools?: boolean; mcp?: "always" | "if-started" | "never" } = {},
   ): Promise<ToolRegistry> {
@@ -1705,18 +1713,22 @@ export class TerminalSession {
   }
 
   /**
-   * 对话级回退(:`/rewind [N]`)。
+   * Conversation-level rewind (`/rewind [N]`).
    *
-   * 语义边界:
-   * - 只截断**对话历史**(模型看到的内容),文件改动仍由 `/undo` 负责,两者互不代替;
-   * - 截断点落在用户轮次之前,天然不破坏 assistant 工具调用与 tool 结果的 1:1 配对;
-   * - 归档逻辑截断走会话存储既有的 `session-reset` 通路,原始 JSONL 字节保留可审计;
-   * - 压缩边界之后的轮次才能回退:更早的对话已被摘要折叠,原文不在活跃历史里。
+   * Semantic boundaries:
+   * - It truncates the **conversation history** only (what the model sees); file changes remain the job
+   *   of `/undo`, and the two do not replace each other;
+   * - The cut point falls before a user turn, so the 1:1 pairing of assistant tool calls with tool
+   *   results is naturally preserved;
+   * - The archive-level truncation goes through the session store's existing `session-reset` path, and
+   *   the raw JSONL bytes are kept for auditing;
+   * - Only turns after the compaction boundary can be rewound: earlier conversation has been folded
+   *   into a summary, and the original text is no longer in the active history.
    */
   /**
-   * /resume:继续被进度门禁暂停的任务。把手头这份暂停状态里的 goal 指纹交给新任务,
-   * 让新任务沿用那一次的窗口、阶段与已写文件(见 resumedRunState),同时把门禁关掉
-   * —— 这正是暂停提示里承诺的那件事。
+   * /resume: continues a task paused by the progress gate. It hands the goal fingerprint from the
+   * paused state to the new task, so the new task keeps that run's window, phase and already-written
+   * files (see resumedRunState) while the gate is turned off -- exactly what the pause notice promised.
    */
   private async resumeProgressTask(): Promise<{ ok: boolean; output: string }> {
     if (!this.model) return { ok: false, output: "no model selected; use /model PROVIDER/MODEL first" };
@@ -2133,7 +2145,7 @@ export class TerminalSession {
     return displaySessionName(session, this.sessionTitleMode());
   }
 
-  /** 串行化会话写操作;任务异常被吞掉,返回 undefined。 */
+  /** Serializes session write operations; a task exception is swallowed and undefined is returned. */
   private runSerialSessionWrite<T>(task: () => Promise<T>): Promise<T | undefined> {
     let value: T | undefined;
     this.sessionSave = this.sessionSave
@@ -2195,7 +2207,7 @@ export class TerminalSession {
     await this.agentStateRestore;
   }
 
-  /** 回收崩溃遗留且无任务租约引用的 worktree(best-effort)。 */
+  /** Reclaims worktrees left behind by a crash and referenced by no task lease (best-effort). */
   private async sweepOrphanWorktrees(): Promise<void> {
     const runtime = this.agentRuntime;
     if (!runtime) return;
@@ -2261,12 +2273,13 @@ export class TerminalSession {
       this.renderer.attachPrompt(undefined);
       this.readline = undefined;
     }
-    // 进程退出前派发 process_exit hook(规则自带超时;失败只记日志)。
+    // Dispatch the process_exit hook before the process exits (rules carry their own timeout;
+    // failures are only logged).
     if (this.hookEngine) {
       try {
         await this.hookEngine.dispatch({ event: "process_exit", workspace: this.workspace });
       } catch {
-        // hook 失败不得阻断退出
+        // A hook failure must not block exit
       }
     }
     await this.closeTrace();
@@ -2354,14 +2367,16 @@ export function supportsTui(input: NodeJS.ReadableStream, output: NodeJS.WriteSt
   return Boolean((input as NodeJS.ReadStream).isTTY && output.isTTY);
 }
 
-/** shell 作业状态映射到 TUI 的后台任务状态词汇(与子代理状态机对齐)。 */
+/** Maps a shell job status onto the TUI's background-task status vocabulary (aligned with the
+ *  subagent state machine). */
 function tuiJobStatus(status: "running" | "exited" | "failed" | "killed"): string {
   if (status === "exited") return "completed";
   if (status === "killed") return "cancelled";
   return status;
 }
 
-/** /rewind 列表里的单行摘要:去掉 "User message:" 包装,压平空白,截断到一行。 */
+/** One-line summary for the /rewind listing: strips the "User message:" wrapper, flattens
+ *  whitespace, and truncates to a single line. */
 function summarizeUserTurn(content: string): string {
   const withoutPrefix = content.includes("User message:\n")
     ? content.slice(content.indexOf("User message:\n"))

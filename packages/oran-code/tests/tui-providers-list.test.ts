@@ -33,7 +33,7 @@ function harness(list: ProviderOption[] = options, deletedOk = true): Harness {
     state,
     loadModels: async () => [],
     onModelSelected: async () => {},
-    // 模拟真实行为:列表反映已删除的供应商
+    // Emulate real behavior: the list reflects deleted providers
     loadProviders: async () => list.filter((option) => !h.deleted.includes(option.name)),
     onProviderSelected: async (name) => {
       h.selected.push(name);
@@ -66,7 +66,7 @@ function overlay(h: Harness) {
   return h.state.overlay;
 }
 
-/** 收窄到 providers 列表 overlay,供访问 options 的用例使用。 */
+/** Narrow to the providers list overlay for cases that access its options. */
 function providersOverlay(h: Harness) {
   const view = overlay(h);
   if (view.kind !== "providers") throw new Error(`overlay is ${view.kind}`);
@@ -99,20 +99,20 @@ describe("providers list overlay", () => {
   it("deletes a provider through the confirm dialog and reloads the list", async () => {
     const h = harness();
     await h.handlers.openProviders();
-    h.handlers.handleProvidersKey("d", key()); // D/Del/Backspace 均可发起删除
+    h.handlers.handleProvidersKey("d", key()); // D/Del/Backspace all start a delete
     expect(overlay(h).kind).toBe("provider-delete-confirm");
 
-    // 默认光标在 Cancel,按 Enter 取消回列表
+    // The cursor defaults to Cancel; Enter cancels and returns to the list
     h.handlers.handleProviderDeleteConfirmKey("", enter);
     expect(h.deleted).toEqual([]);
     expect(overlay(h)).toMatchObject({ kind: "providers", selectedIndex: 0 });
 
-    // 再次请求删除,切到 Delete 确认
+    // Request deletion again and move to Delete to confirm
     h.handlers.handleProvidersKey("d", key());
     h.handlers.handleProviderDeleteConfirmKey("", key({ leftArrow: true }));
-    await h.handlers.handleProviderDeleteConfirmKey("", enter); // 删除确认是异步的,必须等待
+    await h.handlers.handleProviderDeleteConfirmKey("", enter); // delete confirmation is async, must await
     expect(h.deleted).toEqual(["alpha"]);
-    // 删除成功后回到重载后的列表,只剩 beta
+    // After a successful delete it returns to the reloaded list with only beta left
     expect(providersOverlay(h).options.map((option) => option.name)).toEqual(["beta"]);
   });
 

@@ -8,11 +8,12 @@ import type { BackgroundAgentTaskManager } from "./background.js";
 import type { TeamManager } from "./team.js";
 
 /**
- * 主任务与子代理运行时的共享装配入口。
+ * Shared assembly entry point for the main task and the subagent runtime.
  *
- * 交互式 session 与非交互 agent.ts 复用同一装配顺序(runner → scope →
- * coordinator.registerTools),差异全部通过 runnerDeps 与开关参数表达,
- * 防止两处装配随时间漂移出不同的行为。
+ * The interactive session and the non-interactive agent.ts reuse the same assembly order
+ * (runner → scope → coordinator.registerTools), and every difference is expressed through
+ * runnerDeps and toggle parameters, so the two assembly sites cannot drift into different
+ * behaviour over time.
  */
 export interface SubagentStackOptions {
   readonly roles: AgentDefinitionLoader;
@@ -20,7 +21,7 @@ export interface SubagentStackOptions {
   readonly teams: TeamManager;
   readonly registry: ToolRegistry;
   readonly runnerDeps: SubagentRunnerDependencies;
-  /** 是否创建结构化 fork 等待域(任务收尾前 join 全部 fork)。 */
+  /** Whether to create the structured-fork wait scope (joining every fork before the task wraps up). */
   readonly joinStructuredForks: boolean;
   readonly forkWaitTimeoutMs: number;
   readonly parentConversation: () => readonly Message[];
@@ -50,7 +51,7 @@ export function assembleSubagentStack(options: SubagentStackOptions): SubagentSt
   return { runner, scope };
 }
 
-/** 等待结构化 fork 收尾,并把执行摘要附加到任务结果。 */
+/** Wait for the structured forks to wrap up and append their execution summary to the task result. */
 export async function joinStructuredForkSummaries(
   scope: StructuredSubagentScope,
   task: Task,
@@ -63,7 +64,7 @@ export async function joinStructuredForkSummaries(
   }
 }
 
-/** 取消 scope 内全部 fork 并等待其 promise 落定。 */
+/** Cancel every fork in the scope and wait for its promise to settle. */
 export async function disposeStructuredScope(scope: StructuredSubagentScope): Promise<void> {
   scope.cancelAll();
   await Promise.allSettled(scope.list().map((task) => task.promise));

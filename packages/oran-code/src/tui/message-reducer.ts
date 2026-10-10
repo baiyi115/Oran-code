@@ -37,7 +37,7 @@ export function reduceRuntimeEvent(state: TuiState, event: RuntimeEvent): void {
   const sequenceKey = `${event.taskId}:${event.sequence}`;
   if (state.processedSequences.has(sequenceKey)) return;
   if (event.sequence < state.lastSequence) {
-    // 迟到的真实工具结果仍应落到转写行上,否则异步完成的结果会被整条丢弃。
+    // A late real tool result must still land on the transcript row, or the async completion is lost.
     if (event.type === "tool_result") {
       updateToolResult(state, event.call, event.result, event.taskId);
       state.processedSequences.add(sequenceKey);
@@ -95,8 +95,9 @@ export function reduceRuntimeEvent(state: TuiState, event: RuntimeEvent): void {
       clearRetryErrorNotice(state);
       state.waitingForFirstChunk = false;
       const assistant = ensureAssistant(state, event.turnId, event.taskId);
-      // 追加即可:end 事件会整体剥离 plan 标记;对全文反复剥离是 O(n²)。
-      // 标记出现时才做一次全文剥离,保证跨 delta 边界的标记也能清掉。
+      // Appending is enough: the end event strips plan markers wholesale; stripping the whole text
+      // repeatedly is O(n²). Strip once when a marker shows up, so markers that straddle a delta
+      // boundary are cleared too.
       assistant.text += redactSecretText(event.text);
       if (assistant.text.includes("PLAN_COMPLETE")) {
         assistant.text = stripPlanCompleteMarkers(assistant.text);
@@ -404,8 +405,8 @@ function updateToolResult(state: TuiState, call: ToolCall, result: ToolResult, t
   if (!target) return;
   // A result ends the run those notes were describing.
   delete target.progress;
-  // 行已被 force-finish(如新任务取消)时,迟到的真实成功结果仍允许把
-  // cancelled 升级为 success;其余终态不回退。
+  // When the row was already force-finished (e.g. cancelled by a new task), a late real success
+  // result may still upgrade cancelled to success; no other terminal state moves backwards.
   if (target.status !== "running" && !(target.status === "cancelled" && result.ok)) return;
   target.status = result.ok
     ? "success"
@@ -624,7 +625,8 @@ function reconcileTaskUsage(state: TuiState, completed: TuiState["session"]["usa
 }
 
 function isRejected(result: ToolResult): boolean {
-  // 先读结构化 metadata(权限拒绝是显式写入的),正则只做没有 metadata 的回退。
+  // Structured metadata is read first (a permission denial is written explicitly there); the regex
+  // is only a fallback for results without metadata.
   return (
     result.metadata?.permissionDenied === true ||
     result.metadata?.blockedBeforeExecution === true ||
@@ -632,7 +634,7 @@ function isRejected(result: ToolResult): boolean {
   );
 }
 
-/** 把工具结果的 metadata 翻译成用户可见的语义徽标(顺序固定,便于扫读)。 */
+/** Translate tool-result metadata into user-visible semantic badges (fixed order, easy to scan). */
 function metadataBadges(result: ToolResult): string[] | undefined {
   const metadata = result.metadata;
   if (!metadata) return undefined;
@@ -660,7 +662,7 @@ function toolCallKey(call: ToolCall): string {
   return call.id ?? `${call.name}:${call.createdAt}`;
 }
 
-/** 倒序查找但不复制整个转写数组(reverse() 会分配等长副本)。 */
+/** Search in reverse without copying the whole transcript array (reverse() allocates an equal copy). */
 function findLast<T>(items: readonly T[], predicate: (item: T) => boolean): T | undefined {
   for (let index = items.length - 1; index >= 0; index -= 1) {
     const item = items[index]!;

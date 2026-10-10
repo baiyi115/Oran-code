@@ -27,10 +27,11 @@ const languageCache = new Map<string, Promise<Language>>();
 const parserCache = new Map<string, Promise<Parser>>();
 
 /**
- * 编译后的查询按 (grammar, querySource) 缓存。`new Query` 会把 pattern 编译进
- * 字节码,是这条管线上最贵的一步(实测约 7.7ms/条,而解析一个 53KB 的文件只要
- * 15.6ms);同一份查询此前每解析一个文件就要重编一次。查询绑定在某个 Language
- * 实例上,而实例与宿主进程同生命周期,所以缓存是安全的。
+ * Compiled queries are cached by (grammar, querySource). `new Query` compiles the pattern into
+ * bytecode, the most expensive step in this pipeline (measured at ~7.7ms per query, while parsing
+ * a 53KB file takes only 15.6ms); the same query used to be recompiled for every file parsed.
+ * A query is bound to a Language instance, and the instance shares the host process's lifetime,
+ * so caching is safe.
  */
 const queryCache = new Map<string, Query>();
 
@@ -76,18 +77,20 @@ export function queryFor(grammar: string, grammarLanguage: Language, querySource
 }
 
 /**
- * 有些语法在**同一个进程里只能解析一次**:第二次起同一个源会解析成 ERROR 树。
+ * Some grammars can parse only **once within the same process**: from the second call on, the same
+ * source parses into an ERROR tree.
  *
- * 实测(web-tree-sitter 0.25.10 + tree-sitter-wasms 0.1.13)lua 就是这样,而
- * python / typescript / bash 正常:连续 4 次解析得到 ok,ERR,ERR,ERR,换新
- * Parser、换新 Query、换输入长度、乃至在同一进程里重新 Language.load 一个
- * 全新的实例(它的第一次解析也直接 ERR)都不改变结论。也就是说这不是缓存或
- * 对象复用的问题,损坏发生在进程级,唯一可靠的办法是换进程。后果曾经是
- * 「一个仓库里第二个 .lua 文件起,import 边静默消失」。
+ * Measured (web-tree-sitter 0.25.10 + tree-sitter-wasms 0.1.13): this holds for lua, while
+ * python / typescript / bash are fine — 4 parses in a row yield ok,ERR,ERR,ERR, and a fresh
+ * Parser, a fresh Query, a different input length, even re-loading a brand-new Language instance
+ * in the same process (whose very first parse is ERR as well) all leave the conclusion unchanged.
+ * So this is not a caching or object-reuse problem: the corruption happens at process level, and
+ * the only reliable remedy is a new process. The consequence used to be "from the second .lua file
+ * in a repository onward, import edges silently disappeared".
  *
- * 判定方式:一个在本进程里解析干净过的语法,突然给出带错误的树 —— 那不是文件
- * 的问题。此时不采信这次结果,交给上层换进程重试;并记住这个语法,之后不再
- * 浪费那一次解析。
+ * Detection: a grammar that has already parsed cleanly in this process suddenly hands back a tree
+ * with errors — that is not the file's fault. The result is then not trusted, the caller is left
+ * to retry in a new process, and the grammar is remembered so that wasted parse is not repeated.
  */
 const processScopedGrammars = new Set<string>();
 /**

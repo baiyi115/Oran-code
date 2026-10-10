@@ -11,12 +11,14 @@ export const CLIENT_ID = "oran-code/cli";
 export const CLIENT_USER_AGENT = `oran-code/${PRODUCT_VERSION} (cli)`;
 export const PROJECT_STATE_DIRECTORY = ".oran";
 export const LEGACY_PROJECT_STATE_DIRECTORY = ".litecode";
-/** 历史遗留的项目级配置目录名(仅 config.ts 兼容读取,不参与目录迁移)。 */
+/** Legacy project-level config directory name (read for compatibility by config.ts only; it
+ * does not participate in directory migration). */
 export const LEGACY_PROJECT_CONFIG_DIRECTORY = ".liteagent";
 export const USER_DATA_DIRECTORY = ".oran";
 export const LEGACY_USER_DATA_DIRECTORY = ".liteagent";
 
-/** 项目状态目录与历史遗留目录名;搜索、快照、指纹的排除逻辑共用同一来源。 */
+/** The project state directory and the legacy directory names; the search, snapshot and
+ * fingerprint exclusion logic all draw on this single source. */
 export const PROJECT_STATE_DIR_NAMES: readonly string[] = [
   PROJECT_STATE_DIRECTORY,
   LEGACY_PROJECT_STATE_DIRECTORY,
@@ -101,8 +103,9 @@ export function userMemoryRoot(workspace: string): string {
  * archived under the destination rather than overwritten.
  */
 export async function migrateUserDataOutOfWorkspace(workspace: string): Promise<void> {
-  // 工作区是用户主目录(或其祖先)时,~/.oran 就位于 workspace/.oran 之内,
-  // 迁移会变成把目录 rename 进自身(EINVAL);两者本就是同一处,直接跳过。
+  // When the workspace is the user home directory (or an ancestor of it), ~/.oran lies
+  // inside workspace/.oran, so the migration would become a rename of a directory into
+  // itself (EINVAL); the two are the same place, so skip it.
   const userRoot = resolve(userDataRoot());
   const projectRoot = resolve(projectStateRoot(workspace));
   const userRootRelative = relative(projectRoot, userRoot);

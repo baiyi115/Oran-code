@@ -1,4 +1,4 @@
-// eslint-disable-next-line no-control-regex -- 控制字符是刻意匹配的目标（ANSI 转义/文本清洗）
+// eslint-disable-next-line no-control-regex -- control chars are the intended match (ANSI escape/text cleanup)
 const ANSI_PATTERN = /\u001b\[[0-?]*[ -/]*[@-~]/g;
 export function stripTerminalMarkup(value: string): string {
   return value.replace(ANSI_PATTERN, "").replace(INK_TAG_PATTERN, "");
@@ -81,7 +81,7 @@ export function truncateVisible(value: string, width: number): string {
   for (const symbol of symbols) total += graphemeWidth(symbol);
   if (total <= safeWidth) return value;
   if (safeWidth === 1) return "…";
-  // 单遍累计宽度;逐符号重测整个前缀是 O(n²)。
+  // Accumulate width in one pass; re-measuring the whole prefix per symbol is O(n²).
   let used = 0;
   let result = "";
   for (const symbol of symbols) {
@@ -129,7 +129,7 @@ export function wrapDisplayText(value: string, width: number): string[] {
       const output: string[] = [];
       let remaining = line;
       while (true) {
-        // 每行只做一次分词;对剩余串反复全量测量是 O(n²)。
+        // Segment each line once; re-measuring the whole remaining string is O(n²).
         const symbols = graphemes(remaining);
         let total = 0;
         for (const symbol of symbols) total += graphemeWidth(symbol);

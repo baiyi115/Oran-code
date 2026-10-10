@@ -13,7 +13,7 @@ import {
 } from "./process.js";
 
 export interface CommandToolOptions {
-  /** 作业表注入点:测试用独立实例,运行时默认进程级单例。 */
+  /** Job-table injection point: tests use an isolated instance, runtime defaults to the process-level singleton. */
   readonly jobs?: ShellJobManager;
 }
 
@@ -89,7 +89,8 @@ export function registerCommandTools(
       }
 
       if (race.kind === "timeout") {
-        // 超时不杀进程:晋升为后台作业,输出与句柄原样保留,由 job_output/job_kill 继续收割。
+        // A timeout does not kill the process: it is promoted to a background job, with output and
+        // handle preserved as-is, for job_output/job_kill to keep reaping.
         const job = jobs.adopt({ command, cwd, running });
         return {
           ok: false,
@@ -125,7 +126,8 @@ export function registerCommandTools(
     },
     permissionLevel: 0,
     kind: "readonly",
-    // 作业输出是活数据:同一参数在不同时刻结果不同,不能参与只读结果缓存。
+    // Job output is live data: the same arguments return different results at different times,
+    // so it cannot take part in the readonly result cache.
     cacheable: false,
     maxOutputChars: 48_000,
     invoke: async (call) => {
@@ -176,7 +178,8 @@ type ExitRace = { kind: "exited"; outcome: CommandOutcome } | { kind: "timeout" 
 function waitForExitOrTimeout(running: RunningCommand, timeoutSeconds: number): Promise<ExitRace> {
   if (timeoutSeconds <= 0) return running.exited.then((outcome) => ({ kind: "exited" as const, outcome }));
   return new Promise<ExitRace>((resolveRace) => {
-    // settle 最早只在微任务里被调用,所以声明之后引用 timer 不会踩 TDZ。
+    // settle is only ever called from a microtask at the earliest, so referencing `timer` after
+    // its declaration cannot hit the temporal dead zone.
     const settle = (value: ExitRace): void => {
       clearTimeout(timer);
       resolveRace(value);

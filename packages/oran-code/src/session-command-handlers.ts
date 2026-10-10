@@ -1,10 +1,11 @@
 /**
- * 斜杠命令的执行 handler：权限模式 / 连接向导 / 模型切换 / 会话列表 / 手动压缩。
- * 从 TerminalSession 提取（handlePermissionCommand/changePermissionMode/
+ * Execution handlers for slash commands: permission mode / connect wizard / model switching /
+ * session list / manual compaction.
+ * Extracted from TerminalSession (handlePermissionCommand/changePermissionMode/
  * permissionModeAfterPlan/handleConnect/applyConnectProvider/handleModel/
- * handleSessionCommand/runManualCompaction），行为保持不变。
- * TerminalSession 通过端口提供状态读写与副作用回调；路由层（session-commands.ts）
- * 仍只做解析与分发。
+ * handleSessionCommand/runManualCompaction), behavior unchanged.
+ * TerminalSession supplies state reads/writes and side-effect callbacks through a port; the routing
+ * layer (session-commands.ts) still only parses and dispatches.
  */
 import type { ToolRegistry } from "./tools.js";
 import { formatModelReference, modelCandidates } from "./commands.js";
@@ -141,7 +142,7 @@ export class SessionCommandHandlers {
       await tui.openProviders();
       return;
     }
-    // `/connect <provider>`:预填编辑已有 provider,走一遍向导即更新。
+    // `/connect <provider>`: pre-fills an edit of an existing provider; one pass through the wizard updates it.
     const fresh = await loadConfig(this.port.workspace);
     const profile = fresh.providers[name];
     if (!profile) {
@@ -162,7 +163,8 @@ export class SessionCommandHandlers {
     await tui.openConnect(prefill);
   }
 
-  /** 从用户级配置删除供应商;项目级配置里的定义不在此范围,删除后会提示。 */
+  /** Deletes a provider from the user-level config; definitions in the project-level config are out
+   *  of scope, and a notice is shown after deletion. */
   async handleProviderDelete(name: string): Promise<boolean> {
     if (this.port.interactionRunning() || this.port.hasPendingApprovals()) {
       this.port.renderer().status("finish or cancel the current task before deleting a provider", "yellow");
@@ -195,8 +197,9 @@ export class SessionCommandHandlers {
       const configPath = userConfigReadPath();
       const config = await loadConfigFile(configPath);
       const providerName = input.providerName;
-      // 重复 /connect 同名 provider 时合并而非整体覆盖:保留 provider 级与
-      // 模型级的手工配置(如 disableReasoningEffort),只刷新连接信息与模型清单。
+      // When /connect repeats for the same provider, merge instead of overwriting wholesale: keep
+      // provider-level and model-level manual settings (e.g. disableReasoningEffort) and only
+      // refresh connection info and the model list.
       const previous = config.providers[providerName];
       const carriedOptions: Record<string, unknown> = { ...previous?.options };
       delete carriedOptions.baseUrl;
@@ -213,7 +216,8 @@ export class SessionCommandHandlers {
       const models: Record<string, ModelProfile> = {};
       for (const model of input.models) {
         const modelOptions: Record<string, unknown> = { ...previousModels[model.id]?.options };
-        // 向导内 E 指定的 effort 优先;其次沿用旧配置;都没有则按默认 high。
+        // The effort set with E in the wizard wins; otherwise the old config is carried over; if
+        // neither, the default high applies.
         if (model.reasoningEffort) modelOptions.reasoningEffort = model.reasoningEffort;
         else if (modelOptions.reasoningEffort === undefined) {
           modelOptions.reasoningEffort = input.reasoningEffort ?? "high";

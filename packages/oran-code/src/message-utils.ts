@@ -3,23 +3,27 @@ import type { Message } from "./types.js";
 /** Synthetic result content for tool calls that were interrupted before a result was recorded. */
 export const INTERRUPTED_TOOL_RESULT_CONTENT = "Tool execution was interrupted before a result was recorded.";
 
-/** 用户输入在会话历史里的固定包装前缀(控制器与持久化两侧共用同一口径)。 */
+/** The fixed wrapper prefix for user input in session history (the controller and the
+ * persistence side share this convention). */
 export const USER_MESSAGE_PREFIX = "User message:\n";
 
-/** 任务进行中注入的用户插话(steering),不属于可回退的独立轮次。 */
+/** A user interjection injected while a task is running (steering); it is not a standalone
+ * turn that can be rewound. */
 export const STEERING_MESSAGE_PREFIX = "[User steering guidance";
 
 export function isSteeringMessage(message: Message): boolean {
   return message.role === "user" && (message.content ?? "").startsWith(STEERING_MESSAGE_PREFIX);
 }
 
-/** 用户主动发起的轮次(含"前一任务完成"前缀的变体),用于 turn 分组与对话级回退。 */
+/** A turn the user started (including the variant carrying the "previous task completed"
+ * prefix), used for turn grouping and conversation-level rewind. */
 export function isUserTurnMessage(message: Message): boolean {
   if (message.role !== "user" || isSteeringMessage(message)) return false;
   return (message.content ?? "").includes(USER_MESSAGE_PREFIX);
 }
 
-/** 按出现顺序列出用户轮次的起始下标,供 /rewind 选择回退点。 */
+/** Lists the start indices of user turns in order of appearance, for /rewind to pick a
+ * rollback point. */
 export function userTurnIndices(messages: readonly Message[]): number[] {
   const indices: number[] = [];
   for (const [index, message] of messages.entries()) {
@@ -28,7 +32,8 @@ export function userTurnIndices(messages: readonly Message[]): number[] {
   return indices;
 }
 
-/** 消息浅拷贝 + toolCalls/metadata 深拷贝,避免共享可变嵌套结构。 */
+/** Shallow-copies messages plus a deep copy of toolCalls/metadata, so mutable nested
+ * structures are not shared. */
 export function cloneMessages(messages: readonly Message[]): Message[] {
   return messages.map((message) => ({
     ...message,
@@ -51,7 +56,8 @@ export const PLAN_COMPLETE_MARKERS = [
   "</plan_complete>",
 ] as const;
 
-/** 剥离 plan 完成协议标记(任意位置)与整行的 "plan complete" 提示,并去掉尾部空行。 */
+/** Strips the plan-completion protocol markers (anywhere in the text) and whole-line
+ * "plan complete" notices, then drops the trailing blank lines. */
 export function stripPlanCompleteMarkers(text: string): string {
   let plan = text.replace(/\r/g, "");
   for (const marker of PLAN_COMPLETE_MARKERS) {

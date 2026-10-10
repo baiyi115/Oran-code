@@ -13,11 +13,11 @@ describe("WorkspaceFileIndex caching and staleness", () => {
       const index = new WorkspaceFileIndex(workspace, { staleAfterMs: 20 });
       expect(await index.search("first")).toContain("first.txt");
 
-      // TTL 内:新建文件不会出现——这正是"缓存要过期"存在的意义。
+      // Within the TTL the new file does not appear -- which is exactly the point of "the cache must expire".
       await writeFile(join(workspace, "second.txt"), "two", "utf8");
       expect(await index.search("second")).not.toContain("second.txt");
 
-      // 兴趣过后重新扫描,新文件出现。
+      // Once it goes stale and rescans, the new file appears.
       await new Promise((resolve) => setTimeout(resolve, 30));
       expect(await index.search("second")).toContain("second.txt");
     } finally {

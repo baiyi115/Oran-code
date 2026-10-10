@@ -34,8 +34,9 @@ lines.on("line", (line) => {
         queries: request.queries,
       };
       const result = await analyzeFileRaw(payload);
-      // 有些语法在本进程里只能解析一次(runtime.parseSource)。此时结果不可信,
-      // 让父进程换一个宿主重试,并且本进程不再服务任何请求。
+      // Some grammars can parse only once in this process (runtime.parseSource). The result is then
+      // untrustworthy: have the parent retry with another host, and this process serves no further
+      // requests.
       if (result.needsFreshProcess === true) {
         process.stdout.write(
           `${JSON.stringify({ id: request.id, ok: false, retry: true, error: "grammar needs a fresh process" })}\n`,

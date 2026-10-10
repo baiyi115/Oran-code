@@ -60,7 +60,8 @@ describe("terminal input stream mouse reporting", () => {
     stream.on("data", (chunk) => {
       received += String(chunk);
     });
-    // 源不结束:验证挂起的前缀在超时窗口后按普通按键透传,而不是被吞掉。
+    // The source never ends: verifies that a dangling prefix is passed through as plain
+    // keystrokes after the timeout window instead of being swallowed.
     await new Promise((resolve) => setTimeout(resolve, 150));
     stream.destroy();
     expect(received).toBe("ab\x1b[<6");

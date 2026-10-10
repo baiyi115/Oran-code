@@ -193,7 +193,8 @@ describe("OpenAICompatibleProvider", () => {
     };
     expect(firstBody.messages[1]).not.toHaveProperty("reasoning_content");
     expect(secondBody.messages[1]).toMatchObject({ role: "assistant", reasoning_content: "step one" });
-    // 回传推理内容与 reasoning_effort 支持与否是两件事:后者不能被这条 400 牵连。
+    // Echoing reasoning content back and supporting reasoning_effort are two separate things:
+    // the latter must not be dragged down by this 400.
     expect(secondBody.reasoning_effort).toBe("high");
     expect(onReasoningUnsupported).not.toHaveBeenCalled();
   });
