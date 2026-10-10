@@ -58,6 +58,8 @@ interface DeferredToolRecord {
 export interface ToolBatchExecutionSummary {
   workspaceMutated: boolean;
   readonlyOnly: boolean;
+  /** 本批被判定为真的改动过工作区的调用 id（no-op 写入不在内），供进展采集使用。 */
+  mutatedCallIds: readonly string[];
 }
 
 /**
@@ -108,6 +110,7 @@ export class ToolBatchExecutor {
     loop: AgentLoop,
   ): Promise<ToolBatchExecutionSummary> {
     let workspaceMutated = false;
+    const mutatedCallIds: string[] = [];
     const readonlyOnly =
       calls.length > 0 &&
       calls.every((call) => {
@@ -172,7 +175,7 @@ export class ToolBatchExecutor {
           loop.recordUnknownTool(call);
           await this.recordTool(task, messages, call, index, result, 0, { executed: false });
           this.ports.logger(`Tool ${call.name}: unknown tool`);
-          if (loop.shouldStopForUnknownTools()) return { workspaceMutated, readonlyOnly };
+          if (loop.shouldStopForUnknownTools()) return { workspaceMutated, readonlyOnly, mutatedCallIds };
           continue;
         }
 
@@ -182,6 +185,7 @@ export class ToolBatchExecutor {
           const { index, call } = batch[0]!;
           const batchMutated = await this.runBatchScript(task, messages, call, index, loop);
           workspaceMutated ||= batchMutated;
+          if (batchMutated && call.id) mutatedCallIds.push(call.id);
           continue;
         }
 
@@ -261,7 +265,10 @@ export class ToolBatchExecutor {
             );
           }
         }
-        const results = new Map<number, { call: ToolCall; result: ToolResult; duration: number; mutated: boolean }>();
+        const results = new Map<
+          number,
+          { call: ToolCall; result: ToolResult; duration: number; mutated: boolean; hashChanged?: boolean | undefined }
+        >();
         // 指纹按批取前后各一次;逐调用前后各跑一次 git status 在大仓库上代价过高。
         // snapshot 同时携带状态行列表,用于生成执行回执。
         const batchBefore = executable.some((item) => this.isPotentiallyMutating(item.call))
@@ -311,6 +318,8 @@ export class ToolBatchExecutor {
               if (before && after && before.hash !== after.hash) {
                 this.ports.trace.appendFileChange(task.id, before.path, before.hash, after.hash);
               }
+              // undefined = no per-call hash evidence (tools that do not target a file, e.g. run_command).
+              const hashChanged = before && after ? before.hash !== after.hash : undefined;
               result = await this.offloadLargeToolResult(task, item.call, result);
               const executedResult = { ...result, durationMs: duration };
               const tool = this.ports.registry.get(item.call.name);
@@ -325,18 +334,31 @@ export class ToolBatchExecutor {
                   metadata: { ...executedResult.metadata, cached: false },
                 });
               }
-              results.set(item.index, { call: item.call, result: executedResult, duration, mutated: false });
+              results.set(item.index, {
+                call: item.call,
+                result: executedResult,
+                duration,
+                mutated: false,
+                hashChanged,
+              });
             }),
           );
         }
         const batchAfter = batchBefore === undefined ? undefined : await workspaceSnapshot(task.workspace);
-        if (
+        // Mutated has two tiers: file-targeting writes use the per-call content
+        // hash, so rewriting identical content does not count as mutation and a
+        // git-less mtime fingerprint cannot false-positive. Calls without hash
+        // evidence (run_command) fall back to the batch workspace fingerprint.
+        const batchChanged =
           batchBefore !== undefined &&
           batchAfter !== undefined &&
-          batchBefore.fingerprint !== batchAfter.fingerprint
-        ) {
-          for (const entry of results.values()) {
-            if (this.isPotentiallyMutating(entry.call)) entry.mutated = true;
+          batchBefore.fingerprint !== batchAfter.fingerprint;
+        for (const entry of results.values()) {
+          if (!this.isPotentiallyMutating(entry.call)) continue;
+          if (entry.hashChanged !== undefined) {
+            if (entry.hashChanged) entry.mutated = true;
+          } else if (batchChanged) {
+            entry.mutated = true;
           }
         }
 
@@ -350,6 +372,7 @@ export class ToolBatchExecutor {
           if (!entry) continue;
           if (entry.mutated) {
             workspaceMutated = true;
+            if (entry.call.id) mutatedCallIds.push(entry.call.id);
             if (batchBefore && batchAfter) {
               entry.result = withWorkspaceChangesReceipt(entry.result, batchBefore.entries, batchAfter.entries);
             }
@@ -363,7 +386,7 @@ export class ToolBatchExecutor {
         }
         this.ports.throwIfCancelled();
       }
-      return { workspaceMutated, readonlyOnly };
+      return { workspaceMutated, readonlyOnly, mutatedCallIds };
     } finally {
       try {
         await this.flushDeferredToolRecords(task, messages, deferredRecords);
@@ -574,10 +597,13 @@ export class ToolBatchExecutor {
     const duration = Date.now() - started;
     const after = await fileHash(task.workspace, call);
     const afterWorkspace = beforeWorkspace === undefined ? undefined : await workspaceSnapshot(task.workspace);
-    const mutated =
+    // Same two-tier rule as the batch path: per-call hash first, workspace fingerprint only as fallback.
+    const hashChanged = before && after ? before.hash !== after.hash : undefined;
+    const workspaceChanged =
       beforeWorkspace !== undefined &&
       afterWorkspace !== undefined &&
       beforeWorkspace.fingerprint !== afterWorkspace.fingerprint;
+    const mutated = hashChanged !== undefined ? hashChanged : workspaceChanged;
     const rawOutput = result.output;
     if (mutated && beforeWorkspace && afterWorkspace) {
       result = withWorkspaceChangesReceipt(result, beforeWorkspace.entries, afterWorkspace.entries);

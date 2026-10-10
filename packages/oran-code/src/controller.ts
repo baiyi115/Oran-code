@@ -38,13 +38,28 @@ import type {
   HookEventPortContext,
 } from "./types.js";
 import { transitionTask } from "./types.js";
-import { ToolBatchExecutor } from "./controller/tool-executor.js";
+import { ToolBatchExecutor, type ToolBatchExecutionSummary } from "./controller/tool-executor.js";
 import { TurnRequester } from "./controller/turn-requester.js";
 import { formatErrorMessage } from "./error-format.js";
 import { isCasualConversationPrompt } from "./prompt-intent.js";
 import { PRODUCT_VERSION } from "./paths.js";
 import { isPlanModeTool, type ToolRegistry } from "./tools.js";
 import type { SnapshotStorePort } from "./snapshot.js";
+import { captureTurnSnapshot, goalFingerprint } from "./progress/capture.js";
+import { DEFAULT_EXPLORE_BUDGET, DEFAULT_IMPLEMENT_BUDGET, INITIAL_PHASE_STATE, updatePhase } from "./progress/phase.js";
+import { signalToNotice, computeSignals, type ProgressSignal } from "./progress/signals.js";
+import {
+  EMPTY_PROGRESS_STATE,
+  type PersistedProgressState,
+  type ProgressStopKind,
+  MAX_SNAPSHOTS,
+  ProgressStateStore,
+} from "./progress/store.js";
+
+/** Stable identity of one signal firing, used to inject each warn notice once. */
+function signalKey(signal: ProgressSignal): string {
+  return `${signal.kind}:${signal.sinceTurn}`;
+}
 import {
   buildEnvironmentPrompt,
   assembleStableSystemPrompt,
@@ -155,6 +170,14 @@ export class TaskController {
   private conversation: Message[];
   private readonly toolExecutor: ToolBatchExecutor;
   private readonly turnRequester: TurnRequester;
+  /** Out-of-band progress store, reused per workspace; lives in .oran/progress/. */
+  private readonly progressStores = new Map<string, ProgressStateStore>();
+  /** Progress reminders queued this turn; drained into next turn's reminders. */
+  private readonly pendingProgressNotices: string[] = [];
+  /** Warn signals already injected, keyed by kind:turn, so they fire once. */
+  private readonly notifiedProgressSignals = new Set<string>();
+  /** Goal fingerprint whose recovery notices were already replayed in this process. */
+  private progressRecoveryFor: string | undefined;
 
   constructor(options: TaskControllerOptions) {
     this.config = options.config;
@@ -379,6 +402,7 @@ export class TaskController {
         taskModeReminder(planMode, loop.turns),
         loopBudgetReminder(loop.remainingTurns(), finalTurn),
         ...this.runtimeReminders(),
+        ...this.pendingProgressNotices.splice(0),
         ...hookNotices.map((notice) => `[hook:${notice.event}] ${notice.text}`),
       ].filter((item): item is string => Boolean(item && item.trim()));
       if (this.pendingTruncationNotice) {
@@ -402,7 +426,7 @@ export class TaskController {
             `Heads up: the last ${repeatCount} tool call(s) failed with the same error signature: "${detail ?? ""}". ` +
               `Please analyze the root cause before attempting the same approach again.`,
           );
-        } else if (reason === "semantic_stall") {
+        } else if (reason === "stalled_signature") {
           reminders.push(
             stage === "reflection"
               ? `Progress check required: ${detail ?? "recent turns have not produced new evidence"}. ` +
@@ -601,6 +625,7 @@ export class TaskController {
             return task;
           }
           try {
+            const historyStart = loop.executionHistory.length;
             const turnExecution = await this.toolExecutor.runTools(task, messages, response.toolCalls, loop);
             const progress = loop.recordTurnProgress({ hasMutation: turnExecution.workspaceMutated });
             this.appendDiagnosticStep("turn_progress", {
@@ -608,6 +633,24 @@ export class TaskController {
               readonlyOnly: turnExecution.readonlyOnly,
               ...progress,
             });
+            const hardSignals = await this.recordProgressSnapshot(task, loop, {
+              historyStart,
+              execution: turnExecution,
+            });
+            if (hardSignals.length > 0) {
+              const first = hardSignals[0]!;
+              await this.pauseForNoProgress(task, {
+                call:
+                  loop.toolCalls.at(-1) ??
+                  { name: "progress_signal", arguments: {}, createdAt: new Date().toISOString() },
+                repeatCount: hardSignals.length,
+                limit: hardSignals.length,
+                reason: "progress_signal",
+                stage: "pause",
+                detail: `${first.kind}: ${first.detail}`,
+              });
+              return task;
+            }
           } catch (error) {
             const cancelled = isAbortError(error) || this.abortController?.signal.aborted === true;
             await this.toolExecutor.reconcileToolCalls(
@@ -635,6 +678,7 @@ export class TaskController {
           task.result = this.assembleTruncatedText(response.text);
           transitionTask(task, "completed");
           await this.persist(task);
+          await this.recordCompletionStop(task);
           this.throwIfCancelled();
           await this.emitCompleted(loop);
           return task;
@@ -694,10 +738,13 @@ export class TaskController {
     const { call, repeatCount, reason, detail } = diagnostic;
     transitionTask(task, "paused");
     await this.persist(task);
+    await this.recordProgressStop(task, "blocked");
     let pauseMessage: string;
     if (reason === "repeated_error") {
       pauseMessage = `No progress detected; task paused after ${repeatCount} consecutive tool calls failed with identical error: "${detail ?? ""}".`;
-    } else if (reason === "semantic_stall") {
+    } else if (reason === "progress_signal") {
+      pauseMessage = `Progress gate: task paused — ${detail ?? "a hard progress signal fired"}. Confirm how to proceed, then resume from the last snapshot.`;
+    } else if (reason === "stalled_signature") {
       pauseMessage = `No progress detected; task paused after ${repeatCount} consecutive turns without new tool results or workspace changes.`;
     } else if (reason === "repeated_execution") {
       const argSummary = formatCallArguments(call.arguments);
@@ -715,6 +762,7 @@ export class TaskController {
     const budget = this.config.loop.tokenBudget;
     transitionTask(task, "paused");
     await this.persist(task);
+    await this.recordProgressStop(task, "stopped_by_budget");
     await this.emit("log", {
       message: `${tokenBudgetMessage(loop, budget)} Send "继续" to resume with a fresh budget.`,
     });
@@ -770,7 +818,153 @@ export class TaskController {
 
   private async persist(task: Task): Promise<void> {
     this.trace.saveTask(task);
+    // Terminal states (including pause) must not lose the last snapshot.
+    await this.progressStoreFor(task.workspace).flush().catch(() => undefined);
     await this.emit("state", { state: task.state });
+  }
+
+  private progressStoreFor(workspace: string): ProgressStateStore {
+    let store = this.progressStores.get(workspace);
+    if (!store) {
+      store = new ProgressStateStore(workspace);
+      this.progressStores.set(workspace, store);
+    }
+    return store;
+  }
+
+  /**
+   * Capture a snapshot after each turn's tool execution and persist it outside
+   * the conversation. Returns the hard signals that fired this turn; the caller
+   * turns them into a pause. Failures degrade to a missing snapshot only —
+   * capture must never break the main flow.
+   */
+  private async recordProgressSnapshot(
+    task: Task,
+    loop: AgentLoop,
+    context: { historyStart: number; execution: ToolBatchExecutionSummary },
+  ): Promise<readonly ProgressSignal[]> {
+    try {
+      const store = this.progressStoreFor(task.workspace);
+      const persisted = await store.load();
+      const fingerprint = goalFingerprint(task.prompt);
+      // A different task prompt resets the window; the file itself is shared per workspace.
+      const state: PersistedProgressState =
+        persisted.goalFingerprint === fingerprint
+          ? persisted
+          : { ...EMPTY_PROGRESS_STATE, goalFingerprint: fingerprint };
+      const budgets = {
+        exploreBudget: state.exploreBudget > 0 ? state.exploreBudget : DEFAULT_EXPLORE_BUDGET,
+        implementBudget: state.implementBudget > 0 ? state.implementBudget : DEFAULT_IMPLEMENT_BUDGET,
+      };
+
+      // Resuming a known task in a fresh process: replay the window's
+      // warn-and-above signals once, so the model re-learns what went wrong.
+      if (state.goalFingerprint === fingerprint && this.progressRecoveryFor !== fingerprint) {
+        this.progressRecoveryFor = fingerprint;
+        for (const signal of computeSignals({
+          snapshots: state.snapshots,
+          phase: state.phase ?? INITIAL_PHASE_STATE,
+          allowedPaths: state.allowedPaths,
+          budgets,
+        })) {
+          this.notifiedProgressSignals.add(signalKey(signal));
+          if (signal.severity !== "info") this.pendingProgressNotices.push(signalToNotice(signal));
+        }
+      }
+
+      const mutatedCallIds = new Set(context.execution.mutatedCallIds);
+      const executed = loop.executionHistory.slice(context.historyStart).map((item) => ({
+        call: item.call,
+        result: item.result,
+        mutated: item.call.id !== undefined && mutatedCallIds.has(item.call.id),
+      }));
+      const snapshot = await captureTurnSnapshot({
+        turn: loop.turns,
+        workspace: task.workspace,
+        executed,
+        isReadonly: (name) => {
+          const tool = this.registry.has(name) ? this.registry.get(name) : undefined;
+          return (tool?.kind ?? inferToolKind(name)) === "readonly";
+        },
+        cumulativeTokensIn: loop.inputTokens,
+        cumulativeTokensOut: loop.outputTokens,
+        previous: state.snapshots.at(-1),
+      });
+      const phaseResult = updatePhase(state.phase, snapshot, budgets);
+      const allowedPaths =
+        state.allowedPaths.length > 0
+          ? state.allowedPaths
+          : [...new Set(snapshot.toolCalls.flatMap((call) => (call.mutated ? call.paths : [])))];
+      const snapshots = [...state.snapshots, snapshot].slice(-MAX_SNAPSHOTS);
+
+      const signals = [
+        ...phaseResult.signals,
+        ...computeSignals({ snapshots, phase: phaseResult.state, allowedPaths, budgets }),
+      ];
+      const hardSignals: ProgressSignal[] = [];
+      for (const signal of signals) {
+        this.debugLogger(JSON.stringify({ event: "progress_signal", ...signal }));
+        if (signal.severity === "hard") {
+          hardSignals.push(signal);
+          continue;
+        }
+        // Warn notices inject once per firing turn; info stays in the debug log.
+        const key = signalKey(signal);
+        if (signal.severity === "warn" && !this.notifiedProgressSignals.has(key)) {
+          this.notifiedProgressSignals.add(key);
+          this.pendingProgressNotices.push(signalToNotice(signal));
+        }
+      }
+
+      // Intermediate write debounces; persist() flushes on every state transition.
+      store.scheduleSave({
+        ...state,
+        phase: phaseResult.state,
+        allowedPaths,
+        updatedAt: new Date().toISOString(),
+        snapshots,
+      });
+      return hardSignals;
+    } catch (error) {
+      this.debugLogger(JSON.stringify({ event: "progress_capture_failed", error: formatErrorMessage(error) }));
+      return [];
+    }
+  }
+
+  /** Record how a task ended, for the next run of the same goal. */
+  private async recordProgressStop(task: Task, kind: ProgressStopKind): Promise<void> {
+    try {
+      const store = this.progressStoreFor(task.workspace);
+      const state = await store.load();
+      const fingerprint = goalFingerprint(task.prompt);
+      if (state.goalFingerprint !== fingerprint) return;
+      await store.save({
+        ...state,
+        stop: { kind, turn: this.loop?.turns ?? 0, ts: new Date().toISOString() },
+        updatedAt: new Date().toISOString(),
+      });
+    } catch {
+      // Stop metadata is best-effort; never fail the transition for it.
+    }
+  }
+
+  /**
+   * Completed tasks end "verified" when the last snapshot carried positive
+   * external evidence (tests/typecheck/build), "review_required" otherwise.
+   */
+  private async recordCompletionStop(task: Task): Promise<void> {
+    try {
+      const store = this.progressStoreFor(task.workspace);
+      const state = await store.load();
+      const evidence = state.snapshots.at(-1)?.evidence;
+      const verified =
+        (evidence?.testsPassed !== undefined && evidence.testsPassed > 0) ||
+        evidence?.typecheckOk === true ||
+        evidence?.buildOk === true;
+      await this.recordProgressStop(task, verified ? "verified" : "review_required");
+    } catch {
+      await this.recordProgressStop(task, "review_required");
+    }
   }
 
   /**

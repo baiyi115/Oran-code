@@ -2,7 +2,12 @@ import { createHash } from "node:crypto";
 import type { LoopConfig, ToolCall, ToolResult } from "./types.js";
 import { normalizeTokenUsage } from "./token-usage.js";
 
-export type NoProgressReason = "repeated_execution" | "repeated_error" | "semantic_stall";
+export type NoProgressReason =
+  | "repeated_execution"
+  | "repeated_error"
+  | "stalled_signature"
+  /** A hard progress signal (e.g. test regression, goal drift) fired from the progress layer. */
+  | "progress_signal";
 export type NoProgressStage = "warning" | "reflection" | "pause";
 
 export interface NoProgressDiagnostic {
@@ -295,18 +300,18 @@ export class AgentLoop {
           ? "warning"
           : undefined;
     if (!stage) return undefined;
-    return this.semanticStallDiagnostic(stage);
+    return this.stalledSignatureDiagnostic(stage);
   }
 
   private currentSemanticStallDiagnostic(): NoProgressDiagnostic | undefined {
     const limit = this.config.noProgressLimit;
     if (limit <= 0 || this.consecutiveStalledTurns < limit) return undefined;
-    return this.semanticStallDiagnostic("pause");
+    return this.stalledSignatureDiagnostic("pause");
   }
 
-  private semanticStallDiagnostic(stage: NoProgressStage): NoProgressDiagnostic {
+  private stalledSignatureDiagnostic(stage: NoProgressStage): NoProgressDiagnostic {
     const call = this.toolCalls[this.toolCalls.length - 1] ?? {
-      name: "semantic_stall",
+      name: "stalled_signature",
       arguments: {},
       createdAt: new Date().toISOString(),
     };
@@ -314,7 +319,7 @@ export class AgentLoop {
       call,
       repeatCount: this.consecutiveStalledTurns,
       limit: this.config.noProgressLimit,
-      reason: "semantic_stall",
+      reason: "stalled_signature",
       stage,
       detail: `${this.consecutiveStalledTurns} consecutive turn(s) without new tool results or workspace changes`,
     };

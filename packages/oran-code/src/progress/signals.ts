@@ -1,0 +1,174 @@
+/**
+ * Judgment layer output is a list of signals, not a stop decision: most
+ * signals are only recorded or injected, and only `hard` signals may enter
+ * the gate layer and pause the task. New criteria default to info/warn.
+ */
+
+import type { TurnSnapshot } from "./capture.js";
+import type { PhaseState } from "./phase.js";
+
+export type ProgressSignalKind =
+  | "phase_egress"
+  | "implement_budget"
+  | "explore_budget"
+  | "low_symbol_novelty"
+  | "rehearsal_diverged"
+  | "same_error"
+  | "goal_drift"
+  | "test_regression"
+  | "test_count_drop"
+  | "state_loop"
+  | "readonly_repeat"
+  | "write_repeat"
+  | "cost_without_progress";
+
+/** info is log-only; warn is injected into context; hard is the only level allowed to pause. */
+export type ProgressSeverity = "info" | "warn" | "hard";
+
+export interface ProgressSignal {
+  kind: ProgressSignalKind;
+  severity: ProgressSeverity;
+  detail: string;
+  sinceTurn: number;
+}
+
+export interface SignalWindowInput {
+  /** Snapshot window including the current turn, chronological. */
+  snapshots: readonly TurnSnapshot[];
+  phase: PhaseState;
+  allowedPaths: readonly string[];
+  budgets: { exploreBudget: number; implementBudget: number };
+}
+
+const GOAL_DRIFT_WARN_TURNS = 2;
+const GOAL_DRIFT_HARD_TURNS = 4;
+
+/**
+ * Level-based signals computed over the snapshot window. These fire while the
+ * condition holds (they are idempotent per turn), unlike event signals from
+ * the phase machine which fire only on transitions. Repeated identical errors
+ * are deliberately absent: the loop's repeated_error guard already covers it.
+ */
+export function computeSignals(input: SignalWindowInput): ProgressSignal[] {
+  const signals: ProgressSignal[] = [];
+  const { snapshots, phase, budgets } = input;
+  const current = snapshots.at(-1);
+  if (!current) return signals;
+
+  if (phase.phase === "implement" && phase.implementTurns > budgets.implementBudget) {
+    signals.push({
+      kind: "implement_budget",
+      severity: "hard",
+      detail: `${phase.implementTurns} implement turns (budget ${budgets.implementBudget})`,
+      sinceTurn: current.turn,
+    });
+  }
+
+  // Test evidence comparisons: current turn's evidence vs the most recent
+  // earlier value in the window. Missing evidence on either side means no verdict.
+  const evidenceOf = (snapshot: TurnSnapshot | undefined) =>
+    snapshot?.evidence?.testsPassed !== undefined || snapshot?.evidence?.testsTotal !== undefined
+      ? snapshot.evidence
+      : undefined;
+  const currentEvidence = evidenceOf(current);
+  if (currentEvidence) {
+    const previousEvidence = [...snapshots.slice(0, -1)]
+      .reverse()
+      .map((snapshot) => evidenceOf(snapshot))
+      .find((evidence) => evidence !== undefined);
+    if (previousEvidence) {
+      if (
+        currentEvidence.testsPassed !== undefined &&
+        previousEvidence.testsPassed !== undefined &&
+        currentEvidence.testsPassed < previousEvidence.testsPassed
+      ) {
+        signals.push({
+          kind: "test_regression",
+          severity: "hard",
+          detail: `tests passed dropped ${previousEvidence.testsPassed} -> ${currentEvidence.testsPassed}`,
+          sinceTurn: current.turn,
+        });
+      }
+      if (
+        currentEvidence.testsTotal !== undefined &&
+        previousEvidence.testsTotal !== undefined &&
+        currentEvidence.testsTotal < previousEvidence.testsTotal
+      ) {
+        signals.push({
+          kind: "test_count_drop",
+          severity: "hard",
+          detail: `total tests dropped ${previousEvidence.testsTotal} -> ${currentEvidence.testsTotal}`,
+          sinceTurn: current.turn,
+        });
+      }
+    }
+  }
+
+  // State loop: the workspace content returned to an earlier state after
+  // mutations in between — work that undid itself.
+  const loopIndex = snapshots.findIndex(
+    (snapshot, index) =>
+      index < snapshots.length - 1 &&
+      snapshot.workspaceDigest === current.workspaceDigest &&
+      snapshots.slice(index + 1, -1).some((s) => s.toolCalls.some((call) => call.mutated)),
+  );
+  if (loopIndex >= 0) {
+    signals.push({
+      kind: "state_loop",
+      severity: "warn",
+      detail: `workspace returned to the state of turn ${snapshots[loopIndex]?.turn}`,
+      sinceTurn: current.turn,
+    });
+  }
+
+  // Goal drift: trailing consecutive turns whose real writes land outside the
+  // task's target set. Two consecutive out-of-scope turns warn; four hard-pause.
+  if (input.allowedPaths.length > 0) {
+    const allowed = new Set(input.allowedPaths);
+    let driftRun = 0;
+    for (let index = snapshots.length - 1; index >= 0; index -= 1) {
+      const snapshot = snapshots[index];
+      if (!snapshot) break;
+      const outOfScope = snapshot.toolCalls.some(
+        (call) => call.mutated && call.paths.some((path) => !allowed.has(path)),
+      );
+      if (!outOfScope) break;
+      driftRun += 1;
+    }
+    if (driftRun >= GOAL_DRIFT_HARD_TURNS) {
+      signals.push({
+        kind: "goal_drift",
+        severity: "hard",
+        detail: `${driftRun} consecutive turns wrote outside the task's target files`,
+        sinceTurn: current.turn,
+      });
+    } else if (driftRun >= GOAL_DRIFT_WARN_TURNS) {
+      signals.push({
+        kind: "goal_drift",
+        severity: "warn",
+        detail: `${driftRun} consecutive turns wrote outside the task's target files`,
+        sinceTurn: current.turn,
+      });
+    }
+  }
+
+  return signals;
+}
+
+/** Rendered as a reminder for the model; internal severity levels stay internal. */
+export function signalToNotice(signal: ProgressSignal): string {
+  switch (signal.kind) {
+    case "phase_egress":
+      return (
+        "Heads up: the task has fallen back from making changes to pure reading " +
+        `${signal.detail}. If the current direction is stalled, reconsider the approach instead of drifting back to exploration.`
+      );
+    case "explore_budget":
+      return (
+        "Heads up: exploration has covered a lot of files. " +
+        "Summarize what you have learned and commit to a concrete next action (or state the blocker) before reading further."
+      );
+    default:
+      return `Heads up: ${signal.kind} — ${signal.detail}`;
+  }
+}
