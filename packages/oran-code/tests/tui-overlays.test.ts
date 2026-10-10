@@ -25,6 +25,7 @@ describe("TUI overlays", () => {
       "/new",
       "/plan",
       "/rename",
+      "/rewind",
       "/session",
       "/skills",
       "/status",

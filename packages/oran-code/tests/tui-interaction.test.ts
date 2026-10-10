@@ -27,6 +27,7 @@ describe("TUI interaction helpers", () => {
       "/new",
       "/plan",
       "/rename",
+      "/rewind",
       "/session",
       "/skills",
       "/status",

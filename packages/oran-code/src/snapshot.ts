@@ -31,6 +31,8 @@ export interface SnapshotStorePort {
   begin(sessionId: string, task: Task): Promise<void>;
   finalize(task: Task): Promise<void>;
   undoLatest(sessionId: string): Promise<{ ok: boolean; output: string }>;
+  /** 回滚到指定任务开始之前的状态,并把该任务及之后的所有快照标记为 undone。 */
+  restoreBefore(sessionId: string, taskId: string): Promise<{ ok: boolean; output: string }>;
   list(sessionId?: string): Promise<readonly SnapshotManifest[]>;
 }
 
@@ -162,6 +164,94 @@ export class SnapshotStore implements SnapshotStorePort {
     }
     await this.updateStatus(manifest, "undone", new Date().toISOString());
     return { ok: true, output: `Undid the latest Agent file change batch (${manifest.taskId}).` };
+  }
+
+  /**
+   * 回滚到 `taskId` 这次任务**开始之前**的文件状态。
+   *
+   * 与 `undoLatest` 的差别:目标不是"最近一批",而是"某个更早的轮次",因此
+   * 必须同时撤销它之后的所有 Agent 改动,并先验证整条快照链自洽:
+   * 同一个 HEAD、chain 上每个 manifest 都已完成、当前文件仍是链尾状态。
+   * 任一条不成立即拒绝,理由与 `undoLatest` 一致:宁可让用户用 Git 排查,
+   * 也不猜一个可能更糟的状态覆盖回去。
+   */
+  async restoreBefore(sessionId: string, taskId: string): Promise<{ ok: boolean; output: string }> {
+    const ascending = [...(await this.list(sessionId))].reverse();
+    const index = ascending.findIndex((item) => item.taskId === taskId);
+    if (index === -1) {
+      return { ok: false, output: `No file snapshot is recorded for that turn (${taskId}).` };
+    }
+    const chain = ascending.slice(index);
+    const target = chain[0]!;
+    const paths = [...new Set(chain.flatMap((item) => item.changedPaths))];
+    if (paths.length === 0) {
+      return { ok: false, output: "That turn did not change any files; nothing to revert." };
+    }
+    const incomplete = chain.find((item) => item.status === "open" || !item.postTree);
+    if (incomplete) {
+      return {
+        ok: false,
+        output: `File rewind refused: the snapshot for turn ${incomplete.taskId} is incomplete. Inspect the working tree with Git first.`,
+      };
+    }
+    try {
+      assertContained(this.rootWorkspace, target.workspace);
+    } catch {
+      return { ok: false, output: "File rewind refused: the snapshot manifest points outside the workspace." };
+    }
+    const currentHead = await gitHead(target.workspace);
+    if (currentHead !== target.preHead || chain.some((item) => item.preHead !== item.postHead)) {
+      return {
+        ok: false,
+        output: "File rewind refused: Git HEAD changed during or after those turns. Use Git to recover commits.",
+      };
+    }
+    for (let position = 0; position < chain.length - 1; position += 1) {
+      if (chain[position]!.postTree !== chain[position + 1]!.preTree) {
+        return {
+          ok: false,
+          output: "File rewind refused: the snapshot chain is broken (an intermediate task did not finish).",
+        };
+      }
+    }
+    const tail = chain[chain.length - 1]!;
+    const currentEntries = await treeEntries(await captureTree(target.workspace), target.workspace);
+    const tailEntries = await treeEntries(tail.postTree!, target.workspace);
+    const conflicts = paths.filter((path) => currentEntries.get(path) !== tailEntries.get(path));
+    if (conflicts.length) {
+      for (const item of chain) await this.updateStatus(item, "conflicted");
+      return {
+        ok: false,
+        output: `File rewind refused because files changed after those turns:\n${conflicts.map((path) => `- ${path}`).join("\n")}`,
+      };
+    }
+    const preEntries = await treeEntries(target.preTree, target.workspace);
+    const unsupported = paths.filter((path) => !isRestorableEntry(preEntries.get(path)));
+    if (unsupported.length) {
+      return {
+        ok: false,
+        output: `File rewind refused because the snapshot contains unsupported Git entries:\n${unsupported.map((path) => `- ${path}`).join("\n")}`,
+      };
+    }
+    try {
+      for (const path of paths) {
+        await restoreEntry(target.workspace, path, preEntries.get(path));
+      }
+    } catch (error) {
+      return {
+        ok: false,
+        output: `File rewind could not complete; the working tree may be partially restored. Inspect it with Git before retrying. ${error instanceof Error ? error.message : String(error)}`,
+      };
+    }
+    const undoneAt = new Date().toISOString();
+    for (const item of chain) await this.updateStatus(item, "undone", undoneAt);
+    return {
+      ok: true,
+      output: [
+        `Reverted ${paths.length} file(s) to the state before turn ${taskId}:`,
+        ...paths.map((path) => `- ${path}`),
+      ].join("\n"),
+    };
   }
 
   private async updateStatus(manifest: SnapshotManifest, status: SnapshotStatus, undoneAt?: string): Promise<void> {

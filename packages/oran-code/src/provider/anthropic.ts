@@ -7,6 +7,7 @@ import type {
   ProviderRequestOptions,
   ToolCall,
 } from "../types.js";
+import { isTruncatedFinishReason } from "../types.js";
 import { CLIENT_ID, CLIENT_USER_AGENT, PRODUCT_VERSION } from "../paths.js";
 import { ModelRequestError, boundedError, retryAfterMsFromResponse, streamErrorMessage } from "./errors.js";
 import { parseSseJson, readSseEvents } from "./sse.js";
@@ -360,14 +361,19 @@ function parseAnthropicMessage(data: Record<string, unknown>, streamed: boolean)
     }
   }
   const usage = numericUsage(data.usage);
+  const finishReason = typeof data.stop_reason === "string" ? data.stop_reason : undefined;
+  // 被 max_tokens 截断的响应里 tool_use 输入可能不完整,整体丢弃并打上截断标记。
+  const truncated = isTruncatedFinishReason(finishReason);
   return {
     text: textParts.join(""),
     ...(reasoningParts.length ? { reasoning: reasoningParts.join("") } : {}),
     ...(reasoningSignature ? { reasoningSignature } : {}),
-    toolCalls,
+    toolCalls: truncated ? [] : toolCalls,
     raw: data,
     usage,
     streamed,
-    ...(typeof data.stop_reason === "string" ? { finishReason: data.stop_reason } : {}),
+    ...(finishReason !== undefined ? { finishReason } : {}),
+    ...(truncated ? { truncated: true } : {}),
+    ...(truncated && toolCalls.length ? { truncatedToolCalls: toolCalls.length } : {}),
   };
 }

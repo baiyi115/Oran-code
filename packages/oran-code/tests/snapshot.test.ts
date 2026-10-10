@@ -117,6 +117,78 @@ describe("SnapshotStore /undo", () => {
   });
 });
 
+describe("SnapshotStore /rewind files", () => {
+  it("reverts every batch from the target turn onward and marks them undone", async () => {
+    const root = await createSnapshotFixture("oran-snapshot-rewind-");
+    const store = new SnapshotStore(root);
+
+    const first = createTask(root, "first turn");
+    first.id = "task-first";
+    await store.begin("session-rewind", first);
+    await writeFile(join(root, "README.md"), "after-first", "utf8");
+    await store.finalize(first);
+
+    const second = createTask(root, "second turn");
+    second.id = "task-second";
+    await store.begin("session-rewind", second);
+    await writeFile(join(root, "README.md"), "after-second", "utf8");
+    await writeFile(join(root, "second.txt"), "created later", "utf8");
+    await store.finalize(second);
+
+    const result = await store.restoreBefore("session-rewind", "task-first");
+    expect(result.ok).toBe(true);
+    expect(result.output).toContain("README.md");
+    expect(result.output).toContain("second.txt");
+    expect(await readFile(join(root, "README.md"), "utf8")).toBe("initial");
+    await expect(readFile(join(root, "second.txt"), "utf8")).rejects.toMatchObject({ code: "ENOENT" });
+    expect((await store.list("session-rewind")).map((manifest) => manifest.status)).toEqual(["undone", "undone"]);
+  });
+
+  it("refuses when files changed after the target turns", async () => {
+    const root = await createSnapshotFixture("oran-snapshot-rewind-conflict-");
+    const store = new SnapshotStore(root);
+    const first = createTask(root, "first turn");
+    first.id = "task-conflict-first";
+    await store.begin("session-rewind-conflict", first);
+    await writeFile(join(root, "README.md"), "agent", "utf8");
+    await store.finalize(first);
+    await writeFile(join(root, "README.md"), "manual edit", "utf8");
+
+    const refused = await store.restoreBefore("session-rewind-conflict", "task-conflict-first");
+    expect(refused.ok).toBe(false);
+    expect(refused.output).toContain("refused");
+    expect(await readFile(join(root, "README.md"), "utf8")).toBe("manual edit");
+  });
+
+  it("refuses an incomplete chain instead of guessing", async () => {
+    const root = await createSnapshotFixture("oran-snapshot-rewind-open-");
+    const store = new SnapshotStore(root);
+    const first = createTask(root, "first turn");
+    first.id = "task-open-first";
+    await store.begin("session-rewind-open", first);
+    await writeFile(join(root, "README.md"), "first", "utf8");
+    await store.finalize(first);
+
+    const second = createTask(root, "second turn");
+    second.id = "task-open-second";
+    await store.begin("session-rewind-open", second);
+    await writeFile(join(root, "README.md"), "second", "utf8");
+
+    const refused = await store.restoreBefore("session-rewind-open", "task-open-first");
+    expect(refused.ok).toBe(false);
+    expect(refused.output).toContain("incomplete");
+    expect(await readFile(join(root, "README.md"), "utf8")).toBe("second");
+  });
+
+  it("reports when the turn has no recorded snapshot", async () => {
+    const root = await createSnapshotFixture("oran-snapshot-rewind-missing-");
+    const store = new SnapshotStore(root);
+    const result = await store.restoreBefore("session-rewind-missing", "task-unknown");
+    expect(result.ok).toBe(false);
+    expect(result.output).toContain("No file snapshot is recorded");
+  });
+});
+
 async function createSnapshotFixture(prefix: string): Promise<string> {
   const root = await temporaryDirectory(prefix);
   await runGit(root, ["init"]);

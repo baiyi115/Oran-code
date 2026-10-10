@@ -7,6 +7,7 @@ import type {
   ProviderRequestOptions,
   ToolCall,
 } from "../types.js";
+import { isTruncatedFinishReason } from "../types.js";
 import { CLIENT_ID, CLIENT_USER_AGENT, PRODUCT_VERSION } from "../paths.js";
 import { ModelRequestError, boundedError, retryAfterMsFromResponse, streamErrorToModelRequestError } from "./errors.js";
 import { parseSseJson, readSseEvents } from "./sse.js";
@@ -117,7 +118,9 @@ export class OpenAICompatibleProvider implements ModelProvider {
       }
       // 部分兼容实现不返回 finish_reason=tool_calls(或根本没有 finish_reason);
       // 流结束时若有累积未发射的工具调用,统一补发,避免静默丢弃。
-      if (!state.emittedCalls && state.calls.size) {
+      // 但输出被上限截断时参数 JSON 很可能残缺,不能补发(解析会失败并进入
+      // 无谓的重试循环);截断标记由上游按"整体判败"处理。
+      if (!state.emittedCalls && state.calls.size && !isTruncatedFinishReason(state.finishReason)) {
         yield* openAiToolCallChunks(state);
       }
       // 缺 finish_reason 视为异常流(有测试锁定该契约),上游按失败处理,
@@ -305,9 +308,14 @@ function parseCompletion(data: Record<string, unknown>, streamed: boolean): Mode
   const choices = Array.isArray(data.choices) ? data.choices : [];
   const choice = choices[0] as Record<string, unknown> | undefined;
   const message = (choice?.message ?? {}) as Record<string, unknown>;
-  const toolCalls = Array.isArray(message.tool_calls)
-    ? message.tool_calls.map((item) => parseToolCall(item as Record<string, unknown>))
-    : [];
+  const finishReason = typeof choice?.finish_reason === "string" ? choice.finish_reason : undefined;
+  // 截断响应的工具调用参数可能残缺(或 JSON 本身就不完整导致解析失败),
+  // 整体丢弃并打上截断标记,由上游决定收尾方式。
+  const truncated = isTruncatedFinishReason(finishReason);
+  const toolCalls =
+    !truncated && Array.isArray(message.tool_calls)
+      ? message.tool_calls.map((item) => parseToolCall(item as Record<string, unknown>))
+      : [];
   const usage = numericUsage(data.usage);
   return {
     text: typeof message.content === "string" ? message.content : "",
@@ -316,7 +324,12 @@ function parseCompletion(data: Record<string, unknown>, streamed: boolean): Mode
     raw: data,
     usage,
     streamed,
-    ...(typeof choice?.finish_reason === "string" ? { finishReason: choice.finish_reason } : {}),
+    ...(finishReason !== undefined ? { finishReason } : {}),
+    ...(truncated ? { truncated: true } : {}),
+    // 截断时把被丢弃的调用数报上去:调用方据此区分"纯文本被截断"与"调用被截断"。
+    ...(truncated && Array.isArray(message.tool_calls) && message.tool_calls.length
+      ? { truncatedToolCalls: message.tool_calls.length }
+      : {}),
   };
 }
 

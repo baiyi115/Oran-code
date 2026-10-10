@@ -109,5 +109,6 @@ export function* modelResponseChunks(response: ModelResponse): Generator<ModelSt
     type: "response_complete",
     streamed: response.streamed,
     ...(response.finishReason !== undefined ? { finishReason: response.finishReason } : {}),
+    ...(response.truncatedToolCalls ? { droppedToolCalls: response.truncatedToolCalls } : {}),
   };
 }

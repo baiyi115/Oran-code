@@ -83,6 +83,37 @@ function toolResponse(call: ToolCall): ModelStreamChunk[] {
   ];
 }
 
+/** 参数完整但 finish_reason 表明输出被上限截断:调用整体判败,不得执行。 */
+function truncatedToolResponse(call: ToolCall): ModelStreamChunk[] {
+  return [
+    { type: "text_delta", text: "Let me write the file", streamed: true },
+    {
+      type: "tool_call_complete",
+      toolCall: {
+        index: 0,
+        ...(call.id ? { id: call.id } : {}),
+        name: call.name,
+        argumentsJson: JSON.stringify(call.arguments),
+      },
+      streamed: true,
+    },
+    { type: "response_complete", streamed: true, finishReason: "length" },
+  ];
+}
+
+/** 纯文本被截断(没有任何工具调用):文本属于回答内容,可参与续写汇聚。 */
+function truncatedTextResponse(text: string): ModelStreamChunk[] {
+  return [
+    { type: "text_delta", text, streamed: true },
+    { type: "response_complete", streamed: true, finishReason: "length" },
+  ];
+}
+
+/** 截断且什么都没收到(例如在推理阶段被切断)。 */
+function emptyTruncatedResponse(): ModelStreamChunk[] {
+  return [{ type: "response_complete", streamed: true, finishReason: "length" }];
+}
+
 interface ControllerTestOptions {
   approvalCallback?: (call: ToolCall, level: number, description: string, requestId: string) => boolean;
   hookEngine?: HookEnginePort;
@@ -394,6 +425,165 @@ describe("TaskController", () => {
     } finally {
       await rm(workspace, { recursive: true, force: true });
     }
+  });
+
+  describe("truncated model output", () => {
+    it("discards tool calls from a truncated response and asks the model to continue", async () => {
+      const workspace = await mkdtemp(join(tmpdir(), "liteagent-controller-"));
+      try {
+        const registry = new ToolRegistry();
+        let invoked = false;
+        registry.register({
+          name: "custom_writer",
+          description: "Write a note in the workspace.",
+          parameters: { type: "object", properties: { content: { type: "string" } }, required: ["content"] },
+          permissionLevel: 2,
+          kind: "write",
+          maxOutputChars: 1000,
+          invoke: async () => {
+            invoked = true;
+            return { ok: true, output: "wrote note.txt" };
+          },
+        });
+        const provider = new FakeProvider([
+          truncatedToolResponse({
+            id: "call_truncated",
+            name: "custom_writer",
+            arguments: { content: "hello" },
+            createdAt: new Date().toISOString(),
+          }),
+          textResponse("Recovered with a smaller step."),
+        ]);
+        const events: RuntimeEvent[] = [];
+        const { controller } = createController(workspace, provider, registry, events, {
+          approvalCallback: () => true,
+        });
+
+        const task = await controller.execute(createTask(workspace, "write a note"));
+
+        expect(task.state).toBe("completed");
+        expect(task.result).toBe("Recovered with a smaller step.");
+        expect(invoked).toBe(false);
+        expect(events.some((event) => event.type === "tool_result")).toBe(false);
+        expect(
+          provider.requests[1]?.some(
+            (message) =>
+              typeof message.content === "string" && message.content.includes("cut off by the output token limit"),
+          ),
+        ).toBe(true);
+      } finally {
+        await rm(workspace, { recursive: true, force: true });
+      }
+    });
+
+    it("continues a truncated text answer and assembles both parts into the result", async () => {
+      const workspace = await mkdtemp(join(tmpdir(), "liteagent-controller-"));
+      try {
+        const provider = new FakeProvider([
+          truncatedTextResponse("# Design\n\nThe first half of the answer"),
+          textResponse("and the second half."),
+        ]);
+        const events: RuntimeEvent[] = [];
+        const { controller, trace } = createController(workspace, provider, new ToolRegistry(), events);
+
+        const task = await controller.execute(createTask(workspace, "write the design doc"));
+
+        expect(task.state).toBe("completed");
+        expect(task.result).toBe("# Design\n\nThe first half of the answer\n\nand the second half.");
+        // 续写请求带着"接着写、不要重述"的指令,并告知已收到的字符数。
+        expect(
+          provider.requests[1]?.some(
+            (message) => typeof message.content === "string" && /about \d+ characters so far/.test(message.content),
+          ),
+        ).toBe(true);
+        // trace 里能看到这次续写(含收到的字符数与是否纯文本截断)。
+        expect(trace.exportTrace(task.id).steps.map((step) => step.kind)).toContain("model_truncated");
+      } finally {
+        await rm(workspace, { recursive: true, force: true });
+      }
+    });
+
+    it("keeps the partial answer instead of failing when text truncation repeats", async () => {
+      const workspace = await mkdtemp(join(tmpdir(), "liteagent-controller-"));
+      try {
+        const provider = new FakeProvider([
+          truncatedTextResponse("chunk one"),
+          truncatedTextResponse("chunk two"),
+          truncatedTextResponse("chunk three"),
+        ]);
+        const events: RuntimeEvent[] = [];
+        const { controller } = createController(workspace, provider, new ToolRegistry(), events);
+
+        const task = await controller.execute(createTask(workspace, "write a long answer"));
+
+        expect(task.state).toBe("completed");
+        expect(task.result).toContain("chunk one");
+        expect(task.result).toContain("chunk two");
+        expect(task.result).toContain("chunk three");
+        expect(task.result).toContain("the text above is incomplete");
+        // 收尾是 completed,但不再把已生成内容当成"任务失败"的一部分丢掉。
+        expect(events.some((event) => event.type === "error")).toBe(false);
+      } finally {
+        await rm(workspace, { recursive: true, force: true });
+      }
+    });
+
+    it("still fails when every truncated response was empty", async () => {
+      const workspace = await mkdtemp(join(tmpdir(), "liteagent-controller-"));
+      try {
+        const provider = new FakeProvider([emptyTruncatedResponse(), emptyTruncatedResponse(), emptyTruncatedResponse()]);
+        const events: RuntimeEvent[] = [];
+        const { controller } = createController(workspace, provider, new ToolRegistry(), events);
+
+        const task = await controller.execute(createTask(workspace, "answer something"));
+
+        expect(task.state).toBe("failed");
+        expect(events.find((event) => event.type === "error")?.message).toContain("no partial answer was received");
+      } finally {
+        await rm(workspace, { recursive: true, force: true });
+      }
+    });
+
+    it("fails the task after repeated truncation instead of retrying forever", async () => {
+      const workspace = await mkdtemp(join(tmpdir(), "liteagent-controller-"));
+      try {
+        const registry = new ToolRegistry();
+        let invoked = false;
+        registry.register({
+          name: "custom_writer",
+          description: "Write a note in the workspace.",
+          parameters: { type: "object", properties: { content: { type: "string" } }, required: ["content"] },
+          permissionLevel: 2,
+          kind: "write",
+          maxOutputChars: 1000,
+          invoke: async () => {
+            invoked = true;
+            return { ok: true, output: "wrote note.txt" };
+          },
+        });
+        const truncated = () =>
+          truncatedToolResponse({
+            id: "call_truncated",
+            name: "custom_writer",
+            arguments: { content: "hello" },
+            createdAt: new Date().toISOString(),
+          });
+        const provider = new FakeProvider([truncated(), truncated(), truncated(), truncated()]);
+        const events: RuntimeEvent[] = [];
+        const { controller } = createController(workspace, provider, registry, events, {
+          approvalCallback: () => true,
+        });
+
+        const task = await controller.execute(createTask(workspace, "write a note"));
+
+        expect(task.state).toBe("failed");
+        expect(invoked).toBe(false);
+        expect(events.some((event) => event.type === "tool_result")).toBe(false);
+        expect(events.find((event) => event.type === "error")?.message).toContain("output token limit");
+      } finally {
+        await rm(workspace, { recursive: true, force: true });
+      }
+    });
   });
 
   it("completes directly when the model responds without running implicit verification", async () => {

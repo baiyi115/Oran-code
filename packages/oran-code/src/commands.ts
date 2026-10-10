@@ -10,6 +10,7 @@ export type SlashCommandAction =
   | "permission"
   | "plan"
   | "rename"
+  | "rewind"
   | "session"
   | "skills"
   | "undo";
@@ -52,6 +53,14 @@ export const DEFAULT_COMMANDS: readonly SlashCommand[] = [
     description: "undo the latest Agent file change batch",
     kind: "ui",
     action: "undo",
+  },
+  {
+    name: "/rewind",
+    description: "roll the conversation back to before an earlier user message",
+    usage: "/rewind [N] [--files]",
+    argumentHint: "N [--files]",
+    kind: "ui",
+    action: "rewind",
   },
   {
     name: "/session",

@@ -85,6 +85,15 @@ export class ToolRegistry {
       };
     }
     const result = await tool.invoke(call, context);
+    // 后处理(可选)在中央截断之前执行:先去噪再限量,避免 ANSI 序列与重复行
+    // 消耗截断预算。清洗失败不影响结果,回退原始输出。
+    if (tool.postprocess && result.output) {
+      try {
+        result.output = tool.postprocess(result.output);
+      } catch {
+        // 清洗是尽力而为:失败时保留原始输出。
+      }
+    }
     // 中央执行 maxOutputChars:工具各自声明,但个别路径(如超长单行文件)
     // 可能漏截,这里兜底,避免超大输出挤爆上下文。
     const limit = tool.maxOutputChars;

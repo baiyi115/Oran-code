@@ -136,6 +136,8 @@ export interface UsageState {
 export interface TuiBackgroundTask {
   readonly id: string;
   readonly name: string;
+  /** 后台来源:子代理(缺省)或 shell 作业。展示文案按此区分。 */
+  readonly kind?: "subagent" | "job" | undefined;
   readonly origin?: SubagentOrigin | undefined;
   readonly definitionName?: string | undefined;
   readonly status: string;

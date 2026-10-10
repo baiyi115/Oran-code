@@ -51,6 +51,7 @@ export interface SessionCommandContext {
   renameSession(id: string, name: string): Promise<SessionView | undefined>;
   currentSessionId(): string | undefined;
   undoLatestChanges(): Promise<{ ok: boolean; output: string }>;
+  rewindConversation(argument: string): Promise<{ ok: boolean; output: string }>;
   requestExit(): void;
   /** /status 与 /mcp 的共享视图;调用方负责先确保 MCP 就绪。 */
   mcpStatus(): Promise<McpStatusSnapshot>;
@@ -186,6 +187,16 @@ export class SessionCommandRouter {
           return;
         }
         const result = await this.ctx.undoLatestChanges();
+        if (result.ok) this.ctx.renderer().status(result.output, "cyan");
+        else this.ctx.renderer().error(result.output);
+        return;
+      }
+      case "rewind": {
+        if (this.ctx.interactionRunning() || this.ctx.hasPendingApprovals()) {
+          this.ctx.renderer().status("finish or cancel the current task before rewinding the conversation", "yellow");
+          return;
+        }
+        const result = await this.ctx.rewindConversation(argument);
         if (result.ok) this.ctx.renderer().status(result.output, "cyan");
         else this.ctx.renderer().error(result.output);
         return;

@@ -85,6 +85,7 @@ import {
 import type { SubagentOrigin } from "./subagent/types.js";
 import type { QuestionItem } from "./tools/interaction-tools.js";
 import type { ContextManager } from "./context-manager.js";
+import { userTurnIndices } from "./message-utils.js";
 import type { TaskController } from "./controller.js";
 import type { SqliteTraceStore } from "./trace.js";
 import type { ToolRegistry } from "./tools.js";
@@ -108,6 +109,7 @@ const loadTools = () => import("./tools.js");
 const loadTrace = () => import("./trace.js");
 const loadProjectInstructionsMod = () => import("./project-instructions.js");
 const loadSubagentBackground = () => import("./subagent/background.js");
+const loadShellJobs = () => import("./tools/jobs.js");
 const loadSubagentAssembly = () => import("./subagent/assembly.js");
 const loadSubagentRoles = () => import("./subagent/roles.js");
 const loadSubagentTeam = () => import("./subagent/team.js");
@@ -402,6 +404,7 @@ export class TerminalSession {
         const runtime = await this.ensureAgentRuntime();
         return runtime.snapshotStore.undoLatest(sessionId);
       },
+      rewindConversation: (argument) => this.rewindConversation(argument),
       requestExit: () => {
         this.quitRequested = true;
         if (this.tui) this.tui.destroy();
@@ -436,7 +439,19 @@ export class TerminalSession {
       modelLabel: () => this.modelLabel(),
       backgroundTasks: async () => {
         const runtime = await this.ensureAgentRuntime();
-        return runtime.backgroundAgents.list().map((task) => ({
+        const { shellJobs } = await loadShellJobs();
+        const jobs = shellJobs()
+          .list()
+          .map((job) => ({
+            id: job.id,
+            name: job.command,
+            kind: "job" as const,
+            status: tuiJobStatus(job.status),
+            startedAt: job.startedAt,
+            ...(job.endedAt ? { endedAt: job.endedAt } : {}),
+            ...(job.error ? { error: job.error } : {}),
+          }));
+        const subagents = runtime.backgroundAgents.list().map((task) => ({
           id: task.id,
           name: task.name,
           status: task.status,
@@ -446,6 +461,7 @@ export class TerminalSession {
           error: task.error,
           output: task.output,
         }));
+        return [...subagents, ...jobs];
       },
     });
     this.skillLoader = new SkillLoader(this.workspace);
@@ -717,6 +733,7 @@ export class TerminalSession {
       agentRuntime,
       { assembleSubagentStack, joinStructuredForkSummaries, disposeStructuredScope },
       { backgroundTaskNotification },
+      { shellJobNotification, shellJobs },
       { TaskController },
       { ContextManager },
       { createHookEngine },
@@ -724,6 +741,7 @@ export class TerminalSession {
       this.ensureAgentRuntime(),
       loadSubagentAssembly(),
       loadSubagentBackground(),
+      loadShellJobs(),
       loadController(),
       loadContextManager(),
       loadHookFacade(),
@@ -833,7 +851,11 @@ export class TerminalSession {
           : this.activeSkillReminders();
         const notifications = agentRuntime.backgroundAgents.drainNotifications().map(backgroundTaskNotification);
         consumedBackgroundNotifications.push(...notifications);
-        return [...reminders, ...notifications];
+        const jobNotifications = shellJobs()
+          .drainNotifications()
+          .map(shellJobNotification);
+        consumedBackgroundNotifications.push(...jobNotifications);
+        return [...reminders, ...notifications, ...jobNotifications];
       },
       toolFilter: parentToolFilter,
       ...(hookEngine ? { hookEngine } : {}),
@@ -882,6 +904,7 @@ export class TerminalSession {
       consumedBackgroundNotifications.push(
         ...agentRuntime.backgroundAgents.drainNotifications().map(backgroundTaskNotification),
       );
+      consumedBackgroundNotifications.push(...shellJobs().drainNotifications().map(shellJobNotification));
       for (const notification of consumedBackgroundNotifications) {
         conversationSnapshot.push({
           role: "system",
@@ -1444,7 +1467,13 @@ export class TerminalSession {
     const runtime = this.agentRuntime;
     if (!runtime) return;
     const { backgroundTaskNotification } = await loadSubagentBackground();
-    const notifications = runtime.backgroundAgents.drainNotifications().map(backgroundTaskNotification);
+    const { shellJobNotification, shellJobs } = await loadShellJobs();
+    const notifications = [
+      ...runtime.backgroundAgents.drainNotifications().map(backgroundTaskNotification),
+      ...shellJobs()
+        .drainNotifications()
+        .map(shellJobNotification),
+    ];
     if (!notifications.length) return;
     for (const notification of notifications) {
       this.conversation.push({
@@ -1671,6 +1700,81 @@ export class TerminalSession {
 
   private formatActiveSkillReminder(name: string, prompt: string): string {
     return `<active-skill name="${name}">\n${prompt}\n</active-skill>`;
+  }
+
+  /**
+   * 对话级回退(:`/rewind [N]`)。
+   *
+   * 语义边界:
+   * - 只截断**对话历史**(模型看到的内容),文件改动仍由 `/undo` 负责,两者互不代替;
+   * - 截断点落在用户轮次之前,天然不破坏 assistant 工具调用与 tool 结果的 1:1 配对;
+   * - 归档逻辑截断走会话存储既有的 `session-reset` 通路,原始 JSONL 字节保留可审计;
+   * - 压缩边界之后的轮次才能回退:更早的对话已被摘要折叠,原文不在活跃历史里。
+   */
+  private async rewindConversation(argument: string): Promise<{ ok: boolean; output: string }> {
+    const indices = userTurnIndices(this.conversation);
+    if (!indices.length) return { ok: false, output: "This session has no user messages to rewind to." };
+    const tokens = argument.trim().split(/\s+/).filter(Boolean);
+    const withFiles = tokens.includes("--files");
+    const requested = tokens.find((token) => !token.startsWith("--")) ?? "";
+    if (withFiles && !requested) {
+      return { ok: false, output: "Usage: /rewind N --files (N is required when reverting files)." };
+    }
+    if (!requested) {
+      const listing = indices
+        .map((index, position) => `${position + 1}. ${summarizeUserTurn(this.conversation[index]?.content ?? "")}`)
+        .join("\n");
+      return {
+        ok: true,
+        output: [
+          "Rewind targets (run /rewind N to drop everything from that turn onward):",
+          listing,
+          "Add --files to also revert the files changed by those turns (refused when Git HEAD or later edits make it unsafe).",
+        ].join("\n"),
+      };
+    }
+    const target = Number.parseInt(requested, 10);
+    if (!Number.isInteger(target) || target < 1 || target > indices.length) {
+      return { ok: false, output: `Invalid rewind target: ${requested}. Use a number between 1 and ${indices.length}.` };
+    }
+    const cut = indices[target - 1]!;
+    if (cut === 0) return { ok: false, output: "Already at the beginning of this session; nothing to rewind." };
+
+    let filesNote = "";
+    if (withFiles) {
+      const sessionId = this.currentSession?.id;
+      const taskId = this.conversation[cut]?.metadata?.taskId;
+      if (!sessionId) return { ok: false, output: "No active session is available for the file rewind." };
+      if (typeof taskId !== "string" || !taskId) {
+        return {
+          ok: false,
+          output:
+            "File rewind is unavailable for that turn: it has no snapshot link (session recorded before this feature). " +
+            "The conversation was left untouched; use /undo for the latest batch.",
+        };
+      }
+      const runtime = await this.ensureAgentRuntime();
+      const files = await runtime.snapshotStore.restoreBefore(sessionId, taskId);
+      if (!files.ok) {
+        return { ok: false, output: `File rewind refused; the conversation was left untouched. ${files.output}` };
+      }
+      filesNote = ` ${files.output}`;
+    }
+
+    const removed = this.conversation.length - cut;
+    this.conversation = this.conversation.slice(0, cut);
+    (await this.currentContextManager()).reset();
+    this.tui?.rewindToUserMessage(target);
+    this.refreshTui();
+    await this.persistTuiSession();
+    return {
+      ok: true,
+      output:
+        `Rewound the conversation to before user turn ${target}; ${removed} message(s) removed.` +
+        (withFiles
+          ? filesNote
+          : " Files changed by those turns are NOT reverted — run /rewind N --files, or /undo for the latest batch."),
+    };
   }
 
   private isToolAllowedByActiveSkills(toolName: string): boolean {
@@ -2197,6 +2301,24 @@ async function saveHistoryEntries(history: readonly string[]): Promise<void> {
 
 export function supportsTui(input: NodeJS.ReadableStream, output: NodeJS.WriteStream): boolean {
   return Boolean((input as NodeJS.ReadStream).isTTY && output.isTTY);
+}
+
+/** shell 作业状态映射到 TUI 的后台任务状态词汇(与子代理状态机对齐)。 */
+function tuiJobStatus(status: "running" | "exited" | "failed" | "killed"): string {
+  if (status === "exited") return "completed";
+  if (status === "killed") return "cancelled";
+  return status;
+}
+
+/** /rewind 列表里的单行摘要:去掉 "User message:" 包装,压平空白,截断到一行。 */
+function summarizeUserTurn(content: string): string {
+  const withoutPrefix = content.includes("User message:\n") ? content.slice(content.indexOf("User message:\n")) : content;
+  const flattened = withoutPrefix
+    .replace(/^User message:\n?/, "")
+    .replace(/\s+/g, " ")
+    .trim();
+  if (!flattened) return "(empty prompt)";
+  return flattened.length > 80 ? `${flattened.slice(0, 79)}…` : flattened;
 }
 
 function buildPlanExecutePrompt(plan: string): string {

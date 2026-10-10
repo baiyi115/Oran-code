@@ -7,8 +7,9 @@ import { structuredPermissionDenial, type ApprovalDecision } from "./security.js
 import { isWriteToolName } from "./tools.js";
 import type { ContextManager } from "./context-manager.js";
 import type { AgentLoop } from "./loop.js";
-import type { Message, ModelResponse, ToolCall, ToolCallComplete, ToolResult } from "./types.js";
+import type { Message, ModelResponse, ModelRetryCategory, ToolCall, ToolCallComplete, ToolResult } from "./types.js";
 import { formatErrorMessage } from "./error-format.js";
+import { ModelRequestError, SseIdleTimeoutError } from "./provider.js";
 import { PLAN_COMPLETE_MARKERS } from "./message-utils.js";
 import { systemReminderMessage } from "./system-prompt.js";
 import { PROJECT_STATE_DIR_NAMES } from "./paths.js";
@@ -48,6 +49,45 @@ export function toolUnavailableResult(call: ToolCall): ToolResult {
 
 export function isRetryableModelStatus(status: number): boolean {
   return status === 408 || status === 429 || status >= 500;
+}
+
+/** 模型返回了空响应(部分兼容端点的瞬时空 completion):按可重试错误处理。 */
+export class EmptyModelResponseError extends Error {
+  constructor() {
+    super("model returned an empty response");
+    this.name = "EmptyModelResponseError";
+  }
+}
+
+/** 完成的工具调用参数无法解析(非法 JSON / 非法结构),调用不可执行。 */
+export class ToolCallParseError extends Error {
+  constructor(message: string, options?: ErrorOptions) {
+    super(message, options);
+    this.name = "ToolCallParseError";
+  }
+}
+
+const NETWORK_FAILURE_PATTERN =
+  /fetch failed|network|econnreset|econnrefused|econnaborted|enotfound|eai_again|etimedout|socket hang up|other side closed|premature close|undici/i;
+
+/**
+ * 把模型请求失败归类到稳定类别,供重试事件、诊断与按类统计复用。
+ * 分类只回答"发生了哪类失败",不改变重试决策(决策仍在 streamWithRetry)。
+ */
+export function classifyModelRetry(error: unknown): ModelRetryCategory {
+  if (error instanceof ModelRequestError) {
+    if (error.status === 429) return "rate_limit";
+    if (error.status === 408) return "timeout";
+    if (error.status >= 500) return "http_5xx";
+    return "http_4xx";
+  }
+  if (error instanceof SseIdleTimeoutError) return "timeout";
+  if (error instanceof EmptyModelResponseError) return "empty";
+  if (error instanceof ToolCallParseError) return "parse";
+  // ProviderContractError 定义在 turn-requester(流协议违规),取名字避免反向依赖。
+  if (error instanceof Error && error.name === "ProviderContractError") return "contract";
+  if (error instanceof Error && NETWORK_FAILURE_PATTERN.test(error.message)) return "network";
+  return "unknown";
 }
 
 const RETRY_BACKOFF_BASE_MS = 500;
@@ -104,19 +144,19 @@ export function normalizeCallId(call: ToolCall, contextManager: ContextManager):
 
 export function parseCompletedToolCall(raw: ToolCallComplete): ToolCall {
   if (!Number.isInteger(raw.index) || raw.index < 0) {
-    throw new Error(`invalid completed tool-call index: ${String(raw.index)}`);
+    throw new ToolCallParseError(`invalid completed tool-call index: ${String(raw.index)}`);
   }
-  if (!raw.name.trim()) throw new Error(`completed tool call ${raw.index} is missing a name`);
+  if (!raw.name.trim()) throw new ToolCallParseError(`completed tool call ${raw.index} is missing a name`);
   let argumentsValue: unknown;
   try {
     argumentsValue = JSON.parse(raw.argumentsJson);
   } catch (error) {
-    throw new Error(`invalid arguments for completed tool call ${raw.index}: ${formatErrorMessage(error)}`, {
+    throw new ToolCallParseError(`invalid arguments for completed tool call ${raw.index}: ${formatErrorMessage(error)}`, {
       cause: error,
     });
   }
   if (!argumentsValue || typeof argumentsValue !== "object" || Array.isArray(argumentsValue)) {
-    throw new Error(`invalid arguments for completed tool call ${raw.index}: expected an object`);
+    throw new ToolCallParseError(`invalid arguments for completed tool call ${raw.index}: expected an object`);
   }
   return {
     ...(raw.id ? { id: raw.id } : {}),

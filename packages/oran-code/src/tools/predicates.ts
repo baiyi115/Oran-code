@@ -12,6 +12,10 @@ export const TOOL_SEARCH_ALIASES: Readonly<Record<string, readonly string[]>> = 
   glob_files: ["find", "locate", "file search", "glob", "查找文件", "文件搜索"],
   search_code: ["grep", "rg", "ripgrep", "search", "code search", "搜索代码", "文本搜索"],
   run_command: ["shell", "bash", "sh", "cmd", "powershell", "exec", "terminal", "command", "终端", "命令"],
+  job_output: ["background", "job", "async", "output", "后台", "作业", "输出"],
+  job_kill: ["background", "job", "kill", "stop", "terminate", "后台", "作业", "停止"],
+  web_fetch: ["fetch", "http", "url", "download", "page", "网页", "抓取"],
+  web_search: ["search the web", "google", "internet", "web", "联网", "网络搜索"],
 };
 
 export function isWriteToolName(name: string): boolean {

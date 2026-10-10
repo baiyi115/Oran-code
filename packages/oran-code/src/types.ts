@@ -7,6 +7,18 @@ export type ReasoningEffort = "low" | "medium" | "high" | "xhigh";
 export type ToolKind = "readonly" | "write" | "command";
 export type SessionTitleMode = "first-message" | "local" | "model";
 
+/** 模型请求失败的结构化分类,用于重试事件的诊断与展示。 */
+export type ModelRetryCategory =
+  | "rate_limit"
+  | "timeout"
+  | "network"
+  | "http_4xx"
+  | "http_5xx"
+  | "contract"
+  | "empty"
+  | "parse"
+  | "unknown";
+
 export const REASONING_EFFORTS: readonly ReasoningEffort[] = ["low", "medium", "high", "xhigh"];
 export const PERMISSION_MODES: readonly PermissionMode[] = ["readonly", "default", "accept-edits", "plan", "bypass"];
 
@@ -16,6 +28,14 @@ export function isPermissionMode(value: unknown): value is PermissionMode {
 
 export function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+/**
+ * 输出上限导致的截断标记(OpenAI 系 length、Anthropic max_tokens)。
+ * 截断响应的文本与工具调用都可能不完整,调用方需按"整体判败"处理。
+ */
+export function isTruncatedFinishReason(value: string | undefined): boolean {
+  return value === "length" || value === "max_tokens";
 }
 
 export function isReasoningEffort(value: unknown): value is ReasoningEffort {
@@ -129,6 +149,17 @@ export interface ModelResponse {
   usage: Record<string, number>;
   finishReason?: string;
   streamed: boolean;
+  /**
+   * 输出被输出上限截断(finishReason 为 length/max_tokens)。
+   * 截断响应的内容不完整:调用方不得当作最终答案,也不得执行其工具调用。
+   */
+  truncated?: boolean;
+  /**
+   * 因截断而**被丢弃**的工具调用数量(provider 解析层与 requester 兜底层的合计)。
+   * 用来区分"纯文本被截断"(文本属于回答内容,可续写汇聚)与"工具调用被截断"
+   * (文本多半只是前言,不应混进最终答案)。
+   */
+  truncatedToolCalls?: number;
 }
 
 /**
@@ -144,7 +175,13 @@ export type ModelStreamChunk =
   | { type: "reasoning_signature"; signature: string; streamed: boolean }
   | { type: "tool_call_complete"; toolCall: ToolCallComplete; streamed: boolean }
   | { type: "usage"; usage: Record<string, number>; streamed: boolean }
-  | { type: "response_complete"; streamed: boolean; finishReason?: string };
+  | {
+      type: "response_complete";
+      streamed: boolean;
+      finishReason?: string;
+      /** 解析层在截断时丢弃的工具调用数量(见 ModelResponse.truncatedToolCalls)。 */
+      droppedToolCalls?: number;
+    };
 
 export interface ProviderRequestOptions {
   signal?: AbortSignal;
@@ -261,6 +298,27 @@ export interface UserConfig {
   sessionTitles?: SessionTitleSettings;
   mcpServers?: Record<string, McpServerConfig>;
   hooks?: HookRule[];
+  web?: WebSettings;
+}
+
+/**
+ * 联网工具(web_fetch / web_search)设置。
+ * 搜索能力默认不开启:配置了 searchApiKey(或端点)才暴露 web_search。
+ */
+export interface WebSettings {
+  /** 关闭后不注册任何联网工具。 */
+  enabled?: boolean;
+  /** 搜索后端协议,默认 tavily。 */
+  searchProvider?: "tavily" | "searxng" | "brave" | "google";
+  /** 搜索端点;searxng 必填,其余后端缺省用各自官方地址。 */
+  searchEndpoint?: string;
+  searchApiKey?: string;
+  /** Google Programmable Search 的引擎 ID(cx),provider=google 时必填。 */
+  searchEngineId?: string;
+  /** 单次抓取交给模型的字符上限,默认 32000。 */
+  fetchMaxChars?: number;
+  /** 允许访问回环/内网地址,默认 false(SSRF 防护)。 */
+  allowPrivateHosts?: boolean;
 }
 
 export interface LoopConfig {
@@ -344,6 +402,11 @@ export interface ToolDefinition {
   deferred?: boolean;
 
   maxOutputChars: number;
+  /**
+   * 可选的输出后处理,在中央截断之前执行(先清洗再限量)。
+   * 只用于确定性清洗(如 shell 的 ANSI/重复行);异常会被忽略并回退到原始输出。
+   */
+  postprocess?: ((output: string) => string) | undefined;
   invoke: (call: ToolCall, context?: ToolExecutionContext) => Promise<ToolResult>;
 }
 
@@ -406,7 +469,16 @@ export interface RuntimeEventPayloads {
   tool_start: { call: ToolCall; index: number; permissionLevel: number };
   tool_result: { call: ToolCall; index: number; result: ToolResult };
   verify: { results: VerificationResult[] };
-  retry: { step: number; source: string; attempt: number; nextAttempt: number; maxRetries: number; message: string };
+  retry: {
+    step: number;
+    source: string;
+    attempt: number;
+    nextAttempt: number;
+    maxRetries: number;
+    message: string;
+    /** 结构化失败分类,便于诊断与按类统计。 */
+    category?: ModelRetryCategory;
+  };
   context_compaction: {
     phase: "started" | "completed" | "failed" | "offloaded";
     reason: "auto" | "manual" | "emergency";

@@ -1,4 +1,5 @@
 import type { ContextManager } from "../context-manager.js";
+import { isTruncatedFinishReason } from "../types.js";
 import type {
   HookEventPortContext,
   Message,
@@ -13,6 +14,8 @@ import { formatErrorMessage } from "../error-format.js";
 import { isAbortError } from "../utils/abort-error.js";
 import type { AgentLoop } from "../loop.js";
 import {
+  classifyModelRetry,
+  EmptyModelResponseError,
   extractPlanText,
   fingerprintRequest,
   fingerprintResponse,
@@ -281,8 +284,8 @@ export class TurnRequester {
         const response = await this.streamResponse(messages, loop, step, source, attempt, tools);
         // 空响应(部分兼容端点会瞬时出现)按可重试错误处理,参与退避循环,
         // 而不是直接让整个任务失败。
-        if (!response.text.trim() && !response.toolCalls.length) {
-          throw new Error("model returned an empty response");
+        if (!response.text.trim() && !response.toolCalls.length && !response.truncated) {
+          throw new EmptyModelResponseError();
         }
         return response;
       } catch (error) {
@@ -292,6 +295,7 @@ export class TurnRequester {
         if (error instanceof ProviderContractError) throw error;
         lastError = error;
         const message = formatErrorMessage(error);
+        const category = classifyModelRetry(error);
         if (attempt >= this.ports.config.loop.maxRetries) {
           // Final failure is reported by the outer execute() error event.
           throw error;
@@ -304,6 +308,7 @@ export class TurnRequester {
           nextAttempt: attempt + 1,
           maxRetries: this.ports.config.loop.maxRetries,
           message,
+          category,
         });
         this.ports.appendDiagnosticStep("model_retry", {
           step,
@@ -311,6 +316,7 @@ export class TurnRequester {
           attempt,
           nextAttempt: attempt + 1,
           message,
+          category,
         });
         const delayMs = modelRetryDelayMs(
           attempt,
@@ -326,6 +332,7 @@ export class TurnRequester {
             attempt,
             nextAttempt: attempt + 1,
             message,
+            category,
             delayMs,
           }),
         );
@@ -363,6 +370,8 @@ export class TurnRequester {
     let streamed = false;
     let finishReason: string | undefined;
     let responseCompleted = false;
+    /** 解析层已丢弃的截断调用数(provider 报上来的),与 requester 兜底丢弃数合计。 */
+    let providerDroppedToolCalls = 0;
     try {
       const requestFingerprint = fingerprintRequest(messages);
       const estimatedRequestTokens = this.ports.contextManager.estimateTokens(messages, tools);
@@ -437,6 +446,7 @@ export class TurnRequester {
             if (responseCompleted) throw new ProviderContractError("provider emitted response_complete more than once");
             responseCompleted = true;
             finishReason = chunk.finishReason;
+            providerDroppedToolCalls = chunk.droppedToolCalls ?? 0;
             break;
         }
       }
@@ -444,6 +454,17 @@ export class TurnRequester {
         throw new ProviderContractError("provider stream ended without a response_complete event");
       loop.recordModelElapsed(Math.max(1, Date.now() - modelStartedAt));
       loop.recordUsage(usage);
+      // 输出上限截断:文本与工具调用都可能不完整。端点仍可能给出"能解析"的
+      // 参数,直接执行会带来语义残缺的副作用,因此截断消息的所有调用整体判败,
+      // 并把截断标记上抛给 controller 决定收尾方式。
+      const truncated = isTruncatedFinishReason(finishReason);
+      let droppedTruncatedCalls = 0;
+      if (truncated && completedToolCalls.size) {
+        droppedTruncatedCalls = completedToolCalls.size;
+        completedToolCalls.clear();
+      }
+      // 解析层丢弃的调用也计入总数:调用方据此区分纯文本截断与调用截断。
+      droppedTruncatedCalls += providerDroppedToolCalls;
       const normalizedCalls = [...completedToolCalls.entries()]
         .sort(([left], [right]) => left - right)
         .map(([, call]) => normalizeCallId(call, this.ports.contextManager));
@@ -452,11 +473,19 @@ export class TurnRequester {
         ...(reasoningParts.length ? { reasoning: reasoningParts.join("") } : {}),
         ...(reasoningSignatures.length ? { reasoningSignature: reasoningSignatures.join("") } : {}),
         toolCalls: normalizedCalls,
-        raw: { usage, finishReason, toolCalls: normalizedCalls },
+        raw: { usage, finishReason, toolCalls: normalizedCalls, ...(truncated ? { truncated: true } : {}) },
         usage,
         streamed,
         ...(finishReason !== undefined ? { finishReason } : {}),
+        ...(truncated ? { truncated: true } : {}),
+        ...(truncated && droppedTruncatedCalls ? { truncatedToolCalls: droppedTruncatedCalls } : {}),
       };
+      if (droppedTruncatedCalls > 0) {
+        this.ports.logger(
+          `Model output was truncated (finish_reason: ${finishReason ?? "unknown"}); ` +
+            `${droppedTruncatedCalls} tool call(s) from this message were discarded without running.`,
+        );
+      }
       this.modelResponseStepId = this.ports.appendDiagnosticStep("model_response", {
         turnId,
         step,
@@ -466,6 +495,8 @@ export class TurnRequester {
         toolCalls: summarizeToolCalls(normalizedCalls),
         responseFingerprint: fingerprintResponse(response),
         finishReason,
+        truncated,
+        droppedTruncatedCalls,
         usage,
         taskTokensUsed: loop.tokensUsed,
       });
@@ -481,6 +512,8 @@ export class TurnRequester {
           toolCalls: summarizeToolCalls(normalizedCalls),
           responseFingerprint: fingerprintResponse(response),
           finishReason,
+          truncated,
+          droppedTruncatedCalls,
           usage,
           taskTokensUsed: loop.tokensUsed,
         }),

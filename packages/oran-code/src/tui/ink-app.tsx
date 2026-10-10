@@ -541,6 +541,29 @@ export class InkTuiApp {
     this.invalidate();
   }
 
+  /**
+   * 对话级回退:把转写区截断到第 N 个用户消息之前。
+   * 只动展示层——会话历史与持久化由 TerminalSession 负责,两者按同一"用户轮次"口径对齐。
+   */
+  rewindToUserMessage(userMessageCount: number): void {
+    let seen = 0;
+    let cut = this.state.transcript.length;
+    for (const [index, message] of this.state.transcript.entries()) {
+      if (message.kind !== "user") continue;
+      seen += 1;
+      if (seen === userMessageCount) {
+        cut = index;
+        break;
+      }
+    }
+    if (cut >= this.state.transcript.length) return;
+    this.state.transcript = this.state.transcript.slice(0, cut);
+    this.state.expandedToolGroupIds.clear();
+    this.state.transcriptScroll = { offsetFromBottom: 0, followBottom: true };
+    appendSystemMessage(this.state, `Conversation rewound to user turn ${userMessageCount}.`, "system");
+    this.invalidate();
+  }
+
   private restoreSession(session: SessionView): void {
     const previousTaskId = this.state.activeTaskId;
     if (previousTaskId) this.state.retiredTaskIds.add(previousTaskId);

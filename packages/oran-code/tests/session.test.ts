@@ -259,6 +259,71 @@ describe("TerminalSession", () => {
     }
   });
 
+  it("rewinds the conversation to before an earlier user turn and records a session reset", async () => {
+    const workspace = await mkdtemp(join(tmpdir(), "oran-session-rewind-"));
+    let session: TerminalSession | undefined;
+    try {
+      session = new TerminalSession(
+        {
+          workspace,
+          model,
+          config: { providers: {}, agent: { maxSteps: 2, skipVerify: false } },
+          approveAll: true,
+          providerFactory: () => new FakeProvider(),
+        },
+        process.stdin,
+        process.stdout,
+      );
+      await session.handleInput("/new");
+      const internal = session as unknown as {
+        conversation: Message[];
+        rewindConversation(argument: string): Promise<{ ok: boolean; output: string }>;
+      };
+      internal.conversation = [
+        { role: "user", content: "User message:\nfirst request" },
+        { role: "assistant", content: "handled first request" },
+        { role: "user", content: "[User steering guidance provided while task in progress]:\nkeep going" },
+        { role: "assistant", content: "handled steering" },
+        { role: "user", content: "[Previous task completed. New user task begins below.]\nUser message:\nsecond request" },
+        { role: "assistant", content: "handled second request" },
+      ];
+
+      // 无参数只列出可回退的轮次(steering 不算独立轮次)。
+      const listing = await internal.rewindConversation("");
+      expect(listing.ok).toBe(true);
+      expect(listing.output).toContain("1. first request");
+      expect(listing.output).toContain("2. second request");
+      expect(listing.output).not.toContain("keep going");
+
+      const rewound = await internal.rewindConversation("2");
+      expect(rewound.ok).toBe(true);
+      expect(rewound.output).toContain("Rewound the conversation to before user turn 2");
+      expect(internal.conversation.map((message) => message.content)).toEqual([
+        "User message:\nfirst request",
+        "handled first request",
+        "[User steering guidance provided while task in progress]:\nkeep going",
+        "handled steering",
+      ]);
+
+      // 回退结果被持久化:归档里不再包含被丢弃轮次的内容,保留的轮次仍在。
+      const sessionsDir = userSessionsRoot(workspace);
+      const archives = (await readdir(sessionsDir)).filter((name) => name.endsWith(".jsonl"));
+      expect(archives.length).toBeGreaterThan(0);
+      const archiveText = await readFile(join(sessionsDir, archives[0]!), "utf8");
+      expect(parseSessionJsonl(archiveText).length).toBeGreaterThan(0);
+      expect(archiveText).not.toContain("second request");
+      expect(archiveText).toContain("first request");
+
+      // 越界与非法参数被明确拒绝。
+      const invalid = await internal.rewindConversation("9");
+      expect(invalid.ok).toBe(false);
+      expect(invalid.output).toContain("Invalid rewind target");
+    } finally {
+      await (session as any)?.shutdown?.().catch(() => undefined);
+      await rm(workspace, { recursive: true, force: true });
+    }
+  }, 60_000);
+
   it("treats piped EOF as a normal session shutdown", async () => {
     const workspace = await mkdtemp(join(tmpdir(), "liteagent-session-"));
     const input = Readable.from(["/model\n", "/clear\n"]);

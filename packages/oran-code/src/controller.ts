@@ -8,6 +8,7 @@ import { isAbortError } from "./utils/abort-error.js";
 import { cloneMessages } from "./message-utils.js";
 import {
   assistantMessage,
+  EmptyModelResponseError,
   ensureCallId,
   extractPlanText,
   extractToolFilePath,
@@ -24,6 +25,7 @@ import type {
   ApprovalResponse,
   Message,
   ModelProvider,
+  ModelResponse,
   RuntimeConfig,
   RuntimeEvent,
   RuntimeEventPayloads,
@@ -56,6 +58,23 @@ import {
 export type RuntimeEventCallback = (event: RuntimeEvent) => void | Promise<void>;
 export type RuntimeLogger = (message: string) => void;
 export type ConversationCallback = (messages: readonly Message[]) => void;
+
+/** 同一任务内允许的"输出被截断后继续"次数;超过即用已收到的文本收尾。 */
+const MAX_TRUNCATION_RECOVERIES = 2;
+
+/**
+ * 纯文本截断:截断消息没有任何工具调用(既没交付、也没被丢弃)。
+ * 只有这种截断的文本才属于回答内容,可以参与续写汇聚;带工具调用的截断,
+ * 文本多半只是"我接下来要做什么"的前言,混进最终答案会失真。
+ */
+function isTextOnlyTruncation(response: ModelResponse): boolean {
+  return response.toolCalls.length === 0 && (response.truncatedToolCalls ?? 0) === 0;
+}
+
+/** 用已收到的文本收尾时附在结果末尾的说明:任务按 completed 结束,但内容不完整。 */
+function truncationNote(times: number): string {
+  return `\n\n[output truncated by the output token limit ${times} time(s); the text above is incomplete]`;
+}
 
 export interface TaskControllerOptions {
   config: RuntimeConfig;
@@ -122,6 +141,12 @@ export class TaskController {
   private readonly snapshotSessionId: string | undefined;
   private readonly getSteeringMessages: (() => Promise<string[]> | string[]) | undefined;
   private readonly pendingSteeringMessages: string[] = [];
+  /** 模型输出被截断时的纠偏提醒,在下一轮请求前注入一次。 */
+  private pendingTruncationNotice: string | undefined;
+  /** 本任务的截断恢复次数:超过上限即用已收到的文本收尾,避免无界重试。 */
+  private truncationRecoveries = 0;
+  /** 纯文本截断各段(按到达顺序),用于收尾时汇聚成完整度最高的结果。 */
+  private truncatedTextChunks: string[] = [];
   private loop: AgentLoop | undefined;
   private abortController: AbortController | undefined;
   private activeTask: Task | undefined;
@@ -238,6 +263,9 @@ export class TaskController {
     this.abortController = new AbortController();
     this.sequence = 0;
     this.taskStartedAt = Date.now();
+    this.truncationRecoveries = 0;
+    this.pendingTruncationNotice = undefined;
+    this.truncatedTextChunks = [];
     this.turnRequester.resetForTask();
     const loop = new AgentLoop(this.config.loop, this.previousToolCalls);
     this.loop = loop;
@@ -289,7 +317,11 @@ export class TaskController {
       this.conversation.length > 0
         ? `[Previous task completed. New user task begins below.]\nUser message:\n${task.prompt}`
         : `User message:\n${task.prompt}`;
-    const turnConversation: Message[] = [...cloneMessages(this.conversation), { role: "user", content: userContent }];
+    const turnConversation: Message[] = [
+      ...cloneMessages(this.conversation),
+      // taskId 让对话轮次与文件快照 manifest 对齐,/rewind --files 才能精确回滚到本轮之前。
+      { role: "user", content: userContent, metadata: { taskId: task.id } },
+    ];
     this.syncConversation(turnConversation);
     const snapshot = casualConversation
       ? {
@@ -343,6 +375,10 @@ export class TaskController {
         ...this.runtimeReminders(),
         ...hookNotices.map((notice) => `[hook:${notice.event}] ${notice.text}`),
       ].filter((item): item is string => Boolean(item && item.trim()));
+      if (this.pendingTruncationNotice) {
+        reminders.push(this.pendingTruncationNotice);
+        this.pendingTruncationNotice = undefined;
+      }
       if (casualConversation) {
         reminders.push(
           "The user sent a greeting or casual conversational message. Respond politely and concisely in direct text without calling any tools.",
@@ -423,7 +459,64 @@ export class TaskController {
           await this.emitCompleted(loop);
           return task;
         }
-        if (!response.text && !response.toolCalls.length) throw new Error("model returned an empty response");
+        if (!response.text && !response.toolCalls.length && !response.truncated) {
+          throw new EmptyModelResponseError();
+        }
+        if (response.truncated) {
+          // 输出被上限截断:内容不完整,既不能当最终答案,也不能执行其工具调用
+          // (turn-requester 已丢弃截断消息的全部调用)。纯文本截断先记下来,给模型
+          // 一次显式纠偏机会;预算耗尽时用已收到的文本收尾,而不是把生成的内容
+          // 连同失败一起丢掉。
+          this.truncationRecoveries += 1;
+          const reason = response.finishReason ?? "length";
+          if (isTextOnlyTruncation(response) && response.text.trim()) {
+            this.truncatedTextChunks.push(response.text.trim());
+          }
+          const receivedChars = this.truncatedTextChunks.reduce((total, chunk) => total + chunk.length, 0);
+          this.appendDiagnosticStep("model_truncated", {
+            finishReason: reason,
+            recovery: this.truncationRecoveries,
+            limit: MAX_TRUNCATION_RECOVERIES,
+            textOnly: isTextOnlyTruncation(response),
+            receivedChars,
+            droppedToolCalls: response.truncatedToolCalls ?? 0,
+            finalTurn,
+          });
+          if (finalTurn || this.truncationRecoveries > MAX_TRUNCATION_RECOVERIES) {
+            const assembled = this.assembleTruncatedText();
+            if (assembled) {
+              task.result = `${assembled}${truncationNote(this.truncationRecoveries)}`;
+              this.logger(
+                `Model output was truncated (finish_reason: ${reason}) ${this.truncationRecoveries} time(s); ` +
+                  `completing the task with the ${assembled.length} characters received so far — the result is incomplete.`,
+              );
+              transitionTask(task, "completed");
+              await this.persist(task);
+              await this.emitCompleted(loop);
+              return task;
+            }
+            transitionTask(task, "failed");
+            await this.persist(task);
+            await this.emit("error", {
+              message:
+                `Model output was truncated by the output token limit ${this.truncationRecoveries} times in a row ` +
+                `(finish_reason: ${reason}) and no partial answer was received. Stopping instead of retrying forever; ` +
+                `ask for smaller increments (one file or one function per step) or raise the model output limit.`,
+            });
+            return task;
+          }
+          this.pendingTruncationNotice =
+            `Your previous response was cut off by the output token limit (finish_reason: ${reason}); ` +
+            `nothing after the cut-off was received` +
+            (receivedChars ? ` (about ${receivedChars} characters so far)` : "") +
+            `. Continue from exactly where it stopped, in smaller pieces (e.g. one section or one file per turn), ` +
+            `do not repeat content you already emitted, and re-issue any tool call you intended in full.`;
+          this.logger(
+            `Model output was truncated (finish_reason: ${reason}); asking the model to continue in smaller pieces ` +
+              `(${this.truncationRecoveries}/${MAX_TRUNCATION_RECOVERIES}).`,
+          );
+          continue;
+        }
         if (finalTurn && response.toolCalls.length) {
           for (const [index, call] of response.toolCalls.entries()) {
             ensureCallId(call, this.contextManager);
@@ -532,7 +625,8 @@ export class TaskController {
           // The model finished calling tools and returned its final response.
           // Complete the task directly without running any verification harness.
           this.throwIfCancelled();
-          task.result = response.text;
+          // 之前若有纯文本截断,最后一段是它的续写:拼成完整回答再收尾。
+          task.result = this.assembleTruncatedText(response.text);
           transitionTask(task, "completed");
           await this.persist(task);
           this.throwIfCancelled();
@@ -671,6 +765,17 @@ export class TaskController {
   private async persist(task: Task): Promise<void> {
     this.trace.saveTask(task);
     await this.emit("state", { state: task.state });
+  }
+
+  /**
+   * 把截断续写各段与最后一段拼成结果。
+   * 没有截断续写时就是最后一段本身;有续写时顺序即到达顺序,段间用空行分隔。
+   */
+  private assembleTruncatedText(finalText = ""): string {
+    const parts = [...this.truncatedTextChunks];
+    const trimmed = finalText.trim();
+    if (trimmed) parts.push(trimmed);
+    return parts.join("\n\n");
   }
 
   private async emitCompleted(loop: AgentLoop): Promise<void> {

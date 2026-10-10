@@ -36,8 +36,9 @@ export function formatBackgroundTasksIndicator(
   tasks: readonly TuiBackgroundTask[],
   now = Date.now(),
 ): string | undefined {
-  const running = tasks.filter((task) => task.status === "running");
-  const queued = tasks.filter((task) => task.status === "queued");
+  const subagents = tasks.filter((task) => task.kind !== "job");
+  const running = subagents.filter((task) => task.status === "running");
+  const queued = subagents.filter((task) => task.status === "queued");
   if (running.length === 0 && queued.length === 0) return undefined;
 
   if (running.length === 1 && queued.length === 0) {
@@ -77,6 +78,24 @@ export function formatBackgroundTasksIndicator(
   return `[${running.length} subagents running${queuedSuffix}] ${taskSummaries.join(", ")}`;
 }
 
+/** 后台 shell 作业(dev server / 构建)的活体指示:与子代理分开计数与措辞。 */
+export function formatBackgroundJobsIndicator(
+  tasks: readonly TuiBackgroundTask[],
+  now = Date.now(),
+): string | undefined {
+  const running = tasks.filter((task) => task.kind === "job" && task.status === "running");
+  if (running.length === 0) return undefined;
+  const first = running[0]!;
+  const startTime = Date.parse(first.startedAt);
+  const elapsed = Number.isFinite(startTime) ? formatCompactDuration(Math.max(0, now - startTime)) : undefined;
+  const command = first.name.length > 40 ? `${first.name.slice(0, 39)}…` : first.name;
+  const parts = [
+    running.length === 1 ? `[1 background job: ${command}]` : `[${running.length} background jobs running]`,
+  ];
+  if (elapsed) parts.push(elapsed);
+  return parts.join(" ");
+}
+
 /**
  * Live "working" line rendered above the composer while a task is active.
  * Example: "⠋ Working... 2.4s" or "⠋ Running Bash 1.1s" or "⠋ [Subagent: explore] 8.4s".
@@ -84,7 +103,13 @@ export function formatBackgroundTasksIndicator(
 export function workingIndicatorLine(state: TuiState, tick: number, now = Date.now()): string | undefined {
   const frame = spinnerFrame(tick);
   const bgTasks = state.session.backgroundTasks ?? [];
-  const bgIndicator = formatBackgroundTasksIndicator(bgTasks, now);
+  const indicator = [
+    formatBackgroundTasksIndicator(bgTasks, now),
+    formatBackgroundJobsIndicator(bgTasks, now),
+  ]
+    .filter(Boolean)
+    .join(" · ");
+  const bgIndicator = indicator || undefined;
 
   if (!isSessionBusy(state)) {
     if (bgIndicator) {

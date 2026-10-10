@@ -4,7 +4,8 @@ import { registerWorktreeTools } from "../worktree/tools.js";
 import { resolveWorkspacePath } from "./fs-helpers.js";
 import { registerReadTools } from "./read-tools.js";
 import { registerWriteTools } from "./write-tools.js";
-import { registerCommandTools } from "./command-tools.js";
+import { registerCommandTools, type CommandToolOptions } from "./command-tools.js";
+import { registerWebTools } from "./web-tools.js";
 import { registerBatchTools } from "./batch-tools.js";
 import { registerPlanTools } from "./plan-tools.js";
 import { registerSearchTools } from "./search-tools.js";
@@ -12,7 +13,11 @@ import { registerInteractionTools } from "./interaction-tools.js";
 import type { ToolFactoryContext } from "./registry.js";
 import { ToolRegistry } from "./registry.js";
 
-export function registerBuiltinTools(registry: ToolRegistry, workspace: string): void {
+export function registerBuiltinTools(
+  registry: ToolRegistry,
+  workspace: string,
+  options: CommandToolOptions = {},
+): void {
   const root = resolve(workspace);
   const planRoot = resolve(projectStateRoot(root), "plans");
   const ctx: ToolFactoryContext = {
@@ -26,7 +31,8 @@ export function registerBuiltinTools(registry: ToolRegistry, workspace: string):
   registerPlanTools(registry);
   registerBatchTools(registry);
   registerWriteTools(registry, ctx);
-  registerCommandTools(registry, ctx);
+  registerCommandTools(registry, ctx, options);
+  registerWebTools(registry, ctx);
   registerInteractionTools(registry, ctx);
   registerSearchTools(registry);
   registerWorktreeTools(registry, root);

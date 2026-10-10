@@ -1,6 +1,11 @@
-import { exec, execFile } from "node:child_process";
+import { exec, execFile, spawn } from "node:child_process";
 import { resolvePhysicalPath, isWithinPath } from "../utils/path-containment.js";
 import { resolveWorkspacePath } from "./fs-helpers.js";
+
+/** 单条命令/作业保留的输出上限:超出后固定保留头尾,中段丢弃。 */
+const COMMAND_OUTPUT_LIMIT = 200_000;
+const COMMAND_OUTPUT_HEAD = 96_000;
+const COMMAND_OUTPUT_TAIL = 96_000;
 
 export function killProcessTree(pid: number | undefined): void {
   if (!pid || pid <= 0) return;
@@ -30,6 +35,125 @@ export function formatPreservingTail(output: string, maxChars = 32_000, headChar
   const headLen = Math.min(headChars, Math.floor(available / 3));
   const tailLen = available - headLen;
   return `${output.slice(0, headLen)}${separator}${output.slice(output.length - tailLen)}`;
+}
+
+/** 一次命令执行的结果:非零退出码与信号终止都不是异常,由调用方判定。 */
+export interface CommandOutcome {
+  stdout: string;
+  stderr: string;
+  exitCode: number | null;
+  signal: NodeJS.Signals | null;
+  /** spawn 阶段失败(如工作目录不存在)时的错误。 */
+  spawnError?: string;
+}
+
+/**
+ * 已启动命令的句柄。
+ * 与一次性 `exec` 的差别:**输出全程流式累计、超时不自动杀进程**,
+ * 因此调用方可以在超时后把它晋升为后台作业继续收割。
+ */
+export interface RunningCommand {
+  readonly pid: number | undefined;
+  /** 进程退出(或被杀死)后 resolve。 */
+  readonly exited: Promise<CommandOutcome>;
+  /** 累积输出的当前快照;进程仍在运行时也可以安全调用。 */
+  snapshot(): CommandOutcome;
+  /** 是否已经退出。 */
+  readonly finished: boolean;
+  kill(): void;
+}
+
+/** 输出缓冲:超过上限后保留头尾,中段丢弃并计数,避免长任务吃爆内存。 */
+class OutputCollector {
+  private buffer = "";
+  private head: string | undefined;
+  private tail = "";
+  private dropped = 0;
+
+  append(text: string): void {
+    if (this.head === undefined) {
+      this.buffer += text;
+      if (this.buffer.length > COMMAND_OUTPUT_LIMIT) {
+        this.head = this.buffer.slice(0, COMMAND_OUTPUT_HEAD);
+        this.tail = this.buffer.slice(-COMMAND_OUTPUT_TAIL);
+        this.dropped = Math.max(0, this.buffer.length - this.head.length - this.tail.length);
+        this.buffer = "";
+      }
+      return;
+    }
+    this.dropped += text.length;
+    const combined = this.tail + text;
+    this.tail = combined.length > COMMAND_OUTPUT_TAIL ? combined.slice(-COMMAND_OUTPUT_TAIL) : combined;
+  }
+
+  value(): string {
+    if (this.head === undefined) return this.buffer;
+    return `${this.head}\n...[${this.dropped} characters omitted from the middle of this output]...\n${this.tail}`;
+  }
+}
+
+/**
+ * 启动一条命令并持续累积输出。
+ * POSIX 下使用独立进程组(detached),`killProcessTree` 的 `-pid` 才能真正杀掉整棵树;
+ * Windows 下由 `taskkill /T` 负责树清理,不需要 detached。
+ */
+export function startCommand(command: string, options: { cwd: string; signal?: AbortSignal | undefined }): RunningCommand {
+  const child = spawn(command, {
+    cwd: options.cwd,
+    shell: true,
+    windowsHide: true,
+    detached: process.platform !== "win32",
+    stdio: ["ignore", "pipe", "pipe"],
+  });
+  const stdout = new OutputCollector();
+  const stderr = new OutputCollector();
+  let finished = false;
+  let onAbort: (() => void) | undefined;
+
+  child.stdout?.setEncoding("utf8");
+  child.stdout?.on("data", (chunk: string) => stdout.append(chunk));
+  child.stderr?.setEncoding("utf8");
+  child.stderr?.on("data", (chunk: string) => stderr.append(chunk));
+
+  const pid = child.pid;
+  const kill = (): void => killProcessTree(pid);
+  let settledOutcome: CommandOutcome | undefined;
+  const snapshot = (): CommandOutcome =>
+    settledOutcome ?? { stdout: stdout.value(), stderr: stderr.value(), exitCode: null, signal: null };
+
+  const exited = new Promise<CommandOutcome>((resolvePromise) => {
+    let settled = false;
+    const settle = (outcome: CommandOutcome): void => {
+      if (settled) return;
+      settled = true;
+      finished = true;
+      settledOutcome = outcome;
+      if (onAbort && options.signal) options.signal.removeEventListener("abort", onAbort);
+      resolvePromise(outcome);
+    };
+    child.once("close", (code, signal) => {
+      settle({ stdout: stdout.value(), stderr: stderr.value(), exitCode: code, signal });
+    });
+    child.once("error", (error) => {
+      settle({ stdout: stdout.value(), stderr: stderr.value(), exitCode: null, signal: null, spawnError: error.message });
+    });
+  });
+
+  if (options.signal) {
+    onAbort = (): void => kill();
+    if (options.signal.aborted) kill();
+    else options.signal.addEventListener("abort", onAbort, { once: true });
+  }
+
+  return {
+    pid,
+    exited,
+    snapshot,
+    get finished(): boolean {
+      return finished;
+    },
+    kill,
+  };
 }
 
 export function executeCommandWithProcessTree(

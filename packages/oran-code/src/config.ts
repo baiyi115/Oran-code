@@ -22,6 +22,7 @@ import type {
   SessionTitleSettings,
   SubagentSettings,
   UserConfig,
+  WebSettings,
 } from "./types.js";
 
 const defaultConfig: UserConfig = { providers: {} };
@@ -96,6 +97,7 @@ async function readConfig(path: string): Promise<UserConfig> {
       ...(value.subagent ? { subagent: value.subagent } : {}),
       ...(value.sessionTitles ? { sessionTitles: value.sessionTitles } : {}),
       ...(value.mcpServers ? { mcpServers: value.mcpServers } : {}),
+      ...(value.web ? { web: value.web } : {}),
     };
   } catch (error) {
     if (isMissingFile(error)) return { ...defaultConfig };
@@ -119,6 +121,8 @@ function normalizeConfig(value: unknown): UserConfig {
   if (sessionTitles) result.sessionTitles = sessionTitles;
   const mcpServers = normalizeMcpServers(item.mcpServers);
   if (mcpServers) result.mcpServers = mcpServers;
+  const web = normalizeWebSettings(item.web);
+  if (web) result.web = web;
 
   // Read the pre-0.1 top-level settings so an existing installation remains usable.
   // Legacy top-level model/default fields stay ignored; the current preference lives at agent.lastModel.
@@ -165,6 +169,41 @@ function normalizeSubagentSettings(value: unknown): SubagentSettings | undefined
     throw new Error("subagent.forkWaitTimeoutMs must be a finite non-negative number");
   }
   return forkWaitTimeoutMs === undefined ? {} : { forkWaitTimeoutMs };
+}
+
+/** 联网工具设置:只做形状校验,端点合法性在工具调用时判定。 */
+function normalizeWebSettings(value: unknown): WebSettings | undefined {
+  if (value === undefined) return undefined;
+  if (!value || typeof value !== "object" || Array.isArray(value)) {
+    throw new Error("web must be an object");
+  }
+  const item = value as Record<string, unknown>;
+  const provider = item.searchProvider;
+  const searchProviders = ["tavily", "searxng", "brave", "google"] as const;
+  if (provider !== undefined && !searchProviders.includes(provider as (typeof searchProviders)[number])) {
+    throw new Error("invalid web.searchProvider; use tavily, searxng, brave, or google");
+  }
+  const fetchMaxChars = numberOrUndefined(item.fetchMaxChars ?? item.fetch_max_chars);
+  if (fetchMaxChars !== undefined && fetchMaxChars <= 0) {
+    throw new Error("web.fetchMaxChars must be a positive number");
+  }
+  return {
+    ...(item.enabled !== undefined ? { enabled: item.enabled === true } : {}),
+    ...(provider !== undefined ? { searchProvider: provider as "tavily" | "searxng" | "brave" | "google" } : {}),
+    ...(stringOrUndefined(item.searchEndpoint ?? item.search_endpoint)
+      ? { searchEndpoint: stringOrUndefined(item.searchEndpoint ?? item.search_endpoint)! }
+      : {}),
+    ...(stringOrUndefined(item.searchApiKey ?? item.search_api_key)
+      ? { searchApiKey: stringOrUndefined(item.searchApiKey ?? item.search_api_key)! }
+      : {}),
+    ...(stringOrUndefined(item.searchEngineId ?? item.search_engine_id)
+      ? { searchEngineId: stringOrUndefined(item.searchEngineId ?? item.search_engine_id)! }
+      : {}),
+    ...(fetchMaxChars !== undefined ? { fetchMaxChars } : {}),
+    ...(item.allowPrivateHosts !== undefined || item.allow_private_hosts !== undefined
+      ? { allowPrivateHosts: (item.allowPrivateHosts ?? item.allow_private_hosts) === true }
+      : {}),
+  };
 }
 
 function normalizeSessionTitleSettings(value: unknown): SessionTitleSettings | undefined {
@@ -333,6 +372,8 @@ function normalizeOptions(value: unknown): ProviderOptions & ModelOptions {
         "agent",
         "sessionTitles",
         "mcpServers",
+        "hooks",
+        "web",
         "workspace",
         "default",
         "model",
@@ -402,6 +443,7 @@ function merge(base: UserConfig, override: UserConfig): UserConfig {
       ? { sessionTitles: { ...base.sessionTitles, ...override.sessionTitles } }
       : {}),
     ...(base.mcpServers || override.mcpServers ? { mcpServers: { ...base.mcpServers, ...override.mcpServers } } : {}),
+    ...(base.web || override.web ? { web: { ...base.web, ...override.web } } : {}),
   };
 }
 
@@ -469,6 +511,7 @@ function toFileShape(config: UserConfig): Record<string, unknown> {
     ...(config.subagent ? { subagent: config.subagent } : {}),
     ...(config.sessionTitles ? { sessionTitles: config.sessionTitles } : {}),
     ...(config.mcpServers ? { mcpServers: config.mcpServers } : {}),
+    ...(config.web ? { web: config.web } : {}),
   };
 }
 
