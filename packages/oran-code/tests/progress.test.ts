@@ -14,7 +14,7 @@ import { computeSignals } from "../src/progress/signals.js";
 import { INITIAL_NOVELTY_STATE, updateNovelty } from "../src/progress/novelty.js";
 import { judgeConvergence, parseRehearsal, type RehearsalData } from "../src/progress/rehearsal.js";
 import { isExplorationTask } from "../src/progress/phase.js";
-import { EMPTY_PROGRESS_STATE, ProgressStateStore } from "../src/progress/store.js";
+import { EMPTY_PROGRESS_STATE, ProgressStateStore, selectRunState } from "../src/progress/store.js";
 import type { ProgressSignal } from "../src/progress/signals.js";
 import type { ToolCall, ToolResult } from "../src/types.js";
 
@@ -42,6 +42,36 @@ describe("progress capture", () => {
       { call: call("run_command", { command: "pytest -q" }), result: result("5 failed, 40 passed in 1.2s") },
     ]);
     expect(pytest).toMatchObject({ testsPassed: 40, testsTotal: 45 });
+  });
+
+  it("reads the test counts, not the file counts, when a reporter prints both", () => {
+    // vitest and jest print a file/suite summary first. Its numbers are not test
+    // counts, and comparing them across two runs of the same command made an
+    // ordinary test-file refactor look like a regression: two hard signals and a
+    // paused task, with every test still passing.
+    const vitest = extractEvidence([
+      {
+        call: call("run_command", { command: "pnpm test" }),
+        result: result(" Test Files  1 failed | 2 passed (3)\n      Tests  3 failed | 40 passed (43)\n"),
+      },
+    ]);
+    expect(vitest).toMatchObject({ testsPassed: 40, testsTotal: 43 });
+
+    const vitestClean = extractEvidence([
+      {
+        call: call("run_command", { command: "pnpm test" }),
+        result: result(" Test Files  4 passed (4)\n      Tests  40 passed (40)\n"),
+      },
+    ]);
+    expect(vitestClean).toMatchObject({ testsPassed: 40, testsTotal: 40 });
+
+    const jest = extractEvidence([
+      {
+        call: call("run_command", { command: "npx jest" }),
+        result: result("Test Suites: 1 failed, 4 passed, 5 total\nTests:       1 failed, 40 passed, 41 total\n"),
+      },
+    ]);
+    expect(jest).toMatchObject({ testsPassed: 40, testsTotal: 41 });
   });
 
   it("marks typecheck failures from tsc output", () => {
@@ -428,5 +458,49 @@ describe("ProgressStateStore", () => {
     } finally {
       await rm(dir, { recursive: true, force: true });
     }
+  });
+});
+
+describe("run state selection", () => {
+  const disarmed = {
+    ...EMPTY_PROGRESS_STATE,
+    goalFingerprint: "goal",
+    allowedPaths: ["src/a.ts"],
+    exploreBudget: 8,
+    implementBudget: 8,
+    enforcement: "off" as const,
+  };
+
+  it("disarms only the run /resume started", () => {
+    const resumed = selectRunState(disarmed, "goal", { resumed: true });
+    expect(resumed.origin).toBe("resumed");
+    expect(resumed.state.enforcement).toBe("off");
+
+    // The resumed attempt was cancelled, failed, or the process died: nothing
+    // writes a stop in those cases, so the next run of the same prompt used to
+    // take this branch too and stay disarmed with nothing said.
+    const interrupted = selectRunState(disarmed, "goal", { resumed: false });
+    expect(interrupted.origin).toBe("interrupted");
+    expect(interrupted.state.enforcement).toBeUndefined();
+    // The window is still replayed; only the disarm is dropped.
+    expect(interrupted.state.allowedPaths).toEqual(["src/a.ts"]);
+  });
+
+  it("starts clean once the previous run of the goal ended", () => {
+    const ended = selectRunState(
+      { ...disarmed, stop: { kind: "blocked", turn: 3, ts: "2026-09-29T00:00:00.000Z" } },
+      "goal",
+      { resumed: false },
+    );
+    expect(ended.origin).toBe("previous-run-ended");
+    expect(ended.state.enforcement).toBeUndefined();
+    expect(ended.state.allowedPaths).toEqual([]);
+  });
+
+  it("starts clean for a different goal", () => {
+    const other = selectRunState(disarmed, "another-goal", { resumed: false });
+    expect(other.origin).toBe("new-goal");
+    expect(other.state.goalFingerprint).toBe("another-goal");
+    expect(other.state.enforcement).toBeUndefined();
   });
 });

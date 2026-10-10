@@ -89,6 +89,35 @@ export function freshRunState(previous: PersistedProgressState, goalFingerprint:
   };
 }
 
+export type RunStateOrigin = "new-goal" | "resumed" | "previous-run-ended" | "interrupted";
+
+/**
+ * Which persisted state a run starts from, and why.
+ *
+ * `resumed` is set when /resume handed this run the paused attempt's identity.
+ * The interrupted case replays the previous window, but it must not inherit
+ * `enforcement: "off"`: that disarm belongs to the resumed attempt, which is
+ * over. A cancelled or failed run writes no stop, so the next run of the same
+ * prompt took this branch and stayed disarmed, silently.
+ */
+export function selectRunState(
+  persisted: PersistedProgressState,
+  goalFingerprint: string,
+  options: { resumed: boolean },
+): { state: PersistedProgressState; origin: RunStateOrigin } {
+  if (persisted.goalFingerprint !== goalFingerprint) {
+    return { state: freshRunState(persisted, goalFingerprint), origin: "new-goal" };
+  }
+  if (options.resumed) {
+    return { state: resumedRunState(persisted, goalFingerprint), origin: "resumed" };
+  }
+  if (persisted.stop !== undefined) {
+    return { state: freshRunState(persisted, goalFingerprint), origin: "previous-run-ended" };
+  }
+  const { enforcement: _disarmOfTheAttemptThatEnded, ...interrupted } = persisted;
+  return { state: interrupted, origin: "interrupted" };
+}
+
 /**
  * Adopt a paused run (/resume): keep what the task already learned about the
  * repository, restart the counters that tripped the gate, and leave the gate

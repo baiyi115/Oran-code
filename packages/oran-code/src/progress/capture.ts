@@ -70,14 +70,36 @@ export function declaredWritePaths(call: ToolCall, workspace: string): string[] 
   return [rel || raw];
 }
 
-const TESTS_PASSED_PATTERNS: RegExp[] = [
-  /Tests?:?\s+\d+\s+failed,\s+(\d+)\s+passed/i, // jest: Tests: 1 failed, 4 passed
-  /\b(\d+)\s+failed\s*\|[^|]*\b(\d+)\s+passed/i, // vitest: 3 failed | 40 passed
-  /(\d+)\s+failed,\s*(\d+)\s+passed/i, // pytest: 5 failed, 40 passed
-  /\b(\d+)\s+passing/i, // mocha: 40 passing
-  /\b(\d+)\s+passed/i, // generic fallback
-];
+/**
+ * The summary line that counts *tests*.
+ *
+ * vitest and jest print a "Test Files"/"Test Suites" line first, and reading its
+ * numbers as test counts turned a file-count change (splitting or merging test
+ * files — an ordinary refactor) into a test regression: two `hard` signals, and
+ * the task paused while every test still passed. The label is part of the match,
+ * and the same line supplies the total, so the two numbers always describe the
+ * same set.
+ *
+ * Reporters without a label (pytest, mocha) fall back to the whole output.
+ */
+const TESTS_SUMMARY_LINE = /^[ \t]*Tests:?[ \t]+(.*)$/im;
+const TESTS_FILE_SUMMARY_LINE = /^[ \t]*Test (?:Files|Suites)[ \t].*$/gim;
 const TESTS_TOTAL_PATTERN = /(\d+)\s+total\b/i;
+
+function readTestCounts(output: string): { passed?: number; failed?: number; source: string } {
+  const labelled = TESTS_SUMMARY_LINE.exec(output)?.[1];
+  // Reporters without a "Tests" line: drop the file/suite summary lines first, so
+  // their counts cannot be read as test counts either.
+  const source = labelled ?? output.replace(TESTS_FILE_SUMMARY_LINE, "");
+  const passed = /(\d+)\s+(?:passed|passing)/i.exec(source)?.[1];
+  const failed = /(\d+)\s+failed/i.exec(source)?.[1];
+  return {
+    ...(passed !== undefined ? { passed: Number(passed) } : {}),
+    ...(failed !== undefined ? { failed: Number(failed) } : {}),
+    source,
+  };
+}
+
 const TYPECHECK_FAILURE_PATTERN = /\berror\s+TS\d+/i;
 const TYPECHECK_COMMAND_PATTERN = /\b(tsc|vue-tsc|typecheck|tsgo)\b/i;
 const BUILD_COMMAND_PATTERN = /\b(build|compile)\b/i;
@@ -103,26 +125,18 @@ export function extractEvidence(
     if (BUILD_COMMAND_PATTERN.test(command)) {
       evidence.buildOk = result.ok;
     }
-    let passed: number | undefined;
-    for (const pattern of TESTS_PASSED_PATTERNS) {
-      const match = pattern.exec(output);
-      if (!match) continue;
-      // vitest/pytest forms carry the passed count in the second group;
-      // jest/mocha forms only have one.
-      passed = Number(match[2] ?? match[1]);
-      break;
-    }
-    if (passed !== undefined && Number.isFinite(passed)) {
-      evidence.testsPassed = passed;
+    const counts = readTestCounts(output);
+    if (counts.passed !== undefined && Number.isFinite(counts.passed)) {
+      evidence.testsPassed = counts.passed;
       evidence.commandSig = toolCallSignature(call);
-      const totalMatch = TESTS_TOTAL_PATTERN.exec(output);
-      if (totalMatch) {
-        evidence.testsTotal = Number(totalMatch[1]);
-      } else {
-        // Summaries without a total: total = passed + failed.
-        const failedMatch = /(\d+)\s+failed/i.exec(output);
-        evidence.testsTotal = failedMatch ? passed + Number(failedMatch[1]) : passed;
-      }
+      const total = TESTS_TOTAL_PATTERN.exec(counts.source)?.[1];
+      // Summaries without a total: total = passed + failed, both from the same line.
+      evidence.testsTotal =
+        total !== undefined
+          ? Number(total)
+          : counts.failed !== undefined
+            ? counts.passed + counts.failed
+            : counts.passed;
     }
   }
   return Object.keys(evidence).length ? evidence : undefined;

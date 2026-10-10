@@ -57,14 +57,7 @@ import { updateNovelty } from "./progress/novelty.js";
 import { judgeConvergence, parseRehearsal, rehearsalRequestNotice } from "./progress/rehearsal.js";
 import { signalToNotice, computeSignals, type ProgressSignal } from "./progress/signals.js";
 import { readCachedGraph } from "./graph/store.js";
-import {
-  freshRunState,
-  resumedRunState,
-  type PersistedProgressState,
-  type ProgressStopKind,
-  MAX_SNAPSHOTS,
-  ProgressStateStore,
-} from "./progress/store.js";
+import { selectRunState, type ProgressStopKind, MAX_SNAPSHOTS, ProgressStateStore } from "./progress/store.js";
 
 /** Stable identity of one signal firing, used to inject each warn notice once. */
 function signalKey(signal: ProgressSignal): string {
@@ -905,35 +898,23 @@ export class TaskController {
         implementBudget: persisted.implementBudget > 0 ? persisted.implementBudget : DEFAULT_IMPLEMENT_BUDGET,
       };
       const resumed = this.resumedGoalFingerprint !== undefined;
-      let state: PersistedProgressState;
-      if (persisted.goalFingerprint !== fingerprint) {
-        state = freshRunState(persisted, fingerprint);
-      } else if (resumed) {
-        state = resumedRunState(persisted, fingerprint);
-      } else if (persisted.stop !== undefined) {
-        // The previous run of this goal already ended. Its window describes
-        // finished work: replaying its warnings into this run was pure noise,
-        // and its phase counters described a task that is over.
-        state = freshRunState(persisted, fingerprint);
-      } else {
+      const { state, origin } = selectRunState(persisted, fingerprint, { resumed });
+      if (origin === "interrupted" && this.progressRecoveryFor !== fingerprint) {
         // Interrupted run — the process died, or the user re-ran the same prompt
         // while it was still in flight. Replay the window's warn-and-above
         // signals once so the model re-learns what went wrong.
-        state = persisted;
-        if (this.progressRecoveryFor !== fingerprint) {
-          this.progressRecoveryFor = fingerprint;
-          for (const signal of computeSignals({
-            snapshots: state.snapshots,
-            phase: state.phase ?? INITIAL_PHASE_STATE,
-            allowedPaths: state.allowedPaths,
-            budgets,
-          })) {
-            this.notifiedProgressSignals.add(signalKey(signal));
-            // Seeded as active so the replayed warning is not immediately
-            // injected a second time by the rising-edge rule below.
-            this.activeLevelSignals.add(signal.kind);
-            if (signal.severity !== "info") this.pendingProgressNotices.push(signalToNotice(signal));
-          }
+        this.progressRecoveryFor = fingerprint;
+        for (const signal of computeSignals({
+          snapshots: state.snapshots,
+          phase: state.phase ?? INITIAL_PHASE_STATE,
+          allowedPaths: state.allowedPaths,
+          budgets,
+        })) {
+          this.notifiedProgressSignals.add(signalKey(signal));
+          // Seeded as active so the replayed warning is not immediately
+          // injected a second time by the rising-edge rule below.
+          this.activeLevelSignals.add(signal.kind);
+          if (signal.severity !== "info") this.pendingProgressNotices.push(signalToNotice(signal));
         }
       }
       const disarmed = state.enforcement === "off";
