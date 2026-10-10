@@ -2,6 +2,8 @@ import { exec } from "node:child_process";
 import { promisify } from "node:util";
 import { commandHelp, type CommandRegistry, type SlashCommand } from "./commands.js";
 import { parseSlashCommand } from "./commands.js";
+import { ensureGraph, graphIndexPath } from "./graph/store.js";
+import { graphSummary } from "./graph/summary.js";
 import type { PermissionMode } from "./types.js";
 import type { SessionRenderer } from "./renderer.js";
 import type { SessionView } from "./tui/types.js";
@@ -281,6 +283,16 @@ export class SessionCommandRouter {
           }
         }
         return lines.join("\n");
+      }
+      case "/graph": {
+        if (argument) return "Usage: /graph";
+        try {
+          const handle = await ensureGraph(this.ctx.workspace);
+          const how = handle.cached ? "cache hit" : handle.incremental ? "incremental rebuild" : "full rebuild";
+          return `${graphSummary(handle.index)}\nIndex file: ${graphIndexPath(this.ctx.workspace)} (${how})`;
+        } catch (error) {
+          return `Could not build the dependency graph: ${error instanceof Error ? error.message : String(error)}`;
+        }
       }
       case "/mcp": {
         const mcp = await this.ctx.mcpStatus();

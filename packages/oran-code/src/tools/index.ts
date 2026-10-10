@@ -10,6 +10,7 @@ import { registerBatchTools } from "./batch-tools.js";
 import { registerPlanTools } from "./plan-tools.js";
 import { registerSearchTools } from "./search-tools.js";
 import { registerInteractionTools } from "./interaction-tools.js";
+import { registerGraphTools } from "../graph/tools.js";
 import type { ToolFactoryContext } from "./registry.js";
 import { ToolRegistry } from "./registry.js";
 
@@ -36,6 +37,7 @@ export function registerBuiltinTools(
   registerInteractionTools(registry, ctx);
   registerSearchTools(registry);
   registerWorktreeTools(registry, root);
+  registerGraphTools(registry, ctx);
 }
 
 export { ToolRegistry };

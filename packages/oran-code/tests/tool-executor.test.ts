@@ -187,7 +187,7 @@ describe("ToolBatchExecutor batching", () => {
 
     const summary = await executor.runTools(task, messages, [call("slow_a"), call("fast_b")], loopStub);
 
-    expect(summary).toEqual({ workspaceMutated: false, readonlyOnly: true });
+    expect(summary).toEqual({ workspaceMutated: false, readonlyOnly: true, mutatedCallIds: [] });
     const endA = execLog.find((entry) => entry.name === "slow_a" && entry.event === "end")!;
     const startB = execLog.find((entry) => entry.name === "fast_b" && entry.event === "start")!;
     expect(startB.at).toBeLessThan(endA.at);
@@ -538,7 +538,7 @@ describe("ToolBatchExecutor batch_tools scripts", () => {
       loopStub,
     );
 
-    expect(summary).toEqual({ workspaceMutated: false, readonlyOnly: false });
+    expect(summary).toEqual({ workspaceMutated: false, readonlyOnly: false, mutatedCallIds: [] });
     expect(seen).toEqual([{ target: { path: "src/a.ts" }, note: 'got-{"path":"src/a.ts"}' }]);
 
     // 折叠成一条 tool 消息,保持 assistant/toolCalls 配对不变式。

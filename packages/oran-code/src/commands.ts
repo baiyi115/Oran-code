@@ -33,6 +33,7 @@ export const DEFAULT_COMMANDS: readonly SlashCommand[] = [
   { name: "/compact", description: "compact conversation context", kind: "ui", action: "compact" },
   { name: "/connect", description: "manage model providers (add / edit / remove)", kind: "ui", action: "connect" },
   { name: "/exit", aliases: ["/quit"], description: "exit the session", kind: "ui", action: "exit" },
+  { name: "/graph", description: "build the code dependency graph and show its summary", kind: "local" },
   { name: "/help", description: "show available slash commands", kind: "local" },
   { name: "/memory", description: "show loaded long-term memory", kind: "local" },
   { name: "/mcp", description: "show connected extension servers", kind: "local", hidden: true },

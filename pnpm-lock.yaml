@@ -35,6 +35,12 @@ importers:
       react:
         specifier: ^18.3.1
         version: 18.3.1
+      tree-sitter-wasms:
+        specifier: 0.1.13
+        version: 0.1.13
+      web-tree-sitter:
+        specifier: 0.25.10
+        version: 0.25.10
       yaml:
         specifier: ^2.9.0
         version: 2.9.0
@@ -1354,6 +1360,9 @@ packages:
     resolution: {integrity: sha512-n1cw8k1k0x4pgA2+9XrOkFydTerNcJ1zWCO5Nn9scWHTD+5tp8dghT2x1uduQePZTZgd3Tupf+x9BxJjeJi77Q==}
     engines: {node: '>=14.0.0'}
 
+  tree-sitter-wasms@0.1.13:
+    resolution: {integrity: sha512-wT+cR6DwaIz80/vho3AvSF0N4txuNx/5bcRKoXouOfClpxh/qqrF4URNLQXbbt8MaAxeksZcZd1j8gcGjc+QxQ==}
+
   ts-api-utils@2.5.0:
     resolution: {integrity: sha512-OJ/ibxhPlqrMM0UiNHJ/0CKQkoKF243/AEmplt3qpRgkW8VG7IfOS41h7V8TjITqdByHzrjcS/2si+y4lIh8NA==}
     engines: {node: '>=18.12'}
@@ -1450,6 +1459,14 @@ packages:
       happy-dom:
         optional: true
       jsdom:
+        optional: true
+
+  web-tree-sitter@0.25.10:
+    resolution: {integrity: sha512-Y09sF44/13XvgVKgO2cNDw5rGk6s26MgoZPXLESvMXeefBf7i6/73eFurre0IsTW6E14Y0ArIzhUMmjoc7xyzA==}
+    peerDependencies:
+      '@types/emscripten': ^1.40.0
+    peerDependenciesMeta:
+      '@types/emscripten':
         optional: true
 
   which@2.0.2:
@@ -2660,6 +2677,8 @@ snapshots:
 
   tinyspy@3.0.2: {}
 
+  tree-sitter-wasms@0.1.13: {}
+
   ts-api-utils@2.5.0(typescript@5.9.3):
     dependencies:
       typescript: 5.9.3
@@ -2756,6 +2775,8 @@ snapshots:
       - sugarss
       - supports-color
       - terser
+
+  web-tree-sitter@0.25.10: {}
 
   which@2.0.2:
     dependencies:
