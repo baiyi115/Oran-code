@@ -5,6 +5,9 @@ import { join } from "node:path";
 import { captureTurnSnapshot, extractEvidence, goalFingerprint, type ProgressEvidence, type TurnSnapshot } from "../src/progress/capture.js";
 import { DEFAULT_EXPLORE_BUDGET, INITIAL_PHASE_STATE, updatePhase, type PhaseState } from "../src/progress/phase.js";
 import { computeSignals } from "../src/progress/signals.js";
+import { INITIAL_NOVELTY_STATE, updateNovelty } from "../src/progress/novelty.js";
+import { judgeConvergence, parseRehearsal, type RehearsalData } from "../src/progress/rehearsal.js";
+import { isExplorationTask } from "../src/progress/phase.js";
 import { EMPTY_PROGRESS_STATE, ProgressStateStore } from "../src/progress/store.js";
 import type { ProgressSignal } from "../src/progress/signals.js";
 import type { ToolCall, ToolResult } from "../src/types.js";
@@ -147,12 +150,19 @@ describe("phase machine", () => {
     const read2 = updatePhase(read1.state, readSnapshot(3, 1), budgets);
     expect(read2.state.phase).toBe("explore");
     expect(read2.state.egressCount).toBe(1);
+    // First retreat is informational only (assertion: signal fires on the second).
     expect(read2.signals).toHaveLength(1);
-    expect(read2.signals[0]).toMatchObject({ kind: "phase_egress", severity: "warn" });
+    expect(read2.signals[0]).toMatchObject({ kind: "phase_egress", severity: "info" });
 
     // A retreat after mutation re-enters implement normally.
     const again = updatePhase(read2.state, mutatedSnapshot(4), budgets);
     expect(again.state.phase).toBe("implement");
+
+    // Second retreat escalates to warn.
+    const read3 = updatePhase(again.state, readSnapshot(5, 1), budgets);
+    const read4 = updatePhase(read3.state, readSnapshot(6, 1), budgets);
+    expect(read4.state.egressCount).toBe(2);
+    expect(read4.signals).toContainEqual(expect.objectContaining({ kind: "phase_egress", severity: "warn" }));
   });
 });
 
@@ -246,6 +256,82 @@ describe("computeSignals", () => {
       ...base,
     });
     expect(none).toHaveLength(0);
+  });
+});
+
+describe("symbol novelty (mechanism B1)", () => {
+  it("fires low_symbol_novelty after five consecutive turns of reading nothing new", () => {
+    let state = INITIAL_NOVELTY_STATE;
+    let signal = undefined;
+    // Turn one legitimately learns the symbol; the next five add nothing.
+    for (let turn = 0; turn < 6; turn += 1) {
+      const result = updateNovelty(state, [{ file: `f${turn}.ts`, text: "export function helper() {}" }]);
+      state = result.state;
+      signal = result.signal;
+    }
+    expect(state.lowRun).toBe(5);
+    expect(signal).toMatchObject({ kind: "low_symbol_novelty", severity: "warn" });
+  });
+
+  it("does not fire while every turn keeps introducing new symbols", () => {
+    let state = INITIAL_NOVELTY_STATE;
+    let signal = undefined;
+    for (let turn = 0; turn < 8; turn += 1) {
+      const result = updateNovelty(state, [{ file: `f${turn}.ts`, text: `export function fresh${turn}() {}` }]);
+      state = result.state;
+      signal = result.signal;
+    }
+    expect(signal).toBeUndefined();
+  });
+
+  it("prefers graph symbols and records the source", () => {
+    const result = updateNovelty(INITIAL_NOVELTY_STATE, [
+      { file: "a.ts", graphSymbols: ["alpha", "beta"], text: "class IgnoreRegex {}" },
+    ]);
+    expect(result.state.source).toBe("graph");
+    // Regex text is ignored when graph symbols exist.
+    expect(result.state.known).toEqual(["alpha", "beta"]);
+  });
+});
+
+describe("structured rehearsal (mechanism B2)", () => {
+  const baseline: RehearsalData = {
+    hypothesis: "auth token",
+    excluded: ["user.ts"],
+    candidateSet: ["auth/token.ts", "auth/middleware.ts"],
+    nextCheck: "read token.ts",
+  };
+
+  it("accepts a shrinking candidate set as converged", () => {
+    const next: RehearsalData = { ...baseline, candidateSet: ["auth/token.ts"] };
+    expect(judgeConvergence(baseline, next)).toBe("converged");
+  });
+
+  it("accepts a strictly growing exclusion list as converged", () => {
+    const next: RehearsalData = { ...baseline, excluded: ["user.ts", "session.ts"] };
+    expect(judgeConvergence(baseline, next)).toBe("converged");
+  });
+
+  it("judges a same-sized candidate swap as diverged, even with new content", () => {
+    const next: RehearsalData = { ...baseline, candidateSet: ["auth/refresh.ts", "auth/store.ts"] };
+    expect(judgeConvergence(baseline, next)).toBe("diverged");
+  });
+
+  it("treats an unparseable reply as no rehearsal at all (divergence)", () => {
+    expect(parseRehearsal("I think the problem is somewhere in auth.")).toBeUndefined();
+  });
+
+  it("parses a fenced JSON rehearsal", () => {
+    const reply = 'Here is my status:\n```json\n{"hypothesis":"h","excluded":["a"],"candidateSet":["b"],"nextCheck":"c"}\n```';
+    expect(parseRehearsal(reply)).toMatchObject({ hypothesis: "h", candidateSet: ["b"] });
+  });
+});
+
+describe("exploration declaration", () => {
+  it("recognizes explicit exploration wording", () => {
+    expect(isExplorationTask("调研这个模块的架构")).toBe(true);
+    expect(isExplorationTask("Research why the build fails")).toBe(true);
+    expect(isExplorationTask("Fix the bug in auth/login.ts")).toBe(false);
   });
 });
 

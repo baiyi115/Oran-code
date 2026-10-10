@@ -46,8 +46,11 @@ import { PRODUCT_VERSION } from "./paths.js";
 import { isPlanModeTool, type ToolRegistry } from "./tools.js";
 import type { SnapshotStorePort } from "./snapshot.js";
 import { captureTurnSnapshot, goalFingerprint } from "./progress/capture.js";
-import { DEFAULT_EXPLORE_BUDGET, DEFAULT_IMPLEMENT_BUDGET, INITIAL_PHASE_STATE, updatePhase } from "./progress/phase.js";
+import { DEFAULT_EXPLORE_BUDGET, DEFAULT_IMPLEMENT_BUDGET, INITIAL_PHASE_STATE, isExplorationTask, updatePhase } from "./progress/phase.js";
+import { updateNovelty } from "./progress/novelty.js";
+import { judgeConvergence, parseRehearsal, rehearsalRequestNotice } from "./progress/rehearsal.js";
 import { signalToNotice, computeSignals, type ProgressSignal } from "./progress/signals.js";
+import { readCachedGraph } from "./graph/store.js";
 import {
   EMPTY_PROGRESS_STATE,
   type PersistedProgressState,
@@ -463,6 +466,13 @@ export class TaskController {
         const response = request.response;
         messages.push(assistantMessage(response));
         this.syncConversation(messages);
+        // A pending structured rehearsal is judged on this reply before any
+        // tool of the turn executes; divergence twice in a row pauses.
+        const rehearsalPause = await this.consumeRehearsal(task, response.text);
+        if (rehearsalPause) {
+          await this.pauseForNoProgress(task, rehearsalPause);
+          return task;
+        }
         if (this.abortController?.signal.aborted) {
           // Partial assistant already synced; if there are tool calls, pair them with cancelled results.
           if (response.toolCalls.length) {
@@ -891,6 +901,58 @@ export class TaskController {
         previous: state.snapshots.at(-1),
       });
       const phaseResult = updatePhase(state.phase, snapshot, budgets);
+      // Mechanism B2: once the exploration budget is exhausted, require a
+      // structured rehearsal instead of stopping. Exploration-declared tasks
+      // skip mechanism B entirely.
+      let rehearsal = state.rehearsal;
+      if (
+        phaseResult.state.phase === "explore" &&
+        phaseResult.state.readonlyFilesRead > budgets.exploreBudget &&
+        !isExplorationTask(task.prompt) &&
+        !rehearsal
+      ) {
+        this.pendingProgressNotices.push(rehearsalRequestNotice(true));
+        rehearsal = { phase: "requested", requestedTurn: snapshot.turn };
+      }
+
+      // Mechanism B1: symbol novelty over this turn's successful reads.
+      let novelty = state.novelty;
+      if (phaseResult.state.phase === "explore") {
+        const reads = executed
+          .filter((item) => item.call.name === "read_file" && item.result.ok)
+          .map((item) => {
+            const rawPath = item.call.arguments.path;
+            const file = typeof rawPath === "string" ? rawPath.replaceAll("\\", "/").replace(/^\.\//, "") : "";
+            return { file, text: item.result.output ?? "" };
+          })
+          .filter((read) => read.file !== "");
+        if (reads.length > 0) {
+          const graph = await readCachedGraph(task.workspace).catch(() => undefined);
+          const graphSymbolsByFile = new Map<string, string[]>();
+          for (const symbol of graph?.symbols ?? []) {
+            const bucket = graphSymbolsByFile.get(symbol.file);
+            if (bucket) bucket.push(symbol.name);
+            else graphSymbolsByFile.set(symbol.file, [symbol.name]);
+          }
+          const noveltyReads = reads.map((read) => ({
+            file: read.file,
+            graphSymbols: graphSymbolsByFile.get(read.file.replace(/^\//, "")),
+            text: read.text,
+          }));
+          const noveltyResult = updateNovelty(state.novelty, noveltyReads);
+          novelty = noveltyResult.state;
+          if (noveltyResult.signal) {
+            const signal = { ...noveltyResult.signal, sinceTurn: snapshot.turn };
+            this.debugLogger(JSON.stringify({ event: "progress_signal", ...signal }));
+            const key = signalKey(signal);
+            if (!this.notifiedProgressSignals.has(key)) {
+              this.notifiedProgressSignals.add(key);
+              this.pendingProgressNotices.push(signalToNotice(signal));
+            }
+          }
+        }
+      }
+
       const allowedPaths =
         state.allowedPaths.length > 0
           ? state.allowedPaths
@@ -920,6 +982,8 @@ export class TaskController {
       store.scheduleSave({
         ...state,
         phase: phaseResult.state,
+        novelty,
+        rehearsal,
         allowedPaths,
         updatedAt: new Date().toISOString(),
         snapshots,
@@ -931,9 +995,64 @@ export class TaskController {
     }
   }
 
-  /** Record how a task ended, for the next run of the same goal. */
-  private async recordProgressStop(task: Task, kind: ProgressStopKind): Promise<void> {
+  /**
+   * Judge a pending structured rehearsal against the model's latest reply.
+   * Convergence resets the exploration counter; a second divergence returns
+   * a synthesized pause diagnostic for the caller.
+   */
+  private async consumeRehearsal(task: Task, reply: string): Promise<NoProgressDiagnostic | undefined> {
     try {
+      const store = this.progressStoreFor(task.workspace);
+      const state = await store.load();
+      const rehearsal = state.rehearsal;
+      if (!rehearsal || state.goalFingerprint !== goalFingerprint(task.prompt)) return undefined;
+
+      const parsed = parseRehearsal(reply);
+      if (parsed && judgeConvergence(rehearsal.last, parsed) === "converged") {
+        const phase = state.phase ? { ...state.phase, readonlyFilesRead: 0 } : state.phase;
+        await store.save({
+          ...state,
+          phase,
+          rehearsal: undefined,
+          updatedAt: new Date().toISOString(),
+        });
+        this.pendingProgressNotices.push(
+          "Rehearsal accepted: the exploration state converged. Proceed with your stated next check.",
+        );
+        return undefined;
+      }
+
+      if (rehearsal.phase === "requested") {
+        await store.save({
+          ...state,
+          rehearsal: { phase: "reflected", requestedTurn: rehearsal.requestedTurn, last: parsed },
+          updatedAt: new Date().toISOString(),
+        });
+        this.pendingProgressNotices.push(rehearsalRequestNotice(false));
+        return undefined;
+      }
+
+      // Already had its second chance and still did not converge.
+      await store.save({ ...state, rehearsal: undefined, updatedAt: new Date().toISOString() });
+      return {
+        call:
+          this.loop?.toolCalls.at(-1) ??
+          { name: "progress_signal", arguments: {}, createdAt: new Date().toISOString() },
+        repeatCount: 1,
+        limit: 1,
+        reason: "progress_signal",
+        stage: "pause",
+        detail: parsed
+          ? "rehearsal_diverged: the candidate set did not shrink and the exclusion list did not grow"
+          : "rehearsal_diverged: the reply was not a parseable rehearsal JSON",
+      };
+    } catch {
+      return undefined;
+    }
+  }
+
+  /** Record how a task ended, for the next run of the same goal. */
+  private async recordProgressStop(task: Task, kind: ProgressStopKind): Promise<void> {    try {
       const store = this.progressStoreFor(task.workspace);
       const state = await store.load();
       const fingerprint = goalFingerprint(task.prompt);

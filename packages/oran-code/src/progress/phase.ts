@@ -86,11 +86,25 @@ export function updatePhase(
   state.phase = "explore";
   state.consecutiveReadTurns = 0;
   state.egressCount += 1;
+  // The first retreat is informational; from the second on it is the warn
+  // signal the gate layer injects.
   signals.push({
     kind: "phase_egress",
-    severity: "warn",
+    severity: state.egressCount >= 2 ? "warn" : "info",
     detail: `${state.egressCount} time(s), back at turn ${snapshot.turn}`,
     sinceTurn: snapshot.turn,
   });
   return { state, signals };
+}
+
+/**
+ * Explicitly exploration-shaped tasks ("research this module") widen the
+ * mechanism-B criteria; the declaration is an artifact of the prompt, not an
+ * automatic classification.
+ */
+const EXPLORATION_MARKERS =
+  /调研|研究|调查|梳理|\b(?:understand|investigate|research|explor\w*|survey|read[- ]?through)\b/i;
+
+export function isExplorationTask(prompt: string): boolean {
+  return EXPLORATION_MARKERS.test(prompt.slice(0, 400));
 }

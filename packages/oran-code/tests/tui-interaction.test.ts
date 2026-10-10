@@ -21,6 +21,7 @@ describe("TUI interaction helpers", () => {
       "/compact",
       "/connect",
       "/exit",
+      "/graph",
       "/help",
       "/memory",
       "/model",

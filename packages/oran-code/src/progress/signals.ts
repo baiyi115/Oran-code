@@ -168,6 +168,13 @@ export function signalToNotice(signal: ProgressSignal): string {
         "Heads up: exploration has covered a lot of files. " +
         "Summarize what you have learned and commit to a concrete next action (or state the blocker) before reading further."
       );
+    case "low_symbol_novelty":
+      return (
+        "Heads up: the last several turns of reading produced almost no new information " +
+        `(${signal.detail}). Stop reading broadly; commit to a hypothesis and verify it directly.`
+      );
+    case "rehearsal_diverged":
+      return `Progress gate: ${signal.detail}`;
     default:
       return `Heads up: ${signal.kind} — ${signal.detail}`;
   }

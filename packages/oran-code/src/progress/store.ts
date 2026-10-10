@@ -2,6 +2,8 @@ import { mkdir, readFile, rename, writeFile } from "node:fs/promises";
 import { dirname, resolve } from "node:path";
 import { projectStateRoot } from "../paths.js";
 import type { TurnSnapshot } from "./capture.js";
+import type { NoveltyState } from "./novelty.js";
+import type { RehearsalData } from "./rehearsal.js";
 
 /**
  * Out-of-band progress state: task-level fixed fields plus a window of the
@@ -38,6 +40,10 @@ export interface PersistedProgressState {
   implementBudget: number;
   /** Phase machine state; absent in states written before phasing existed. */
   phase?: PhasePersistedState | undefined;
+  /** Symbol-novelty tracker (mechanism B1). */
+  novelty?: NoveltyState | undefined;
+  /** Pending structured rehearsal (mechanism B2). */
+  rehearsal?: { phase: "requested" | "reflected"; requestedTurn: number; last?: RehearsalData | undefined } | undefined;
   /** How the previous run of this task ended; absent while still running. */
   stop?: ProgressStop | undefined;
   snapshots: TurnSnapshot[];
@@ -139,6 +145,11 @@ export class ProgressStateStore {
         exploreBudget: typeof parsed.exploreBudget === "number" ? parsed.exploreBudget : 0,
         implementBudget: typeof parsed.implementBudget === "number" ? parsed.implementBudget : 0,
         phase: parsed.phase && typeof parsed.phase === "object" ? (parsed.phase as PhasePersistedState) : undefined,
+        novelty: parsed.novelty && typeof parsed.novelty === "object" ? (parsed.novelty as NoveltyState) : undefined,
+        rehearsal:
+          parsed.rehearsal && typeof parsed.rehearsal === "object"
+            ? (parsed.rehearsal as PersistedProgressState["rehearsal"])
+            : undefined,
         stop: parsed.stop && typeof parsed.stop === "object" ? (parsed.stop as ProgressStop) : undefined,
         snapshots: Array.isArray(parsed.snapshots) ? parsed.snapshots : [],
       };

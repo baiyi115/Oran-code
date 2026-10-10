@@ -19,6 +19,7 @@ describe("TUI overlays", () => {
       "/compact",
       "/connect",
       "/exit",
+      "/graph",
       "/help",
       "/memory",
       "/model",
