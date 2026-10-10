@@ -112,7 +112,8 @@ export interface ResolveContext {
   packageIndex: ReadonlyMap<string, readonly string[]>;
 }
 
-export type ResolveResult = { kind: "resolved"; paths: string[] } | { kind: "unresolved"; reason: UnresolvedReason };
+export type ResolveResult =
+  { kind: "resolved"; paths: readonly string[] } | { kind: "unresolved"; reason: UnresolvedReason };
 
 /** Language-specific raw import extraction. Opaque strings understood by resolve(). */
 export interface RawImport {

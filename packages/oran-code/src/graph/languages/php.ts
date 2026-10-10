@@ -1,5 +1,6 @@
 import { posix } from "node:path";
 import { registerLanguage, type LanguageSupport, type ResolveContext, type ResolveResult } from "./registry.js";
+import { fileIndexFor } from "./file-index.js";
 import { firstQuoted } from "../extract.js";
 
 /**
@@ -26,7 +27,7 @@ function specFromMatch(captures: ReadonlyMap<string, string>): string[] {
 }
 
 function uniqueSuffixMatch(fileSet: ReadonlySet<string>, suffix: string): ResolveResult | undefined {
-  const matches = [...fileSet].filter((file) => file === suffix || file.endsWith(`/${suffix}`)).sort();
+  const matches = fileIndexFor(fileSet).withSuffix(suffix);
   if (matches.length === 1) return { kind: "resolved", paths: matches };
   if (matches.length > 1) return { kind: "unresolved", reason: "ambiguous" };
   return undefined;

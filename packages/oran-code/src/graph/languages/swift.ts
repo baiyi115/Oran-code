@@ -1,4 +1,5 @@
 import { registerLanguage, type LanguageSupport, type ResolveContext, type ResolveResult } from "./registry.js";
+import { fileIndexFor } from "./file-index.js";
 
 /**
  * Swift. `import X` names a module, not a file; without an Xcode/SwiftPM
@@ -11,7 +12,7 @@ const QUERY = "(import_declaration (identifier) @spec)";
 function resolve(specifier: string, context: ResolveContext): ResolveResult {
   if (!specifier) return { kind: "unresolved", reason: "dynamic" };
   const prefix = `${specifier}/`;
-  const files = [...context.fileSet].filter((file) => file.startsWith(prefix) && file.endsWith(".swift")).sort();
+  const files = fileIndexFor(context.fileSet).withPrefix(prefix, ".swift");
   if (files.length > 0) return { kind: "resolved", paths: files };
   return { kind: "unresolved", reason: "external" };
 }

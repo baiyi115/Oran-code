@@ -1,6 +1,7 @@
 import { posix } from "node:path";
 import { stripQuotes } from "../extract.js";
 import { registerLanguage, type LanguageSupport, type ResolveContext, type ResolveResult } from "./registry.js";
+import { fileIndexFor } from "./file-index.js";
 
 /**
  * Ruby. `require_relative` resolves against the file's own directory, with or
@@ -14,7 +15,7 @@ const QUERY = "(call method: (identifier) @fn arguments: (argument_list (string 
 const CALL_FNS: ReadonlySet<string> = new Set(["require", "require_relative"]);
 
 function uniqueSuffixMatch(fileSet: ReadonlySet<string>, suffix: string): ResolveResult | undefined {
-  const matches = [...fileSet].filter((file) => file === suffix || file.endsWith(`/${suffix}`)).sort();
+  const matches = fileIndexFor(fileSet).withSuffix(suffix);
   if (matches.length === 1) return { kind: "resolved", paths: matches };
   if (matches.length > 1) return { kind: "unresolved", reason: "ambiguous" };
   return undefined;

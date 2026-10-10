@@ -1,5 +1,6 @@
 import { dirname, posix } from "node:path";
 import { registerLanguage, type LanguageSupport, type ResolveContext, type ResolveResult } from "./registry.js";
+import { fileIndexFor } from "./file-index.js";
 
 /**
  * Rust. Two specifier channels:
@@ -77,7 +78,7 @@ export function resolveRustSpecifier(fromFile: string, specifier: string, contex
   const depDir = config.cargoPathDeps?.get(anchor);
   if (depDir !== undefined) {
     if (!rest) {
-      const files = [...fileSet].filter((file) => file.startsWith(`${depDir}/`) && file.endsWith(".rs")).sort();
+      const files = fileIndexFor(fileSet).withPrefix(`${depDir}/`, ".rs");
       if (files.length > 0) return { kind: "resolved", paths: files };
     } else {
       return resolveIn(depDir, rest, fileSet);

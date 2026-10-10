@@ -145,35 +145,50 @@ async function buildPackageIndex(
   workspace: string,
   filesByLanguage: ReadonlyMap<LanguageSupport, ScannedSource[]>,
 ): Promise<{ packageIndex: Map<string, string[]>; unreadable: string[] }> {
+  // Only the languages whose resolution needs this table contribute files, so a repository in
+  // another language pays nothing for the pass.
+  const tasks: Array<{ support: LanguageSupport; path: string; query: string }> = [];
+  for (const [support, files] of filesByLanguage) {
+    const query = support.packageQuery;
+    if (!query) continue;
+    for (const file of files) tasks.push({ support, path: file.path, query });
+  }
+
+  // Reading and parsing are both round trips (the parse goes to the host), and this pass ran one
+  // file at a time while the main pass was already concurrent — on a Java-shaped repository that
+  // made it the slowest serial step of a build.
+  const analyzed = await mapLimit(tasks, ANALYZE_CONCURRENCY, async ({ support, path, query }) => {
+    const read = await readSourceText(`${workspace}/${path}`);
+    if (!read.text) return { path, packages: [] as string[], unreadable: true };
+    const analysis = await analyzeFile(support, read.text, { pkg: query });
+    if (isIncompleteAnalysis(analysis)) return { path, packages: [] as string[], unreadable: true };
+    const packages: string[] = [];
+    for (const match of analysis.queries.pkg?.matches ?? []) {
+      for (const capture of match.captures) {
+        if (capture.name !== "pkg") continue;
+        const pkg = capture.text
+          .replace(/^(?:package|namespace)\s+/, "")
+          .replace(/;\s*$/, "")
+          .trim();
+        if (pkg) packages.push(pkg);
+      }
+    }
+    return { path, packages, unreadable: false };
+  });
+
+  // Merged in input order: a Map's insertion order is part of what callers see, so the index has
+  // to stay byte-identical for a given tree whatever order the reads finished in.
   const packageIndex = new Map<string, string[]>();
   const unreadable: string[] = [];
-  for (const [support, files] of filesByLanguage) {
-    const packageQuery = support.packageQuery;
-    if (!packageQuery) continue;
-    for (const file of files) {
-      const read = await readSourceText(`${workspace}/${file.path}`);
-      if (!read.text) {
-        unreadable.push(file.path);
-        continue;
-      }
-      const analysis = await analyzeFile(support, read.text, { pkg: packageQuery });
-      if (isIncompleteAnalysis(analysis)) {
-        unreadable.push(file.path);
-        continue;
-      }
-      for (const match of analysis.queries.pkg?.matches ?? []) {
-        for (const capture of match.captures) {
-          if (capture.name !== "pkg") continue;
-          const pkg = capture.text
-            .replace(/^(?:package|namespace)\s+/, "")
-            .replace(/;\s*$/, "")
-            .trim();
-          if (!pkg) continue;
-          const bucket = packageIndex.get(pkg);
-          if (bucket) bucket.push(file.path);
-          else packageIndex.set(pkg, [file.path]);
-        }
-      }
+  for (const entry of analyzed) {
+    if (entry.unreadable) {
+      unreadable.push(entry.path);
+      continue;
+    }
+    for (const pkg of entry.packages) {
+      const bucket = packageIndex.get(pkg);
+      if (bucket) bucket.push(entry.path);
+      else packageIndex.set(pkg, [entry.path]);
     }
   }
   return { packageIndex, unreadable };

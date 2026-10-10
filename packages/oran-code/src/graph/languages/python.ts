@@ -1,5 +1,6 @@
 import { posix } from "node:path";
 import { registerLanguage, type LanguageSupport, type ResolveResult } from "./registry.js";
+import { fileIndexFor } from "./file-index.js";
 
 /**
  * Python. Two specifier shapes reach resolve():
@@ -59,9 +60,7 @@ export function resolvePythonSpecifier(
   // Distinguish "repo has this top-level name but not this module" (a gap)
   // from "some installed package" (by design out of scope).
   const top = `${specifier.split(".")[0]}/`;
-  for (const file of fileSet) {
-    if (file.startsWith(top)) return { kind: "unresolved", reason: "no-source" };
-  }
+  if (fileIndexFor(fileSet).hasPrefix(top)) return { kind: "unresolved", reason: "no-source" };
   return { kind: "unresolved", reason: "external" };
 }
 

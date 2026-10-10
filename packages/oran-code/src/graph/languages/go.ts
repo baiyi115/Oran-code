@@ -1,5 +1,6 @@
 import { dirname, posix } from "node:path";
 import { registerLanguage, type LanguageSupport, type ResolveContext, type ResolveResult } from "./registry.js";
+import { fileIndexFor } from "./file-index.js";
 
 /**
  * Go. Import specifiers are module paths; mapping them to directories needs
@@ -10,26 +11,8 @@ import { registerLanguage, type LanguageSupport, type ResolveContext, type Resol
 
 const QUERY = "(import_spec path: (interpreted_string_literal) @spec)";
 
-/** directory -> sorted .go files, cached per build's file set. */
-const directoryIndexCache = new WeakMap<ReadonlySet<string>, Map<string, string[]>>();
-
-function filesInDirectory(fileSet: ReadonlySet<string>, directory: string): string[] {
-  let index = directoryIndexCache.get(fileSet);
-  if (!index) {
-    index = new Map<string, string[]>();
-    directoryIndexCache.set(fileSet, index);
-  }
-  const cached = index.get(directory);
-  if (cached) return cached;
-  const prefix = directory === "." ? "" : `${directory}/`;
-  const files: string[] = [];
-  for (const file of fileSet) {
-    if (!file.endsWith(".go")) continue;
-    if (file.startsWith(prefix) && !file.slice(prefix.length).includes("/")) files.push(file);
-  }
-  files.sort();
-  index.set(directory, files);
-  return files;
+function filesInDirectory(fileSet: ReadonlySet<string>, directory: string): readonly string[] {
+  return fileIndexFor(fileSet).containedIn(directory, ".go");
 }
 
 export function resolveGoSpecifier(fromFile: string, specifier: string, context: ResolveContext): ResolveResult {
