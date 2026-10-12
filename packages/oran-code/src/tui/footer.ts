@@ -166,8 +166,7 @@ function explicitStatus(state: TuiState): string | undefined {
   // Suppress noisy machine states; keep user-facing hints (exit, errors, renames).
   // Duration already appears as "- Work for ..." above the composer.
   const lower = raw.toLowerCase();
-  if (["ready", "completed", "planning", "executing", "verifying", "cancelled", "failed"].includes(lower))
-    return undefined;
+  if (["ready", "completed", "planning", "executing", "cancelled", "failed"].includes(lower)) return undefined;
   if (lower.startsWith("completed in")) return undefined;
   if (lower === "task completed" || lower === "task completed." || lower.startsWith("task completed")) return undefined;
   return raw;

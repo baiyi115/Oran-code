@@ -2304,10 +2304,7 @@ function renderCommitKind(event: RuntimeEvent): TuiRenderCommitKind {
       return event.phase === "started" ? "boundary" : "normal";
     case "state":
       if (event.state === "failed" || event.state === "cancelled" || event.state === "paused") return "terminal";
-      return event.state === "planning" ||
-        event.state === "executing" ||
-        event.state === "verifying" ||
-        event.state === "awaiting_approval"
+      return event.state === "planning" || event.state === "executing" || event.state === "awaiting_approval"
         ? "boundary"
         : "normal";
     default:

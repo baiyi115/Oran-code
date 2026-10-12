@@ -17,7 +17,7 @@ export function hasActiveBackgroundTasks(state: TuiState): boolean {
 
 export function isSessionBusy(state: TuiState): boolean {
   const taskState = String(state.session.taskState);
-  if (["planning", "executing", "verifying", "awaiting_approval"].includes(taskState)) return true;
+  if (["planning", "executing", "awaiting_approval"].includes(taskState)) return true;
   if (state.streaming) return true;
   if (state.thoughtMessageId) return true;
   if (state.session.currentTool) return true;
@@ -177,7 +177,6 @@ function hasVisibleLiveActivity(state: TuiState): boolean {
 
 function workingLabel(state: TuiState): string {
   if (state.session.taskState === "awaiting_approval") return "Waiting for approval...";
-  if (state.session.taskState === "verifying") return "Verifying...";
   if (state.session.taskState === "planning") return "Planning...";
 
   const runningTool = [...state.transcript]

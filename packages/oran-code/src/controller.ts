@@ -103,7 +103,6 @@ export interface TaskControllerOptions {
   provider: ModelProvider;
   registry: ToolRegistry;
   trace: TraceStore;
-  verifier?: unknown;
   permission?: PermissionPolicy;
   approvalCallback?: ApprovalCallback;
   eventCallback?: RuntimeEventCallback;

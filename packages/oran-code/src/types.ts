@@ -36,15 +36,7 @@ export function isReasoningEffort(value: unknown): value is ReasoningEffort {
 }
 
 export type TaskState =
-  | "created"
-  | "planning"
-  | "awaiting_approval"
-  | "executing"
-  | "verifying"
-  | "completed"
-  | "failed"
-  | "paused"
-  | "cancelled";
+  "created" | "planning" | "awaiting_approval" | "executing" | "completed" | "failed" | "paused" | "cancelled";
 
 export const TERMINAL_TASK_STATES: readonly TaskState[] = ["completed", "failed", "paused", "cancelled"];
 

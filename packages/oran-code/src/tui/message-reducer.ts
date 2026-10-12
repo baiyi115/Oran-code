@@ -60,7 +60,7 @@ export function reduceRuntimeEvent(state: TuiState, event: RuntimeEvent): void {
       }
       state.session.taskState = event.state;
       state.session.status = event.state;
-      if (event.state === "planning" || event.state === "executing" || event.state === "verifying") {
+      if (event.state === "planning" || event.state === "executing") {
         state.session.startedAt ??= Date.now();
       }
       if (
@@ -352,7 +352,6 @@ function reduceContextCompaction(state: TuiState, event: Extract<RuntimeEvent, {
 function runningTaskStatus(state: TuiState): string | undefined {
   return state.session.taskState === "planning" ||
     state.session.taskState === "executing" ||
-    state.session.taskState === "verifying" ||
     state.session.taskState === "awaiting_approval"
     ? state.session.taskState
     : undefined;
