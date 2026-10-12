@@ -455,7 +455,10 @@ async function readBoundedBody(
  * could look at them again.
  */
 function decodeBody(bytes: Buffer, contentType: string): string {
-  const charset = bomCharset(bytes) ?? headerCharset(contentType) ?? metaCharset(bytes);
+  // The document's own declaration is only worth prescanning for a document: in binary content a
+  // `<meta charset=…>`-shaped substring is a coincidence, not a declaration.
+  const declared = headerCharset(contentType) ?? (isHtml(contentType) ? metaCharset(bytes) : undefined);
+  const charset = bomCharset(bytes) ?? declared;
   if (charset) {
     try {
       return new TextDecoder(charset, { fatal: false }).decode(bytes);
@@ -473,18 +476,77 @@ function bomCharset(bytes: Buffer): string | undefined {
   return undefined;
 }
 
-function headerCharset(contentType: string): string | undefined {
-  return /charset\s*=\s*"?([\w.:-]+)/i.exec(contentType)?.[1];
+/** True when `index` sits inside a double-quoted string (an attribute or parameter value). */
+function insideQuotes(text: string, index: number): boolean {
+  let quotes = 0;
+  for (let position = 0; position < index; position += 1) {
+    if (text[position] === "\\") position += 1;
+    else if (text[position] === '"') quotes += 1;
+  }
+  return quotes % 2 === 1;
 }
 
 /**
- * The document's own declaration, prescanned in the first kilobyte (the same window HTML5 looks
- * at). Reading the head as latin1 is safe: the declaration is ASCII in every encoding it can name,
- * and a document in an encoding where it is not (UTF-16) carries a byte-order mark instead.
+ * The `charset` parameter of a Content-Type header, and only that parameter.
+ *
+ * Matching `charset=` anywhere in the header value takes a substring of a different parameter —
+ * `xcharset=gbk`, or `filename="notes; charset=gbk"` — for the response's own declaration, and then
+ * a body that would have decoded correctly comes back as mojibake. The candidate has to be the
+ * start of a parameter, which means outside any quoted value.
+ */
+function headerCharset(contentType: string): string | undefined {
+  const candidate = /(?:^|;)\s*charset\s*=\s*(?:"([^"]*)"|([^;\s]+))/gi;
+  for (let match = candidate.exec(contentType); match; match = candidate.exec(contentType)) {
+    if (insideQuotes(contentType, match.index)) continue;
+    const value = (match[1] ?? match[2])?.trim();
+    if (value) return value.toLowerCase();
+  }
+  return undefined;
+}
+
+/**
+ * The document's own declaration, prescanned in the first kilobyte (the window HTML5 looks at).
+ * Reading the head as latin1 is safe: the declaration is ASCII in every encoding it can name, and
+ * a document in an encoding where it is not (UTF-16) carries a byte-order mark instead.
+ *
+ * A comment or an unrelated attribute carrying the same text is not a declaration: `<!-- <meta
+ * charset="gb2312"> -->` above a real `charset="utf-8"` used to win, which turned a page that
+ * decodes fine into mojibake — the failure this whole path exists to prevent, inverted.
  */
 function metaCharset(bytes: Buffer): string | undefined {
   const head = bytes.subarray(0, 1024).toString("latin1");
-  return /<meta[^>]+charset\s*=\s*["']?\s*([\w.:-]+)/i.exec(head)?.[1];
+  for (const tag of head.replace(/<!--[\s\S]*?-->/g, "").match(/<meta\b[^>]*>/gi) ?? []) {
+    // Values are blanked before searching, so `charset=` inside a description is not a candidate;
+    // the value itself is then read from the original text at that offset.
+    const masked = tag.replace(/"[^"]*"|'[^']*'/g, (quoted) => " ".repeat(quoted.length));
+    const attribute = /\bcharset\s*=/i.exec(masked);
+    if (attribute) {
+      // The position comes from the masked tag, the value from the original: at this offset the
+      // masked text has blanked exactly the quoted value that is still there to be read.
+      const value = readAttributeValue(tag, attribute.index + attribute[0].length);
+      if (value) return value.toLowerCase();
+    }
+    // The other legal form: <meta http-equiv="Content-Type" content="text/html; charset=gbk">.
+    const equivalent = readAttributeValue(tag, positionAfter(masked, /\bhttp-equiv\s*=/i));
+    if (equivalent?.toLowerCase() !== "content-type") continue;
+    const content = readAttributeValue(tag, positionAfter(masked, /\bcontent\s*=/i));
+    const declared = content ? /charset\s*=\s*["']?([\w.:-]+)/i.exec(content)?.[1] : undefined;
+    if (declared) return declared.toLowerCase();
+  }
+  return undefined;
+}
+
+/** Offset just past an attribute-name match in the masked tag, or -1 when it is absent. */
+function positionAfter(masked: string, pattern: RegExp): number {
+  const match = pattern.exec(masked);
+  return match ? match.index + match[0].length : -1;
+}
+
+/** The attribute value starting at `offset`, quoted or bare; undefined when there is none. */
+function readAttributeValue(tag: string, offset: number): string | undefined {
+  if (offset < 0) return undefined;
+  const value = /^\s*(?:"([^"]*)"|'([^']*)'|([^\s"'>]+))/.exec(tag.slice(offset));
+  return value?.[1] ?? value?.[2] ?? value?.[3];
 }
 
 function isHtml(contentType: string): boolean {

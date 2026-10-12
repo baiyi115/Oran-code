@@ -561,4 +561,69 @@ describe("web_fetch decoding", () => {
       await rm(workspace, { recursive: true, force: true });
     }
   }, 30_000);
+
+  it("only treats a real header parameter as the charset", async () => {
+    // A substring of a different parameter is not this response's declaration. Reading it as one
+    // turned a page that decodes fine into mojibake — the failure this path exists to prevent.
+    for (const contentType of ["text/plain; xcharset=gbk", 'text/plain; filename="notes; charset=gbk"']) {
+      const { workspace, baseUrl } = await startFixtureServer(() => ({
+        contentType,
+        body: Buffer.from("中文内容", "utf8"),
+      }));
+      try {
+        expect(await bodyOf(workspace, `${baseUrl}/page`), contentType).toContain("中文内容");
+      } finally {
+        await rm(workspace, { recursive: true, force: true });
+      }
+    }
+  }, 30_000);
+
+  it("ignores a meta charset that is commented out or inside another attribute", async () => {
+    const heads = [
+      // A migrated site keeping the old declaration as a comment above the real one.
+      '<!-- <meta charset="gb2312"> --><meta charset="utf-8">',
+      // The same text inside a description, which is not a declaration at all.
+      '<meta name="description" content="how to set charset=gbk in a header"><meta charset="utf-8">',
+    ];
+    for (const head of heads) {
+      const { workspace, baseUrl } = await startFixtureServer(() => ({
+        contentType: "text/html",
+        body: Buffer.from(`<html><head>${head}</head><body><p>中文内容</p></body></html>`, "utf8"),
+      }));
+      try {
+        expect(await bodyOf(workspace, `${baseUrl}/page`), head).toContain("中文内容");
+      } finally {
+        await rm(workspace, { recursive: true, force: true });
+      }
+    }
+  }, 30_000);
+
+  it("reads the http-equiv form of the declaration", async () => {
+    const { workspace, baseUrl } = await startFixtureServer(() => ({
+      contentType: "text/html",
+      body: Buffer.concat([
+        ascii('<html><head><meta http-equiv="Content-Type" content="text/html; charset=gbk"></head><body><p>'),
+        GBK_TEXT,
+        ascii("</p></body></html>"),
+      ]),
+    }));
+    try {
+      expect(await bodyOf(workspace, `${baseUrl}/page`)).toContain("中文");
+    } finally {
+      await rm(workspace, { recursive: true, force: true });
+    }
+  }, 30_000);
+
+  it("does not prescan a body that is not a document", async () => {
+    // The same substring in plain text is a coincidence; only a document declares an encoding.
+    const { workspace, baseUrl } = await startFixtureServer(() => ({
+      contentType: "text/plain",
+      body: Buffer.from('notes: emit <meta charset="gbk"> for legacy clients — 中文内容', "utf8"),
+    }));
+    try {
+      expect(await bodyOf(workspace, `${baseUrl}/page`)).toContain("中文内容");
+    } finally {
+      await rm(workspace, { recursive: true, force: true });
+    }
+  }, 30_000);
 });
