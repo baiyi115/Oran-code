@@ -14,7 +14,11 @@ afterEach(async () => {
   await Promise.all(temporaryDirectories.splice(0).map((path) => rm(path, { recursive: true, force: true })));
 });
 
-describe("SnapshotStore /undo", () => {
+/** Every test here drives real git operations; under a loaded suite the 5s default is
+ * not enough, and a timeout reads as a failure rather than as the slow test it is. */
+const SNAPSHOT_TEST_TIMEOUT_MS = 30_000;
+
+describe("SnapshotStore /undo", { timeout: SNAPSHOT_TEST_TIMEOUT_MS }, () => {
   it("records and undoes the latest agent file change batch", async () => {
     const root = await createSnapshotFixture("oran-snapshot-undo-");
     const store = new SnapshotStore(root);
@@ -142,7 +146,7 @@ describe("SnapshotStore /undo", () => {
   });
 });
 
-describe("SnapshotStore /rewind files", () => {
+describe("SnapshotStore /rewind files", { timeout: SNAPSHOT_TEST_TIMEOUT_MS }, () => {
   it("reverts every batch from the target turn onward and marks them undone", async () => {
     const root = await createSnapshotFixture("oran-snapshot-rewind-");
     const store = new SnapshotStore(root);
