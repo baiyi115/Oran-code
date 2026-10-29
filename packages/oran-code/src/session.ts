@@ -83,7 +83,8 @@ import {
   PRODUCT_NAME,
   userTraceRoot,
 } from "./paths.js";
-import type { SubagentOrigin } from "./subagent/types.js";
+import type { SubagentEvent, SubagentOrigin } from "./subagent/types.js";
+import { normalizeTokenUsage } from "./token-usage.js";
 import type { QuestionItem } from "./tools/interaction-tools.js";
 import type { ContextManager } from "./context-manager.js";
 import { userTurnIndices } from "./message-utils.js";
@@ -220,6 +221,10 @@ export class TerminalSession {
   private commandUsage: CommandUsageTracker | undefined;
   private commandIntegrationPromise: Promise<void> | undefined;
   private latestUsage: Record<string, number> = {};
+  /** Subagent usage per session id, shown beside the main task's own usage in the footer. */
+  private readonly subagentUsageBySession = new Map<string, ReturnType<typeof normalizeTokenUsage>>();
+  /** A run can report more than once; its usage is counted on the first terminal event only. */
+  private readonly countedSubagentTasks = new Set<string>();
   private readonly debugLogSink: DebugLogSink;
   private readonly debugTracker: StreamDebugTracker;
   private readonly runtimeEventSink: ((event: RuntimeEvent) => void) | undefined;
@@ -460,7 +465,6 @@ export class TerminalSession {
           endedAt: task.endedAt,
           definitionName: task.definitionName,
           error: task.error,
-          output: task.output,
         }));
         return [...subagents, ...jobs];
       },
@@ -545,7 +549,7 @@ export class TerminalSession {
       this.readlineClosed = true;
     });
     restoreHistory(this.readline, history);
-    this.renderer.attachPrompt(createPromptHooks(this.output, () => this.prompt()));
+    this.renderer.attachPrompt?.(createPromptHooks(this.output, () => this.prompt()));
     this.setPrompt();
     this.renderer.status(`${PRODUCT_NAME} ${this.modelLabel()} | ${this.workspace}`, "boldCyan");
     this.renderer.status("Type / for commands or !command for a shell command.");
@@ -794,6 +798,7 @@ export class TerminalSession {
         approvalCallback: (call, level, description, requestId, origin) =>
           this.requestApproval(call, level, description, origin, requestId),
         approvalCancellationCallback: (origin) => this.cancelApprovalsForOrigin(origin),
+        eventCallback: (event) => this.recordSubagentUsage(event),
         parentToolFilter,
         isMcpTool: (name) => this.mcp.isMcpTool(name),
         hookFactory: async (workspace, messages) => {
@@ -831,6 +836,8 @@ export class TerminalSession {
         : await this.currentContextManager(),
       approvalCallback: (call, level, description, requestId) =>
         this.requestApproval(call, level, description, { kind: "main" }, requestId),
+      // Read live so a mid-task mode switch (shift+tab) applies to the running permission policy.
+      permissionMode: () => this.permissionMode,
       askUserCallback: (questions) => this.requestUserQuestions(questions),
       eventCallback: (event) => this.onEvent(event),
       ...(!isolated
@@ -967,7 +974,8 @@ export class TerminalSession {
         this.queuePaused = false;
         this.setPrompt();
         this.refreshTui();
-        void this.persistTuiSession();
+        // No second persistTuiSession here: startTask's finally already awaited a full write of the
+        // same state, and everything changed since is display-only.
         await this.drainFollowUps();
         this.prompt();
       });
@@ -1045,6 +1053,33 @@ export class TerminalSession {
 
   private refreshTui(): void {
     this.tui?.refreshContext();
+  }
+
+  /**
+   * Counts a finished subagent's usage into the session it belongs to. Subagents spend real tokens
+   * against the same account, so the footer's session figure must include them; the completion
+   * summary stays the main task's own number.
+   */
+  private recordSubagentUsage(event: SubagentEvent): void {
+    if (event.status === "queued" || event.status === "running") return;
+    if (!event.usage) return;
+    if (this.countedSubagentTasks.has(event.taskId)) return;
+    this.countedSubagentTasks.add(event.taskId);
+    const key = this.currentSession?.id ?? "current";
+    const current = this.subagentUsageBySession.get(key) ?? normalizeTokenUsage({});
+    const delta = normalizeTokenUsage({ ...event.usage });
+    this.subagentUsageBySession.set(key, {
+      inputTokens: current.inputTokens + delta.inputTokens,
+      outputTokens: current.outputTokens + delta.outputTokens,
+      totalTokens: current.totalTokens + delta.totalTokens,
+      cacheReadTokens: current.cacheReadTokens + delta.cacheReadTokens,
+      cacheWriteTokens: current.cacheWriteTokens + delta.cacheWriteTokens,
+    });
+    this.tui?.refreshContext();
+  }
+
+  private subagentUsageSnapshot(): ReturnType<typeof normalizeTokenUsage> | undefined {
+    return this.subagentUsageBySession.get(this.currentSession?.id ?? "current");
   }
 
   private async initializeCommandIntegrations(): Promise<void> {
@@ -1499,7 +1534,7 @@ export class TerminalSession {
     const sessionId = this.currentSession?.id ?? "session-current";
     return this.followUps
       .filter((item) => item.sessionId === sessionId)
-      .map((item) => ({ id: item.id, prompt: item.prompt, createdAt: item.createdAt }));
+      .map((item) => ({ id: item.id, prompt: item.prompt }));
   }
 
   private cancelFollowUp(id: string): boolean {
@@ -1895,12 +1930,10 @@ export class TerminalSession {
       onProviderDeleted: (name) => this.handlers.handleProviderDelete(name),
       loadSessions: () => this.crud.loadSessionOptions(),
       onSessionSelected: (id) => this.crud.selectSession(id),
-      onSessionCreated: (name) => this.crud.createSession(name),
       onSessionDeleted: (id) => this.crud.deleteSession(id),
       loadFollowUps: () => this.loadFollowUpOptions(),
       onFollowUpCancelled: (id) => this.cancelFollowUp(id),
       loadFiles: (query) => this.loadWorkspaceFiles(query),
-      onSessionChanged: () => this.persistTuiSession(),
       getFollowUpCount: () => this.followUps.length,
       getBackgroundTasks: async () => {
         const subagents =
@@ -1913,7 +1946,6 @@ export class TerminalSession {
             startedAt: task.startedAt,
             endedAt: task.endedAt,
             error: task.error,
-            output: task.output,
           })) ?? [];
         const { shellJobs, formatJobOutput } = await loadShellJobs();
         const jobs = shellJobs()
@@ -1931,9 +1963,9 @@ export class TerminalSession {
         return [...subagents, ...jobs];
       },
       getSessionName: () => (this.currentSession ? this.sessionName(this.currentSession) : "Current session"),
-      getApprovalPolicy: () => (this.permissionMode === "bypass" ? "all" : "ask"),
       getWorkMode: () => this.workMode,
       getPermissionMode: () => this.permissionMode,
+      onPermissionModeChanged: (mode) => this.handlers.changePermissionMode(mode),
       onWorkModeChanged: async (mode) => {
         if (this.interactionRunning() || this.hasPendingApprovals()) return false;
         if (mode === "plan") {
@@ -1952,20 +1984,6 @@ export class TerminalSession {
         await this.persistTuiSession();
         return true;
       },
-      onPermissionModeChanged: async (mode) => {
-        if (this.interactionRunning() || this.hasPendingApprovals()) return false;
-        if (mode === "plan" && this.permissionMode !== "plan") {
-          this.previousPlanPermissionMode = this.permissionMode;
-          this.pendingPlanExecute = undefined;
-        } else if (mode !== "plan") {
-          this.previousPlanPermissionMode = undefined;
-        }
-        if (mode !== this.permissionMode) this.pendingPlanExecute = undefined;
-        this.permissionMode = mode;
-        this.workMode = workModeForPermission(mode);
-        await this.persistTuiSession();
-        return true;
-      },
       getReasoningEffort: () => this.reasoningEffort,
       onReasoningEffortChanged: (effort) => {
         if (this.interactionRunning() || this.hasPendingApprovals()) return false;
@@ -1979,6 +1997,7 @@ export class TerminalSession {
         const manager = this.contextManagers.get(session.id);
         return manager ? manager.estimateTokens(this.conversation, []) : undefined;
       },
+      getSubagentUsage: () => this.subagentUsageSnapshot(),
       getModelReference: () => (this.model ? this.modelReference(this.model) : this.currentSession?.modelReference),
       getModelWarning: () => this.modelWarning,
       isInteractionBlocked: () =>
@@ -2269,7 +2288,7 @@ export class TerminalSession {
     if (this.readline) {
       await saveHistory(this.readline);
       this.closeReadline();
-      this.renderer.attachPrompt(undefined);
+      this.renderer.attachPrompt?.(undefined);
       this.readline = undefined;
     }
     // Dispatch the process_exit hook before the process exits (rules carry their own timeout;
