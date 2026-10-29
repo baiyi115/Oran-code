@@ -2,7 +2,8 @@ import { describe, expect, it } from "vitest";
 import type { Key } from "ink";
 import { createTuiState } from "../src/tui/state.js";
 import { OverlayHandlers, type OverlayHandlerContext } from "../src/tui/overlay-handlers.js";
-import { providerDeleteConfirmLines, providersListLines } from "../src/tui/providers-list.js";
+import { providersListLines } from "../src/tui/providers-list.js";
+import { deleteConfirmLines } from "../src/tui/delete-confirm-dialog.js";
 import type { ProviderOption, TuiState } from "../src/tui/types.js";
 
 function key(partial: Partial<Key> = {}): Key {
@@ -100,17 +101,17 @@ describe("providers list overlay", () => {
     const h = harness();
     await h.handlers.openProviders();
     h.handlers.handleProvidersKey("d", key()); // D/Del/Backspace all start a delete
-    expect(overlay(h).kind).toBe("provider-delete-confirm");
+    expect(overlay(h).kind).toBe("delete-confirm");
 
     // The cursor defaults to Cancel; Enter cancels and returns to the list
-    h.handlers.handleProviderDeleteConfirmKey("", enter);
+    h.handlers.handleDeleteConfirmKey("", enter);
     expect(h.deleted).toEqual([]);
     expect(overlay(h)).toMatchObject({ kind: "providers", selectedIndex: 0 });
 
     // Request deletion again and move to Delete to confirm
     h.handlers.handleProvidersKey("d", key());
-    h.handlers.handleProviderDeleteConfirmKey("", key({ leftArrow: true }));
-    await h.handlers.handleProviderDeleteConfirmKey("", enter); // delete confirmation is async, must await
+    h.handlers.handleDeleteConfirmKey("", key({ leftArrow: true }));
+    await h.handlers.handleDeleteConfirmKey("", enter); // delete confirmation is async, must await
     expect(h.deleted).toEqual(["alpha"]);
     // After a successful delete it returns to the reloaded list with only beta left
     expect(providersOverlay(h).options.map((option) => option.name)).toEqual(["beta"]);
@@ -120,10 +121,10 @@ describe("providers list overlay", () => {
     const h = harness(options, false);
     await h.handlers.openProviders();
     h.handlers.handleProvidersKey("d", key());
-    h.handlers.handleProviderDeleteConfirmKey("", key({ leftArrow: true }));
-    h.handlers.handleProviderDeleteConfirmKey("", enter);
+    h.handlers.handleDeleteConfirmKey("", key({ leftArrow: true }));
+    h.handlers.handleDeleteConfirmKey("", enter);
     expect(h.deleted).toEqual(["alpha"]);
-    expect(overlay(h).kind).toBe("provider-delete-confirm");
+    expect(overlay(h).kind).toBe("delete-confirm");
   });
 
   it("escape closes the list", async () => {
@@ -146,7 +147,7 @@ describe("providers list rendering", () => {
   });
 
   it("renders the delete confirmation", () => {
-    const lines = providerDeleteConfirmLines("alpha", 0, 80);
+    const lines = deleteConfirmLines("Delete provider?", "alpha", 0, 80);
     expect(lines[0]?.text).toBe("Delete provider?");
     expect(lines.some((line) => line.text.includes("alpha"))).toBe(true);
   });

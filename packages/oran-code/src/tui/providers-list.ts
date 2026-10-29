@@ -3,7 +3,7 @@ import { highlightSelection, overlayLine, type OverlayLine } from "./overlay/sel
 import { truncateVisible, visibleWidth } from "./text-width.js";
 import { dimHorizontalRule } from "./theme.js";
 
-/** Rendering for the provider list and delete-confirmation overlays. */
+/** Rendering for the provider list overlay. */
 
 export function providersListLines(
   options: readonly ProviderOption[],
@@ -16,34 +16,18 @@ export function providersListLines(
   const lines: OverlayLine[] = [
     overlayLine(truncateVisible(`Providers · Current: ${current?.name ?? "(none)"}`, Math.max(1, width))),
     overlayLine(dimHorizontalRule(Math.max(1, width))),
-    overlayLine(truncateVisible(`↑↓ Select   Enter Edit   A Add   D Delete   Esc Close${position}`, Math.max(1, width))),
+    overlayLine(
+      truncateVisible(`↑↓ Select   Enter Edit   A Add   D Delete   Esc Close${position}`, Math.max(1, width)),
+    ),
     overlayLine(""),
   ];
   if (!options.length) lines.push(overlayLine("  (no providers configured)"));
   options.forEach((option, index) => {
-    lines.push(
-      highlightSelection(`  ${providerOptionLabel(option, Math.max(1, width - 4))}`, index === selectedIndex),
-    );
+    lines.push(highlightSelection(`  ${providerOptionLabel(option, Math.max(1, width - 4))}`, index === selectedIndex));
   });
   // The last row is always the add entry; Enter/A on it opens a blank wizard.
   lines.push(highlightSelection("  + Add provider", selectedIndex === options.length));
   return lines;
-}
-
-export function providerDeleteConfirmLines(
-  providerName: string,
-  selectedIndex: number,
-  width: number,
-): OverlayLine[] {
-  return [
-    overlayLine("Delete provider?"),
-    overlayLine(`  ${truncateVisible(providerName, Math.max(1, width - 2))}`),
-    overlayLine(dimHorizontalRule(Math.max(1, width))),
-    overlayLine("←→ Select   Enter Confirm   Esc Cancel"),
-    overlayLine(""),
-    highlightSelection("  Delete", selectedIndex === 0),
-    highlightSelection("  Cancel", selectedIndex === 1),
-  ];
 }
 
 function providerOptionLabel(option: ProviderOption, width: number): string {

@@ -273,19 +273,13 @@ export type OverlayState =
       kind: "models";
       selectedIndex: number;
       options: string[];
-      loading: boolean;
-      error?: string | undefined;
     }
   | { kind: "sessions"; selectedIndex: number; options: SessionOption[]; query: string }
   | {
-      kind: "session-delete-confirm";
-      sessionId: string;
-      sessionName: string;
+      kind: "delete-confirm";
+      target: DeleteConfirmTarget;
       selectedIndex: number;
       returnSelectedIndex: number;
-      options: SessionOption[];
-      /** Search text to restore when the confirmation is cancelled. */
-      returnQuery: string;
     }
   | { kind: "follow-ups"; selectedIndex: number; options: FollowUpOption[] }
   | {
@@ -322,13 +316,6 @@ export type OverlayState =
     }
   | { kind: "providers"; selectedIndex: number; options: ProviderOption[] }
   | {
-      kind: "provider-delete-confirm";
-      providerName: string;
-      selectedIndex: number;
-      returnSelectedIndex: number;
-      options: ProviderOption[];
-    }
-  | {
       kind: "question";
       questions: QuestionDialogItem[];
       currentQuestionIndex: number;
@@ -336,6 +323,22 @@ export type OverlayState =
       selectedIndices: number[];
       answers: Record<string, string>;
     };
+
+/**
+ * What a delete confirmation is about to remove, together with the list it returns to: both
+ * payloads carry the options as they were when the dialog opened, so cancelling restores exactly
+ * what the user was looking at.
+ */
+export type DeleteConfirmTarget =
+  | {
+      kind: "session";
+      sessionId: string;
+      name: string;
+      options: SessionOption[];
+      /** Search text to restore along with the rows when the confirmation is cancelled. */
+      returnQuery: string;
+    }
+  | { kind: "provider"; providerName: string; options: ProviderOption[] };
 
 export type ConnectStep = "info" | "models";
 
@@ -442,4 +445,3 @@ export interface TuiState {
    */
   cancelArmedUntil: number | undefined;
 }
-

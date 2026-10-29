@@ -135,7 +135,6 @@ describe("OverlayHandlers", () => {
       kind: "models",
       selectedIndex: 0,
       options: ["openai/a", "openai/b"],
-      loading: false,
     };
     h.handlers.handleModelKey("", down);
     expect(h.state.overlay).toMatchObject({ selectedIndex: 1 });
@@ -149,18 +148,22 @@ describe("OverlayHandlers", () => {
     const h = harness();
     h.state.overlay = { kind: "sessions", selectedIndex: 1, options: [...h.sessionsLoaded], query: "" };
     h.handlers.handleSessionKey("d", key({ ctrl: true }));
-    expect(h.state.overlay).toMatchObject({ kind: "session-delete-confirm", sessionId: "s2", returnSelectedIndex: 1 });
+    expect(h.state.overlay).toMatchObject({
+      kind: "delete-confirm",
+      target: { kind: "session", sessionId: "s2" },
+      returnSelectedIndex: 1,
+    });
 
     // Cancel restores the sessions overlay at the previous index.
-    h.handlers.handleSessionDeleteConfirmKey("", escape);
+    h.handlers.handleDeleteConfirmKey("", escape);
     expect(h.state.overlay).toMatchObject({ kind: "sessions", selectedIndex: 1 });
 
     // Confirm deletes and rebuilds the list with a clamped index.
     // The delete confirm defaults to Cancel (changed in this consistency pass); move the
     // highlight to Delete before pressing Enter.
     h.handlers.handleSessionKey("d", key({ ctrl: true }));
-    h.handlers.handleSessionDeleteConfirmKey("", up);
-    await h.handlers.handleSessionDeleteConfirmKey("", enter);
+    h.handlers.handleDeleteConfirmKey("", up);
+    await h.handlers.handleDeleteConfirmKey("", enter);
     expect(h.sessionsDeleted).toEqual(["s2"]);
     expect(h.state.overlay).toMatchObject({ kind: "sessions", selectedIndex: 0 });
     expect((h.state.overlay as { options: SessionOption[] }).options.map((item) => item.id)).toEqual(["s1"]);
@@ -270,8 +273,8 @@ describe("session search", () => {
     h.handlers.handleSessionKey("t", key());
     h.handlers.handleSessionKey("w", key());
     h.handlers.handleSessionKey("d", key({ ctrl: true }));
-    expect(h.state.overlay).toMatchObject({ kind: "session-delete-confirm", sessionId: "s2" });
-    await h.handlers.handleSessionDeleteConfirmKey("", escape);
+    expect(h.state.overlay).toMatchObject({ kind: "delete-confirm", target: { kind: "session", sessionId: "s2" } });
+    await h.handlers.handleDeleteConfirmKey("", escape);
     expect(h.state.overlay).toMatchObject({ kind: "sessions", query: "tw", selectedIndex: 0 });
   });
 
@@ -299,13 +302,13 @@ describe("session delete confirmation", () => {
     const h = sessionsHarness();
     // Ctrl+D asks to delete (through the confirm layer, no longer a direct delete)
     h.handlers.handleSessionKey("d", key({ ctrl: true }));
-    expect(h.state.overlay).toMatchObject({ kind: "session-delete-confirm", selectedIndex: 1 });
+    expect(h.state.overlay).toMatchObject({ kind: "delete-confirm", selectedIndex: 1 });
   });
 
   it("Enter on Cancel backs out with nothing deleted", async () => {
     const h = sessionsHarness();
     h.handlers.handleSessionKey("d", key({ ctrl: true }));
-    await h.handlers.handleSessionDeleteConfirmKey("", enter);
+    await h.handlers.handleDeleteConfirmKey("", enter);
     expect(h.sessionsDeleted).toEqual([]);
     expect(h.state.overlay.kind).toBe("sessions");
   });
@@ -313,11 +316,11 @@ describe("session delete confirmation", () => {
   it("Backspace while Cancel is focused no longer deletes; only Enter on Delete deletes", async () => {
     const h = sessionsHarness();
     h.handlers.handleSessionKey("d", key({ ctrl: true }));
-    await h.handlers.handleSessionDeleteConfirmKey("", key({ backspace: true }));
+    await h.handlers.handleDeleteConfirmKey("", key({ backspace: true }));
     expect(h.sessionsDeleted).toEqual([]);
 
-    await h.handlers.handleSessionDeleteConfirmKey("", up);
-    await h.handlers.handleSessionDeleteConfirmKey("", enter);
+    await h.handlers.handleDeleteConfirmKey("", up);
+    await h.handlers.handleDeleteConfirmKey("", enter);
     expect(h.sessionsDeleted).toEqual(["s1"]);
     expect(h.state.session.status).toBe("session deleted");
   });

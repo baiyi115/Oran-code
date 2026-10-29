@@ -5,7 +5,8 @@ import { modelSelectorLines } from "./model-selector.js";
 import { approvalDialogLines } from "./approval-dialog.js";
 import { questionDialogLines } from "./question-dialog.js";
 import { currentSessionLine, filterSessionOptions, sessionOptionLabel, sessionSearchLine } from "./session-list.js";
-import { providerDeleteConfirmLines, providersListLines } from "./providers-list.js";
+import { providersListLines } from "./providers-list.js";
+import { deleteConfirmLines } from "./delete-confirm-dialog.js";
 import { ANSI, dimHorizontalRule } from "./theme.js";
 import { highlightSelection, overlayLine, type OverlayLine } from "./overlay/select-list.js";
 import { abbreviatePath, graphemeWidth, graphemes, truncateVisible, visibleWidth } from "./text-width.js";
@@ -67,18 +68,10 @@ export function renderOverlayLines(
   switch (state.overlay.kind) {
     case "models": {
       const overlay = state.overlay;
-      // Without the hint and the three states this panel was a dead end: a failed load rendered as
-      // an empty box with no way to tell it from "no models".
-      const lines = textLines([
-        "Select model",
-        dimHorizontalRule(width),
-        "↑↓ Select   Enter Confirm   Esc Close",
-        "",
-      ]);
-      if (overlay.loading) lines.push(overlayLine("  loading..."));
-      else if (overlay.error)
-        lines.push(overlayLine(`  error: ${truncateVisible(overlay.error, Math.max(1, width - 2))}`));
-      else if (!overlay.options.length) lines.push(overlayLine("  (no models available)"));
+      // The panel only lists; a failed load is reported on the status line like the other lists
+      // (see openListOverlay), so there is no separate loading/error state to draw here.
+      const lines = textLines(["Select model", dimHorizontalRule(width), "↑↓ Select   Enter Confirm   Esc Close", ""]);
+      if (!overlay.options.length) lines.push(overlayLine("  (no models available)"));
       else lines.push(...modelSelectorLines(overlay.options, overlay.selectedIndex, width));
       return lines;
     }
@@ -140,7 +133,9 @@ export function renderOverlayLines(
           listHint("Type to search   ↑↓ Select   Enter Resume   Del Remove   Esc Close", selected, visible.length),
         ),
         overlayLine(
-          overlay.query ? sessionSearchLine(overlay.query, width) : `${ANSI.gray}${sessionSearchLine("", width)}${ANSI.reset}`,
+          overlay.query
+            ? sessionSearchLine(overlay.query, width)
+            : `${ANSI.gray}${sessionSearchLine("", width)}${ANSI.reset}`,
         ),
         ...(visible.length
           ? visible.map((item, index) =>
@@ -149,22 +144,18 @@ export function renderOverlayLines(
           : [overlayLine("  (no matching sessions)")]),
       ];
     }
-    case "session-delete-confirm": {
-      const overlay = state.overlay;
-      return [
-        overlayLine("Delete session?"),
-        overlayLine(`  ${truncateVisible(overlay.sessionName, Math.max(1, width - 2))}`),
-        overlayLine(dimHorizontalRule(width)),
-        overlayLine("←→ Select   Enter Confirm   Esc Cancel"),
-        overlayLine(""),
-        highlightSelection("  Delete", overlay.selectedIndex === 0),
-        highlightSelection("  Cancel", overlay.selectedIndex === 1),
-      ];
+    case "delete-confirm": {
+      const { target, selectedIndex } = state.overlay;
+      const session = target.kind === "session";
+      return deleteConfirmLines(
+        session ? "Delete session?" : "Delete provider?",
+        session ? target.name : target.providerName,
+        selectedIndex,
+        width,
+      );
     }
     case "providers":
       return providersListLines(state.overlay.options, state.overlay.selectedIndex, width);
-    case "provider-delete-confirm":
-      return providerDeleteConfirmLines(state.overlay.providerName, state.overlay.selectedIndex, width);
     case "follow-ups": {
       const overlay = state.overlay;
       return [
@@ -195,7 +186,10 @@ export function renderOverlayLines(
           ? [overlayLine("  loading...")]
           : overlay.options.length
             ? overlay.options.map((item, index) =>
-                highlightSelection(`  ${truncateVisible(item, Math.max(1, width - 2))}`, index === overlay.selectedIndex),
+                highlightSelection(
+                  `  ${truncateVisible(item, Math.max(1, width - 2))}`,
+                  index === overlay.selectedIndex,
+                ),
               )
             : [overlayLine("  (no matching files)")]),
       ];
@@ -243,10 +237,7 @@ export function fitOverlayLines(lines: readonly OverlayLine[], capacity: number)
   return [...header, ...body.slice(start, start + bodyHeight)];
 }
 
-export function fileQuery(
-  value: string,
-  cursor: number,
-): { query: string; start: number } | undefined {
+export function fileQuery(value: string, cursor: number): { query: string; start: number } | undefined {
   const before = value.slice(0, cursor);
   // Two trigger forms: @fragment and @"a spaced path (the closing quote is optional).
   const match = before.match(/(?:^|\s)@("([^"]*)"?|([^\s@]*))$/);

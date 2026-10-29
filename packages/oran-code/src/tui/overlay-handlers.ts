@@ -1,6 +1,14 @@
 import type { Key } from "ink";
 import type { ApprovalResponse } from "../types.js";
-import type { OverlayState, SessionOption, SessionView, TuiState } from "./types.js";
+import type {
+  DeleteConfirmTarget,
+  FollowUpOption,
+  OverlayState,
+  ProviderOption,
+  SessionOption,
+  SessionView,
+  TuiState,
+} from "./types.js";
 import { composerValue, setComposerValue, setOverlay } from "./state.js";
 import { composerCursorOffset } from "./composer.js";
 import { commandCandidates } from "./command-palette.js";
@@ -43,6 +51,9 @@ export interface OverlayHandlerContext {
   resolveQuestion(answers: Record<string, string>): void;
 }
 
+/** A list loader as the overlay context exposes it: sync or async, and possibly empty. */
+type ListOverlayLoader<T> = () => Promise<readonly T[] | undefined> | readonly T[];
+
 /**
  * Key state machine for the command palette/model/session/file-completion/follow-up/approval
  * overlays. Extracted from InkTuiApp with behavior unchanged; the mutually exclusive selection
@@ -56,33 +67,48 @@ export class OverlayHandlers {
   constructor(private readonly ctx: OverlayHandlerContext) {}
 
   async openModels(): Promise<void> {
-    if (this.ctx.rejectIfBlocked("finish or cancel the current task before switching models")) return;
-    try {
-      const options = await this.ctx.loadModels();
-      setOverlay(this.ctx.state, { kind: "models", selectedIndex: 0, options, loading: false });
-    } catch (error) {
-      setOverlay(this.ctx.state, {
-        kind: "models",
-        selectedIndex: 0,
-        options: [],
-        loading: false,
-        error: formatErrorMessage(error),
-      });
-    }
-    this.ctx.invalidate();
+    await this.openListOverlay<string>({
+      blocked: "finish or cancel the current task before switching models",
+      load: this.ctx.loadModels,
+      show: (options) => ({ kind: "models", selectedIndex: 0, options }),
+    });
   }
 
   /** Provider management list: the no-argument entry point of /connect. Rows = providers + 1 (add row). */
   async openProviders(): Promise<void> {
-    if (this.ctx.rejectIfBlocked("finish or cancel the current task before managing providers")) return;
-    if (!this.ctx.loadProviders) return;
+    await this.openListOverlay<ProviderOption>({
+      blocked: "finish or cancel the current task before managing providers",
+      load: this.ctx.loadProviders,
+      show: (options) => ({ kind: "providers", selectedIndex: 0, options }),
+    });
+  }
+
+  /**
+   * The shape the four lists share: refuse while a task holds the input, load, then show the rows.
+   * A failure lands on the status line — the one channel all four now use, rather than a panel with
+   * its own error row for one of them. Returns whether the list was opened.
+   */
+  private async openListOverlay<T>(spec: {
+    readonly blocked?: string | undefined;
+    readonly load?: ListOverlayLoader<T> | undefined;
+    /** Shown when the caller has no loader wired at all. */
+    readonly unavailable?: string | undefined;
+    readonly show: (options: T[]) => OverlayState;
+  }): Promise<boolean> {
+    if (spec.blocked && this.ctx.rejectIfBlocked(spec.blocked)) return false;
+    if (!spec.load) {
+      if (spec.unavailable) this.ctx.state.session.status = spec.unavailable;
+      return false;
+    }
     try {
-      const options = await this.ctx.loadProviders();
-      setOverlay(this.ctx.state, { kind: "providers", selectedIndex: 0, options: [...options] });
+      setOverlay(this.ctx.state, spec.show([...((await spec.load()) ?? [])]));
+      return true;
     } catch (error) {
       this.ctx.state.session.status = formatErrorMessage(error);
+      return false;
+    } finally {
+      this.ctx.invalidate();
     }
-    this.ctx.invalidate();
   }
 
   handleProvidersKey(input: string, key: Key): void {
@@ -116,93 +142,116 @@ export class OverlayHandlers {
     this.ctx.invalidate();
   }
 
-  private requestProviderDelete(selected: import("./types.js").ProviderOption): void {
+  private requestProviderDelete(selected: ProviderOption): void {
     if (this.ctx.rejectIfBlocked("finish or cancel the current task before deleting a provider")) return;
     if (this.ctx.state.overlay.kind !== "providers" || !this.ctx.onProviderDeleted) return;
-    this.ctx.state.overlay = {
-      kind: "provider-delete-confirm",
-      providerName: selected.name,
-      selectedIndex: 1,
-      returnSelectedIndex: this.ctx.state.overlay.selectedIndex,
-      options: [...this.ctx.state.overlay.options],
-    };
+    const overlay = this.ctx.state.overlay;
+    this.requestDelete(
+      { kind: "provider", providerName: selected.name, options: [...overlay.options] },
+      overlay.selectedIndex,
+    );
+  }
+
+  /** Opens the shared confirmation; it defaults to Cancel — deleting is never the default. */
+  private requestDelete(target: DeleteConfirmTarget, returnSelectedIndex: number): void {
+    this.ctx.state.overlay = { kind: "delete-confirm", target, selectedIndex: 1, returnSelectedIndex };
     this.ctx.invalidate();
   }
 
-  async handleProviderDeleteConfirmKey(input: string, key: Key): Promise<void> {
-    if (this.ctx.state.overlay.kind !== "provider-delete-confirm" || this.deletingEntry) return;
+  async handleDeleteConfirmKey(input: string, key: Key): Promise<void> {
+    if (this.ctx.state.overlay.kind !== "delete-confirm" || this.deletingEntry) return;
     const overlay = this.ctx.state.overlay;
     if (key.leftArrow || key.upArrow) this.ctx.state.overlay = { ...overlay, selectedIndex: 0 };
     else if (key.rightArrow || key.downArrow) this.ctx.state.overlay = { ...overlay, selectedIndex: 1 };
-    else if (key.escape) this.cancelProviderDeleteConfirmation();
+    else if (key.escape) this.restoreListOverlay(overlay.target, overlay.returnSelectedIndex);
     else if (isSubmitKey(input, key)) {
-      // Same as the session confirm layer: delete only when Enter lands on Delete.
-      if (overlay.selectedIndex === 0) {
-        this.deletingEntry = true;
-        try {
-          const deleted = await this.ctx.onProviderDeleted?.(overlay.providerName);
-          if (deleted) {
-            const options = (await this.ctx.loadProviders?.()) ?? [];
-            this.ctx.state.overlay = {
-              kind: "providers",
-              selectedIndex: Math.min(overlay.returnSelectedIndex, Math.max(0, options.length - 1)),
-              options: [...options],
-            };
-          }
-          // On failure the handler has already surfaced the error; stay on the confirm layer so the
-          // user can cancel.
-        } catch (error) {
-          this.ctx.state.session.status = formatErrorMessage(error);
-          this.cancelProviderDeleteConfirmation();
-        } finally {
-          this.deletingEntry = false;
-        }
-      } else this.cancelProviderDeleteConfirmation();
+      // Delete only when Enter lands on Delete. Backspace/Del used to delete regardless of the
+      // highlight, so a single press with Cancel focused destroyed the entry — that route is
+      // closed, leaving only the explicit Enter confirmation.
+      if (overlay.selectedIndex === 0) await this.confirmDelete();
+      else this.restoreListOverlay(overlay.target, overlay.returnSelectedIndex);
     }
     this.ctx.invalidate();
   }
 
-  private cancelProviderDeleteConfirmation(): void {
-    if (this.ctx.state.overlay.kind !== "provider-delete-confirm") return;
+  private async confirmDelete(): Promise<void> {
     const overlay = this.ctx.state.overlay;
-    this.ctx.state.overlay = {
-      kind: "providers",
-      selectedIndex: overlay.returnSelectedIndex,
-      options: overlay.options,
-    };
+    if (overlay.kind !== "delete-confirm") return;
+    const { target, returnSelectedIndex } = overlay;
+    this.deletingEntry = true;
+    try {
+      if (target.kind === "session") {
+        const activeSessionId = this.ctx.state.session.sessionId;
+        const session = await this.ctx.onSessionDeleted?.(target.sessionId);
+        if (!session) {
+          this.ctx.state.session.status = "session could not be deleted";
+          return;
+        }
+        if (session.id !== activeSessionId) this.ctx.restoreSession(session);
+        this.ctx.state.session.status = "session deleted";
+        const options = await this.ctx.loadSessions?.();
+        this.ctx.state.overlay = options
+          ? this.sessionOverlay(options, target.returnQuery, returnSelectedIndex)
+          : { kind: "none" };
+        return;
+      }
+      const deleted = await this.ctx.onProviderDeleted?.(target.providerName);
+      // On refusal the handler has already surfaced the error; stay on the confirmation layer so
+      // the user can still cancel.
+      if (!deleted) return;
+      const options = (await this.ctx.loadProviders?.()) ?? [];
+      this.ctx.state.overlay = {
+        kind: "providers",
+        selectedIndex: Math.min(returnSelectedIndex, Math.max(0, options.length - 1)),
+        options: [...options],
+      };
+    } catch (error) {
+      this.ctx.state.session.status = formatErrorMessage(error);
+      this.restoreListOverlay(target, returnSelectedIndex);
+    } finally {
+      this.deletingEntry = false;
+    }
+  }
+
+  /** Puts back the list the confirmation came from, exactly as it was snapshotted. */
+  private restoreListOverlay(target: DeleteConfirmTarget, selectedIndex: number): void {
+    this.ctx.state.overlay =
+      target.kind === "session"
+        ? this.sessionOverlay(target.options, target.returnQuery, selectedIndex)
+        : {
+            kind: "providers",
+            selectedIndex: Math.max(0, Math.min(selectedIndex, target.options.length - 1)),
+            options: [...target.options],
+          };
     this.ctx.invalidate();
   }
 
   async openSessions(): Promise<void> {
-    if (this.ctx.rejectIfBlocked("finish or cancel the current task before switching sessions")) return;
-    if (!this.ctx.loadSessions) return;
-    try {
-      const options = await this.ctx.loadSessions();
-      setOverlay(this.ctx.state, this.sessionOverlay(options ?? [], "", 0));
-    } catch (error) {
-      this.ctx.state.session.status = formatErrorMessage(error);
-    }
-    this.ctx.invalidate();
+    await this.openListOverlay<SessionOption>({
+      blocked: "finish or cancel the current task before switching sessions",
+      load: this.ctx.loadSessions,
+      show: (options) => this.sessionOverlay(options, "", 0),
+    });
   }
 
   async openFollowUps(): Promise<void> {
     if (this.followUpBusy) return;
-    if (!this.ctx.loadFollowUps) {
-      this.ctx.state.session.status = "follow-up queue is unavailable";
-      this.ctx.invalidate();
-      return;
-    }
     this.followUpBusy = true;
     try {
-      const options = await this.ctx.loadFollowUps();
-      this.ctx.state.overlay = { kind: "follow-ups", selectedIndex: 0, options: [...options] };
-      this.ctx.state.session.status = options.length ? `${options.length} follow-up(s) queued` : "no queued follow-ups";
-    } catch (error) {
-      this.ctx.state.session.status = formatErrorMessage(error);
+      const opened = await this.openListOverlay<FollowUpOption>({
+        load: this.ctx.loadFollowUps,
+        unavailable: "follow-up queue is unavailable",
+        show: (options) => ({ kind: "follow-ups", selectedIndex: 0, options }),
+      });
+      const overlay = this.ctx.state.overlay;
+      if (opened && overlay.kind === "follow-ups") {
+        const count = overlay.options.length;
+        this.ctx.state.session.status = count ? `${count} follow-up(s) queued` : "no queued follow-ups";
+      }
     } finally {
       this.followUpBusy = false;
+      this.ctx.invalidate();
     }
-    this.ctx.invalidate();
   }
 
   handleCommandKey(input: string, key: Key): void {
@@ -356,63 +405,17 @@ export class OverlayHandlers {
   private requestSessionDelete(selected: SessionOption): void {
     if (this.ctx.rejectIfBlocked("finish or cancel the current task before deleting a session")) return;
     if (this.deletingEntry || this.ctx.state.overlay.kind !== "sessions") return;
-    this.ctx.state.overlay = {
-      kind: "session-delete-confirm",
-      sessionId: selected.id,
-      sessionName: selected.name,
-      // Defaults to Cancel, matching the provider delete confirmation — the default for deleting
-      // is "do nothing".
-      selectedIndex: 1,
-      returnSelectedIndex: this.ctx.state.overlay.selectedIndex,
-      options: [...this.ctx.state.overlay.options],
-      returnQuery: this.ctx.state.overlay.query,
-    };
-    this.ctx.invalidate();
-  }
-
-  async handleSessionDeleteConfirmKey(input: string, key: Key): Promise<void> {
-    if (this.ctx.state.overlay.kind !== "session-delete-confirm" || this.deletingEntry) return;
     const overlay = this.ctx.state.overlay;
-    if (key.leftArrow || key.upArrow) this.ctx.state.overlay = { ...overlay, selectedIndex: 0 };
-    else if (key.rightArrow || key.downArrow) this.ctx.state.overlay = { ...overlay, selectedIndex: 1 };
-    else if (key.escape) this.cancelSessionDeleteConfirmation();
-    else if (isSubmitKey(input, key)) {
-      // Delete only when Enter lands on Delete. Backspace/Del used to delete regardless of the
-      // highlight, so a single press with Cancel focused deleted it — that route is closed, leaving
-      // only the explicit Enter confirmation.
-      if (overlay.selectedIndex === 0) {
-        this.deletingEntry = true;
-        try {
-          const activeSessionId = this.ctx.state.session.sessionId;
-          const session = await this.ctx.onSessionDeleted?.(overlay.sessionId);
-          if (session) {
-            if (session.id !== activeSessionId) this.ctx.restoreSession(session);
-            this.ctx.state.session.status = "session deleted";
-            const options = await this.ctx.loadSessions?.();
-            if (options) {
-              this.ctx.state.overlay = this.sessionOverlay(options, overlay.returnQuery, overlay.returnSelectedIndex);
-            } else {
-              this.ctx.state.overlay = { kind: "none" };
-            }
-          } else {
-            this.ctx.state.session.status = "session could not be deleted";
-          }
-        } catch (error) {
-          this.ctx.state.session.status = formatErrorMessage(error);
-          this.ctx.state.overlay = this.sessionOverlay(overlay.options, overlay.returnQuery, overlay.returnSelectedIndex);
-        } finally {
-          this.deletingEntry = false;
-        }
-      } else this.cancelSessionDeleteConfirmation();
-    }
-    this.ctx.invalidate();
-  }
-
-  private cancelSessionDeleteConfirmation(): void {
-    if (this.ctx.state.overlay.kind !== "session-delete-confirm") return;
-    const overlay = this.ctx.state.overlay;
-    this.ctx.state.overlay = this.sessionOverlay(overlay.options, overlay.returnQuery, overlay.returnSelectedIndex);
-    this.ctx.invalidate();
+    this.requestDelete(
+      {
+        kind: "session",
+        sessionId: selected.id,
+        name: selected.name,
+        options: [...overlay.options],
+        returnQuery: overlay.query,
+      },
+      overlay.selectedIndex,
+    );
   }
 
   async handleFollowUpKey(input: string, key: Key): Promise<void> {

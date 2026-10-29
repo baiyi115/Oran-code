@@ -471,12 +471,8 @@ export class InkTuiApp {
       this.overlayHandlers.handleProvidersKey(input, key);
       return;
     }
-    if (this.state.overlay.kind === "provider-delete-confirm") {
-      void this.overlayHandlers.handleProviderDeleteConfirmKey(input, key);
-      return;
-    }
-    if (this.state.overlay.kind === "session-delete-confirm") {
-      void this.overlayHandlers.handleSessionDeleteConfirmKey(input, key);
+    if (this.state.overlay.kind === "delete-confirm") {
+      void this.overlayHandlers.handleDeleteConfirmKey(input, key);
       return;
     }
     if (this.state.overlay.kind === "follow-ups") {

@@ -46,7 +46,6 @@ describe("TUI render helpers", () => {
         kind: "models" as const,
         selectedIndex: 0,
         options: ["openai/a", "openai/b"],
-        loading: false,
       },
     };
     expect(renderOverlayLines(models, [], 60)[0]?.text).toBe("Select model");
