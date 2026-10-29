@@ -48,6 +48,12 @@ function makeSpillWriter(directory: string, options: { fail?: boolean } = {}): S
 }
 
 describe("microcompact", () => {
+  /** Per-result size and older-than-window round count that push the older history over budget. */
+  const PER_RESULT_BYTES = 20_000;
+  const HISTORICAL_ROUNDS = Math.ceil(CONTEXT_LIMITS.microcompactHistoricalBytes / PER_RESULT_BYTES) + 1;
+  const ROUNDS = CONTEXT_LIMITS.microcompactKeepResults + HISTORICAL_ROUNDS;
+  const CLEARED_ROUNDS = HISTORICAL_ROUNDS - Math.floor(CONTEXT_LIMITS.microcompactHistoricalBytes / PER_RESULT_BYTES);
+
   async function runCase(toolResultBytes: number, rounds: number) {
     const workspace = await mkdtemp(join(tmpdir(), "oran-pruner-"));
     const writer = makeSpillWriter(workspace);
@@ -60,14 +66,14 @@ describe("microcompact", () => {
     return { workspace, writer, messages: result.messages, result };
   }
 
-  it("clears the body of older tool results and keeps the recent ones verbatim", async () => {
-    const rounds = CONTEXT_LIMITS.microcompactKeepResults + 3;
-    const { workspace, writer, messages } = await runCase(6_000, rounds);
+  it("keeps older results while they fit the budget and clears the oldest first past it", async () => {
+    const { workspace, writer, messages } = await runCase(PER_RESULT_BYTES, ROUNDS);
     try {
       const toolMessages = messages.filter((message) => message.role === "tool");
-      expect(toolMessages).toHaveLength(rounds);
+      expect(toolMessages).toHaveLength(ROUNDS);
+      expect(CLEARED_ROUNDS).toBeGreaterThan(0);
       for (const [index, message] of toolMessages.entries()) {
-        if (index < 3) {
+        if (index < CLEARED_ROUNDS) {
           expect(message.content).toContain("<cleared-tool-result>");
           expect(message.content).toContain(`.oran/tool-results/call_${index}`);
           // The original text is still on disk and can be read back.
@@ -84,14 +90,27 @@ describe("microcompact", () => {
     }
   });
 
+  it("keeps a short conversation's older results verbatim", async () => {
+    // Older than the keep window but well under the byte budget: clearing here would only cost a
+    // re-read a couple of turns later.
+    const rounds = CONTEXT_LIMITS.microcompactKeepResults + 3;
+    const { workspace, writer, messages, result } = await runCase(6_000, rounds);
+    try {
+      expect(result.messages.filter((message) => message.content?.startsWith("<cleared-tool-result>"))).toHaveLength(0);
+      expect(writer.calls).toHaveLength(0);
+      expect(messages.filter((message) => message.role === "tool")).toHaveLength(rounds);
+    } finally {
+      await rm(workspace, { recursive: true, force: true });
+    }
+  });
+
   it("leaves small results alone and never clears them twice", async () => {
-    const rounds = CONTEXT_LIMITS.microcompactKeepResults + 2;
     const workspace = await mkdtemp(join(tmpdir(), "oran-pruner-"));
     const writer = makeSpillWriter(workspace);
     const messages: Message[] = [{ role: "user", content: "read files" }];
     messages.push(...toolRound("call_small", "tiny output"));
-    for (let index = 0; index < rounds; index += 1) {
-      messages.push(...toolRound(`call_${index}`, `${"y".repeat(6_000)}#${index}`));
+    for (let index = 0; index < ROUNDS; index += 1) {
+      messages.push(...toolRound(`call_${index}`, `${"y".repeat(PER_RESULT_BYTES)}#${index}`));
     }
     const state = ledger();
     try {
@@ -101,7 +120,7 @@ describe("microcompact", () => {
       expect(writer.calls).not.toContain("call_small");
 
       const clearedBefore = first.messages.filter((m) => m.content?.startsWith("<cleared-tool-result>")).length;
-      expect(clearedBefore).toBe(2);
+      expect(clearedBefore).toBe(CLEARED_ROUNDS);
       const second = await offloadConversation(state, first.messages, writer.spill);
       expect(second.replacementCount).toBe(0);
       expect(second.messages.filter((m) => m.content?.startsWith("<cleared-tool-result>")).length).toBe(clearedBefore);
@@ -111,12 +130,11 @@ describe("microcompact", () => {
   });
 
   it("keeps the original content when spilling fails", async () => {
-    const rounds = CONTEXT_LIMITS.microcompactKeepResults + 1;
     const workspace = await mkdtemp(join(tmpdir(), "oran-pruner-"));
     const writer = makeSpillWriter(workspace, { fail: true });
     const messages: Message[] = [{ role: "user", content: "read files" }];
-    for (let index = 0; index < rounds; index += 1) {
-      messages.push(...toolRound(`call_${index}`, `${"z".repeat(5_000)}#${index}`));
+    for (let index = 0; index < ROUNDS; index += 1) {
+      messages.push(...toolRound(`call_${index}`, `${"z".repeat(PER_RESULT_BYTES)}#${index}`));
     }
     try {
       const output = await offloadConversation(ledger(), messages, writer.spill);

@@ -177,6 +177,11 @@ export interface ProviderRequestOptions {
   signal?: AbortSignal;
   /** Maximum time to wait for the next SSE chunk before treating the stream as stalled. */
   idleTimeoutMs?: number;
+  /**
+   * Per-request output cap, overriding `ModelConfig.maxTokens`. Set when a reasoning-only
+   * truncation shows the configured limit is too small for this model's thinking budget.
+   */
+  maxTokens?: number;
 }
 
 export interface ModelProvider {

@@ -49,13 +49,19 @@ export const CONTEXT_LIMITS = Object.freeze({
   previewBytes: 8_192,
   previewLines: 80,
   /**
-   * microcompact: how many of the most recent tool results keep their verbatim text; older ones
-   * have their body cleared (they can still be read back from disk).
+   * microcompact: how many of the most recent tool results keep their verbatim text whatever the
+   * budget below says.
    */
   microcompactKeepResults: 8,
   /**
-   * microcompact: historical results smaller than this byte count are not worth clearing and keep
-   * their verbatim text.
+   * microcompact: byte budget for the tool results older than the keep window. Oldest results are
+   * cleared only while the older history exceeds it, so a short session keeps everything it just
+   * read instead of losing evidence a couple of turns later and reading it again.
+   */
+  microcompactHistoricalBytes: 96_000,
+  /**
+   * microcompact: results smaller than this byte count are not worth clearing and keep their
+   * verbatim text even when the budget is exceeded.
    */
   microcompactMinBytes: 4_000,
 });

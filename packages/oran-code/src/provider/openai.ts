@@ -90,7 +90,7 @@ export class OpenAICompatibleProvider implements ModelProvider {
       fetch(this.endpoint, {
         method: "POST",
         headers: this.headers(),
-        body: JSON.stringify(this.payload(messages, tools, false)),
+        body: JSON.stringify(this.payload(messages, tools, false, options?.maxTokens)),
         ...(signal ? { signal } : {}),
       });
     const response = await this.postWithReasoningFallback(request);
@@ -109,7 +109,7 @@ export class OpenAICompatibleProvider implements ModelProvider {
         fetch(this.endpoint, {
           method: "POST",
           headers: this.headers(),
-          body: JSON.stringify(this.payload(messages, tools, true)),
+          body: JSON.stringify(this.payload(messages, tools, true, options?.maxTokens)),
           signal: request.signal,
         });
       const response = await this.postWithReasoningFallback(send);
@@ -189,6 +189,7 @@ export class OpenAICompatibleProvider implements ModelProvider {
     messages: Message[],
     tools: Record<string, unknown>[] | undefined,
     stream: boolean,
+    maxTokens?: number,
   ): Record<string, unknown> {
     const options = requestOptions(this.config.options);
     if (this.sendsReasoningEffort()) options.reasoning_effort = this.config.reasoningEffort;
@@ -206,7 +207,7 @@ export class OpenAICompatibleProvider implements ModelProvider {
       model: this.config.model,
       messages: toOpenAiMessages(messages, this.echoesReasoning()),
       temperature: this.config.temperature,
-      max_tokens: this.config.maxTokens,
+      max_tokens: maxTokens ?? this.config.maxTokens,
       stream,
       ...(tools?.length ? { tools, tool_choice: "auto" } : {}),
     };

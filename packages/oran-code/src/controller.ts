@@ -26,6 +26,7 @@ import type {
   Message,
   ModelProvider,
   ModelResponse,
+  PermissionMode,
   RuntimeConfig,
   RuntimeEvent,
   RuntimeEventPayloads,
@@ -104,6 +105,11 @@ export interface TaskControllerOptions {
   registry: ToolRegistry;
   trace: TraceStore;
   permission?: PermissionPolicy;
+  /**
+   * Live permission mode. The policy is created once per task but the user can switch modes while
+   * it runs (shift+tab), so the mode is read through this instead of the config snapshot.
+   */
+  permissionMode?: () => PermissionMode;
   approvalCallback?: ApprovalCallback;
   eventCallback?: RuntimeEventCallback;
   conversationCallback?: ConversationCallback;
@@ -204,7 +210,7 @@ export class TaskController {
     this.provider = options.provider;
     this.registry = options.registry;
     this.trace = options.trace;
-    this.permission = options.permission ?? new PermissionPolicy(options.config.permissions);
+    this.permission = options.permission ?? new PermissionPolicy(options.config.permissions, options.permissionMode);
     this.permission.registerTools(options.registry.list());
     this.approvalCallback = options.approvalCallback ?? (async () => false);
     this.eventCallback = options.eventCallback ?? (() => undefined);
@@ -259,7 +265,6 @@ export class TaskController {
       contextManager: this.contextManager,
       trace: this.trace,
       permission: this.permission,
-      logger: (message: string) => this.logger(message),
       debugLogger: (message: string) => this.debugLogger(message),
       readonlyCache: this.readonlyCache,
       snapshotStore: this.snapshotStore,
@@ -484,8 +489,13 @@ export class TaskController {
         );
         messages = request.messages;
         const response = request.response;
-        messages.push(assistantMessage(response));
-        this.syncConversation(messages);
+        // A truncated response with no text and no tool calls (the output limit spent on reasoning)
+        // has nothing to record: persisting an empty assistant turn only pollutes the conversation
+        // and some providers reject empty assistant messages.
+        if (response.text.trim() || response.toolCalls.length > 0) {
+          messages.push(assistantMessage(response));
+          this.syncConversation(messages);
+        }
         // A pending structured rehearsal is judged on this reply before any
         // tool of the turn executes; divergence twice in a row pauses.
         const rehearsalPause = await this.consumeRehearsal(task, response.text);
@@ -534,16 +544,27 @@ export class TaskController {
             this.truncatedTextChunks.push(response.text.trim());
           }
           const receivedChars = this.truncatedTextChunks.reduce((total, chunk) => total + chunk.length, 0);
+          // Nothing was received at all: the model spent the whole output budget on reasoning. There
+          // is no text to "continue", and repeating the same limit would only be spent on reasoning
+          // again, so the retry raises the per-request output budget instead.
+          const reasoningOnly = isTextOnlyTruncation(response) && !response.text.trim();
           this.appendDiagnosticStep("model_truncated", {
             finishReason: reason,
             recovery: this.truncationRecoveries,
             limit: MAX_TRUNCATION_RECOVERIES,
             textOnly: isTextOnlyTruncation(response),
+            reasoningOnly,
             receivedChars,
             droppedToolCalls: response.truncatedToolCalls ?? 0,
             finalTurn,
           });
-          if (finalTurn || this.truncationRecoveries > MAX_TRUNCATION_RECOVERIES) {
+          const canRetry =
+            (!finalTurn || reasoningOnly) && this.truncationRecoveries <= MAX_TRUNCATION_RECOVERIES;
+          const escalatedTo = canRetry && reasoningOnly ? this.turnRequester.escalateOutputTokenLimit() : undefined;
+          // A reasoning-only truncation did not consume the turn (nothing was produced), so hand it
+          // back: otherwise the retry cannot start once the turn budget is already used up.
+          if (escalatedTo !== undefined) loop.refundTurn();
+          if (!canRetry || (reasoningOnly && escalatedTo === undefined)) {
             const assembled = this.assembleTruncatedText();
             if (assembled) {
               task.result = `${assembled}${truncationNote(this.truncationRecoveries)}`;
@@ -561,20 +582,28 @@ export class TaskController {
             await this.emit("error", {
               message:
                 `Model output was truncated by the output token limit ${this.truncationRecoveries} times in a row ` +
-                `(finish_reason: ${reason}) and no partial answer was received. Stopping instead of retrying forever; ` +
+                `(finish_reason: ${reason})` +
+                (reasoningOnly ? " while still producing reasoning, so no answer text was received" : "") +
+                ` and no partial answer was received. Stopping instead of retrying forever; ` +
                 `ask for smaller increments (one file or one function per step) or raise the model output limit.`,
             });
             return task;
           }
-          this.pendingTruncationNotice =
-            `Your previous response was cut off by the output token limit (finish_reason: ${reason}); ` +
-            `nothing after the cut-off was received` +
-            (receivedChars ? ` (about ${receivedChars} characters so far)` : "") +
-            `. Continue from exactly where it stopped, in smaller pieces (e.g. one section or one file per turn), ` +
-            `do not repeat content you already emitted, and re-issue any tool call you intended in full.`;
+          this.pendingTruncationNotice = reasoningOnly
+            ? `Your previous response hit the output token limit while still reasoning and returned no visible text. ` +
+              `The output budget is now ${escalatedTo} tokens. Answer directly and concisely; ` +
+              `skip restating or expanding your reasoning, and re-issue in full any tool call you intended.`
+            : `Your previous response was cut off by the output token limit (finish_reason: ${reason}); ` +
+              `nothing after the cut-off was received` +
+              (receivedChars ? ` (about ${receivedChars} characters so far)` : "") +
+              `. Continue from exactly where it stopped, in smaller pieces (e.g. one section or one file per turn), ` +
+              `do not repeat content you already emitted, and re-issue any tool call you intended in full.`;
           this.logger(
-            `Model output was truncated (finish_reason: ${reason}); asking the model to continue in smaller pieces ` +
-              `(${this.truncationRecoveries}/${MAX_TRUNCATION_RECOVERIES}).`,
+            reasoningOnly
+              ? `Model output was truncated by reasoning with no text received; raising the output limit to ` +
+                  `${escalatedTo} tokens (${this.truncationRecoveries}/${MAX_TRUNCATION_RECOVERIES}).`
+              : `Model output was truncated (finish_reason: ${reason}); asking the model to continue in smaller pieces ` +
+                  `(${this.truncationRecoveries}/${MAX_TRUNCATION_RECOVERIES}).`,
           );
           continue;
         }

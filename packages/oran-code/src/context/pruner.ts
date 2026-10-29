@@ -66,9 +66,10 @@ export function isTransientRequestMessage(message: Message): boolean {
  * Applies the active-context tool-result limits.
  *
  * Two-stage strategy, layered by threshold and non-overlapping:
- * 1. microcompact (deterministic, no LLM): clear the body of "early and medium-sized" tool
- *    results, keeping only the byte count and the read-back path — these results would never
- *    trigger offload and would otherwise accumulate without bound in a long session;
+ * 1. microcompact (deterministic, no LLM): once the tool results older than the keep window exceed
+ *    `microcompactHistoricalBytes`, the oldest of them are cleared down to that budget (keeping only
+ *    the byte count and the read-back path) — these results would never trigger offload and would
+ *    otherwise accumulate without bound in a long session;
  * 2. offload (per-result/per-round budget): over-limit results are spilled to disk with a
  *    preview kept.
  *
@@ -251,10 +252,14 @@ export async function offloadCandidates(
 }
 
 /**
- * microcompact: clear the body of "early and large enough" tool results.
+ * microcompact: clear the body of "early and large enough" tool results once the older history is
+ * over budget.
  *
  * - Only touches records older than the most recent `microcompactKeepResults`; the current round
  *   and recent results keep their verbatim text;
+ * - Clearing is budget-driven, oldest first: while the older results still fit
+ *   `microcompactHistoricalBytes` nothing is cleared, so evidence a task just gathered survives more
+ *   than a couple of turns and is not read again;
  * - Results smaller than `microcompactMinBytes` are left as-is (clearing a small result only loses
  *   information without saving budget);
  * - Content is spilled to disk before being cleared, and a failed spill keeps the verbatim text,
@@ -270,7 +275,8 @@ async function microcompactConversation(
     if (message.role === "tool" && message.toolCallId) toolIndices.push(index);
   }
   const keepFrom = Math.max(0, toolIndices.length - CONTEXT_LIMITS.microcompactKeepResults);
-  let cleared = 0;
+  const candidates: Array<{ index: number; id: string; content: string; bytes: number }> = [];
+  let retainedBytes = 0;
   for (const index of toolIndices.slice(0, keepFrom)) {
     const message = messages[index]!;
     const id = message.toolCallId!;
@@ -279,11 +285,18 @@ async function microcompactConversation(
     if (content.startsWith("<offloaded-tool-result>") || content.startsWith("<cleared-tool-result>")) continue;
     const bytes = Buffer.byteLength(content, "utf8");
     if (bytes < CONTEXT_LIMITS.microcompactMinBytes) continue;
-    const relativePath = await spill(id, content);
+    candidates.push({ index, id, content, bytes });
+    retainedBytes += bytes;
+  }
+  let cleared = 0;
+  for (const candidate of candidates) {
+    if (retainedBytes <= CONTEXT_LIMITS.microcompactHistoricalBytes) break;
+    const relativePath = await spill(candidate.id, candidate.content);
     if (relativePath === undefined) continue;
-    const replacement = buildClearedReplacement(bytes, relativePath);
-    message.content = replacement;
-    ledger.replacements.set(id, replacement);
+    const replacement = buildClearedReplacement(candidate.bytes, relativePath);
+    messages[candidate.index]!.content = replacement;
+    ledger.replacements.set(candidate.id, replacement);
+    retainedBytes -= candidate.bytes;
     cleared += 1;
   }
   return { cleared };

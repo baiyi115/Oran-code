@@ -67,7 +67,9 @@ export class ContextManager {
    * the full JSON is costly, so memoize the most recent raw estimate keyed by element object
    * identity (messages are immutable once queued).
    */
-  private estimateMemo: { messages: readonly Message[]; tools: unknown; tokens: number } | undefined;
+  private estimateMemo:
+    | { messages: readonly Message[]; tools: readonly Record<string, unknown>[]; tokens: number }
+    | undefined;
 
   constructor(options: ContextManagerOptions) {
     this.workspace = resolve(options.workspace);
@@ -168,9 +170,12 @@ export class ContextManager {
 
   private rawEstimate(messages: readonly Message[], tools: readonly Record<string, unknown>[]): number {
     const memo = this.estimateMemo;
+    // Two empty lists are the same tool set even when the caller wrote its own `[]` literal; that
+    // identity-only comparison never matched, so every call re-serialized the whole conversation.
+    const sameTools = memo !== undefined && (memo.tools === tools || (memo.tools.length === 0 && tools.length === 0));
     if (
       memo &&
-      memo.tools === tools &&
+      sameTools &&
       memo.messages.length === messages.length &&
       memo.messages.every((message, index) => message === messages[index])
     ) {

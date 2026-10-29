@@ -5,6 +5,7 @@ import type {
   Message,
   ModelProvider,
   ModelResponse,
+  ProviderRequestOptions,
   RuntimeConfig,
   RuntimeEventPayloads,
 } from "../types.js";
@@ -35,6 +36,13 @@ const BUDGET_COMPACTION_MIN_REQUEST_TOKENS = 32_000;
 const BUDGET_COMPACTION_HEADROOM = 1.5;
 const BUDGET_COMPACTION_GROWTH_FACTOR = 1.25;
 const BUDGET_COMPACTION_COOLDOWN_TURNS = 3;
+/**
+ * Ceiling for the escalating output budget. A reasoning-only truncation raises the per-request
+ * max_tokens (4096 -> 8192 -> 16384); going higher risks endpoints rejecting a value above what
+ * the model actually supports, and the truncation recovery stops after MAX_TRUNCATION_RECOVERIES
+ * attempts anyway.
+ */
+const MAX_OUTPUT_TOKEN_LIMIT = 16_384;
 
 /**
  * Provider stream protocol contract violation (still emitting events after the response completed,
@@ -80,14 +88,34 @@ export class TurnRequester {
   private modelResponseStepId: number | undefined;
   private lastContextCompactionTurn = Number.NEGATIVE_INFINITY;
   private contextCompactionFloorTokens = 0;
+  private outputTokenLimit: number;
 
-  constructor(private readonly ports: TurnRequesterPorts) {}
+  constructor(private readonly ports: TurnRequesterPorts) {
+    this.outputTokenLimit = ports.config.model.maxTokens;
+  }
 
   resetForTask(): void {
     this.turnSequence = 0;
     this.modelResponseStepId = undefined;
     this.lastContextCompactionTurn = Number.NEGATIVE_INFINITY;
     this.contextCompactionFloorTokens = 0;
+    this.outputTokenLimit = this.ports.config.model.maxTokens;
+  }
+
+  get currentOutputTokenLimit(): number {
+    return this.outputTokenLimit;
+  }
+
+  /**
+   * Raise the per-request output budget after the model spent the whole limit on reasoning and
+   * returned no text. Returns the new limit, or undefined when it is already at the ceiling (so
+   * the caller gives up instead of repeating an identical request).
+   */
+  escalateOutputTokenLimit(): number | undefined {
+    const next = Math.min(MAX_OUTPUT_TOKEN_LIMIT, this.outputTokenLimit * 2);
+    if (next <= this.outputTokenLimit) return undefined;
+    this.outputTokenLimit = next;
+    return next;
   }
 
   get currentTurnSequence(): number {
@@ -408,7 +436,10 @@ export class TurnRequester {
           tail: summarizeMessageTail(messages),
         }),
       );
-      const providerOptions = this.ports.getAbortSignal() ? { signal: this.ports.getAbortSignal()! } : undefined;
+      const providerOptions: ProviderRequestOptions = {
+        ...(this.ports.getAbortSignal() ? { signal: this.ports.getAbortSignal()! } : {}),
+        maxTokens: this.outputTokenLimit,
+      };
       const modelStartedAt = Date.now();
       for await (const chunk of this.ports.provider.streamResponse(messages, tools, providerOptions)) {
         streamed ||= chunk.streamed;

@@ -154,6 +154,15 @@ export class AgentLoop {
     this.turnExecutions = [];
   }
 
+  /**
+   * Give back the turn just recorded for a request that produced neither text nor tool calls
+   * (typically the output limit spent on reasoning). The retry then fits inside the same budget,
+   * including on the final turn, where it stays a finalize request.
+   */
+  refundTurn(): void {
+    if (this.turns > 0) this.turns -= 1;
+  }
+
   recordUsage(usage: Record<string, number>): void {
     if (!Object.keys(usage).length) return;
     const normalized = normalizeTokenUsage(usage);

@@ -42,7 +42,7 @@ export class AnthropicProvider implements ModelProvider {
     const response = await fetch(this.endpoint, {
       method: "POST",
       headers: this.headers(),
-      body: JSON.stringify(this.payload(messages, tools, false)),
+      body: JSON.stringify(this.payload(messages, tools, false, options?.maxTokens)),
       ...(signal ? { signal } : {}),
     });
     if (!response.ok)
@@ -61,7 +61,7 @@ export class AnthropicProvider implements ModelProvider {
       const response = await fetch(this.endpoint, {
         method: "POST",
         headers: this.headers(),
-        body: JSON.stringify(this.payload(messages, tools, true)),
+        body: JSON.stringify(this.payload(messages, tools, true, options?.maxTokens)),
         signal: request.signal,
       });
       if (!response.ok)
@@ -184,6 +184,7 @@ export class AnthropicProvider implements ModelProvider {
     messages: Message[],
     tools: Record<string, unknown>[] | undefined,
     stream: boolean,
+    maxTokens?: number,
   ): Record<string, unknown> {
     const options = requestOptions(this.config.options);
     delete options.protocol;
@@ -200,7 +201,7 @@ export class AnthropicProvider implements ModelProvider {
     return {
       ...options,
       model: this.config.model,
-      max_tokens: this.config.maxTokens,
+      max_tokens: maxTokens ?? this.config.maxTokens,
       temperature: this.config.temperature,
       stream,
       ...(system ? { system } : {}),
