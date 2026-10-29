@@ -7,6 +7,7 @@ import { questionDialogLines } from "./question-dialog.js";
 import { currentSessionLine, filterSessionOptions, sessionOptionLabel, sessionSearchLine } from "./session-list.js";
 import { providersListLines } from "./providers-list.js";
 import { deleteConfirmLines } from "./delete-confirm-dialog.js";
+import { taskListLines } from "./task-list.js";
 import { ANSI, dimHorizontalRule } from "./theme.js";
 import { highlightSelection, overlayLine, type OverlayLine } from "./overlay/select-list.js";
 import { abbreviatePath, graphemeWidth, graphemes, truncateVisible, visibleWidth } from "./text-width.js";
@@ -156,6 +157,8 @@ export function renderOverlayLines(
     }
     case "providers":
       return providersListLines(state.overlay.options, state.overlay.selectedIndex, width);
+    case "tasks":
+      return taskListLines(state.overlay.options, state.overlay.selectedIndex, width);
     case "follow-ups": {
       const overlay = state.overlay;
       return [

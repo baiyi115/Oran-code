@@ -7,6 +7,7 @@ import type {
   ProviderOption,
   SessionOption,
   SessionView,
+  TuiBackgroundTask,
   TuiState,
 } from "./types.js";
 import { composerValue, setComposerValue, setOverlay } from "./state.js";
@@ -14,7 +15,8 @@ import { composerCursorOffset } from "./composer.js";
 import { commandCandidates } from "./command-palette.js";
 import { approvalResponse, moveSelection, stepSelection } from "./interaction.js";
 import { filterSessionOptions } from "./session-list.js";
-import { graphemes } from "./text-width.js";
+import { taskDetailLines } from "./task-list.js";
+import { graphemes, wrapDisplayText } from "./text-width.js";
 import { formatErrorMessage } from "../error-format.js";
 import { isDeleteBackward, isDeleteForward, isSessionDeleteKey, isSubmitKey } from "./keys.js";
 
@@ -37,6 +39,10 @@ export interface OverlayHandlerContext {
   readonly openConnect?: () => void;
   readonly loadFollowUps?: () => Promise<import("./types.js").FollowUpOption[]> | import("./types.js").FollowUpOption[];
   readonly onFollowUpCancelled?: (id: string) => Promise<boolean> | boolean;
+  /** Background tasks (subagents and shell jobs) behind the /tasks list. */
+  readonly getBackgroundTasks?: () => readonly TuiBackgroundTask[] | Promise<readonly TuiBackgroundTask[]>;
+  /** Content width an overlay body can use, for views that pre-wrap their text. */
+  contentWidth?(): number;
   invalidate(): void;
   rejectIfBlocked(message: string): boolean;
   refreshContext(): void;
@@ -93,6 +99,8 @@ export class OverlayHandlers {
     readonly load?: ListOverlayLoader<T> | undefined;
     /** Shown when the caller has no loader wired at all. */
     readonly unavailable?: string | undefined;
+    /** Shown instead of opening an empty list, which would be a dead end. */
+    readonly empty?: string | undefined;
     readonly show: (options: T[]) => OverlayState;
   }): Promise<boolean> {
     if (spec.blocked && this.ctx.rejectIfBlocked(spec.blocked)) return false;
@@ -101,7 +109,12 @@ export class OverlayHandlers {
       return false;
     }
     try {
-      setOverlay(this.ctx.state, spec.show([...((await spec.load()) ?? [])]));
+      const items = [...((await spec.load()) ?? [])];
+      if (!items.length && spec.empty) {
+        this.ctx.state.session.status = spec.empty;
+        return false;
+      }
+      setOverlay(this.ctx.state, spec.show(items));
       return true;
     } catch (error) {
       this.ctx.state.session.status = formatErrorMessage(error);
@@ -252,6 +265,42 @@ export class OverlayHandlers {
       this.followUpBusy = false;
       this.ctx.invalidate();
     }
+  }
+
+  /**
+   * `/tasks`: the reviewable list. Unlike the panel above the composer, which drops a finished task
+   * after a minute, this keeps every task the session knows about and opens its full output.
+   */
+  async openTasks(): Promise<void> {
+    await this.openListOverlay<TuiBackgroundTask>({
+      load: this.ctx.getBackgroundTasks,
+      unavailable: "background tasks are unavailable",
+      empty: "No background tasks (subagents or shell jobs) found.",
+      show: (options) => ({ kind: "tasks", selectedIndex: 0, options }),
+    });
+  }
+
+  handleTaskKey(input: string, key: Key): void {
+    if (this.ctx.state.overlay.kind !== "tasks") return;
+    const overlay = this.ctx.state.overlay;
+    if (key.upArrow || key.downArrow) {
+      this.ctx.state.overlay = {
+        ...overlay,
+        selectedIndex: stepSelection(overlay.selectedIndex, key.upArrow ? -1 : 1, overlay.options.length),
+      };
+    } else if (key.escape) this.ctx.state.overlay = { kind: "none" };
+    else if (isSubmitKey(input, key)) {
+      const selected = overlay.options[overlay.selectedIndex];
+      if (selected) this.openTaskDetails(selected, overlay);
+    }
+    this.ctx.invalidate();
+  }
+
+  private openTaskDetails(task: TuiBackgroundTask, returnTo: OverlayState): void {
+    const width = Math.max(20, this.ctx.contentWidth?.() ?? 78);
+    const lines = taskDetailLines(task).flatMap((line) => (line ? wrapDisplayText(line, width) : [""]));
+    this.ctx.state.overlay = { kind: "details", title: `Task: ${task.name}`, lines, returnTo };
+    this.ctx.invalidate();
   }
 
   handleCommandKey(input: string, key: Key): void {

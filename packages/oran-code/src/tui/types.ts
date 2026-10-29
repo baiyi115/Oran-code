@@ -147,6 +147,11 @@ export interface TuiBackgroundTask {
   readonly startedAt: string;
   readonly endedAt?: string | undefined;
   readonly error?: string | undefined;
+  /**
+   * Full result text, shown when a task is opened from the task list. The transcript's background
+   * notification truncates it, so this is the only way to read a long subagent report in the TUI.
+   */
+  readonly output?: string | undefined;
 }
 
 export interface TuiSessionState {
@@ -282,6 +287,7 @@ export type OverlayState =
       returnSelectedIndex: number;
     }
   | { kind: "follow-ups"; selectedIndex: number; options: FollowUpOption[] }
+  | { kind: "tasks"; selectedIndex: number; options: TuiBackgroundTask[] }
   | {
       kind: "files";
       query: string;
@@ -297,6 +303,8 @@ export type OverlayState =
       lines: string[];
       /** Scroll distance from the bottom: 0 = at the start of the content, >0 = scrolled up. */
       scrollOffset?: number;
+      /** Overlay to reopen when the details view closes; absent closes to no overlay. */
+      returnTo?: OverlayState | undefined;
     }
   | {
       kind: "connect";

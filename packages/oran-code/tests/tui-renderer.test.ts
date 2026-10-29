@@ -255,7 +255,10 @@ describe("TuiTranscriptRenderer", () => {
       expect(rows).toEqual([{ text: "✓ done-agent · completed 4.0s", tone: "done" }]);
 
       const later = fixedNow + TASK_PANEL_RECENT_DONE_MS + 1_000;
-      expect(subagentTaskLines([doneTask], 0, later, 100)).toEqual([]);
+      // Past the window the task leaves the panel, but the history stays reachable through /tasks.
+      expect(subagentTaskLines([doneTask], 0, later, 100)).toEqual([
+        { text: "✓ 1 finished · /tasks to review", tone: "done" },
+      ]);
     });
 
     it("marks failed subagents and skips shell jobs", () => {

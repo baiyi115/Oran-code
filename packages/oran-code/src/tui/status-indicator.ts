@@ -64,7 +64,13 @@ export function subagentTaskLines(
     return Number.isFinite(endedAt) && now - endedAt <= TASK_PANEL_RECENT_DONE_MS;
   });
   const ordered = [...active, ...finished];
-  if (ordered.length === 0) return [];
+  if (ordered.length === 0) {
+    // Nothing running and nothing recent: the finished tasks have left the panel, but they are
+    // still in the task list. Keep one row so the history stays reachable instead of just vanishing.
+    const failed = subagents.filter((task) => task.status !== "completed").length;
+    const detail = failed > 0 ? `${subagents.length - failed} done · ${failed} failed` : `${subagents.length} finished`;
+    return [{ text: `${failed > 0 ? "✗" : "✓"} ${detail} · /tasks to review`, tone: failed > 0 ? "failed" : "done" }];
+  }
 
   const rowLimit = Math.max(1, Math.floor(maxRows));
   // The "+N more" row occupies a line itself, so the hidden count is computed against limit-1.
@@ -117,10 +123,7 @@ function buildTaskPanelRow(task: TuiBackgroundTask, tick: number, now: number, w
 }
 
 /** Live indicator for background shell jobs (dev server / build): counted and worded apart from subagents. */
-function formatBackgroundJobsIndicator(
-  tasks: readonly TuiBackgroundTask[],
-  now = Date.now(),
-): string | undefined {
+function formatBackgroundJobsIndicator(tasks: readonly TuiBackgroundTask[], now = Date.now()): string | undefined {
   const running = tasks.filter((task) => task.kind === "job" && task.status === "running");
   if (running.length === 0) return undefined;
   const first = running[0]!;

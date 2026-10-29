@@ -47,6 +47,8 @@ export interface SessionCommandContext {
   handleModel(argument: string): Promise<void>;
   handleConnect(argument: string): Promise<void>;
   handleSessionCommand(argument: string): Promise<void>;
+  /** Opens the interactive task list; false when there is no TUI and the caller must print text. */
+  openTaskList(): Promise<boolean>;
   handlePermissionCommand(argument: string): Promise<void>;
   changePermissionMode(mode: PermissionMode): Promise<void>;
   runManualCompaction(): Promise<void>;
@@ -144,6 +146,16 @@ export class SessionCommandRouter {
       case "session":
         await this.ctx.handleSessionCommand(argument);
         return;
+      case "tasks": {
+        // The TUI list can open a task's full output; the readline side gets the text form.
+        if (argument) {
+          this.ctx.renderer().error("/tasks does not accept arguments");
+          return;
+        }
+        if (await this.ctx.openTaskList()) return;
+        this.ctx.renderer().markdown("/tasks", await this.taskListOutput());
+        return;
+      }
       case "permission":
         await this.ctx.handlePermissionCommand(argument);
         return;
@@ -225,6 +237,32 @@ export class SessionCommandRouter {
     }
   }
 
+  /**
+   * `/tasks` text form, used when no TUI is around to open the interactive list. The TUI path lives
+   * in the action switch below; both read the same snapshot.
+   */
+  private async taskListOutput(): Promise<string> {
+    const tasks = await this.ctx.backgroundTasks();
+    if (!tasks.length) return "No background tasks (subagents or shell jobs) found.";
+    const lines: string[] = ["Background Tasks (subagents & shell jobs):"];
+    for (const task of tasks) {
+      const role = task.definitionName ? ` [${task.definitionName}]` : "";
+      const start = Date.parse(task.startedAt);
+      const end = task.endedAt ? Date.parse(task.endedAt) : Date.now();
+      const duration = Number.isFinite(start) ? ` (${((end - start) / 1000).toFixed(1)}s)` : "";
+      const icon =
+        task.status === "completed" ? "✓" : task.status === "running" ? "⠋" : task.status === "queued" ? "⏳" : "✗";
+      lines.push(`  ${icon} ${task.id}${role}: ${task.name} — ${task.status}${duration}`);
+      if (task.error) {
+        lines.push(`    Error: ${task.error.slice(0, 160)}`);
+      } else if (task.output && (task.status === "completed" || task.status === "failed")) {
+        const firstLine = task.output.trim().split("\n")[0] ?? "";
+        if (firstLine) lines.push(`    Result: ${firstLine.slice(0, 140)}`);
+      }
+    }
+    return lines.join("\n");
+  }
+
   private async localOutput(command: SlashCommand, argument: string): Promise<string> {
     switch (command.name) {
       case "/help": {
@@ -275,28 +313,6 @@ export class SessionCommandRouter {
         } catch {
           return "Git worktree information is unavailable for this workspace.";
         }
-      }
-      case "/tasks":
-      case "/subagents": {
-        const tasks = await this.ctx.backgroundTasks();
-        if (!tasks.length) return "No background tasks (subagents or shell jobs) found.";
-        const lines: string[] = ["Background Tasks (subagents & shell jobs):"];
-        for (const task of tasks) {
-          const role = task.definitionName ? ` [${task.definitionName}]` : "";
-          const start = Date.parse(task.startedAt);
-          const end = task.endedAt ? Date.parse(task.endedAt) : Date.now();
-          const duration = Number.isFinite(start) ? ` (${((end - start) / 1000).toFixed(1)}s)` : "";
-          const icon =
-            task.status === "completed" ? "✓" : task.status === "running" ? "⠋" : task.status === "queued" ? "⏳" : "✗";
-          lines.push(`  ${icon} ${task.id}${role}: ${task.name} — ${task.status}${duration}`);
-          if (task.error) {
-            lines.push(`    Error: ${task.error.slice(0, 160)}`);
-          } else if (task.output && (task.status === "completed" || task.status === "failed")) {
-            const firstLine = task.output.trim().split("\n")[0] ?? "";
-            if (firstLine) lines.push(`    Result: ${firstLine.slice(0, 140)}`);
-          }
-        }
-        return lines.join("\n");
       }
       case "/graph": {
         if (argument) return "Usage: /graph";

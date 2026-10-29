@@ -193,6 +193,8 @@ export class InkTuiApp {
       onModelSelected: (reference) => options.onModelSelected(reference),
       ...(options.loadFollowUps ? { loadFollowUps: () => options.loadFollowUps!() } : {}),
       ...(options.onFollowUpCancelled ? { onFollowUpCancelled: (id: string) => options.onFollowUpCancelled!(id) } : {}),
+      ...(options.getBackgroundTasks ? { getBackgroundTasks: () => options.getBackgroundTasks!() } : {}),
+      contentWidth: () => Math.max(20, (this.options.output.columns || 80) - 2),
       invalidate: () => this.invalidate(),
       rejectIfBlocked: (message) => this.rejectIfBlocked(message),
       refreshContext: () => this.refreshContext(),
@@ -479,6 +481,10 @@ export class InkTuiApp {
       void this.overlayHandlers.handleFollowUpKey(input, key);
       return;
     }
+    if (this.state.overlay.kind === "tasks") {
+      this.overlayHandlers.handleTaskKey(input, key);
+      return;
+    }
     if (this.state.overlay.kind === "commands") {
       this.overlayHandlers.handleCommandKey(input, key);
       return;
@@ -493,7 +499,8 @@ export class InkTuiApp {
       const delta = (): number => this.pageScrollDelta();
       const maxOffset = this.detailsScrollMax();
       if (key.escape || (key.ctrl && input === "t")) {
-        setOverlay(this.state, { kind: "none" });
+        // A details view opened from a list returns to it; ctrl+t opens one from no overlay at all.
+        setOverlay(this.state, overlay.returnTo ?? { kind: "none" });
         this.invalidate();
         return;
       }
@@ -562,6 +569,10 @@ export class InkTuiApp {
 
   async openSessions(): Promise<void> {
     await this.overlayHandlers.openSessions();
+  }
+
+  async openTasks(): Promise<void> {
+    await this.overlayHandlers.openTasks();
   }
 
   private handleComposerKey(input: string, key: Key): void {

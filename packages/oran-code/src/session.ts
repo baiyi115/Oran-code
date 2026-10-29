@@ -389,6 +389,11 @@ export class TerminalSession {
       },
       handleConnect: (argument) => this.handlers.handleConnect(argument),
       handleSessionCommand: (argument) => this.handlers.handleSessionCommand(argument),
+      openTaskList: async () => {
+        if (!this.tui) return false;
+        await this.tui.openTasks();
+        return true;
+      },
       handlePermissionCommand: (argument) => this.handlers.handlePermissionCommand(argument),
       changePermissionMode: async (mode) => {
         await this.handlers.changePermissionMode(mode);
@@ -1946,6 +1951,8 @@ export class TerminalSession {
             startedAt: task.startedAt,
             endedAt: task.endedAt,
             error: task.error,
+            // The task list opens this; the transcript notification only carries the first 16k.
+            ...(task.output ? { output: task.output } : {}),
           })) ?? [];
         const { shellJobs, formatJobOutput } = await loadShellJobs();
         const jobs = shellJobs()

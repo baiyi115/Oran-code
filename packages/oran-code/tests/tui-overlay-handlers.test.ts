@@ -4,7 +4,7 @@ import { createTuiState, setComposerValue } from "../src/tui/state.js";
 import { OverlayHandlers, type OverlayHandlerContext } from "../src/tui/overlay-handlers.js";
 import { commandCandidates } from "../src/tui/command-palette.js";
 import type { ApprovalResponse } from "../src/types.js";
-import type { SessionOption, SessionView, TuiState } from "../src/tui/types.js";
+import type { SessionOption, SessionView, TuiBackgroundTask, TuiState } from "../src/tui/types.js";
 
 function key(partial: Partial<Key> = {}): Key {
   return partial as Key;
@@ -24,6 +24,7 @@ interface Harness {
   sessionsDeleted: string[];
   followUpsCancelled: string[];
   sessionsLoaded: SessionOption[];
+  tasksLoaded: TuiBackgroundTask[];
   modelsSelected: string[];
   restored: SessionView[];
 }
@@ -41,6 +42,17 @@ function harness(overrides: Partial<TuiState> = {}): Harness {
     sessionsLoaded: [
       { id: "s1", name: "one", updatedAt: "", messageCount: 1, isCurrent: false },
       { id: "s2", name: "two", updatedAt: "", messageCount: 2, isCurrent: false },
+    ],
+    tasksLoaded: [
+      {
+        id: "agent-1",
+        name: "explore",
+        definitionName: "Explore",
+        status: "completed",
+        startedAt: "2026-10-29T10:00:00.000Z",
+        endedAt: "2026-10-29T10:00:12.000Z",
+        output: "found 3 files\nsrc/a.ts\nsrc/b.ts\nsrc/c.ts",
+      },
     ],
     modelsSelected: [],
     restored: [],
@@ -62,6 +74,7 @@ function harness(overrides: Partial<TuiState> = {}): Harness {
       return true;
     },
     loadFollowUps: async () => (h.followUpsCancelled.length ? [] : [{ id: "f1", prompt: "run tests" }]),
+    getBackgroundTasks: async () => h.tasksLoaded,
     onFollowUpCancelled: async (id) => {
       h.followUpsCancelled.push(id);
       return true;
@@ -283,6 +296,30 @@ describe("session search", () => {
     h.handlers.handleSessionKey("", key({ upArrow: true }));
     h.handlers.handleSessionKey("x", key({ ctrl: true }));
     expect(h.state.overlay).toMatchObject({ kind: "sessions", query: "" });
+  });
+});
+
+describe("task list overlay", () => {
+  it("opens every task and shows a task's full output on enter", async () => {
+    const h = harness();
+    await h.handlers.openTasks();
+    expect(h.state.overlay).toMatchObject({ kind: "tasks", selectedIndex: 0 });
+
+    h.handlers.handleTaskKey("", enter);
+    const overlay = h.state.overlay;
+    if (overlay.kind !== "details") throw new Error(`overlay is ${overlay.kind}`);
+    expect(overlay.title).toBe("Task: explore");
+    expect(overlay.lines.join("\n")).toContain("src/c.ts");
+    // Closing the details returns to the list it was opened from.
+    expect(overlay.returnTo).toMatchObject({ kind: "tasks" });
+  });
+
+  it("reports an empty task list instead of opening a dead end", async () => {
+    const h = harness();
+    h.tasksLoaded = [];
+    await h.handlers.openTasks();
+    expect(h.state.overlay.kind).toBe("none");
+    expect(h.state.session.status).toContain("No background tasks");
   });
 });
 

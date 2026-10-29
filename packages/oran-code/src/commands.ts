@@ -15,6 +15,7 @@ export type SlashCommandAction =
   | "rewind"
   | "session"
   | "skills"
+  | "tasks"
   | "undo";
 
 export interface SlashCommand {
@@ -81,7 +82,13 @@ export const DEFAULT_COMMANDS: readonly SlashCommand[] = [
   },
   { name: "/skills", description: "show available skills", kind: "local", action: "skills" },
   { name: "/status", description: "show current agent status", kind: "local" },
-  { name: "/tasks", aliases: ["/subagents"], description: "list background subagent tasks", kind: "local" },
+  {
+    name: "/tasks",
+    aliases: ["/subagents"],
+    description: "list background subagent tasks",
+    kind: "ui",
+    action: "tasks",
+  },
   { name: "/worktree", description: "show workspace status", kind: "local" },
 ];
 
