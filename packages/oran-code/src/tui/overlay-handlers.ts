@@ -4,7 +4,7 @@ import type { SessionOption, SessionView, TuiState } from "./types.js";
 import { composerValue, setComposerValue, setOverlay } from "./state.js";
 import { composerCursorOffset } from "./composer.js";
 import { commandCandidates } from "./command-palette.js";
-import { approvalResponse, moveSelection } from "./interaction.js";
+import { approvalResponse, moveSelection, stepSelection } from "./interaction.js";
 import { formatErrorMessage } from "../error-format.js";
 import { isSessionDeleteKey, isSubmitKey } from "./keys.js";
 
@@ -57,11 +57,10 @@ export class OverlayHandlers {
     if (this.ctx.rejectIfBlocked("finish or cancel the current task before switching models")) return;
     try {
       const options = await this.ctx.loadModels();
-      setOverlay(this.ctx.state, { kind: "models", query: "", selectedIndex: 0, options, loading: false });
+      setOverlay(this.ctx.state, { kind: "models", selectedIndex: 0, options, loading: false });
     } catch (error) {
       setOverlay(this.ctx.state, {
         kind: "models",
-        query: "",
         selectedIndex: 0,
         options: [],
         loading: false,
@@ -177,7 +176,7 @@ export class OverlayHandlers {
     if (!this.ctx.loadSessions) return;
     try {
       const options = await this.ctx.loadSessions();
-      setOverlay(this.ctx.state, { kind: "sessions", query: "", selectedIndex: 0, options: options ?? [] });
+      setOverlay(this.ctx.state, { kind: "sessions", selectedIndex: 0, options: options ?? [] });
     } catch (error) {
       this.ctx.state.session.status = formatErrorMessage(error);
     }
@@ -243,17 +242,12 @@ export class OverlayHandlers {
   handleModelKey(input: string, key: Key): void {
     if (this.ctx.state.overlay.kind !== "models") return;
     const options = this.ctx.state.overlay.options;
-    if (key.upArrow)
+    if (key.upArrow || key.downArrow) {
       this.ctx.state.overlay = {
         ...this.ctx.state.overlay,
-        selectedIndex: Math.max(0, this.ctx.state.overlay.selectedIndex - 1),
+        selectedIndex: stepSelection(this.ctx.state.overlay.selectedIndex, key.upArrow ? -1 : 1, options.length),
       };
-    else if (key.downArrow)
-      this.ctx.state.overlay = {
-        ...this.ctx.state.overlay,
-        selectedIndex: Math.min(Math.max(0, options.length - 1), this.ctx.state.overlay.selectedIndex + 1),
-      };
-    else if (key.escape) this.ctx.state.overlay = { kind: "none" };
+    } else if (key.escape) this.ctx.state.overlay = { kind: "none" };
     else if (isSubmitKey(input, key)) {
       const selected = options[this.ctx.state.overlay.selectedIndex];
       if (selected) void this.selectModel(selected);
@@ -271,17 +265,12 @@ export class OverlayHandlers {
     if (this.ctx.state.overlay.kind !== "sessions") return;
     if (this.selectingSession) return;
     const options = this.ctx.state.overlay.options;
-    if (key.upArrow)
+    if (key.upArrow || key.downArrow) {
       this.ctx.state.overlay = {
         ...this.ctx.state.overlay,
-        selectedIndex: Math.max(0, this.ctx.state.overlay.selectedIndex - 1),
+        selectedIndex: stepSelection(this.ctx.state.overlay.selectedIndex, key.upArrow ? -1 : 1, options.length),
       };
-    else if (key.downArrow)
-      this.ctx.state.overlay = {
-        ...this.ctx.state.overlay,
-        selectedIndex: Math.min(Math.max(0, options.length - 1), this.ctx.state.overlay.selectedIndex + 1),
-      };
-    else if (key.escape) this.ctx.state.overlay = { kind: "none" };
+    } else if (key.escape) this.ctx.state.overlay = { kind: "none" };
     else if (isSessionDeleteKey(input, key)) {
       const selected = options[this.ctx.state.overlay.selectedIndex];
       if (selected) this.requestSessionDelete(selected);
@@ -376,8 +365,7 @@ export class OverlayHandlers {
             if (options) {
               this.ctx.state.overlay = {
                 kind: "sessions",
-                query: "",
-                selectedIndex: Math.min(overlay.returnSelectedIndex, Math.max(0, options.length - 1)),
+                        selectedIndex: Math.min(overlay.returnSelectedIndex, Math.max(0, options.length - 1)),
                 options: [...options],
               };
             } else {
@@ -390,8 +378,7 @@ export class OverlayHandlers {
           this.ctx.state.session.status = formatErrorMessage(error);
           this.ctx.state.overlay = {
             kind: "sessions",
-            query: "",
-            selectedIndex: overlay.returnSelectedIndex,
+                selectedIndex: overlay.returnSelectedIndex,
             options: overlay.options,
           };
         } finally {
@@ -407,7 +394,6 @@ export class OverlayHandlers {
     const overlay = this.ctx.state.overlay;
     this.ctx.state.overlay = {
       kind: "sessions",
-      query: "",
       selectedIndex: overlay.returnSelectedIndex,
       options: overlay.options,
     };
