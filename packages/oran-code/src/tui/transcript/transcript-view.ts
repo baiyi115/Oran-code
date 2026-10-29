@@ -12,6 +12,15 @@ export interface TranscriptRenderLine {
   lineOffset: number;
 }
 
+export interface TranscriptRenderOptions {
+  /**
+   * Render collapsible segments message by message instead of as one "◇ N tools" row. The details
+   * overlay needs the bodies; the transcript itself never does, because a committed row cannot be
+   * re-rendered once Static owns it.
+   */
+  readonly expandSegments?: boolean;
+}
+
 export class TranscriptView {
   private readonly cache = new Map<
     string,
@@ -33,15 +42,20 @@ export class TranscriptView {
     messages: readonly TranscriptMessage[],
     width: number,
     liveTick = 0,
-    expandedToolGroupIds: ReadonlySet<string> = new Set(),
+    options: TranscriptRenderOptions = {},
   ): TranscriptRenderLine[] {
     const safeWidth = Math.max(12, width);
     this.pruneCache(messages);
-    return this.renderItems(messages, safeWidth, liveTick, expandedToolGroupIds);
+    return this.renderItems(messages, safeWidth, liveTick, options.expandSegments === true);
   }
 
-  linesWithAnchors(state: TuiState, width: number, liveTick = 0): TranscriptRenderLine[] {
-    return this.renderLines(state.transcript, width, liveTick, state.expandedToolGroupIds);
+  linesWithAnchors(
+    state: TuiState,
+    width: number,
+    liveTick = 0,
+    options: TranscriptRenderOptions = {},
+  ): TranscriptRenderLine[] {
+    return this.renderLines(state.transcript, width, liveTick, options);
   }
 
   private pruneCache(messages: readonly TranscriptMessage[]): void {
@@ -60,9 +74,9 @@ export class TranscriptView {
     messages: readonly TranscriptMessage[],
     width: number,
     liveTick: number,
-    expandedToolGroupIds: ReadonlySet<string>,
+    expandSegments: boolean,
   ): TranscriptRenderLine[] {
-    return transcriptRenderItems(messages, expandedToolGroupIds).flatMap((item) => {
+    return transcriptRenderItems(messages, expandSegments).flatMap((item) => {
       if (item.kind === "segment") {
         const segment = item.segment;
         return this.renderSegment(segment, width).map((text, lineOffset) => ({
@@ -232,7 +246,7 @@ export function trailingSegmentStart(messages: readonly TranscriptMessage[]): nu
 
 function transcriptRenderItems(
   messages: readonly TranscriptMessage[],
-  expandedToolGroupIds: ReadonlySet<string>,
+  expandSegments: boolean,
 ): TranscriptRenderItem[] {
   const items: TranscriptRenderItem[] = [];
   let index = 0;
@@ -246,7 +260,7 @@ function transcriptRenderItems(
     let end = index + 1;
     while (end < messages.length && isSegmentMember(messages[end]!)) end += 1;
     for (const segment of splitRunIntoSegments(messages.slice(index, end))) {
-      if (segment.toolCount >= SEGMENT_MIN_TOOLS && !expandedToolGroupIds.has(segment.id)) {
+      if (segment.toolCount >= SEGMENT_MIN_TOOLS && !expandSegments) {
         items.push({ kind: "segment", segment });
       } else {
         // Expanded (or too small to collapse): show the original interleaved

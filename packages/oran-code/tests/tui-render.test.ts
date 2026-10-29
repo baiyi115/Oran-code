@@ -375,7 +375,7 @@ describe("question dialog preview head/tail and honest hints", () => {
     expect(text).not.toContain("preview line 8");
     expect(text).toContain("preview line 12");
     expect(text).toContain("4 more lines in the middle");
-    expect(text).toContain("Esc Skip remaining");
+    expect(text).toContain("Esc Dismiss");
     expect(text).not.toContain("Esc Reject");
   });
 });

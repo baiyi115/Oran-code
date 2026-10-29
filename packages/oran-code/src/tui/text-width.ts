@@ -57,25 +57,6 @@ export function visibleWidth(value: string): number {
   return graphemes(stripped).reduce((total, symbol) => total + graphemeWidth(symbol), 0);
 }
 
-export function sliceByDisplayWidth(value: string, start: number, width: number): string {
-  const safeWidth = Math.max(1, Math.floor(width));
-  if (ASCII_ONLY_PATTERN.test(value)) {
-    // Array#slice semantics for a negative start (counted from the end), then one cell per character.
-    const from = start < 0 ? Math.max(0, value.length + start) : Math.min(start, value.length);
-    return value.slice(from, from + safeWidth);
-  }
-  const symbols = graphemes(value).slice(start);
-  let used = 0;
-  let result = "";
-  for (const symbol of symbols) {
-    const next = graphemeWidth(symbol);
-    if (used + next > safeWidth) break;
-    result += symbol;
-    used += next;
-  }
-  return result || (symbols[0] ?? "");
-}
-
 export function sliceGraphemes(value: string, start: number, end?: number): string[] {
   return graphemes(value).slice(Math.max(0, start), end === undefined ? undefined : Math.max(start, end));
 }

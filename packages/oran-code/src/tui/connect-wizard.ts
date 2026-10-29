@@ -2,6 +2,7 @@ import type { Key } from "ink";
 import type { ReasoningEffort } from "../types.js";
 import { formatErrorMessage } from "../error-format.js";
 import { setOverlay } from "./state.js";
+import { appendSystemMessage } from "./message-reducer.js";
 import type { ConnectInfoField, ConnectInput, ConnectModelOption, ConnectPrefill, TuiState } from "./types.js";
 import { dimHorizontalRule } from "./theme.js";
 import { highlightSelection, overlayLine, type OverlayLine } from "./overlay/select-list.js";
@@ -24,9 +25,10 @@ const INFO_FIELDS: readonly ConnectInfoField[] = ["baseURL", "apiKey", "protocol
 
 /**
  * Two-screen "add/edit model provider" wizard: an info form (baseURL/apiKey/protocol/name on one
- * screen, with protocol and name auto-derived from baseURL) → models multi-select. Reasoning
- * effort is not asked here; it is written uniformly as high, and the provider layer strips the
- * parameter when an endpoint rejects it. State lives entirely in the connect variant of
+ * screen, with protocol and name auto-derived from baseURL) → models multi-select. Reasoning effort
+ * has no field of its own: unset means "high" (the provider layer strips the parameter when an
+ * endpoint rejects it), and `e` cycles the focused model through
+ * unset → low → medium → high → xhigh. State lives entirely in the connect variant of
  * state.overlay.
  */
 export class ConnectWizard {
@@ -261,10 +263,14 @@ export class ConnectWizard {
       const ok = await this.deps.onConnect?.(payload);
       this.deps.state.overlay = { kind: "none" };
       const activeModel = selected[0]?.id ? `${payload.providerName}/${selected[0].id}` : undefined;
-      this.deps.state.session.status =
+      // A completed setup is history, not a status: written to the record it survives scrolling,
+      // and the footer is left free of a line that would otherwise never be cleared.
+      appendSystemMessage(
+        this.deps.state,
         ok === false
           ? "provider connection failed"
-          : `Connected ${payload.providerName} (${selected.length} model${selected.length === 1 ? "" : "s"})${activeModel ? `. Active model: ${activeModel}` : ""}`;
+          : `Connected ${payload.providerName} (${selected.length} model${selected.length === 1 ? "" : "s"})${activeModel ? `. Active model: ${activeModel}` : ""}`,
+      );
     } catch (error) {
       if (this.deps.state.overlay.kind === "connect") {
         this.deps.state.overlay.error = formatErrorMessage(error);
@@ -296,9 +302,7 @@ export function renderConnectLines(
     const cursor = (field: ConnectInfoField) => (overlay.activeField === field ? "▸" : " ");
     const auto = (touched: boolean) => (touched ? "" : "  (auto)");
     lines.push(overlayLine("Add provider"), overlayLine(dimHorizontalRule(width)));
-    lines.push(
-      overlayLine(`${cursor("baseURL")} Base URL   ${overlay.baseURL || "(e.g. https://api.openai.com/v1)"}`),
-    );
+    lines.push(overlayLine(`${cursor("baseURL")} Base URL   ${overlay.baseURL || "(e.g. https://api.openai.com/v1)"}`));
     lines.push(
       overlayLine(
         `${cursor("apiKey")} API key    ${overlay.apiKey ? "*".repeat(Math.min(40, overlay.apiKey.length)) : "(optional)"}`,
@@ -310,16 +314,11 @@ export function renderConnectLines(
       ),
     );
     lines.push(
-      overlayLine(
-        `${cursor("name")} Name       ${overlay.providerName || "(auto)"}${auto(overlay.nameTouched)}`,
-      ),
+      overlayLine(`${cursor("name")} Name       ${overlay.providerName || "(auto)"}${auto(overlay.nameTouched)}`),
     );
     lines.push(overlayLine(""), overlayLine("Tab/↑↓ switch field   ←→ switch protocol   Enter next   Esc close"));
     if (overlay.error)
-      lines.push(
-        overlayLine(""),
-        overlayLine(`error: ${truncateVisible(overlay.error, Math.max(1, width - 2))}`),
-      );
+      lines.push(overlayLine(""), overlayLine(`error: ${truncateVisible(overlay.error, Math.max(1, width - 2))}`));
     return lines;
   }
   lines.push(

@@ -113,7 +113,11 @@ describe("ConnectWizard", () => {
       },
     ]);
     expect(h.state.overlay.kind).toBe("none");
-    expect(h.state.session.status).toContain("Connected api-example-com (1 model)");
+    // The confirmation is a record entry, not a footer status that would never be cleared.
+    expect(h.state.transcript.at(-1)).toMatchObject({
+      kind: "system",
+      text: expect.stringContaining("Connected api-example-com (1 model)"),
+    });
   });
 
   it("auto-derives name and protocol until the user edits them", async () => {

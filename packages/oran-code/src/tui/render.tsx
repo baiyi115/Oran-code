@@ -107,7 +107,7 @@ export function renderOverlayLines(
       const overlay = state.overlay;
       const lines = overlay.lines;
       // This used to show only the first capacity lines, so even the close hint was cut off; now
-      // scrollOffset drives windowing, the hint stays on the first line, content starts at the
+      // scrollOffset drives windowing, the hint stays on the last line, content starts at the
       // head by default, and it can be paged.
       const bodyHeight = Math.max(1, (capacity ?? lines.length + 3) - 3);
       const maxOffset = Math.max(0, lines.length - bodyHeight);

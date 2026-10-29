@@ -20,9 +20,9 @@ function createState(): TuiState {
 }
 
 /** Full transcript text, including the live tail and any expanded segments. */
-function transcriptText(view: TranscriptView, state: TuiState): string {
+function transcriptText(view: TranscriptView, state: TuiState, expandSegments = false): string {
   return view
-    .linesWithAnchors(state, 80)
+    .linesWithAnchors(state, 80, 0, { expandSegments })
     .map((line) => line.text)
     .join("\n");
 }
@@ -43,7 +43,7 @@ function event(value: Record<string, unknown>): RuntimeEvent {
 describe("TuiTranscriptRenderer", () => {
   it("accumulates deltas and does not duplicate final assistant text", () => {
     const state = createState();
-    const layout = { redraw() {}, destroy() {} } as TuiRendererLayout;
+    const layout = { redraw() {} } as TuiRendererLayout;
     const renderer = new TuiTranscriptRenderer(layout, state);
 
     renderer.render(event({ type: "assistant_start", step: 0, source: "turn", attempt: 0, model: "chat" }));
@@ -69,7 +69,7 @@ describe("TuiTranscriptRenderer", () => {
 
   it("uses a non-empty final response to correct partial streamed text", () => {
     const state = createState();
-    const layout = { redraw() {}, destroy() {} } as TuiRendererLayout;
+    const layout = { redraw() {} } as TuiRendererLayout;
     const renderer = new TuiTranscriptRenderer(layout, state);
 
     renderer.render(event({ type: "assistant_delta", step: 0, source: "turn", attempt: 0, text: "helxo" }));
@@ -188,9 +188,7 @@ describe("TuiTranscriptRenderer", () => {
     expect(collapsed).toContain("3 tools");
     expect(collapsed).not.toContain("Inspect the relevant files.");
 
-    const segment = collapsibleSegments(state.transcript)[0]!;
-    state.expandedToolGroupIds.add(segment.id);
-    const expanded = transcriptText(view, state);
+    const expanded = transcriptText(view, state, true);
     expect(expanded).not.toContain("3 tools");
     expect(expanded).toContain("Inspect the relevant files.");
     expect(expanded).toContain("Read");
@@ -345,7 +343,7 @@ describe("TuiTranscriptRenderer", () => {
       expect(workingIndicatorLine(state, 0, 1700000005000)).toBeUndefined();
     });
 
-    it("renders subagent count badge in footer and hides workSummaryLine when background tasks are active", () => {
+    it("hides workSummaryLine on background tasks and keeps the count out of the footer", () => {
       const state = createState();
       state.session.elapsedMs = 1500;
       state.session.taskState = "completed";
@@ -361,8 +359,9 @@ describe("TuiTranscriptRenderer", () => {
 
       expect(workSummaryLine(state)).toBeUndefined();
 
+      // The task panel below the composer owns the subagent rows; the footer no longer repeats them.
       const footer = footerLines(state, 100);
-      expect(footer.join("\n")).toContain("1 subagent running");
+      expect(footer.join("\n")).not.toContain("subagent");
     });
   });
 });

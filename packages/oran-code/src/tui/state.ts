@@ -93,7 +93,6 @@ export function createTuiState(
     composer: createComposerState(history),
     overlay: { kind: "none" },
     transcript: [...initialTranscript],
-    expandedToolGroupIds: new Set(),
     streaming: false,
     assistantMessageId: undefined,
     thoughtMessageId: undefined,
@@ -134,7 +133,7 @@ export function composerValue(composer: ComposerState): string {
 
 export function setComposerValue(composer: ComposerState, value: string, recordUndo = true): void {
   if (recordUndo) pushUndoSnapshot(composer, "set");
-  const lines = value.replace(/\r\n/g, "\n").split("\n");
+  const lines = value.replace(/\r\n/g, "\n").replace(/\r/g, "\n").split("\n");
   composer.lines = lines.length ? lines : [""];
   const lastLine = composer.lines.length - 1;
   composer.cursor = { line: lastLine, column: graphemeLength(composer.lines[lastLine] ?? "") };
@@ -155,14 +154,24 @@ export function getToolMessage(
   // One pass: this runs on every tool event, and the old shape walked the transcript twice.
   let legacy: Extract<TranscriptMessage, { kind: "tool" }> | undefined;
   let legacyCount = 0;
+  let firstMatch: Extract<TranscriptMessage, { kind: "tool" }> | undefined;
+  let runningMatch: Extract<TranscriptMessage, { kind: "tool" }> | undefined;
   for (const entry of state.transcript) {
     if (entry.kind !== "tool" || entry.callId !== callId) continue;
-    if (taskId !== undefined && entry.taskId === taskId) return entry;
+    if (taskId !== undefined && entry.taskId === taskId) {
+      firstMatch ??= entry;
+      // Calls without an id fall back to `name:createdAt`, which two parallel calls of the same
+      // tool can share; a result then belongs to the one still running rather than the first.
+      if (entry.status === "running") runningMatch = entry;
+      continue;
+    }
     if (entry.taskId === undefined) {
       legacy = entry;
       legacyCount += 1;
     }
   }
+  if (runningMatch) return runningMatch;
+  if (firstMatch) return firstMatch;
   // A call id without a task still matches when it is unambiguous.
   return legacyCount === 1 ? legacy : undefined;
 }

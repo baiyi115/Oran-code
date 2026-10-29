@@ -1,6 +1,6 @@
 import type { TranscriptMessage, TuiState } from "./types.js";
 import { abbreviatePath, truncateVisible, visibleWidth } from "./text-width.js";
-import { hasActiveBackgroundTasks, isSessionBusy, partitionBackgroundTasks } from "./status-indicator.js";
+import { hasActiveBackgroundTasks, isSessionBusy } from "./status-indicator.js";
 import { formatDuration, formatRate } from "../formatting.js";
 
 /**
@@ -18,18 +18,9 @@ export function footerLines(state: TuiState, width: number): string[] {
   const workspace = state.session.workspace || ".";
   const usage = usageLabel(state);
   const queue = state.session.followUpCount > 0 ? `follow-ups: ${state.session.followUpCount}` : undefined;
-  const background = partitionBackgroundTasks(state.session.backgroundTasks);
-  const runningBgCount = background.runningSubagents.length;
-  const queuedBgCount = background.queuedSubagents.length;
-  const runningJobCount = background.runningJobs.length;
-  const subagentBadge =
-    runningBgCount > 0
-      ? `${runningBgCount} subagent${runningBgCount === 1 ? "" : "s"} running${queuedBgCount > 0 ? ` (+${queuedBgCount} queued)` : ""}`
-      : queuedBgCount > 0
-        ? `${queuedBgCount} subagent${queuedBgCount === 1 ? "" : "s"} queued`
-        : undefined;
-  const jobBadge =
-    runningJobCount > 0 ? `${runningJobCount} job${runningJobCount === 1 ? "" : "s"} running` : undefined;
+  // No subagent or job badges here: the task panel below the composer already lists every
+  // subagent, and the working line above it already names running shell jobs. Repeating the
+  // counts in the footer only made the detail line longer.
   const status = explicitStatus(state);
 
   // Status first: the detail line is truncated from the right, and an error or hint is the part
@@ -41,8 +32,6 @@ export function footerLines(state: TuiState, width: number): string[] {
     queue,
     permissionChip(state),
     contextChip(state),
-    subagentBadge,
-    jobBadge,
     detailsHint(state),
   ]
     .filter(Boolean)

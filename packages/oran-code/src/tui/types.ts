@@ -368,7 +368,7 @@ export interface ConnectInput {
   baseURL: string;
   apiKey: string;
   protocol: "openai" | "anthropic";
-  /** The wizard no longer asks; when unset, high is written and rolled back at runtime as needed. */
+  /** No form field of its own: `e` on the model list cycles it, and unset means high. */
   reasoningEffort?: ReasoningEffort;
   models: ConnectModelOption[];
 }
@@ -422,8 +422,6 @@ export interface TuiState {
   composer: ComposerState;
   overlay: OverlayState;
   transcript: TranscriptMessage[];
-  /** Tool-group ids explicitly expanded for the current TUI session. */
-  expandedToolGroupIds: Set<string>;
   streaming: boolean;
   assistantMessageId: string | undefined;
   thoughtMessageId: string | undefined;

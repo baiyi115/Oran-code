@@ -4,7 +4,6 @@ import {
   graphemeOffset,
   graphemes,
   graphemeWidth,
-  sliceByDisplayWidth,
   sliceGraphemes,
   visibleWidth,
 } from "./text-width.js";
@@ -177,8 +176,11 @@ export function insertText(composer: ComposerState, value: string): void {
 }
 
 export function deleteBackward(composer: ComposerState): void {
-  pushUndoSnapshot(composer, "delete");
   const { line, column } = composer.cursor;
+  // Nothing to delete at the very start of the buffer: pushing an undo level here would clear the
+  // redo stack for an operation that changes nothing.
+  if (column === 0 && line === 0) return;
+  pushUndoSnapshot(composer, "delete");
   if (column > 0) {
     const symbols = graphemes(composer.lines[line] ?? "");
     composer.lines[line] = symbols
@@ -196,9 +198,11 @@ export function deleteBackward(composer: ComposerState): void {
 }
 
 export function deleteForward(composer: ComposerState): void {
-  pushUndoSnapshot(composer, "delete");
   const { line, column } = composer.cursor;
   const current = composer.lines[line] ?? "";
+  // Nothing at or after the caret on the last line: same reason as deleteBackward.
+  if (column >= graphemeLength(current) && line >= composer.lines.length - 1) return;
+  pushUndoSnapshot(composer, "delete");
   if (column < graphemeLength(current)) {
     const symbols = graphemes(current);
     composer.lines[line] = symbols

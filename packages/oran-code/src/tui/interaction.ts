@@ -1,4 +1,5 @@
 import type { ApprovalResponse } from "../types.js";
+import { redactSecretText } from "../formatting.js";
 
 export function moveSelection(index: number, delta: number, length: number): number {
   if (length <= 0) return 0;
@@ -45,8 +46,6 @@ export function navigateHistory(
   return { value: history[nextIndex] ?? currentValue, index: nextIndex, draft };
 }
 
-import { redactSecretText } from "../formatting.js";
-
 export function redactSecrets(value: unknown): unknown {
   if (Array.isArray(value)) return value.map(redactSecrets);
   if (!value || typeof value !== "object") {
@@ -59,5 +58,3 @@ export function redactSecrets(value: unknown): unknown {
     }),
   );
 }
-
-export { redactSecretText } from "../formatting.js";

@@ -1,4 +1,5 @@
-import { redactSecretText, redactSecrets } from "./interaction.js";
+import { redactSecretText } from "../formatting.js";
+import { redactSecrets } from "./interaction.js";
 import { appendTranscriptMessage, getToolMessage } from "./state.js";
 import { truncateVisible } from "./text-width.js";
 import type { TuiState } from "./types.js";

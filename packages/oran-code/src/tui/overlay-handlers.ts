@@ -251,16 +251,13 @@ export class OverlayHandlers {
     if (this.followUpBusy) return;
     this.followUpBusy = true;
     try {
-      const opened = await this.openListOverlay<FollowUpOption>({
+      // The overlay itself shows the queue (including "(no queued follow-ups)"), so nothing is
+      // written into session.status: that one-off line used to stay in the footer forever.
+      await this.openListOverlay<FollowUpOption>({
         load: this.ctx.loadFollowUps,
         unavailable: "follow-up queue is unavailable",
         show: (options) => ({ kind: "follow-ups", selectedIndex: 0, options }),
       });
-      const overlay = this.ctx.state.overlay;
-      if (opened && overlay.kind === "follow-ups") {
-        const count = overlay.options.length;
-        this.ctx.state.session.status = count ? `${count} follow-up(s) queued` : "no queued follow-ups";
-      }
     } finally {
       this.followUpBusy = false;
       this.ctx.invalidate();
@@ -566,14 +563,10 @@ export class OverlayHandlers {
     }
 
     if (key.escape) {
-      const fallbackAnswers = { ...overlay.answers };
-      for (let i = overlay.currentQuestionIndex; i < overlay.questions.length; i++) {
-        const q = overlay.questions[i];
-        if (q) {
-          fallbackAnswers[q.question] = q.options[0]?.label ?? "Yes";
-        }
-      }
-      this.ctx.resolveQuestion(fallbackAnswers);
+      // Esc dismisses the dialog; it does not answer on the user's behalf. Picking each question's
+      // first option used to hand the model a decision nobody made, and that option is not
+      // necessarily the safe one. The tool reports how many questions went unanswered.
+      this.ctx.resolveQuestion({ ...overlay.answers });
       return;
     }
 

@@ -170,6 +170,9 @@ export function createBracketedPasteStream(source: NodeJS.ReadableStream, hooks?
     decodeStrings: false,
     transform(chunk, _encoding, callback) {
       let str = typeof chunk === "string" ? chunk : (chunk as Buffer).toString("utf8");
+      // A paste frame that hit the safety timeout closes late: its end marker then arrives outside
+      // any frame and would be typed into the composer as "[201~". It is never legitimate text.
+      if (!inPaste) str = str.split(BRACKETED_PASTE_END).join("");
 
       // Mouse-clean an "outside a paste frame" segment before pushing it; in-frame bytes are data.
       const pushOutsidePaste = (segment: string): void => {
@@ -214,6 +217,16 @@ export function createBracketedPasteStream(source: NodeJS.ReadableStream, hooks?
           if (startIdx > 0) {
             pushOutsidePaste(str.slice(0, startIdx));
           }
+          // Bytes held as a possible mouse prefix belong to the keys typed before the paste; they
+          // are not part of the frame, and the flush timer must not fire inside it.
+          if (mousePrefix) {
+            transform.push(rewriteKeySequences(mousePrefix));
+            mousePrefix = "";
+          }
+          if (mouseFlushTimer) {
+            clearTimeout(mouseFlushTimer);
+            mouseFlushTimer = undefined;
+          }
           inPaste = true;
           pasteBuffer = "";
           str = str.slice(startIdx + BRACKETED_PASTE_START.length);
@@ -227,6 +240,8 @@ export function createBracketedPasteStream(source: NodeJS.ReadableStream, hooks?
               inPaste = false;
             }
           }, 1000);
+          // A pending fallback timer must never keep the process alive on its own.
+          timeoutTimer.unref?.();
         } else {
           const endIdx = str.indexOf(BRACKETED_PASTE_END);
           if (endIdx === -1) {
@@ -247,12 +262,19 @@ export function createBracketedPasteStream(source: NodeJS.ReadableStream, hooks?
       callback();
     },
     flush(callback) {
-      // On source end, release a pending mouse prefix as plain keys; user input is never dropped silently.
+      // On source end, release a pending mouse prefix as plain keys and a half-received paste as
+      // text; user input is never dropped silently.
       if (mousePrefix) {
         this.push(mousePrefix);
         mousePrefix = "";
       }
+      if (pasteBuffer) {
+        this.push(pasteBuffer);
+        pasteBuffer = "";
+      }
+      inPaste = false;
       if (mouseFlushTimer) clearTimeout(mouseFlushTimer);
+      if (timeoutTimer) clearTimeout(timeoutTimer);
       callback();
     },
   });

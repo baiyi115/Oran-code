@@ -1,5 +1,6 @@
 import type { ToolCall } from "../types.js";
-import { redactSecretText, redactSecrets } from "./interaction.js";
+import { redactSecretText } from "../formatting.js";
+import { redactSecrets } from "./interaction.js";
 import { highlightSelection, overlayLine, type OverlayLine } from "./overlay/select-list.js";
 import { wrapDisplayText } from "./text-width.js";
 import { subagentOriginLabel, type SubagentOrigin } from "../subagent/types.js";
@@ -42,12 +43,8 @@ export function approvalDialogLines(
     body.push(`${key}: ${summarizeValue(redactSecretText(formatValue(value)))}`);
   }
 
-  const content = [...head, ...body]
-    .flatMap((line) => (line ? wrapDisplayText(line, width) : [""]))
-    .map(overlayLine);
-  const options = APPROVAL_OPTIONS.map((option, index) =>
-    highlightSelection(`  ${option}`, index === selectedIndex),
-  );
+  const content = [...head, ...body].flatMap((line) => (line ? wrapDisplayText(line, width) : [""])).map(overlayLine);
+  const options = APPROVAL_OPTIONS.map((option, index) => highlightSelection(`  ${option}`, index === selectedIndex));
   const tail = [overlayLine(""), ...options, overlayLine(""), overlayLine(APPROVAL_HINT)];
 
   const limit = capacity === undefined ? Number.POSITIVE_INFINITY : Math.max(1, Math.floor(capacity));

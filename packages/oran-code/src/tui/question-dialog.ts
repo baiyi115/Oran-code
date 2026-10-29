@@ -66,14 +66,14 @@ export function questionDialogLines(
     }
   }
 
-  // Esc really means "answer from the first option"; the hint must match the behavior or users
-  // will not dare press it.
+  // Esc dismisses the dialog without answering the rest; the hint must say so, because the answers
+  // that do go back are only the ones the user actually chose.
   lines.push(
     overlayLine(""),
     overlayLine(
       isMulti
-        ? "↑↓ Navigate   Space Toggle   Enter Confirm   Esc Skip remaining"
-        : "↑↓ Navigate   Enter Confirm   Esc Skip remaining",
+        ? "↑↓ Navigate   Space Toggle   Enter Confirm   Esc Dismiss"
+        : "↑↓ Navigate   Enter Confirm   Esc Dismiss",
     ),
   );
 

@@ -729,7 +729,6 @@ export class InkTuiApp {
     }
     if (cut >= this.state.transcript.length) return;
     this.state.transcript = this.state.transcript.slice(0, cut);
-    this.state.expandedToolGroupIds.clear();
     this.state.transcriptScroll = { offsetFromBottom: 0, followBottom: true };
     appendSystemMessage(this.state, `Conversation rewound to user turn ${userMessageCount}.`, "system");
     this.invalidate();
@@ -754,7 +753,6 @@ export class InkTuiApp {
     this.state.transcript = normalizeRestoredTranscript(
       session.messages.filter((message) => !isTransientRestoredMessage(message)).map((message) => ({ ...message })),
     );
-    this.state.expandedToolGroupIds.clear();
     if (
       session.modelWarning &&
       !this.state.transcript.some((message) => message.kind === "error" && message.text === session.modelWarning)
@@ -968,16 +966,10 @@ export class InkTuiApp {
 
   private cancelQuestion(): void {
     if (!this.questionResolve) return;
+    // Only what the user actually chose travels back: unanswered questions stay unanswered rather
+    // than being filled in with their first option.
     const overlay = this.state.overlay.kind === "question" ? this.state.overlay : undefined;
-    const fallback: Record<string, string> = overlay ? { ...overlay.answers } : {};
-    if (overlay) {
-      for (const q of overlay.questions) {
-        if (!fallback[q.question]) {
-          fallback[q.question] = q.options[0]?.label ?? "Yes";
-        }
-      }
-    }
-    this.resolveQuestion(fallback);
+    this.resolveQuestion(overlay ? { ...overlay.answers } : {});
   }
 
   private isBlocked(): boolean {
@@ -1183,7 +1175,7 @@ export class InkTuiApp {
     const start = this.liveTranscriptStart();
     if (start >= this.state.transcript.length) return [];
     return this.transcript
-      .renderLines(this.state.transcript.slice(start), width, 0, this.state.expandedToolGroupIds)
+      .renderLines(this.state.transcript.slice(start), width, 0)
       .filter((line) => !this.committedStaticTranscriptIds.has(line.messageId));
   }
 
@@ -1264,7 +1256,7 @@ export class InkTuiApp {
     // rebuilding their lines every frame (at the new width after a resize) was pure waste.
     const start = this.liveTranscriptStart();
     const live = start > 0 ? this.state.transcript.slice(start) : this.state.transcript;
-    const lines = this.transcript.renderLines(live, Math.max(12, width), liveTick, this.state.expandedToolGroupIds);
+    const lines = this.transcript.renderLines(live, Math.max(12, width), liveTick);
     const candidateStaticCount = staticCommitBoundary(this.state.transcript);
     const staticMessages = this.state.transcript.slice(start, candidateStaticCount);
     const groupedLines = new Map<string, string[]>();
@@ -1311,7 +1303,7 @@ export class InkTuiApp {
     );
     const width = Math.max(20, (this.options.output.columns || 80) - 2);
     const lines = new TranscriptView()
-      .renderLines(detailMessages, width, 0, segment ? new Set([segment.id]) : new Set())
+      .renderLines(detailMessages, width, 0, { expandSegments: true })
       .map((line) => line.text);
     const title = segment ? "Latest activity" : target.kind === "tool" ? `Tool: ${target.name}` : "Thought";
 
@@ -1529,6 +1521,9 @@ function InkRoot({ app, revision }: { app: InkTuiApp; revision: number }): React
     width,
     taskPanelRows,
   );
+  // Computed once: the composer line used to evaluate both of these twice per frame.
+  const promptPrefix = composerPrefix(state.overlay.kind);
+  const ghostSuggestion = ghostCommandSuggestion(state, composerValue(state.composer));
   useEffect(() => {
     if (!activeSpinner) return;
     // The same tick animates the fallback Working line, Subagent indicator, and live Thought/Tool rows.
@@ -1686,15 +1681,13 @@ function InkRoot({ app, revision }: { app: InkTuiApp; revision: number }): React
         <Text dimColor>{horizontalRule(width)}</Text>
         <Text>
           <Text {...colorProps(COLORS.accent)} bold>
-            {composerPrefix(state.overlay.kind).trimEnd()}
+            {promptPrefix.trimEnd()}
           </Text>
           <Text>
-            {composerPrefix(state.overlay.kind).endsWith(" ") ? " " : ""}
+            {promptPrefix.endsWith(" ") ? " " : ""}
             {renderComposerLines(editorLines, cursor.row, cursor.column, busy || isModalOverlay(state.overlay.kind))}
           </Text>
-          {ghostCommandSuggestion(state, composerValue(state.composer)) ? (
-            <Text dimColor>{ghostCommandSuggestion(state, composerValue(state.composer))}</Text>
-          ) : null}
+          {ghostSuggestion ? <Text dimColor>{ghostSuggestion}</Text> : null}
         </Text>
         <Text dimColor>{horizontalRule(width)}</Text>
         {taskRows.map((row, index) => (

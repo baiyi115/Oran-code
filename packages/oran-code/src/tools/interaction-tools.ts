@@ -87,10 +87,18 @@ export function registerInteractionTools(
 
         if (context?.askUser) {
           const answers = await context.askUser(questions);
+          const answered = Object.keys(answers).length;
+          // Esc dismisses the dialog without answering; say so instead of calling that "answered 0".
+          const summary =
+            answered === 0
+              ? "the user dismissed the questions without answering"
+              : answered < questions.length
+                ? `answered ${answered}/${questions.length} questions (the rest were dismissed)`
+                : `answered ${answered} questions`;
           return {
             ok: true,
             output: JSON.stringify(answers, null, 2),
-            summary: `answered ${Object.keys(answers).length} questions`,
+            summary,
           };
         }
 
