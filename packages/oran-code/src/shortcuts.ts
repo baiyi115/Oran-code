@@ -19,12 +19,13 @@ export const SHORTCUTS: readonly ShortcutGroup[] = [
       ["Enter", "提交输入(要写多行就整段粘贴:折叠成占位符,提交时按原文发出)"],
       ["Ctrl+Z / Ctrl+Y", "撤销 / 重做;光标位置与折叠的粘贴内容一并恢复"],
       ["Ctrl+W", "向前删除一个词"],
-      ["Ctrl/Alt + ←/→", "按词移动光标;Home/End 到 当前行 首尾"],
+      ["Ctrl/Alt + ←/→", "按词移动光标;Home/End 到当前行首尾;Delete 删除光标后的字符"],
       ["Ctrl+Q", "查看并取消排队中的 follow-up"],
       ["@", '补全文件路径(@"带空格的路径" 也支持)'],
       // Idle-only: while a task runs both callbacks refuse and the TUI says to finish
       // or cancel first, so this cannot live under "While a task is running".
-      ["Tab / Shift+Tab", "切换工作模式(plan/auto)/切换思考强度(空闲时;任务运行中会提示先结束当前任务)"],
+      ["Tab / Shift+Tab", "切换工作模式(plan/auto)/切换审批模式(default/accept-edits，任务运行中也生效)"],
+      ["Ctrl+R", "切换思考强度(空闲时;任务运行中会提示先结束当前任务)"],
     ],
   },
   {

@@ -588,11 +588,23 @@ function isReadOnlyGitCommand(cmd: ShellCommandNode): boolean {
 }
 
 export class PermissionPolicy {
-  private readonly taskAllows = new Set<string>();
+  /** Rules granted by "allow for this task": same shape as file rules, discarded with the policy. */
+  private readonly taskRules: PermissionRule[] = [];
   private readonly registeredKinds = new Map<string, ToolKind>();
   private resolvedRoots: { key: string; roots: (string | undefined)[] } | undefined;
 
-  constructor(private readonly config: PermissionConfig) {}
+  /**
+   * `modeProvider` keeps the mode live: the TUI can switch it mid-task, and the policy is built
+   * once per task, so reading `config.mode` would keep answering with the mode the task started in.
+   */
+  constructor(
+    private readonly config: PermissionConfig,
+    private readonly modeProvider?: () => PermissionMode,
+  ) {}
+
+  private get mode(): PermissionMode {
+    return this.modeProvider?.() ?? this.config.mode;
+  }
 
   registerTools(tools: readonly { name: string; kind?: ToolKind }[]): void {
     this.registeredKinds.clear();
@@ -665,7 +677,7 @@ export class PermissionPolicy {
     }
 
     if (
-      this.config.mode === "plan" &&
+      this.mode === "plan" &&
       kind === "write" &&
       this.registeredKinds.get(canonicalTool(call.name)) === "write" &&
       resolvedPath !== undefined
@@ -718,12 +730,8 @@ export class PermissionPolicy {
       }
     }
 
-    if (this.config.mode === "readonly" && kind !== "readonly") {
-      return modeDecision(this.config.mode, kind, level);
-    }
-
-    if (this.taskAllows.has(ruleKey(call, kind))) {
-      return decision("allow", "allowed for the current task", "session-rule", level);
+    if (this.mode === "readonly" && kind !== "readonly") {
+      return modeDecision(this.mode, kind, level);
     }
 
     const layers: readonly [PermissionDecisionSource, string][] = [
@@ -731,34 +739,72 @@ export class PermissionPolicy {
       ["project-rule", this.config.projectRulesPath],
       ["user-rule", this.config.userRulesPath],
     ];
+    const matches: Array<{ source: PermissionDecisionSource; rule: PermissionRule }> = [];
     for (const [source, file] of layers) {
       const rule = findMatchingRule(await loadRules(file), call, kind, this.registeredKinds);
-      if (rule) return decision(rule.effect, `${rule.effect} rule matched ${formatRule(rule)}`, source, level);
+      if (rule) matches.push({ source, rule });
     }
+    // Deny wins over every allow, including a task grant: a rule written for one directory must not
+    // shadow an explicit deny in project or user config.
+    const denied = matches.find((entry) => entry.rule.effect === "deny");
+    if (denied) return decision("deny", `deny rule matched ${formatRule(denied.rule)}`, denied.source, level);
+    if (findMatchingRule(this.taskRules, call, kind, this.registeredKinds)) {
+      return decision("allow", "allowed for the current task", "session-rule", level);
+    }
+    const allowed = matches[0];
+    if (allowed) return decision("allow", `allow rule matched ${formatRule(allowed.rule)}`, allowed.source, level);
 
-    return modeDecision(this.config.mode, kind, level);
+    return modeDecision(this.mode, kind, level);
   }
 
   allowForTask(call: ToolCall): void {
-    const kind = this.registeredKinds.get(canonicalTool(call.name)) ?? inferToolKind(call.name);
-    this.taskAllows.add(ruleKey(call, kind));
+    // Same pattern the "always allow" path would save, scoped to this policy instead of a file.
+    // Keying it on the full arguments made it narrower than "always allow": any edit whose
+    // old/new text differed could never match again, so the option did nothing.
+    this.taskRules.push({ ...this.suggestRule(call), effect: "allow" });
+  }
+
+  /**
+   * The rule "allow for this task" and "always allow" store for a call.
+   *
+   * - a simple `run_command` gets a prefix pattern (`pnpm test*`), so the next variant of the same
+   *   command does not ask again; compound commands keep an exact rule, because a trailing `*` on
+   *   the whole line would also approve whatever follows the operator;
+   * - a path-carrying tool gets its directory (`src/features/**`), so approving one edit covers the
+   *   work in that area without opening the whole workspace;
+   * - everything else stays exact.
+   */
+  suggestRule(call: ToolCall, kind?: ToolKind): PermissionRule {
+    const tool = canonicalTool(call.name);
+    const resolvedKind = kind ?? this.registeredKinds.get(tool) ?? inferToolKind(call.name);
+    if (resolvedKind === "command" && tool === "run_command") {
+      const command = typeof call.arguments.command === "string" ? call.arguments.command.trim() : "";
+      const pattern = commandPrefixPattern(command);
+      return { tool, pattern: pattern ?? command, effect: "allow", match: pattern ? "glob" : "exact" };
+    }
+    if (resolvedKind !== "command") {
+      const path = extractPath(call);
+      const pattern = path === undefined ? undefined : pathDirectoryPattern(path);
+      if (pattern) return { tool, pattern, effect: "allow", match: "glob" };
+    }
+    return { tool, pattern: exactPattern(call, resolvedKind), effect: "allow", match: "exact" };
+  }
+
+  /** The suggestion as rule text, for the approval dialog ("what would this write down"). */
+  suggestRuleText(call: ToolCall, kind?: ToolKind): string {
+    return formatRule(this.suggestRule(call, kind));
   }
 
   async allowPermanently(call: ToolCall): Promise<void> {
-    const kind = this.registeredKinds.get(canonicalTool(call.name)) ?? inferToolKind(call.name);
+    const suggested = this.suggestRule(call);
     const existing = await loadRuleDocumentForWrite(this.config.localRulesPath);
     const rules = Array.isArray(existing.rules) ? existing.rules.filter(isWritableRule) : [];
     const nextRule = {
-      rule: formatRule({
-        tool: call.name,
-        pattern: exactPattern(call, kind),
-        effect: "allow",
-        match: "exact",
-      }),
+      rule: formatRule(suggested),
       effect: "allow" as const,
-      match: "exact" as const,
+      match: suggested.match,
     };
-    if (!rules.some((item) => item.rule === nextRule.rule && item.effect === "allow" && item.match === "exact"))
+    if (!rules.some((item) => item.rule === nextRule.rule && item.effect === "allow" && item.match === nextRule.match))
       rules.push(nextRule);
     await mkdir(dirname(this.config.localRulesPath), { recursive: true });
     const temporary = `${this.config.localRulesPath}.tmp-${process.pid}`;
@@ -878,8 +924,38 @@ function exactPattern(call: ToolCall, kind: ToolKind): string {
   return extractRuleContent(call, kind);
 }
 
-function ruleKey(call: ToolCall, kind: ToolKind): string {
-  return `${canonicalTool(call.name)}\u0000${kind}\u0000${stableArguments(call.arguments)}`;
+/**
+ * Prefix pattern for a simple command: `pnpm test --watch` → `pnpm test*`.
+ *
+ * Only the executable and up to two plain words are kept; the first flag, path, or assignment ends
+ * the prefix, so `node scripts/build.mjs` stays an exact rule instead of approving every script.
+ * A compound command gets no prefix at all: `pnpm test*` would otherwise also approve
+ * `pnpm test && rm -rf /`.
+ */
+function commandPrefixPattern(command: string): string | undefined {
+  if (!command || /[;&|<>`$\n\r]/.test(command)) return undefined;
+  const tokens = command.split(/\s+/).filter(Boolean);
+  if (tokens.length < 2) return undefined;
+  const prefix = [tokens[0]!];
+  for (const token of tokens.slice(1, 3)) {
+    if (token.startsWith("-") || /[/\\=]/.test(token)) break;
+    prefix.push(token);
+  }
+  return prefix.length >= 2 ? `${prefix.join(" ")}*` : undefined;
+}
+
+/** Directory rule for a path-carrying tool: `src/features/a.ts` → `src/features/**`. */
+function pathDirectoryPattern(path: string): string | undefined {
+  const normalized = path.replaceAll("\\", "/");
+  const slash = normalized.lastIndexOf("/");
+  // A workspace-root file has no directory to scope to; an exact rule is the honest option.
+  if (slash <= 0) return undefined;
+  return `${normalized.slice(0, slash)}/**`;
+}
+
+/** Commands a glob rule may match: a prefix pattern never covers a compound command. */
+function globRuleApplies(kind: ToolKind, content: string): boolean {
+  return kind !== "command" || !/[\n\r;&|<>`$]/.test(content);
 }
 
 function stableArguments(value: unknown): string {
@@ -989,10 +1065,17 @@ function findMatchingRule(
 ): PermissionRule | undefined {
   const tool = canonicalTool(call.name);
   const content = extractRuleContent(call, kind);
+  // A prefix rule must not swallow what follows a shell operator: `pnpm test*` would otherwise
+  // match `pnpm test && rm -rf /`, handing out an approval nobody gave.
+  const globApplies = globRuleApplies(kind, content);
   for (let index = rules.length - 1; index >= 0; index -= 1) {
     const rule = rules[index];
     if (!rule || !registeredKinds.has(canonicalTool(rule.tool)) || canonicalTool(rule.tool) !== tool) continue;
-    if (rule.match === "exact" ? rule.pattern === content : matchesPattern(rule.pattern, content)) return rule;
+    if (rule.match === "exact") {
+      if (rule.pattern === content) return rule;
+    } else if (globApplies && matchesPattern(rule.pattern, content)) {
+      return rule;
+    }
   }
   return undefined;
 }

@@ -100,7 +100,11 @@ export class SessionCommandHandlers {
   }
 
   async changePermissionMode(mode: PermissionMode): Promise<boolean> {
-    if (this.port.interactionRunning() || this.port.hasPendingApprovals()) {
+    // Switching how much has to be approved is safe while a task runs — the running policy reads
+    // the mode live, which is the point of the shift+tab shortcut. Entering or leaving plan mode is
+    // not: it changes the workflow the task was started under, and plan mode stops writes.
+    const crossesPlan = mode === "plan" || this.port.permissionMode() === "plan";
+    if (crossesPlan && (this.port.interactionRunning() || this.port.hasPendingApprovals())) {
       this.port.renderer().status("finish or cancel the current task before changing permission mode", "yellow");
       return false;
     }

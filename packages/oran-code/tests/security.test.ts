@@ -10,7 +10,7 @@ import {
   parseShellCommand,
   PermissionPolicy,
 } from "../src/security.js";
-import type { PermissionConfig, ToolCall } from "../src/types.js";
+import type { PermissionConfig, PermissionMode, ToolCall } from "../src/types.js";
 
 const roots: string[] = [];
 async function makeWorkspace(): Promise<string> {
@@ -262,6 +262,105 @@ describe("PermissionPolicy", () => {
     expect(isReadOnlyShellCommand(parseShellCommand("git log --oneline 2>&1 & git status"))).toBe(true);
     expect(isReadOnlyShellCommand(parseShellCommand("git status && git diff | git show > report.txt"))).toBe(false);
     expect(isReadOnlyShellCommand(parseShellCommand(""))).toBe(false);
+  });
+});
+
+describe("standing approval rules", () => {
+  it("suggests a prefix for a simple command and stays exact for compound ones", async () => {
+    const policy = new PermissionPolicy(permissionConfig(await makeWorkspace()));
+    expect(policy.suggestRule(call("run_command", { command: "pnpm test --watch" }))).toMatchObject({
+      pattern: "pnpm test*",
+      match: "glob",
+    });
+    expect(policy.suggestRule(call("run_command", { command: "git commit -m fix" }))).toMatchObject({
+      pattern: "git commit*",
+    });
+    // A path argument would widen the rule past the script the user approved.
+    expect(policy.suggestRule(call("run_command", { command: "node scripts/build.mjs" }))).toMatchObject({
+      match: "exact",
+    });
+    // A prefix on a compound command would also approve whatever follows the operator.
+    expect(policy.suggestRule(call("run_command", { command: "pnpm test && echo done" }))).toMatchObject({
+      match: "exact",
+    });
+  });
+
+  it("scopes a write rule to the file's directory", async () => {
+    const policy = new PermissionPolicy(permissionConfig(await makeWorkspace()));
+    policy.registerTools([{ name: "edit_file", kind: "write" }]);
+    expect(policy.suggestRule(call("edit_file", { path: "src/features/a.ts", old_string: "a", new_string: "b" })))
+      .toMatchObject({ pattern: "src/features/**", match: "glob" });
+    // Nothing to scope to at the workspace root.
+    expect(policy.suggestRule(call("edit_file", { path: "README.md", old_string: "a", new_string: "b" }))).toMatchObject(
+      { pattern: "README.md", match: "exact" },
+    );
+  });
+
+  it("covers variants of a permanently-allowed command but never a compound one", async () => {
+    const root = await makeWorkspace();
+    const policy = new PermissionPolicy(permissionConfig(root));
+    policy.registerTools([{ name: "run_command", kind: "command" }]);
+    await policy.allowPermanently(call("run_command", { command: "pnpm test" }));
+    expect(await policy.decide(call("run_command", { command: "pnpm test --watch" }), 3, "command")).toMatchObject({
+      verdict: "allow",
+      source: "local-rule",
+    });
+    expect(await policy.decide(call("run_command", { command: "pnpm test && echo hi" }), 3, "command")).toMatchObject({
+      verdict: "ask",
+    });
+  });
+
+  it("lets one task-scoped approval cover the directory it was granted in", async () => {
+    const root = await makeWorkspace();
+    const policy = new PermissionPolicy(permissionConfig(root));
+    policy.registerTools([{ name: "edit_file", kind: "write" }]);
+    const first = call("edit_file", { path: join(root, "src", "a.ts"), old_string: "a", new_string: "b" });
+    expect(await policy.decide(first, 2, "write")).toMatchObject({ verdict: "ask" });
+    policy.allowForTask(first);
+    expect(
+      await policy.decide(
+        call("edit_file", { path: join(root, "src", "c.ts"), old_string: "x", new_string: "y" }),
+        2,
+        "write",
+      ),
+    ).toMatchObject({ verdict: "allow", source: "session-rule" });
+    expect(
+      await policy.decide(
+        call("edit_file", { path: join(root, "docs", "c.md"), old_string: "x", new_string: "y" }),
+        2,
+        "write",
+      ),
+    ).toMatchObject({ verdict: "ask" });
+  });
+
+  it("keeps an explicit deny ahead of allows, including a task grant", async () => {
+    const root = await makeWorkspace();
+    await writeFile(
+      join(root, "user-permissions.yaml"),
+      'rules:\n  - rule: "edit_file(**secret/**)"\n    effect: deny\n    match: glob\n',
+      "utf8",
+    );
+    await writeFile(
+      join(root, ".oran", "permissions.local.yaml"),
+      'rules:\n  - rule: "edit_file(**)"\n    effect: allow\n    match: glob\n',
+      "utf8",
+    );
+    const policy = new PermissionPolicy(permissionConfig(root));
+    policy.registerTools([{ name: "edit_file", kind: "write" }]);
+    const target = call("edit_file", { path: join(root, "secret", "keys.ts"), old_string: "a", new_string: "b" });
+    policy.allowForTask(target);
+    expect(await policy.decide(target, 2, "write")).toMatchObject({ verdict: "deny", source: "user-rule" });
+  });
+
+  it("reads the permission mode live, so a mid-task switch applies", async () => {
+    const root = await makeWorkspace();
+    let mode: PermissionMode = "default";
+    const policy = new PermissionPolicy(permissionConfig(root), () => mode);
+    policy.registerTools([{ name: "edit_file", kind: "write" }]);
+    const write = call("edit_file", { path: join(root, "src", "a.ts"), old_string: "a", new_string: "b" });
+    expect(await policy.decide(write, 2, "write")).toMatchObject({ verdict: "ask" });
+    mode = "accept-edits";
+    expect(await policy.decide(write, 2, "write")).toMatchObject({ verdict: "allow", source: "permission-mode" });
   });
 });
 
