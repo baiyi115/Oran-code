@@ -12,6 +12,12 @@ import { footerLines } from "../src/tui/footer.js";
 import { questionDialogLines } from "../src/tui/question-dialog.js";
 import { renderToolMessage } from "../src/tui/transcript/tool-message.js";
 import { renderDiff } from "../src/tui/transcript/diff-renderer.js";
+import type { OverlayLine } from "../src/tui/overlay/select-list.js";
+
+/** Overlay rows are structured now; most assertions only care about their text. */
+function texts(lines: readonly OverlayLine[]): string[] {
+  return lines.map((line) => line.text);
+}
 import type { SessionOption, ToolMessage, TuiState } from "../src/tui/types.js";
 
 function state(): TuiState {
@@ -19,53 +25,53 @@ function state(): TuiState {
 }
 
 describe("TUI render helpers", () => {
-  it("renders a welcome card with model and directory rows", () => {
+  it("renders a welcome card with model, effort and directory rows", () => {
     const card = oranWelcomeLines(state(), 72);
     expect(card[0]).toContain("╭");
     expect(card.at(-1)).toContain("╯");
-    expect(card.join("\n")).toContain("gpt-4o medium");
+    expect(card.join("\n")).toContain("openai/gpt-4o");
+    expect(card.join("\n")).toContain("effort:");
+    expect(card.join("\n")).toContain("medium");
     expect(card.join("\n")).toContain("/workspace");
   });
 
   it("renders each overlay kind with a header and hint line", () => {
     const base = state();
     const commands = { ...base, overlay: { kind: "commands" as const, query: "/mo", selectedIndex: 0 } };
-    expect(renderOverlayLines(commands, ["/model"], 60)).toEqual(["/model"]);
+    expect(renderOverlayLines(commands, [{ text: "/model" }], 60)).toEqual([{ text: "/model" }]);
 
     const models = {
       ...base,
       overlay: {
         kind: "models" as const,
-        query: "",
         selectedIndex: 0,
         options: ["openai/a", "openai/b"],
         loading: false,
       },
     };
-    expect(renderOverlayLines(models, [], 60)[0]).toBe("Select model");
+    expect(renderOverlayLines(models, [], 60)[0]?.text).toBe("Select model");
 
     const sessions = {
       ...base,
       overlay: {
         kind: "sessions" as const,
-        query: "",
         selectedIndex: 0,
         options: [{ id: "s1", name: "one", updatedAt: "", messageCount: 3, isCurrent: true } satisfies SessionOption],
       },
     };
     const sessionLines = renderOverlayLines(sessions, [], 60);
-    expect(sessionLines.join("\n")).toContain("Enter Resume");
-    expect(sessionLines.join("\n")).toContain("{inverse}");
+    expect(texts(sessionLines).join("\n")).toContain("Enter Resume");
+    expect(sessionLines.some((line) => line.selected === true)).toBe(true);
 
     const followUps = {
       ...base,
       overlay: {
         kind: "follow-ups" as const,
         selectedIndex: 0,
-        options: [{ id: "f1", prompt: "continue tests", createdAt: "" }],
+        options: [{ id: "f1", prompt: "continue tests" }],
       },
     };
-    expect(renderOverlayLines(followUps, [], 60).join("\n")).toContain("Follow-ups");
+    expect(texts(renderOverlayLines(followUps, [], 60)).join("\n")).toContain("Follow-ups");
 
     const files = {
       ...base,
@@ -76,27 +82,34 @@ describe("TUI render helpers", () => {
         options: ["readme.md"],
         loading: false,
         tokenStart: 0,
-        quoted: false,
       },
     };
-    expect(renderOverlayLines(files, [], 60)[0]).toBe("@re");
+    expect(renderOverlayLines(files, [], 60)[0]?.text).toBe("@re");
 
     expect(renderOverlayLines({ ...base, overlay: { kind: "none" } }, [], 60)).toEqual([]);
   });
 
   it("windows overlay lines around the inverse selection", () => {
-    const lines = ["header", "hint", "", "a", "{inverse}b{/inverse}", "c", "d"];
+    const lines: OverlayLine[] = [
+      { text: "header" },
+      { text: "hint" },
+      { text: "" },
+      { text: "a" },
+      { text: "b", selected: true },
+      { text: "c" },
+      { text: "d" },
+    ];
     expect(fitOverlayLines(lines, 10)).toEqual(lines);
-    expect(fitOverlayLines(lines, 1)).toEqual(["{inverse}b{/inverse}"]);
-    expect(fitOverlayLines(lines, 2)).toEqual(["header", "{inverse}b{/inverse}"]);
-    expect(fitOverlayLines(lines, 4)).toEqual(["header", "hint", "a", "{inverse}b{/inverse}"]);
+    expect(fitOverlayLines(lines, 1)).toEqual([{ text: "b", selected: true }]);
+    expect(fitOverlayLines(lines, 2)).toEqual([{ text: "header" }, { text: "b", selected: true }]);
+    expect(fitOverlayLines(lines, 4)).toEqual([{ text: "header" }, { text: "hint" }, { text: "a" }, { text: "b", selected: true }]);
   });
 
   it("extracts the @file token before the cursor", () => {
-    expect(fileQuery("read @sr", 9)).toEqual({ query: "sr", start: 5, quoted: false });
-    expect(fileQuery("read @sr", 6)).toEqual({ query: "", start: 5, quoted: false });
+    expect(fileQuery("read @sr", 9)).toEqual({ query: "sr", start: 5 });
+    expect(fileQuery("read @sr", 6)).toEqual({ query: "", start: 5 });
     expect(fileQuery("no token", 8)).toBeUndefined();
-    expect(fileQuery("@ab", 3)).toEqual({ query: "ab", start: 0, quoted: false });
+    expect(fileQuery("@ab", 3)).toEqual({ query: "ab", start: 0 });
     expect(fileQuery("write @a@b", 11)).toBeUndefined();
   });
 
@@ -133,24 +146,24 @@ describe("details overlay window", () => {
 
   it("shows the head window by default with the hint pinned and a count", () => {
     const lines = renderOverlayLines(overlayState(0), [], 60, 10);
-    expect(lines[0]).toBe("Latest activity");
-    expect(lines).toContain("content line 1");
-    expect(lines).not.toContain("content line 10");
-    expect(lines.some((line) => line.includes("7/40") && line.includes("Ctrl+T/Esc Close"))).toBe(true);
+    expect(lines[0]?.text).toBe("Latest activity");
+    expect(texts(lines)).toContain("content line 1");
+    expect(texts(lines)).not.toContain("content line 10");
+    expect(texts(lines).some((line) => line.includes("7/40") && line.includes("Ctrl+T/Esc Close"))).toBe(true);
   });
 
   it("scrolls through the content without dropping the title or hint", () => {
     const lines = renderOverlayLines(overlayState(20), [], 60, 10);
-    expect(lines[0]).toBe("Latest activity");
-    expect(lines).toContain("content line 21");
-    expect(lines).not.toContain("content line 1");
-    expect(lines.some((line) => line.includes("27/40"))).toBe(true);
+    expect(lines[0]?.text).toBe("Latest activity");
+    expect(texts(lines)).toContain("content line 21");
+    expect(texts(lines)).not.toContain("content line 1");
+    expect(texts(lines).some((line) => line.includes("27/40"))).toBe(true);
   });
 
   it("clamps the scroll offset to the end of the content", () => {
     const lines = renderOverlayLines(overlayState(999), [], 60, 10);
-    expect(lines.some((line) => line.includes("content line 40"))).toBe(true);
-    expect(lines.some((line) => line.includes("40/40"))).toBe(true);
+    expect(texts(lines).some((line) => line.includes("content line 40"))).toBe(true);
+    expect(texts(lines).some((line) => line.includes("40/40"))).toBe(true);
   });
 
   it("shows everything when the content fits", () => {
@@ -161,7 +174,7 @@ describe("details overlay window", () => {
       60,
       10,
     );
-    expect(lines).toEqual(["T", expect.any(String), "one", "two", "PageUp/PageDown/↑↓ scroll · Ctrl+T/Esc Close"]);
+    expect(texts(lines)).toEqual(["T", expect.any(String), "one", "two", "PageUp/PageDown/↑↓ scroll · Ctrl+T/Esc Close"]);
   });
 });
 
@@ -201,26 +214,48 @@ describe("tool output head/tail preview", () => {
   });
 });
 
-describe("diff head/tail preview", () => {
+describe("diff rendering", () => {
   const diff = Array.from({ length: 40 }, (_, index) => `${index % 2 === 0 ? "+" : "-"}change ${index + 1}`).join("\n");
 
-  it("keeps both ends of a long diff when expanded", () => {
-    const lines = renderDiff(diff, 80, true);
-    const text = lines.join("\n");
+  it("renders the whole diff in the details view", () => {
+    const text = renderDiff(diff, 80).join("\n");
     expect(text).toContain("change 1");
     expect(text).toContain("change 33");
     expect(text).toContain("change 40");
-    expect(text).toContain("12 lines hidden");
+    expect(text).not.toContain("lines hidden");
   });
 
-  it("keeps the folded preview compact for non-expanded diffs", () => {
-    const lines = renderDiff(diff, 80, false);
-    // The folded form keeps 6 header lines plus an explicit hidden-line count
-    // (folding should not pretend the content is complete).
-    expect(lines.length).toBeLessThan(10);
-    expect(lines.join("\n")).toContain("34 lines hidden");
-    expect(lines.join("\n")).toContain("change 6");
-    expect(lines.join("\n")).not.toContain("change 33");
+  it("caps a diff longer than the render ceiling", () => {
+    const long = Array.from({ length: 450 }, (_, index) => `+change ${index + 1}`).join("\n");
+    const text = renderDiff(long, 80).join("\n");
+    expect(text).toContain("change 400");
+    expect(text).not.toContain("change 401");
+    expect(text).toContain("50 lines hidden");
+  });
+
+  it("keeps the diff out of the transcript row and shows it only in details", () => {
+    const message: ToolMessage = {
+      id: "tool-1",
+      kind: "tool",
+      callId: "call-1",
+      name: "edit_file",
+      arguments: { path: "src/app.ts" },
+      permissionLevel: 2,
+      status: "success",
+      durationMs: 900,
+      summary: "unique replace",
+      expanded: false,
+      diff: { text: "@@ -1,1 +1,1 @@\n-old line\n+new line", added: 1, removed: 1, truncated: false },
+    };
+    const collapsed = renderToolMessage(message, 80);
+    // One row: the counts in the heading answer "how big", the body would only push the transcript
+    // apart for a change the user can open on demand.
+    expect(collapsed).toHaveLength(1);
+    expect(collapsed.join("\n")).toContain("+1 -1");
+
+    const expanded = renderToolMessage({ ...message, expanded: true }, 80).join("\n");
+    expect(expanded).toContain("- old line");
+    expect(expanded).toContain("+ new line");
   });
 });
 
@@ -323,7 +358,7 @@ describe("question dialog preview head/tail and honest hints", () => {
         ],
       },
     ];
-    const text = questionDialogLines(questions, 0, 0, [0], 80).join("\n");
+    const text = texts(questionDialogLines(questions, 0, 0, [0], 80)).join("\n");
     expect(text).toContain("preview line 1");
     expect(text).toContain("preview line 5");
     expect(text).not.toContain("preview line 8");

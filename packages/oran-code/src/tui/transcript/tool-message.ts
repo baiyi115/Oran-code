@@ -22,6 +22,10 @@ export function renderToolMessage(message: ToolMessage, width: number, liveTick 
   const call = argument
     ? `${ANSI.toolBold}${label}${ANSI.reset} ${ANSI.gray}${argument}${ANSI.reset}`
     : `${ANSI.toolBold}${label}${ANSI.reset}`;
+  // What the call changed, in the heading: the counts answer "how big was this edit" without
+  // opening the row, and they stay correct even when the diff text below is truncated.
+  const changeDiff = writeToolDiff(message);
+  const changeCounts = changeDiff ? diffCounters(changeDiff) : "";
   // A finished call shows its total duration; a running one shows elapsed time (so a long tool's
   // stuck step is visible at a glance).
   const duration =
@@ -51,14 +55,13 @@ export function renderToolMessage(message: ToolMessage, width: number, liveTick 
       ? ` ${ANSI.gray}\u00b7 ${truncateVisible(detail.replace(/\s+/g, " ").trim(), 80)}${ANSI.reset}`
       : "";
   const headingPrefix = `${indicatorColor}${indicator}${ANSI.reset} `;
-  const headingBody = `${call}${status}${duration}${summary}${badges}`;
+  const headingBody = `${call}${changeCounts}${status}${duration}${summary}${badges}`;
   const headingWidth = Math.max(1, width - visibleWidth(headingPrefix));
   const lines = wrapDisplayText(headingBody, headingWidth).map(
     (line, index) => `${index === 0 ? headingPrefix : " ".repeat(2)}${line}`,
   );
   const output = message.error || message.output || "";
-  const changeDiff = writeToolDiff(message);
-  if (message.expanded && output && !changeDiff) {
+  if (message.expanded && output && !changeDiff?.text) {
     // Showing only the first 12 lines drops the valuable part of long output (failure stacks and
     // summary lines almost always sit at the end), so it became "8 head lines + an omission
     // marker + 4 tail lines"; head and tail stay visible, ctrl+t gives the detail.
@@ -84,17 +87,52 @@ export function renderToolMessage(message: ToolMessage, width: number, liveTick 
         .slice(0, 2),
     );
   }
-  // File-modifying tools always surface what changed (diff-style), collapsed
-  // to a short preview; ctrl+t on the row expands it to more lines.
-  if (changeDiff) lines.push(...renderDiff(changeDiff, width, message.expanded));
+  // The heading already says how big the edit was (+N -M); the diff body itself only renders in the
+  // details view. Padding every finished write with a few preview lines pushes the conversation
+  // apart for something the counts already answer, and a write is never folded into "N tools".
+  if (changeDiff?.text && message.expanded) lines.push(...renderDiff(changeDiff.text, width));
   return lines;
 }
 
-/** Synthetic unified-diff text for file-modifying tools, or undefined for read-only tools. */
-function writeToolDiff(message: ToolMessage): string | undefined {
+/** Diff text plus its change counts; `text` is absent when only the counts are known. */
+interface DisplayDiff {
+  text?: string | undefined;
+  added: number;
+  removed: number;
+}
+
+function diffCounters(diff: DisplayDiff): string {
+  const parts: string[] = [];
+  if (diff.added > 0) parts.push(`${ANSI.green}+${diff.added}${ANSI.reset}`);
+  if (diff.removed > 0) parts.push(`${ANSI.red}-${diff.removed}${ANSI.reset}`);
+  return parts.length ? ` ${parts.join(" ")}` : "";
+}
+
+/**
+ * What the call changed: the diff the tool actually applied when it reported one, else a preview
+ * derived from the call's arguments (older sessions, and any writer that does not report a diff),
+ * and undefined for read-only tools.
+ */
+function writeToolDiff(message: ToolMessage): DisplayDiff | undefined {
   // Failed, rejected, cancelled, and running calls did not produce a confirmed
   // file change, so do not present their requested arguments as an applied diff.
   if (message.status !== "success") return undefined;
+  // A reported diff is authoritative even when empty: the writer knows there was nothing worth
+  // showing, and falling back to the arguments would claim a whole-file addition for an overwrite.
+  if (message.diff) {
+    return {
+      text: message.diff.text || undefined,
+      added: message.diff.added,
+      removed: message.diff.removed,
+    };
+  }
+  const text = argumentDiff(message);
+  if (!text) return undefined;
+  return { text, ...countDiffLines(text) };
+}
+
+/** Diff preview reconstructed from the call arguments; has no before-state to compare against. */
+function argumentDiff(message: ToolMessage): string | undefined {
   if (message.name === "edit_file") {
     if (Array.isArray(message.arguments.edits)) {
       const diffs: string[] = [];
@@ -128,6 +166,18 @@ function writeToolDiff(message: ToolMessage): string | undefined {
       .join("\n");
   }
   return undefined;
+}
+
+/** Added/removed line counts from diff text, ignoring hunk and file headers. */
+function countDiffLines(text: string): { added: number; removed: number } {
+  let added = 0;
+  let removed = 0;
+  for (const line of text.split(/\r?\n/)) {
+    if (line.startsWith("+++") || line.startsWith("---") || line.startsWith("@@")) continue;
+    if (line.startsWith("+")) added += 1;
+    else if (line.startsWith("-")) removed += 1;
+  }
+  return { added, removed };
 }
 
 function toolArgumentSummary(message: ToolMessage): string {

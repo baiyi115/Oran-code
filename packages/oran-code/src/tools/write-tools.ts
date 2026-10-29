@@ -3,6 +3,7 @@ import { isAbsolute, relative, resolve, sep } from "node:path";
 import type { ToolDefinition, ToolResult } from "../types.js";
 import { projectStateRoot } from "../paths.js";
 import { applyUnifiedDiff } from "../patch.js";
+import { createFileDiff } from "../diff.js";
 import { resolvePhysicalPath, isWithinPath } from "../utils/path-containment.js";
 import type { ToolFactoryContext } from "./registry.js";
 import { atomicWriteFile, countOccurrences, displayPath, failedResult, resolveWorkspacePath } from "./fs-helpers.js";
@@ -189,7 +190,7 @@ export function registerWriteTools(registry: { register(tool: ToolDefinition): v
             ok: true,
             output: `edited ${displayPath(workspace, path)} (${ranges.length} batch replacement${ranges.length === 1 ? "" : "s"})`,
             summary: `batch ${ranges.length} edits`,
-            metadata: { matches: ranges.length, batch: true },
+            metadata: { matches: ranges.length, batch: true, ...fileDiffMetadata(content, next) },
           };
         }
 
@@ -232,7 +233,7 @@ export function registerWriteTools(registry: { register(tool: ToolDefinition): v
             ok: true,
             output: `edited ${displayPath(workspace, path)} (${replaced} replacement${replaced === 1 ? "" : "s"})`,
             summary: replaceAll ? `replace_all ${replaced}` : "unique replace",
-            metadata: { matches: replaced, replaceAll },
+            metadata: { matches: replaced, replaceAll, ...fileDiffMetadata(content, next) },
           };
         }
 
@@ -261,7 +262,7 @@ export function registerWriteTools(registry: { register(tool: ToolDefinition): v
           ok: true,
           output: `edited ${displayPath(workspace, path)} (${replaced} replacement${replaced === 1 ? "" : "s"})`,
           summary: replaceAll ? `replace_all ${replaced}` : "unique replace",
-          metadata: { matches: replaced, replaceAll },
+          metadata: { matches: replaced, replaceAll, ...fileDiffMetadata(content, next) },
         };
       } catch (error) {
         return failedResult(error, "edit_file failed");
@@ -320,6 +321,7 @@ export function registerWriteTools(registry: { register(tool: ToolDefinition): v
             hunksApplied: applied.hunksApplied,
             linesAdded: applied.linesAdded,
             linesRemoved: applied.linesRemoved,
+            ...fileDiffMetadata(content, applied.content),
           },
         };
       } catch (error) {
@@ -337,16 +339,60 @@ async function writeTextFile(
 ): Promise<ToolResult> {
   try {
     const path = target(rawPath);
-    await atomicWriteFile(path, String(rawContent ?? ""));
+    const content = String(rawContent ?? "");
+    // The previous content is what makes a real diff possible: the arguments only carry the new
+    // text, so an overwrite would otherwise be indistinguishable from a fresh file.
+    const previous = await previousContent(path);
+    await atomicWriteFile(path, content);
     return {
       ok: true,
       output: `wrote ${displayPath(root, path)}`,
       summary: "wrote file",
+      metadata: fileDiffMetadata(previous, content),
     };
   } catch (error) {
     return failedResult(error, "write failed");
   }
 }
+
+/** Text above this size is not diffed: the preview is worth less than the copy it costs. */
+const MAX_DIFF_INPUT_BYTES = 1_000_000;
+
+/**
+ * The content a write is about to replace.
+ * - "" when there is no previous file (every line is an addition);
+ * - undefined when the file exists but cannot be diffed cheaply, so the UI shows no preview rather
+ *   than claiming the whole file was added.
+ */
+async function previousContent(path: string): Promise<string | undefined> {
+  let size: number;
+  try {
+    const info = await stat(path);
+    if (!info.isFile()) return undefined;
+    size = info.size;
+  } catch {
+    return "";
+  }
+  if (size > MAX_DIFF_INPUT_BYTES) return undefined;
+  try {
+    return await readFile(path, "utf8");
+  } catch {
+    return undefined;
+  }
+}
+
+/**
+ * Diff metadata for a write tool result. `before` undefined means the previous content could not
+ * be compared cheaply; the key is still set, with an empty diff, so the UI shows nothing instead of
+ * deriving a preview from the arguments that would call the whole file an addition.
+ */
+function fileDiffMetadata(before: string | undefined, after: string): Record<string, unknown> {
+  if (before === undefined) return { diff: EMPTY_DIFF };
+  return { diff: createFileDiff(before, after) ?? EMPTY_DIFF };
+}
+
+/** No changes, or no diff worth showing; both render as nothing. */
+const EMPTY_DIFF = { text: "", added: 0, removed: 0, truncated: false } as const;
 
 async function writePlanFile(root: string, rawPath: unknown, rawContent: unknown): Promise<ToolResult> {
   try {
