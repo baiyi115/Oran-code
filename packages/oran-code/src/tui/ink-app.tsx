@@ -1198,9 +1198,25 @@ export class InkTuiApp {
    * can reach it.
    */
   private liveTranscriptLines(width: number): ReturnType<TranscriptView["linesWithAnchors"]> {
+    const start = this.liveTranscriptStart();
+    if (start >= this.state.transcript.length) return [];
     return this.transcript
-      .linesWithAnchors(this.state, width)
+      .renderLines(this.state.transcript.slice(start), width, 0, this.state.expandedToolGroupIds)
       .filter((line) => !this.committedStaticTranscriptIds.has(line.messageId));
+  }
+
+  /**
+   * Index of the first message that has not been printed through Ink Static.
+   *
+   * Everything before it is already a string in `committedStaticTranscriptItems`, so rendering it
+   * again each frame is work whose output is thrown away — and on a resize every per-message cache
+   * is invalidated at once, which is where a long session spent its slowest frame.
+   */
+  private liveTranscriptStart(): number {
+    const messages = this.state.transcript;
+    let index = 0;
+    while (index < messages.length && this.committedStaticTranscriptIds.has(messages[index]!.id)) index += 1;
+    return index;
   }
 
   scrollState(): TuiState["transcriptScroll"] {
@@ -1262,9 +1278,13 @@ export class InkTuiApp {
     staticItems: StaticTranscriptItem[];
     liveLines: ReturnType<TranscriptView["linesWithAnchors"]>;
   } {
-    const lines = this.transcript.linesWithAnchors(this.state, Math.max(12, width), liveTick);
+    // Render only what is still live: committed messages are already strings in staticItems, and
+    // rebuilding their lines every frame (at the new width after a resize) was pure waste.
+    const start = this.liveTranscriptStart();
+    const live = start > 0 ? this.state.transcript.slice(start) : this.state.transcript;
+    const lines = this.transcript.renderLines(live, Math.max(12, width), liveTick, this.state.expandedToolGroupIds);
     const candidateStaticCount = staticCommitBoundary(this.state.transcript);
-    const staticMessages = this.state.transcript.slice(0, candidateStaticCount);
+    const staticMessages = this.state.transcript.slice(start, candidateStaticCount);
     const groupedLines = new Map<string, string[]>();
 
     for (const line of lines) {
