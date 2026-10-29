@@ -133,7 +133,6 @@ function makeHarness(
     contextManager,
     trace,
     permission,
-    logger: vi.fn(),
     debugLogger: vi.fn(),
     readonlyCache: new Map(),
     snapshotStore,

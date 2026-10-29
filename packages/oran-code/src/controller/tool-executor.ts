@@ -74,7 +74,6 @@ export interface ToolExecutorPorts {
   readonly contextManager: ContextManager;
   readonly trace: TraceStore;
   readonly permission: PermissionPolicy;
-  readonly logger: (message: string) => void;
   readonly debugLogger: (message: string) => void;
   readonly readonlyCache: Map<string, ToolResult>;
   readonly snapshotStore: SnapshotStorePort | undefined;
@@ -98,8 +97,9 @@ export interface ToolExecutorPorts {
 
 /**
  * Tool batch executor: consecutive readonly calls are batched concurrently, writes/commands run
- * serially, approvals come first, and results are recorded lazily (flushed as a whole once the
- * batch finishes). Extracted from TaskController, behavior unchanged.
+ * serially, approvals come first, and results are held until the batch boundary so offload can
+ * budget them together — each batch publishes the previous one before it starts. Extracted from
+ * TaskController.
  */
 export class ToolBatchExecutor {
   private deferredRecords: DeferredToolRecord[] | undefined;
@@ -169,6 +169,10 @@ export class ToolBatchExecutor {
 
       for (const batch of batches) {
         this.ports.throwIfCancelled();
+        // Publish what the previous batch already produced before this one can block on an
+        // approval: a finished subagent or command must show up in the transcript while the next
+        // call waits for the user, not minutes later when the whole response is done.
+        await this.flushDeferredToolRecords(task, messages, deferredRecords);
         if (batch.length === 1 && !this.ports.registry.has(batch[0]!.call.name)) {
           const { index, call } = batch[0]!;
           await this.ports.emit("tool_start", { call, index, permissionLevel: 4 });
@@ -194,7 +198,6 @@ export class ToolBatchExecutor {
           };
           loop.recordUnknownTool(call);
           await this.recordTool(task, messages, call, index, result, 0, { executed: false });
-          this.ports.logger(`Tool ${call.name}: unknown tool`);
           if (loop.shouldStopForUnknownTools()) return { workspaceMutated, readonlyOnly, mutatedCallIds };
           continue;
         }
@@ -397,7 +400,6 @@ export class ToolBatchExecutor {
             await this.ports.trackSuccessfulFileRead(task.workspace, entry.call);
           }
           await this.recordTool(task, messages, entry.call, item.index, entry.result, entry.duration);
-          this.ports.logger(`Tool ${entry.call.name}: ${entry.result.summary ?? entry.result.ok}`);
         }
         this.ports.throwIfCancelled();
       }
@@ -702,7 +704,10 @@ export class ToolBatchExecutor {
     await this.ports.persist(task);
     let approval: ApprovalResponse;
     try {
-      approval = await this.ports.requestApproval(call, level, `${description}\nReason: ${decision.reason}`);
+      // The rule the standing answers would save, shown before the user commits to one: an
+      // approval means something only if its breadth is visible ("pnpm test*" vs the whole tool).
+      const rule = this.ports.permission.suggestRuleText(call, kind);
+      approval = await this.ports.requestApproval(call, level, `${description}\nReason: ${decision.reason}\nRule: ${rule}`);
     } finally {
       if (task.state === "awaiting_approval" && !this.ports.getAbortSignal()?.aborted) {
         transitionTask(task, resumeState);
@@ -763,11 +768,14 @@ export class ToolBatchExecutor {
   private async flushDeferredToolRecords(
     task: Task,
     messages: Message[],
-    records: readonly DeferredToolRecord[],
+    records: DeferredToolRecord[],
   ): Promise<void> {
     if (!records.length) return;
+    // Take ownership of the entries: this runs between batches as well as at the end, and a record
+    // must be published exactly once.
+    const pending = records.splice(0, records.length);
     const offload = await this.ports.contextManager.offloadToolResults(
-      records.map((record) => ({
+      pending.map((record) => ({
         id: record.call.id ?? `call_${record.call.name}`,
         content: record.result.output || record.result.error || "",
       })),
@@ -781,7 +789,7 @@ export class ToolBatchExecutor {
       if (offload.failedCount > 0) payload.message = `${offload.failedCount} tool result(s) could not be offloaded.`;
       await this.ports.emit("context_compaction", payload);
     }
-    for (const record of records) {
+    for (const record of pending) {
       const replacement = offload.replacements.get(record.call.id ?? `call_${record.call.name}`);
       const result =
         replacement === undefined
