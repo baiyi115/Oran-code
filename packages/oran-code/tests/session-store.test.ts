@@ -66,6 +66,47 @@ describe("SessionStore JSONL archives", () => {
     }
   });
 
+  it("records an in-place tool-result rewrite as a context edit, not a snapshot", async () => {
+    const root = await mkdtemp(join(tmpdir(), "liteagent-store-context-edit-"));
+    try {
+      const store = new SessionStore(root);
+      await store.open();
+      const original: Message[] = [
+        { role: "user", content: "read it" },
+        {
+          role: "assistant",
+          content: "",
+          toolCalls: [
+            { id: "call_1", name: "read_file", arguments: {}, createdAt: "2026-10-28T00:00:00.000Z" },
+          ],
+        },
+        { role: "tool", toolCallId: "call_1", content: "x".repeat(4_000) },
+      ];
+      const created = await store.create("Rewrite", { conversation: original });
+      // Offload keeps the message count and ids and only rewrites the body.
+      const rewritten = original.map((message) =>
+        message.role === "tool"
+          ? { ...message, content: "<cleared-tool-result>4000 bytes in .oran/tool-results/call_1</cleared-tool-result>" }
+          : message,
+      );
+      await store.update(created.id, { conversation: rewritten });
+
+      const archive = join(store.directory, `${created.id}.jsonl`);
+      const records = parseSessionJsonl(await readFile(archive, "utf8"));
+      expect(records.filter((record) => record.type === "context-edit")).toHaveLength(1);
+      expect(records.some((record) => record.type === "session-reset")).toBe(false);
+
+      const reopened = new SessionStore(root);
+      await reopened.open();
+      const restored = await reopened.ensureConversation(created.id);
+      const toolMessage = restored?.conversation?.find((message) => message.role === "tool");
+      expect(toolMessage?.content).toContain("<cleared-tool-result>");
+      expect(toolMessage?.content).not.toContain("xxxx");
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
   it("skips bad and empty lines and uses the last reset boundary", async () => {
     const root = await mkdtemp(join(tmpdir(), "liteagent-store-bad-lines-"));
     try {

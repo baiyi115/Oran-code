@@ -81,13 +81,31 @@ export interface SessionTaskPlanRecord {
   timestamp: string;
   plan: TaskPlanState;
 }
+export interface SessionContextEditReplacement {
+  /** Tool call whose result body was rewritten (offload or microcompact). */
+  toolCallId: string;
+  /** Frozen replacement text; the original body is still in the spill file it points at. */
+  content: string;
+}
+/**
+ * An in-place rewrite of tool result bodies. Offload and microcompact keep the conversation's shape
+ * and only change some tool results, so the archive records exactly those replacements instead of
+ * re-dumping the whole conversation the way `session-reset` does.
+ */
+export interface SessionContextEditRecord {
+  type: "context-edit";
+  role: "system";
+  timestamp: string;
+  content: { replacements: SessionContextEditReplacement[] };
+}
 export type SessionJsonlRecord =
   | SessionStateRecord
   | SessionMessageRecord
   | LegacySessionMessageRecord
   | SessionCompactionBoundaryRecord
   | SessionResetRecord
-  | SessionTaskPlanRecord;
+  | SessionTaskPlanRecord
+  | SessionContextEditRecord;
 
 export type StoredSessionPatch = Partial<
   Pick<
@@ -258,7 +276,9 @@ export class SessionStore {
       (item) => item.id === id && normalizeWorkspace(item.workspace) === normalizeWorkspace(this.workspace),
     );
     if (!existing) return undefined;
-    const next = cloneSession(existing);
+    // Shallow copy: every field is replaced below, never mutated in place, and the stored arrays are
+    // treated as immutable — a deep clone here copied the transcript and conversation on each write.
+    const next = { ...existing };
     if (patch.name !== undefined) next.name = patch.name.trim() || next.name;
     if (patch.autoNamed !== undefined) next.autoNamed = patch.autoNamed;
     if (patch.titleSource !== undefined) next.titleSource = patch.titleSource;
@@ -288,7 +308,8 @@ export class SessionStore {
         : isMessagePrefix(before, after)
           ? messageRecords(after.slice(before.length), now)
           : [
-              compactionBoundaryRecord(after, now) ?? {
+              compactionBoundaryRecord(after, now) ??
+              contextEditRecord(before, after, now) ?? {
                 type: "session-reset",
                 role: "system",
                 timestamp: now,
@@ -320,7 +341,8 @@ export class SessionStore {
     this.sessions[this.sessions.indexOf(existing)] = next;
     if (patch.conversation !== undefined) this.loadedConversations.add(id);
     await this.refreshMtime(id);
-    return cloneSession(next);
+    // Shallow as well: `next` is already this call's private object, and callers only read fields.
+    return { ...next };
   }
 
   /** Durably append one semantic message before the Agent loop continues. */
@@ -756,7 +778,12 @@ export function rebuildConversation(records: readonly SessionJsonlRecord[]): Mes
     }
   }
   for (let index = Math.max(0, boundaryIndex + 1); index < records.length; index += 1) {
-    const message = recordMessage(records[index]);
+    const record = records[index];
+    if (record?.type === "context-edit") {
+      applyContextEdits(rebuilt, record.content.replacements);
+      continue;
+    }
+    const message = recordMessage(record);
     if (message) rebuilt.push(message);
   }
   return truncateIncompleteToolChains(rebuilt);
@@ -811,6 +838,7 @@ function recordMessage(record: SessionJsonlRecord | undefined): Message | undefi
     record.type === "compaction-boundary" ||
     record.type === "session-reset" ||
     record.type === "task-plan" ||
+    record.type === "context-edit" ||
     !isMessageRole(record.role)
   )
     return undefined;
@@ -841,7 +869,9 @@ function stateSnapshotRecord(session: StoredSession, timestamp: string): Session
   return { type: "state", timestamp, session: storedSessionState(session) };
 }
 function storedSessionState(session: StoredSession): StoredSessionState {
-  const { conversation: _conversation, ...state } = cloneSession(session);
+  // Shallow: the result is only serialized into the record, never mutated, so deep-cloning it here
+  // copied the whole TUI transcript and history on every sidecar write for nothing.
+  const { conversation: _conversation, ...state } = session;
   return state;
 }
 function stripDerivedArchiveFields(session: StoredSessionState): StoredSessionState {
@@ -879,10 +909,13 @@ function messageRecords(messages: readonly Message[], timestamp: string): Sessio
   }));
 }
 function isMessagePrefix(prefix: readonly Message[], complete: readonly Message[]): boolean {
-  return (
-    prefix.length <= complete.length &&
-    prefix.every((message, index) => JSON.stringify(message) === JSON.stringify(complete[index]))
-  );
+  if (prefix.length > complete.length) return false;
+  for (let index = 0; index < prefix.length; index += 1) {
+    const left = prefix[index];
+    if (left === complete[index]) continue; // same object: messages are immutable once enqueued
+    if (JSON.stringify(left) !== JSON.stringify(complete[index])) return false;
+  }
+  return true;
 }
 function compactionBoundaryRecord(
   messages: readonly Message[],
@@ -927,6 +960,8 @@ function isSessionJsonlRecord(value: unknown): value is SessionJsonlRecord {
   if (item.type === "session-reset")
     return item.role === "system" && typeof item.timestamp === "string" && isResetContent(item.content);
   if (item.type === "task-plan") return typeof item.timestamp === "string" && isTaskPlanState(item.plan);
+  if (item.type === "context-edit")
+    return item.role === "system" && typeof item.timestamp === "string" && isContextEditContent(item.content);
   return (
     (item.type === undefined || item.type === "message") &&
     isMessageRole(item.role) &&
@@ -944,6 +979,59 @@ function isBoundaryContent(value: unknown): value is SessionCompactionBoundaryCo
     (item.retainedTail === undefined ||
       (Array.isArray(item.retainedTail) && item.retainedTail.every(isRetainedMessage)));
   return validReset || validSummary;
+}
+/**
+ * Records an offload/microcompact rewrite as a list of replacements. Only a conversation that keeps
+ * its length, roles and tool-call ids qualifies: anything else (a real compaction, a rewind) is not
+ * a rewrite of bodies and must take the snapshot path.
+ */
+function contextEditRecord(
+  before: readonly Message[],
+  after: readonly Message[],
+  timestamp: string,
+): SessionContextEditRecord | undefined {
+  if (before.length !== after.length) return undefined;
+  const replacements: SessionContextEditReplacement[] = [];
+  for (let index = 0; index < after.length; index += 1) {
+    const left = before[index];
+    const right = after[index];
+    if (!left || !right) return undefined;
+    // The caller hands in a clone, so identity only short-circuits the messages nobody touched;
+    // deep equality decides whether this slot changed at all, and only a tool body may have.
+    if (left === right || JSON.stringify(left) === JSON.stringify(right)) continue;
+    if (right.role !== "tool" || typeof right.toolCallId !== "string") return undefined;
+    if (left.role !== "tool" || left.toolCallId !== right.toolCallId) return undefined;
+    if (typeof right.content !== "string") return undefined;
+    replacements.push({ toolCallId: right.toolCallId, content: right.content });
+  }
+  if (!replacements.length) return undefined;
+  return { type: "context-edit", role: "system", timestamp, content: { replacements } };
+}
+
+function applyContextEdits(
+  messages: Message[],
+  replacements: readonly SessionContextEditReplacement[],
+): void {
+  if (!replacements.length) return;
+  const byId = new Map(replacements.map((item) => [item.toolCallId, item.content]));
+  for (const message of messages) {
+    if (message.role !== "tool" || typeof message.toolCallId !== "string") continue;
+    const content = byId.get(message.toolCallId);
+    if (content !== undefined) message.content = content;
+  }
+}
+
+function isContextEditContent(value: unknown): value is SessionContextEditRecord["content"] {
+  if (!value || typeof value !== "object") return false;
+  const replacements = (value as { replacements?: unknown }).replacements;
+  return (
+    Array.isArray(replacements) &&
+    replacements.every((item: unknown) => {
+      if (!item || typeof item !== "object") return false;
+      const entry = item as { toolCallId?: unknown; content?: unknown };
+      return typeof entry.toolCallId === "string" && typeof entry.content === "string";
+    })
+  );
 }
 function isResetContent(value: unknown): value is SessionResetRecord["content"] {
   if (!value || typeof value !== "object") return false;
