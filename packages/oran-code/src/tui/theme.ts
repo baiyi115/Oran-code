@@ -169,7 +169,6 @@ function ansiPalette(code: (n: number) => string, mode: ColorMode): AnsiPalette 
 
 const mode = resolveColorMode();
 
-export const COLOR_MODE: ColorMode = mode;
 export const COLORS: ThemePalette = mode === "light" ? LIGHT_PALETTE : mode === "mono" ? MONO_PALETTE : DARK_PALETTE;
 export const ANSI: AnsiPalette = ansiPalette((n) => `\u001b[38;5;${n}m`, mode);
 

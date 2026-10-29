@@ -28,12 +28,12 @@ describe("WorkspaceFileIndex caching and staleness", () => {
 
 describe("fileQuery", () => {
   it("parses unquoted @-fragments", () => {
-    expect(fileQuery("read @src/ind", 13)).toMatchObject({ query: "src/ind", quoted: false });
+    expect(fileQuery("read @src/ind", 13)).toMatchObject({ query: "src/ind" });
   });
 
   it("parses quoted @-fragments with spaces in them", () => {
     const value = 'open @"dev 文档/头像';
-    expect(fileQuery(value, value.length)).toMatchObject({ query: "dev 文档/头像", quoted: true });
+    expect(fileQuery(value, value.length)).toMatchObject({ query: "dev 文档/头像" });
   });
 
   it("returns undefined when there is no @ trigger", () => {

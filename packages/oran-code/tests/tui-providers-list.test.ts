@@ -137,16 +137,17 @@ describe("providers list overlay", () => {
 describe("providers list rendering", () => {
   it("marks the current provider and shows the add row", () => {
     const lines = providersListLines(options, 0, 80);
-    expect(lines.some((line) => line.includes("alpha"))).toBe(true);
-    expect(lines.some((line) => line.includes("Current: alpha"))).toBe(true);
-    expect(lines.some((line) => line.includes("●"))).toBe(true);
-    expect(lines.some((line) => line.includes("+ Add provider"))).toBe(true);
-    expect(lines.some((line) => line.includes("1 model"))).toBe(true);
+    const text = lines.map((line) => line.text);
+    expect(text.some((line) => line.includes("alpha"))).toBe(true);
+    expect(text.some((line) => line.includes("Current: alpha"))).toBe(true);
+    expect(text.some((line) => line.includes("●"))).toBe(true);
+    expect(text.some((line) => line.includes("+ Add provider"))).toBe(true);
+    expect(text.some((line) => line.includes("1 model"))).toBe(true);
   });
 
   it("renders the delete confirmation", () => {
     const lines = providerDeleteConfirmLines("alpha", 0, 80);
-    expect(lines[0]).toBe("Delete provider?");
-    expect(lines.some((line) => line.includes("alpha"))).toBe(true);
+    expect(lines[0]?.text).toBe("Delete provider?");
+    expect(lines.some((line) => line.text.includes("alpha"))).toBe(true);
   });
 });

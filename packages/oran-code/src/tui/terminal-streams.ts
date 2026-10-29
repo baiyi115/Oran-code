@@ -1,7 +1,7 @@
 import { Transform } from "node:stream";
 
-export const BEGIN_SYNCHRONIZED_OUTPUT = "\x1b[?2026h";
-export const END_SYNCHRONIZED_OUTPUT = "\x1b[?2026l";
+const BEGIN_SYNCHRONIZED_OUTPUT = "\x1b[?2026h";
+const END_SYNCHRONIZED_OUTPUT = "\x1b[?2026l";
 export const ENABLE_BRACKETED_PASTE = "\x1b[?2004h";
 export const DISABLE_BRACKETED_PASTE = "\x1b[?2004l";
 /**
@@ -29,6 +29,31 @@ export interface TerminalInputHooks {
 
 const BRACKETED_PASTE_START = "\x1b[200~";
 const BRACKETED_PASTE_END = "\x1b[201~";
+
+/**
+ * Forward delete marker. Ink blanks `input` for the Delete sequence and its `Key` carries no
+ * forward/backward distinction, so the transform hands the app a sequence no single keystroke can
+ * produce; `parse-keypress` leaves it as plain input text ("[9~"), which keys.ts recognizes.
+ */
+export const FORWARD_DELETE_SEQUENCE = "\x1b[9~";
+
+/**
+ * Ink blanks `input` for home/end/delete and its `Key` has no home/end flag, so those keys reach the
+ * app indistinguishable from one another (and from backspace). Rewriting them here — the last place
+ * the raw bytes are visible — gives the composer the control keys it already understands.
+ */
+const KEY_SEQUENCE_REWRITES: ReadonlyArray<readonly [RegExp, string]> = [
+  [/\x1b\[H|\x1b\[1~|\x1bOH/g, "\x01"],
+  [/\x1b\[F|\x1b\[4~|\x1bOF/g, "\x05"],
+  [/\x1b\[3~|\x1b\[3;1~/g, FORWARD_DELETE_SEQUENCE],
+];
+
+/** Only complete sequences are rewritten: a split sequence behaves exactly as it did before. */
+function rewriteKeySequences(text: string): string {
+  let result = text;
+  for (const [pattern, replacement] of KEY_SEQUENCE_REWRITES) result = result.replace(pattern, replacement);
+  return result;
+}
 
 /** Held prefix flushes after 40ms; past that it passes through as plain keys so real input survives. */
 const MOUSE_PREFIX_FLUSH_MS = 40;
@@ -149,7 +174,7 @@ export function createBracketedPasteStream(source: NodeJS.ReadableStream, hooks?
       // Mouse-clean an "outside a paste frame" segment before pushing it; in-frame bytes are data.
       const pushOutsidePaste = (segment: string): void => {
         if (!hooks?.onMouse) {
-          if (segment) this.push(segment);
+          if (segment) this.push(rewriteKeySequences(segment));
           return;
         }
         const input = mousePrefix + segment;
@@ -176,7 +201,7 @@ export function createBracketedPasteStream(source: NodeJS.ReadableStream, hooks?
           mouseFlushTimer.unref?.();
         }
         const clean = held ? text.slice(0, text.length - held.length) : text;
-        if (clean) this.push(clean);
+        if (clean) this.push(rewriteKeySequences(clean));
       };
 
       while (str.length > 0) {

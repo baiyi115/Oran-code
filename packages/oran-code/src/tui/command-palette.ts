@@ -1,5 +1,5 @@
 import { DEFAULT_COMMAND_REGISTRY, type SlashCommand } from "../commands.js";
-import { highlightSelection, visibleSelection } from "./overlay/select-list.js";
+import { highlightSelection, overlayLine, visibleSelection, type OverlayLine } from "./overlay/select-list.js";
 import { truncateVisible, visibleWidth } from "./text-width.js";
 import { ANSI } from "./theme.js";
 
@@ -36,7 +36,7 @@ export function commandPaletteLines(
   commands: readonly SlashCommand[] = DEFAULT_COMMAND_REGISTRY.list(),
   width = 120,
   maxVisible = 7,
-): string[] {
+): OverlayLine[] {
   const candidates = commandCandidates(input, commands);
   const selected = Math.max(0, Math.min(Math.max(0, candidates.length - 1), selectedIndex));
   const window = visibleSelection(selected, candidates.length, maxVisible);
@@ -46,9 +46,12 @@ export function commandPaletteLines(
   const descriptionWidth = Math.max(1, width - nameWidth - 5);
   const position = candidates.length > maxVisible ? ` · ${selected + 1}/${candidates.length}` : "";
   const title = truncateVisible(`Slash commands${position}`, width);
-  const help = truncateVisible("Up/Down Select · Tab Complete · Enter Run · Esc Close", width);
-  const lines = [`${ANSI.orangeBold}${title}${ANSI.reset}`, `${ANSI.gray}${help}${ANSI.reset}`];
-  if (!visibleCandidates.length) return [...lines, "  No matching commands"];
+  const help = truncateVisible("↑↓ Select · Tab Complete · Enter Run · Esc Close", width);
+  const lines: OverlayLine[] = [
+    overlayLine(`${ANSI.orangeBold}${title}${ANSI.reset}`),
+    overlayLine(`${ANSI.gray}${help}${ANSI.reset}`),
+  ];
+  if (!visibleCandidates.length) return [...lines, overlayLine("  No matching commands")];
 
   return [
     ...lines,
@@ -56,8 +59,7 @@ export function commandPaletteLines(
       const index = window.start + localIndex;
       const displayName = names[index] ?? command.name;
       const content = `${displayName.padEnd(nameWidth, " ")}  ${truncateVisible(command.description, descriptionWidth)}`;
-      if (index !== selected) return `  ${content}`;
-      return `${ANSI.orangeBold}›${ANSI.reset} ${highlightSelection(content, true)}`;
+      return index === selected ? highlightSelection(`› ${content}`, true) : overlayLine(`  ${content}`);
     }),
   ];
 }

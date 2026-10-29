@@ -7,8 +7,8 @@ import { questionDialogLines } from "./question-dialog.js";
 import { currentSessionLine, sessionOptionLabel } from "./session-list.js";
 import { providerDeleteConfirmLines, providersListLines } from "./providers-list.js";
 import { ANSI, dimHorizontalRule } from "./theme.js";
-import { highlightSelection } from "./overlay/select-list.js";
-import { abbreviatePath, graphemes, truncateVisible, visibleWidth } from "./text-width.js";
+import { highlightSelection, overlayLine, type OverlayLine } from "./overlay/select-list.js";
+import { abbreviatePath, graphemeWidth, graphemes, truncateVisible, visibleWidth } from "./text-width.js";
 import { visualLines } from "./composer.js";
 import { renderConnectLines } from "./connect-wizard.js";
 import type { TuiState } from "./types.js";
@@ -16,14 +16,19 @@ import type { TuiState } from "./types.js";
 /** Pure render helpers: take (state, width), return ANSI string lines or React fragments. */
 
 export function oranWelcomeLines(state: TuiState, availableWidth: number): string[] {
-  const model = welcomeModelLabel(state);
+  // The full provider/model label, as the footer shows it; the effort is its own labelled row
+  // instead of being glued to the model name.
+  const model = state.session.modelLabel || "(not selected)";
+  const effort = state.session.reasoningEffort;
   const labelWidth = 11;
   const modelLine = `${"model:".padEnd(labelWidth)}${model}`;
+  const effortLine = `${"effort:".padEnd(labelWidth)}${effort}`;
   const directoryLine = `${"directory:".padEnd(labelWidth)}${state.session.workspace}`;
   const preferredWidth = Math.max(
     48,
     visibleWidth(">_ Oran code") + 4,
     visibleWidth(modelLine) + 4,
+    visibleWidth(effortLine) + 4,
     visibleWidth(directoryLine) + 4,
   );
   const cardWidth = Math.max(20, Math.min(72, availableWidth, preferredWidth));
@@ -33,6 +38,7 @@ export function oranWelcomeLines(state: TuiState, availableWidth: number): strin
     `${ANSI.orangeBold}>_ Oran code${ANSI.reset}`,
     "",
     `${ANSI.bold}${"model:".padEnd(labelWidth)}${ANSI.reset}${truncateVisible(model, valueWidth)}`,
+    `${ANSI.bold}${"effort:".padEnd(labelWidth)}${ANSI.reset}${truncateVisible(effort, valueWidth)}`,
     `${ANSI.bold}${"directory:".padEnd(labelWidth)}${ANSI.reset}${abbreviatePath(state.session.workspace, valueWidth)}`,
     "",
   ];
@@ -45,14 +51,6 @@ export function oranWelcomeLines(state: TuiState, availableWidth: number): strin
   return [top, ...rows, bottom];
 }
 
-function welcomeModelLabel(state: TuiState): string {
-  const fullLabel = state.session.modelLabel || "(not selected)";
-  if (fullLabel.startsWith("(")) return fullLabel;
-  const separator = fullLabel.indexOf("/");
-  const model = separator >= 0 ? fullLabel.slice(separator + 1) : fullLabel;
-  return `${model} ${state.session.reasoningEffort}`;
-}
-
 export function ghostCommandSuggestion(state: TuiState, input: string): string {
   if (state.overlay.kind !== "commands" || !input.startsWith("/") || /\s/.test(input)) return "";
   const candidate = commandCandidates(input, state.commands)[0];
@@ -62,17 +60,28 @@ export function ghostCommandSuggestion(state: TuiState, input: string): string {
 
 export function renderOverlayLines(
   state: TuiState,
-  commandLines: string[],
+  commandLines: readonly OverlayLine[],
   width: number,
   capacity?: number,
-): string[] {
+): OverlayLine[] {
   switch (state.overlay.kind) {
-    case "models":
-      return [
+    case "models": {
+      const overlay = state.overlay;
+      // Without the hint and the three states this panel was a dead end: a failed load rendered as
+      // an empty box with no way to tell it from "no models".
+      const lines = textLines([
         "Select model",
         dimHorizontalRule(width),
-        ...modelSelectorLines(state.overlay.options, state.overlay.selectedIndex),
-      ];
+        "↑↓ Select   Enter Confirm   Esc Close",
+        "",
+      ]);
+      if (overlay.loading) lines.push(overlayLine("  loading..."));
+      else if (overlay.error)
+        lines.push(overlayLine(`  error: ${truncateVisible(overlay.error, Math.max(1, width - 2))}`));
+      else if (!overlay.options.length) lines.push(overlayLine("  (no models available)"));
+      else lines.push(...modelSelectorLines(overlay.options, overlay.selectedIndex, width));
+      return lines;
+    }
     case "approval":
       return approvalDialogLines(
         state.overlay.approval.call,
@@ -82,6 +91,9 @@ export function renderOverlayLines(
         state.overlay.approval.origin,
         state.overlay.selectedIndex,
         width,
+        // Fitted here rather than by fitOverlayLines: its "first two lines are the header" rule does
+        // not hold for this dialog and used to cut the options and the hint away.
+        capacity,
       );
     case "question":
       return questionDialogLines(
@@ -105,21 +117,25 @@ export function renderOverlayLines(
       const visible = lines.slice(offset, offset + bodyHeight);
       const hint = "PageUp/PageDown/↑↓ scroll · Ctrl+T/Esc Close";
       return [
-        overlay.title,
-        dimHorizontalRule(width),
-        ...visible,
-        ...(lines.length > bodyHeight
-          ? [`${ANSI.gray}${offset + visible.length}/${lines.length} · ${hint}${ANSI.reset}`]
-          : [hint]),
+        overlayLine(overlay.title),
+        overlayLine(dimHorizontalRule(width)),
+        ...textLines(visible),
+        overlayLine(
+          lines.length > bodyHeight
+            ? `${ANSI.gray}${offset + visible.length}/${lines.length} · ${hint}${ANSI.reset}`
+            : hint,
+        ),
       ];
     }
     case "sessions": {
       const overlay = state.overlay;
       return [
-        currentSessionLine(overlay.options, width),
-        dimHorizontalRule(width),
-        "Enter Resume   Del Remove   Esc Close",
-        "",
+        overlayLine(currentSessionLine(overlay.options, width)),
+        overlayLine(dimHorizontalRule(width)),
+        overlayLine(
+          listHint("↑↓ Select   Enter Resume   Del Remove   Esc Close", overlay.selectedIndex, overlay.options.length),
+        ),
+        overlayLine(""),
         ...overlay.options.map((item, index) =>
           highlightSelection(`  ${sessionOptionLabel(item, Math.max(1, width - 2))}`, index === overlay.selectedIndex),
         ),
@@ -128,11 +144,11 @@ export function renderOverlayLines(
     case "session-delete-confirm": {
       const overlay = state.overlay;
       return [
-        "Delete session?",
-        `  ${truncateVisible(overlay.sessionName, Math.max(1, width - 2))}`,
-        dimHorizontalRule(width),
-        "Enter Confirm   Esc Cancel",
-        "",
+        overlayLine("Delete session?"),
+        overlayLine(`  ${truncateVisible(overlay.sessionName, Math.max(1, width - 2))}`),
+        overlayLine(dimHorizontalRule(width)),
+        overlayLine("←→ Select   Enter Confirm   Esc Cancel"),
+        overlayLine(""),
         highlightSelection("  Delete", overlay.selectedIndex === 0),
         highlightSelection("  Cancel", overlay.selectedIndex === 1),
       ];
@@ -144,10 +160,12 @@ export function renderOverlayLines(
     case "follow-ups": {
       const overlay = state.overlay;
       return [
-        "Follow-ups",
-        dimHorizontalRule(width),
-        "Enter Cancel selected   Esc Close",
-        "",
+        overlayLine("Follow-ups"),
+        overlayLine(dimHorizontalRule(width)),
+        overlayLine(
+          listHint("↑↓ Select   Enter Cancel selected   Esc Close", overlay.selectedIndex, overlay.options.length),
+        ),
+        overlayLine(""),
         ...(overlay.options.length
           ? overlay.options.map((item, index) =>
               highlightSelection(
@@ -155,30 +173,27 @@ export function renderOverlayLines(
                 index === overlay.selectedIndex,
               ),
             )
-          : ["  (no queued follow-ups)"]),
+          : [overlayLine("  (no queued follow-ups)")]),
       ];
     }
     case "files": {
       const overlay = state.overlay;
       return [
-        `@${overlay.query}`,
-        dimHorizontalRule(width),
-        "Enter Insert   Esc Close",
-        "",
+        overlayLine(`@${overlay.query}`),
+        overlayLine(dimHorizontalRule(width)),
+        overlayLine(listHint("↑↓ Select   Enter Insert   Esc Close", overlay.selectedIndex, overlay.options.length)),
+        overlayLine(""),
         ...(overlay.loading && !overlay.options.length
-          ? ["  loading..."]
+          ? [overlayLine("  loading...")]
           : overlay.options.length
             ? overlay.options.map((item, index) =>
-                highlightSelection(
-                  `  ${truncateVisible(item, Math.max(1, width - 2))}`,
-                  index === overlay.selectedIndex,
-                ),
+                highlightSelection(`  ${truncateVisible(item, Math.max(1, width - 2))}`, index === overlay.selectedIndex),
               )
-            : ["  (no matching files)"]),
+            : [overlayLine("  (no matching files)")]),
       ];
     }
     case "commands":
-      return commandLines;
+      return [...commandLines];
     case "connect":
       return renderConnectLines(state.overlay, width);
     default:
@@ -186,10 +201,25 @@ export function renderOverlayLines(
   }
 }
 
-export function fitOverlayLines(lines: readonly string[], capacity: number): string[] {
+/** Plain rows from already-rendered text (header/hint/detail lines, which are never selectable). */
+function textLines(values: readonly string[]): OverlayLine[] {
+  return values.map(overlayLine);
+}
+
+/** At or above this many rows a list is windowed by the frame, so it also reports the cursor position. */
+const LIST_POSITION_MIN = 8;
+
+/** Overlay hint line; long lists append "N/M" the way the command palette's title does. */
+function listHint(base: string, selectedIndex: number, count: number): string {
+  if (count < LIST_POSITION_MIN) return base;
+  return `${base} · ${Math.min(selectedIndex + 1, count)}/${count}`;
+}
+
+export function fitOverlayLines(lines: readonly OverlayLine[], capacity: number): OverlayLine[] {
   const height = Math.max(1, Math.floor(capacity));
   if (lines.length <= height) return [...lines];
-  const activeLine = lines.findIndex((line) => line.includes("{inverse}"));
+  const isSelected = (line: OverlayLine): boolean => line.selected === true;
+  const activeLine = lines.findIndex(isSelected);
   if (activeLine >= 0 && height === 1) return [lines[activeLine]!];
   if (activeLine >= 0 && height === 2) return [lines[0]!, lines[activeLine]!];
   if (height === 1) return [lines[lines.length - 1]!];
@@ -199,10 +229,7 @@ export function fitOverlayLines(lines: readonly string[], capacity: number): str
   const headerHeight = Math.min(2, height - 1);
   const header = lines.slice(0, headerHeight);
   const body = lines.slice(headerHeight);
-  const selectedLine = Math.max(
-    0,
-    body.findIndex((line) => line.includes("{inverse}")),
-  );
+  const selectedLine = Math.max(0, body.findIndex(isSelected));
   const bodyHeight = height - header.length;
   const start = Math.max(0, Math.min(selectedLine - bodyHeight + 1, body.length - bodyHeight));
   return [...header, ...body.slice(start, start + bodyHeight)];
@@ -211,7 +238,7 @@ export function fitOverlayLines(lines: readonly string[], capacity: number): str
 export function fileQuery(
   value: string,
   cursor: number,
-): { query: string; start: number; quoted: boolean } | undefined {
+): { query: string; start: number } | undefined {
   const before = value.slice(0, cursor);
   // Two trigger forms: @fragment and @"a spaced path (the closing quote is optional).
   const match = before.match(/(?:^|\s)@("([^"]*)"?|([^\s@]*))$/);
@@ -219,31 +246,12 @@ export function fileQuery(
   return {
     query: match[2] ?? match[3] ?? "",
     start: before.lastIndexOf("@"),
-    quoted: match[2] !== undefined,
   };
 }
 
-/** Parse {inverse} text markers into ink's inverse <Text> so selection survives the string pipeline. */
-export function HighlightedLine({ value }: { value: string }): React.JSX.Element {
-  const parts: React.ReactNode[] = [];
-  const pattern = /\{inverse\}([\s\S]*?)\{\/inverse\}/g;
-  let lastIndex = 0;
-  let match: RegExpExecArray | null;
-  let key = 0;
-  while ((match = pattern.exec(value)) !== null) {
-    if (match.index > lastIndex) {
-      parts.push(<Text key={`t-${key++}`}>{value.slice(lastIndex, match.index)}</Text>);
-    }
-    parts.push(
-      <Text key={`s-${key++}`} inverse>
-        {match[1]}
-      </Text>,
-    );
-    lastIndex = match.index + match[0].length;
-  }
-  if (lastIndex < value.length) parts.push(<Text key={`t-${key}`}>{value.slice(lastIndex)}</Text>);
-  if (!parts.length) return <Text> </Text>;
-  return <Text>{parts}</Text>;
+/** One overlay row: the selection is a flag on the row, not a marker parsed out of its text. */
+export function OverlayRow({ line }: { line: OverlayLine }): React.JSX.Element {
+  return <Text inverse={line.selected === true}>{line.text || " "}</Text>;
 }
 
 export function composerPrefix(kind: TuiState["overlay"]["kind"]): string {
@@ -286,14 +294,15 @@ export function renderComposerLines(
   );
 }
 
-export function renderComposerLineWithCaret(text: string, cursorColumn: number): React.JSX.Element {
+function renderComposerLineWithCaret(text: string, cursorColumn: number): React.JSX.Element {
   const symbols = graphemes(text);
   // cursorColumn is display-width based; walk cells to the caret boundary.
   let display = 0;
   let splitAt = 0;
   while (splitAt < symbols.length) {
     const symbol = symbols[splitAt] ?? "";
-    const width = Math.max(1, visibleWidth(symbol));
+    // The symbol is already one grapheme: measure it directly instead of re-segmenting it.
+    const width = Math.max(1, graphemeWidth(symbol));
     if (display + width > cursorColumn) break;
     display += width;
     splitAt += 1;

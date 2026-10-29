@@ -49,15 +49,3 @@ export function shouldCaptureWheel(options: {
   if (options.overlayOpen) return false;
   return options.liveLines > Math.max(1, Math.floor(options.viewportLines)) || options.offsetFromBottom > 0;
 }
-
-export function transcriptViewportLines(
-  lines: readonly string[],
-  viewportLines: number,
-  offsetFromBottom: number,
-): string[] {
-  const height = Math.max(1, Math.floor(viewportLines));
-  const maximumStart = Math.max(0, lines.length - height);
-  const offset = Math.max(0, Math.min(maximumStart, Math.floor(offsetFromBottom)));
-  const start = Math.max(0, maximumStart - offset);
-  return lines.slice(start, start + height);
-}

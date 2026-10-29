@@ -4,8 +4,8 @@ import { formatErrorMessage } from "../error-format.js";
 import { setOverlay } from "./state.js";
 import type { ConnectInfoField, ConnectInput, ConnectModelOption, ConnectPrefill, TuiState } from "./types.js";
 import { dimHorizontalRule } from "./theme.js";
-import { highlightSelection } from "./overlay/select-list.js";
-import { truncateVisible } from "./text-width.js";
+import { highlightSelection, overlayLine, type OverlayLine } from "./overlay/select-list.js";
+import { truncateVisible, visibleWidth } from "./text-width.js";
 import { isSubmitKey } from "./keys.js";
 
 export interface ConnectWizardDeps {
@@ -274,7 +274,7 @@ export class ConnectWizard {
   }
 }
 
-export function safeHostName(input: string, fallback = "provider"): string {
+function safeHostName(input: string, fallback = "provider"): string {
   try {
     const url = new URL(input.includes("://") ? input : `https://${input}`);
     const host = url.hostname.replace(/\./g, "-").replace(/[^a-zA-Z0-9_-]/g, "");
@@ -287,55 +287,74 @@ export function safeHostName(input: string, fallback = "provider"): string {
 export function renderConnectLines(
   overlay: Extract<TuiState["overlay"], { kind: "connect" }>,
   width: number,
-): string[] {
+): OverlayLine[] {
   function protocolLabel(protocol: "openai" | "anthropic"): string {
     return protocol === "anthropic" ? "Anthropic Messages" : "OpenAI Chat Completions";
   }
-  const lines: string[] = [];
+  const lines: OverlayLine[] = [];
   if (overlay.step === "info") {
     const cursor = (field: ConnectInfoField) => (overlay.activeField === field ? "▸" : " ");
     const auto = (touched: boolean) => (touched ? "" : "  (auto)");
-    lines.push("Add provider", dimHorizontalRule(width));
-    lines.push(`${cursor("baseURL")} Base URL   ${overlay.baseURL || "(e.g. https://api.openai.com/v1)"}`);
+    lines.push(overlayLine("Add provider"), overlayLine(dimHorizontalRule(width)));
     lines.push(
-      `${cursor("apiKey")} API key    ${overlay.apiKey ? "*".repeat(Math.min(40, overlay.apiKey.length)) : "(optional)"}`,
+      overlayLine(`${cursor("baseURL")} Base URL   ${overlay.baseURL || "(e.g. https://api.openai.com/v1)"}`),
     );
     lines.push(
-      `${cursor("protocol")} Protocol   ${overlay.protocol ? protocolLabel(overlay.protocol) : "(auto)"}${auto(overlay.protocolTouched)}`,
+      overlayLine(
+        `${cursor("apiKey")} API key    ${overlay.apiKey ? "*".repeat(Math.min(40, overlay.apiKey.length)) : "(optional)"}`,
+      ),
     );
-    lines.push(`${cursor("name")} Name       ${overlay.providerName || "(auto)"}${auto(overlay.nameTouched)}`);
-    lines.push("", "Tab/↑↓ switch field   ←→ switch protocol   Enter next   Esc close");
-    if (overlay.error) lines.push("", `error: ${truncateVisible(overlay.error, Math.max(1, width - 2))}`);
+    lines.push(
+      overlayLine(
+        `${cursor("protocol")} Protocol   ${overlay.protocol ? protocolLabel(overlay.protocol) : "(auto)"}${auto(overlay.protocolTouched)}`,
+      ),
+    );
+    lines.push(
+      overlayLine(
+        `${cursor("name")} Name       ${overlay.providerName || "(auto)"}${auto(overlay.nameTouched)}`,
+      ),
+    );
+    lines.push(overlayLine(""), overlayLine("Tab/↑↓ switch field   ←→ switch protocol   Enter next   Esc close"));
+    if (overlay.error)
+      lines.push(
+        overlayLine(""),
+        overlayLine(`error: ${truncateVisible(overlay.error, Math.max(1, width - 2))}`),
+      );
     return lines;
   }
   lines.push(
-    `Provider: ${overlay.providerName} (${protocolLabel(overlay.protocol || "openai")})`,
-    dimHorizontalRule(width),
+    overlayLine(`Provider: ${overlay.providerName} (${protocolLabel(overlay.protocol || "openai")})`),
+    overlayLine(dimHorizontalRule(width)),
   );
-  lines.push("选择模型");
-  lines.push("F Fetch all   E Effort   D Delete   Enter Toggle select   Ctrl+S/Tab Save   Esc Close");
-  lines.push("");
+  lines.push(overlayLine("Select models"));
+  lines.push(overlayLine("↑↓ Select   F Fetch   E Effort   D Delete   Enter Toggle   Ctrl+S Save   Esc Close"));
+  lines.push(overlayLine(""));
   if (overlay.loading) {
-    lines.push("  fetching models...");
+    lines.push(overlayLine("  fetching models..."));
   } else if (overlay.error) {
-    lines.push(`  error: ${truncateVisible(overlay.error, Math.max(1, width - 2))}`);
-    lines.push("  press F to retry");
+    lines.push(overlayLine(`  error: ${truncateVisible(overlay.error, Math.max(1, width - 2))}`));
+    lines.push(overlayLine("  press F to retry"));
   } else if (overlay.models.length === 0) {
-    lines.push("  (no models yet — press F to fetch)");
+    lines.push(overlayLine("  (no models yet — press F to fetch)"));
   } else {
     overlay.models.forEach((model, index) => {
       const mark = model.selected ? "✓" : " ";
       const effort = `  [effort ${model.reasoningEffort ?? "high"}]`;
       const ctx = model.contextWindow ? `  [ctx ${model.contextWindow}]` : "";
+      // The badges are appended after the id, so the id's budget has to leave room for them or the
+      // row runs past the overlay width.
+      const idBudget = Math.max(8, width - visibleWidth(mark) - 1 - visibleWidth(effort) - visibleWidth(ctx));
       lines.push(
         highlightSelection(
-          `${mark} ${truncateVisible(model.id, Math.max(1, width - 4))}${effort}${ctx}`,
+          `${mark} ${truncateVisible(model.id, idBudget)}${effort}${ctx}`,
           index === overlay.selectedIndex,
         ),
       );
     });
   }
   const selectedCount = overlay.models.filter((model) => model.selected).length;
-  if (selectedCount > 0) lines.push("", `${selectedCount} selected — Ctrl+S/Tab to save`);
+  if (selectedCount > 0) {
+    lines.push(overlayLine(""), overlayLine(`${selectedCount} selected — Ctrl+S/Tab to save`));
+  }
   return lines;
 }

@@ -13,7 +13,8 @@ const call: ToolCall = {
 describe("TUI overlays", () => {
   it("renders slash command candidates with a selection marker", () => {
     expect(commandCandidates("/mo").map((command) => command.name)).toEqual(["/model", "/connect", "/memory", "/plan"]);
-    const lines = commandPaletteLines("/", 0).join("\n");
+    const rows = commandPaletteLines("/", 0);
+    const lines = rows.map((row) => row.text).join("\n");
     expect(commandCandidates("/").map((command) => command.name)).toEqual([
       "/clear",
       "/compact",
@@ -35,7 +36,7 @@ describe("TUI overlays", () => {
       "/undo",
       "/worktree",
     ]);
-    expect(lines).toContain("{inverse}");
+    expect(rows.some((row) => row.selected === true)).toBe(true);
     expect(lines).toContain("clear");
     expect(lines).not.toContain("> ");
     expect(lines).not.toContain("→ ");
@@ -44,25 +45,26 @@ describe("TUI overlays", () => {
 
   it("renders model selection rows", () => {
     const lines = modelSelectorLines(["Demo/chat", "OpenAI/gpt"], 1);
-    expect(lines[0]).toBe("  Demo/chat");
-    expect(lines[1]).toContain("{inverse}");
-    expect(lines[1]).not.toContain("> OpenAI/gpt");
+    expect(lines[0]?.text).toBe("  Demo/chat");
+    expect(lines[1]?.selected).toBe(true);
+    expect(lines[1]?.text).not.toContain("> OpenAI/gpt");
   });
 
   it("renders the approval choices without leaking secrets", () => {
-    const text = approvalDialogLines(
+    const rows = approvalDialogLines(
       call,
       3,
       "Run the test suite",
       "D:\\Programming\\project\\LiteAgent",
       { kind: "main" },
       0,
-    ).join("\n");
+    );
+    const text = rows.map((row) => row.text).join("\n");
     expect(text).toContain("Permission required");
     expect(text).toContain("Tool: run_command");
     expect(text).not.toContain("Tool: run_command (L3)");
     expect(text).toContain("Command: pnpm test");
-    expect(text).toContain("{inverse}  Allow for this task");
+    expect(rows.some((row) => row.selected === true && row.text.includes("Allow for this task"))).toBe(true);
     expect(text).toContain("Allow once");
     expect(text).toContain("Always allow");
     expect(text).toContain("Reject");

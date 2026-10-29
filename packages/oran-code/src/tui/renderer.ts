@@ -1,6 +1,5 @@
 import type { QuestionDialogItem, TuiState } from "./types.js";
 import type { ApprovalResponse, RuntimeEvent, ToolCall } from "../types.js";
-import type { PromptOutputHooks } from "../renderer.js";
 import type { SubagentOrigin } from "../subagent/types.js";
 import { appendSystemMessage, appendUserMessage, reduceRuntimeEvent } from "./message-reducer.js";
 
@@ -52,11 +51,6 @@ export class TuiTranscriptRenderer {
 
   setApprovalHandler(handler: ApprovalHandler): void {
     this.approvalHandler = handler;
-  }
-
-  attachPrompt(_hooks: PromptOutputHooks | undefined): void {
-    // The Ink app's live frame owns the prompt and redraw lifecycle; the
-    // transcript renderer only reduces events and invalidates that frame.
   }
 
   setApprovalCancelHandler(handler: ApprovalCancelHandler): void {

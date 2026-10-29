@@ -17,7 +17,24 @@ function streamWithMouse(chunks: string[]): { stream: Transform; events: Termina
   return { stream, events };
 }
 
+describe("terminal input stream key rewriting", () => {
+  async function collectInput(chunks: string[]): Promise<string> {
+    const stream = createBracketedPasteStream(Readable.from(chunks) as NodeJS.ReadableStream);
+    return collect(stream);
+  }
+
+  it("rewrites physical Home/End/Delete into what Ink can actually report", async () => {
+    expect(await collectInput(["\x1b[H", "\x1b[F", "\x1b[3~", "a"])).toBe("\x01\x05\x1b[9~a");
+    expect(await collectInput(["\x1bOH", "\x1b[4~"])).toBe("\x01\x05");
+  });
+
+  it("leaves key sequences inside a paste untouched", async () => {
+    expect(await collectInput(["\x1b[200~a\x1b[H\x1b[201~"])).toBe("a\x1b[H");
+  });
+});
+
 describe("terminal input stream mouse reporting", () => {
+
   it("strips SGR wheel reports and forwards parsed events", async () => {
     const { stream, events } = streamWithMouse(["ab", "\x1b[<64;12;34M", "\x1b[<65;12;34M", "c"]);
     expect(await collect(stream)).toBe("abc");

@@ -1,5 +1,4 @@
 import type {
-  ApprovalDetails,
   ComposerState,
   OverlayState,
   TranscriptMessage,
@@ -26,7 +25,7 @@ export function createComposerState(history: readonly string[] = []): ComposerSt
   };
 }
 
-export function createTuiSessionState(
+function createTuiSessionState(
   workspace: string,
   modelLabel: string,
   sessionId = "session-current",
@@ -49,16 +48,14 @@ export function createTuiSessionState(
     permissionMode,
     reasoningEffort,
     ...(contextWindow !== undefined ? { contextWindow } : {}),
-    approvalPolicy: "ask",
     taskState: "ready",
     status: "",
-    currentStep: undefined,
     currentTool: undefined,
     startedAt: undefined,
     elapsedMs: undefined,
-    modelElapsedMs: undefined,
     outputTokensPerSecond: undefined,
     usage: { inputTokens: 0, outputTokens: 0, totalTokens: 0, cacheReadTokens: 0, cacheWriteTokens: 0 },
+    subagentUsage: { inputTokens: 0, outputTokens: 0, totalTokens: 0, cacheReadTokens: 0, cacheWriteTokens: 0 },
     followUpCount: 0,
     backgroundTasks: [],
   };
@@ -111,7 +108,23 @@ export function createTuiState(
     lastTranscriptLines: 0,
     lastTranscriptViewportLines: 0,
     detailsScrollMax: 0,
+    cancelArmedUntil: undefined,
   };
+}
+
+/**
+ * A session persisted mid-turn keeps `streaming: true` / `status: "running"` on the message it was
+ * writing, but no runtime is attached to a restored transcript to ever clear them. Left as they
+ * are, the spinner spins forever, the footer hides every status, and the Static boundary freezes at
+ * the first live row — so the tail of the transcript is unreadable for the rest of the session.
+ */
+export function normalizeRestoredTranscript(messages: readonly TranscriptMessage[]): TranscriptMessage[] {
+  return messages.map((message) => {
+    if (message.kind === "assistant" && message.streaming) return { ...message, streaming: false };
+    if (message.kind === "thought" && message.streaming) return { ...message, streaming: false };
+    if (message.kind === "tool" && message.status === "running") return { ...message, status: "cancelled" };
+    return message;
+  });
 }
 
 export function composerValue(composer: ComposerState): string {
@@ -138,16 +151,19 @@ export function getToolMessage(
   callId: string,
   taskId?: string,
 ): Extract<TranscriptMessage, { kind: "tool" }> | undefined {
-  if (taskId !== undefined) {
-    const exact = state.transcript.find(
-      (entry) => entry.kind === "tool" && entry.callId === callId && entry.taskId === taskId,
-    );
-    if (exact?.kind === "tool") return exact;
+  // One pass: this runs on every tool event, and the old shape walked the transcript twice.
+  let legacy: Extract<TranscriptMessage, { kind: "tool" }> | undefined;
+  let legacyCount = 0;
+  for (const entry of state.transcript) {
+    if (entry.kind !== "tool" || entry.callId !== callId) continue;
+    if (taskId !== undefined && entry.taskId === taskId) return entry;
+    if (entry.taskId === undefined) {
+      legacy = entry;
+      legacyCount += 1;
+    }
   }
-  const legacy = state.transcript.filter(
-    (entry) => entry.kind === "tool" && entry.callId === callId && entry.taskId === undefined,
-  );
-  return legacy.length === 1 && legacy[0]?.kind === "tool" ? legacy[0] : undefined;
+  // A call id without a task still matches when it is unambiguous.
+  return legacyCount === 1 ? legacy : undefined;
 }
 
 export function nextMessageNumber(transcript: readonly TranscriptMessage[]): number {
@@ -161,13 +177,4 @@ export function nextMessageNumber(transcript: readonly TranscriptMessage[]): num
 
 export function setOverlay(state: TuiState, overlay: OverlayState): void {
   state.overlay = overlay;
-}
-
-export function clearOverlay(state: TuiState): void {
-  state.overlay = { kind: "none" };
-}
-
-export function setApproval(state: TuiState, approval: ApprovalDetails): void {
-  state.overlay = { kind: "approval", approval, selectedIndex: 0 };
-  state.session.status = "approval required";
 }

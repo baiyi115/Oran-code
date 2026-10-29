@@ -3,7 +3,7 @@ import { toolDisplayName } from "./tool-names.js";
 import { truncateVisible } from "./text-width.js";
 
 /** Braille spinner frames, matching common CLI working indicators (pi/Ink loaders). */
-export const WORKING_SPINNER_FRAMES = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"] as const;
+const WORKING_SPINNER_FRAMES = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"] as const;
 
 export function spinnerFrame(tick: number): string {
   const frames = WORKING_SPINNER_FRAMES;
@@ -52,6 +52,7 @@ export function subagentTaskLines(
   tick = 0,
   now = Date.now(),
   width = 80,
+  maxRows = TASK_PANEL_MAX_ROWS,
 ): TaskPanelRow[] {
   const subagents = tasks.filter((task) => task.kind !== "job");
   if (subagents.length === 0) return [];
@@ -65,9 +66,10 @@ export function subagentTaskLines(
   const ordered = [...active, ...finished];
   if (ordered.length === 0) return [];
 
-  // The "+N more" row occupies a line itself, so the hidden count is computed against MAX-1.
-  const hidden = ordered.length > TASK_PANEL_MAX_ROWS ? ordered.length - (TASK_PANEL_MAX_ROWS - 1) : 0;
-  const visible = hidden > 0 ? ordered.slice(0, TASK_PANEL_MAX_ROWS - 1) : ordered;
+  const rowLimit = Math.max(1, Math.floor(maxRows));
+  // The "+N more" row occupies a line itself, so the hidden count is computed against limit-1.
+  const hidden = ordered.length > rowLimit ? ordered.length - (rowLimit - 1) : 0;
+  const visible = hidden > 0 ? ordered.slice(0, rowLimit - 1) : ordered;
   const rows = visible.map((task) => buildTaskPanelRow(task, tick, now, width));
   // ctrl+t opens the "recent activity" details, which cannot show tasks collapsed into that row;
   // /tasks is the entry point listing every background task, so the hint must point there.
@@ -103,14 +105,19 @@ function buildTaskPanelRow(task: TuiBackgroundTask, tick: number, now: number, w
     timing = `${task.status}${total}`;
   }
   // Keep the timing suffix alive: a long description only truncates the label part.
-  const suffix = ` · ${timing}`;
+  // A failed subagent also says why, which is the part the user needs to decide what to do next.
+  const reason =
+    task.status === "failed" && task.error
+      ? truncateVisible(task.error.split(/\r?\n/)[0]?.trim() ?? "", Math.max(8, Math.floor(width * 0.4)))
+      : "";
+  const suffix = ` · ${timing}${reason ? ` · ${reason}` : ""}`;
   const prefix = `${icon} `;
   const budget = Math.max(8, width - prefix.length - suffix.length);
   return { text: `${prefix}${truncateVisible(label.replace(/\s+/g, " ").trim(), budget)}${suffix}`, tone };
 }
 
 /** Live indicator for background shell jobs (dev server / build): counted and worded apart from subagents. */
-export function formatBackgroundJobsIndicator(
+function formatBackgroundJobsIndicator(
   tasks: readonly TuiBackgroundTask[],
   now = Date.now(),
 ): string | undefined {
@@ -136,10 +143,18 @@ export function workingIndicatorLine(state: TuiState, tick: number, now = Date.n
   const frame = spinnerFrame(tick);
   const bgTasks = state.session.backgroundTasks ?? [];
   const bgIndicator = formatBackgroundJobsIndicator(bgTasks, now);
+  // An armed Esc rides on this line: the footer suppresses statuses while a task runs, and this is
+  // the row the user is already looking at while waiting.
+  const cancelHint =
+    state.cancelArmedUntil !== undefined && now < state.cancelArmedUntil ? "Esc again to cancel" : undefined;
+  const withHint = (line: string | undefined): string | undefined => {
+    if (!cancelHint) return line;
+    return line ? `${line} · ${cancelHint}` : `${frame} ${cancelHint}`;
+  };
 
   if (!isSessionBusy(state)) {
     if (bgIndicator) {
-      return `${frame} ${bgIndicator}`;
+      return withHint(`${frame} ${bgIndicator}`);
     }
     return undefined;
   }
@@ -149,21 +164,21 @@ export function workingIndicatorLine(state: TuiState, tick: number, now = Date.n
   if (state.waitingForFirstChunk) {
     const elapsed = formatWorkingElapsed(state, now);
     const mainText = elapsed ? `Waiting... ${elapsed}` : "Waiting...";
-    return bgIndicator ? `${frame} ${mainText} · ${bgIndicator}` : `${frame} ${mainText}`;
+    return withHint(bgIndicator ? `${frame} ${mainText} · ${bgIndicator}` : `${frame} ${mainText}`);
   }
   // Thought, assistant, and tool rows already carry their own live state.
   // A second spinner duplicates the same information and forces frequent
   // full-frame Ink updates while content is streaming.
   if (hasVisibleLiveActivity(state)) {
     if (bgIndicator) {
-      return `${frame} ${bgIndicator}`;
+      return withHint(`${frame} ${bgIndicator}`);
     }
-    return undefined;
+    return withHint(undefined);
   }
   const label = workingLabel(state);
   const elapsed = formatWorkingElapsed(state, now);
   const mainText = elapsed ? `${label} ${elapsed}` : label;
-  return bgIndicator ? `${frame} ${mainText} · ${bgIndicator}` : `${frame} ${mainText}`;
+  return withHint(bgIndicator ? `${frame} ${mainText} · ${bgIndicator}` : `${frame} ${mainText}`);
 }
 
 function hasVisibleLiveActivity(state: TuiState): boolean {

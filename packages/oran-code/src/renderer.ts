@@ -20,7 +20,7 @@ export interface PromptOutputHooks {
 export type RendererStyle = "dim" | "bold" | "cyan" | "boldCyan" | "green" | "yellow" | "red" | "boldRed";
 
 export interface SessionRenderer {
-  attachPrompt(hooks: PromptOutputHooks | undefined): void;
+  attachPrompt?(hooks: PromptOutputHooks | undefined): void;
   render(event: RuntimeEvent): void;
   user(prompt: string, queued?: boolean): void;
   status(message: string, style?: RendererStyle): void;

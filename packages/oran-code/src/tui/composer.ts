@@ -23,11 +23,23 @@ export function visualLines(composer: ComposerState, width: number): VisualLine[
       result.push({ text: "", logicalLine, startColumn: 0 });
       return;
     }
+    // Segment the line once and walk it: slicing the remaining string per row re-segments the tail
+    // and turns a long draft into quadratic work on every keystroke.
+    const symbols = graphemes(line);
     let startColumn = 0;
-    while (startColumn < graphemeLength(line)) {
-      const chunk = sliceByDisplayWidth(line, startColumn, safeWidth);
-      result.push({ text: chunk, logicalLine, startColumn });
-      startColumn += graphemeLength(chunk) || 1;
+    while (startColumn < symbols.length) {
+      let used = 0;
+      let end = startColumn;
+      while (end < symbols.length) {
+        const symbolWidth = graphemeWidth(symbols[end]!);
+        if (used + symbolWidth > safeWidth) break;
+        used += symbolWidth;
+        end += 1;
+      }
+      // A single grapheme wider than the frame still gets its own row.
+      if (end === startColumn) end = startColumn + 1;
+      result.push({ text: symbols.slice(startColumn, end).join(""), logicalLine, startColumn });
+      startColumn = end;
     }
   });
   return result.length ? result : [{ text: "", logicalLine: 0, startColumn: 0 }];
@@ -229,7 +241,7 @@ export function moveCursor(composer: ComposerState, direction: "left" | "right" 
     return;
   }
   const lines = visualLines(composer, width);
-  const current = cursorVisualPosition(composer, width);
+  const current = cursorVisualPositionIn(lines, composer);
   const targetRow = direction === "up" ? current.row - 1 : current.row + 1;
   if (targetRow < 0 || targetRow >= lines.length) return;
   const preferred = composer.preferredDisplayColumn ?? current.column;
@@ -254,17 +266,27 @@ export function moveToLineEdge(composer: ComposerState, edge: "start" | "end"): 
 }
 
 export function cursorVisualPosition(composer: ComposerState, width: number): { row: number; column: number } {
-  const lines = visualLines(composer, width);
+  return cursorVisualPositionIn(visualLines(composer, width), composer);
+}
+
+/** Same as cursorVisualPosition, for callers that already hold the wrapped rows. */
+export function cursorVisualPositionIn(
+  lines: readonly VisualLine[],
+  composer: ComposerState,
+): { row: number; column: number } {
   let target = lines[0]!;
-  for (const line of lines) {
-    if (line.logicalLine === composer.cursor.line && composer.cursor.column >= line.startColumn) target = line;
+  let row = 0;
+  for (let index = 0; index < lines.length; index += 1) {
+    const line = lines[index]!;
+    if (line.logicalLine === composer.cursor.line && composer.cursor.column >= line.startColumn) {
+      target = line;
+      row = index;
+    }
   }
   const current = composer.lines[composer.cursor.line] ?? "";
   const beforeCursor = sliceGraphemes(current, target.startColumn, composer.cursor.column).join("");
-  return { row: lines.indexOf(target), column: visibleWidth(beforeCursor) };
+  return { row, column: visibleWidth(beforeCursor) };
 }
-
-export { visibleWidth } from "./text-width.js";
 
 export function composerCursorOffset(composer: ComposerState): number {
   let offset = 0;
