@@ -72,6 +72,12 @@ export class SubagentRunner {
     const startedAt = new Date().toISOString();
     const usage: Record<string, number> = {};
     const assistantText: string[] = [];
+    // Diagnostics for a run that ends without an answer: the caller needs to know what actually
+    // went wrong, not just that the subagent failed.
+    let lastError: string | undefined;
+    let lastToolError: string | undefined;
+    let failedToolCalls = 0;
+    let steps: number | undefined;
     const baseConversation = options.parentConversation ?? options.conversation ?? [];
     // Message objects are immutable once queued, so a shallow array copy is enough to isolate
     // push/splice; deep-cloning a large context for parallel forks is pure CPU/GC waste.
@@ -138,6 +144,12 @@ export class SubagentRunner {
             // Partial usage accrued before the cancellation must still be counted, matching the main loop.
             addUsage(usage, event.usage ?? {});
           }
+          if (event.type === "error") lastError = event.message;
+          if (event.type === "completed") steps = event.steps;
+          if (event.type === "tool_result" && !event.result.ok) {
+            failedToolCalls += 1;
+            lastToolError = `${event.call.name}: ${event.result.error ?? event.result.summary ?? "failed"}`;
+          }
           await this.emitEvent({
             taskId,
             name,
@@ -161,7 +173,17 @@ export class SubagentRunner {
       const status = task.state === "cancelled" ? "cancelled" : task.state === "completed" ? "completed" : "failed";
       worktreeLease = await settleWorktree(worktreeLease);
       await notifyWorktreeLease(options, worktreeLease);
-      const baseOutput = task.result?.trim() || assistantText.join("\n\n").trim() || stableEmptyResult(status);
+      const baseOutput =
+        task.result?.trim() ||
+        assistantText.join("\n\n").trim() ||
+        emptySubagentResult(status, {
+          taskId,
+          state: task.state,
+          steps,
+          lastError,
+          failedToolCalls,
+          lastToolError,
+        });
       const output = appendWorktreeSummary(baseOutput, worktreeLease);
       const result: SubagentRunResult = {
         taskId,
@@ -333,8 +355,41 @@ function addUsage(target: Record<string, number>, source: Readonly<Record<string
   }
 }
 
-function stableEmptyResult(status: "completed" | "failed" | "cancelled"): string {
+interface SubagentEmptyResultContext {
+  readonly taskId: string;
+  /** Final task state, which separates a crash from a loop that simply ran out of steps. */
+  readonly state: string;
+  readonly steps: number | undefined;
+  readonly lastError: string | undefined;
+  readonly failedToolCalls: number;
+  readonly lastToolError: string | undefined;
+}
+
+/**
+ * Text handed back when a run produced no answer. A bare "failed" left the caller with nothing to
+ * act on (and no way to tell a truncated model call from a broken tool), so the report names the
+ * final state, the error that ended the run or the last failing tool, and the record to inspect.
+ */
+function emptySubagentResult(
+  status: "completed" | "failed" | "cancelled",
+  context: SubagentEmptyResultContext,
+): string {
   if (status === "completed") return "Subagent completed without a textual result.";
   if (status === "cancelled") return "Subagent was cancelled.";
-  return "Subagent failed without a textual result.";
+  const details = [`state: ${context.state}`];
+  if (context.steps !== undefined) details.push(`${context.steps} steps`);
+  if (context.failedToolCalls > 0) {
+    details.push(`${context.failedToolCalls} failed tool call${context.failedToolCalls === 1 ? "" : "s"}`);
+  }
+  const lines = [`Subagent failed without a textual result (${details.join(" · ")}).`];
+  if (context.lastError) lines.push(`last error: ${truncateForResult(context.lastError)}`);
+  if (context.lastToolError) lines.push(`last tool error: ${truncateForResult(context.lastToolError)}`);
+  lines.push(`record: ${context.taskId}`);
+  return lines.join("\n");
+}
+
+/** One-line, capped text for an error report: a provider dump must not flood the caller's context. */
+function truncateForResult(text: string, limit = 400): string {
+  const single = text.replace(/\s+/g, " ").trim();
+  return single.length <= limit ? single : `${single.slice(0, limit - 1)}…`;
 }
