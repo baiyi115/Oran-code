@@ -74,6 +74,7 @@ import {
   fileQuery,
   fitOverlayLines,
   ghostCommandSuggestion,
+  isModalOverlay,
   oranWelcomeLines,
   renderComposerLines,
   renderOverlayLines,
@@ -1654,7 +1655,9 @@ function InkRoot({ app, revision }: { app: InkTuiApp; revision: number }): React
   const parkUp = footer.length + taskRows.length + frameEndOffset + Math.max(0, composerLineCount - 1 - cursor.row);
   const parkColumn = 1 + 2 + Math.max(0, cursor.column);
   useEffect(() => {
-    if (busy || state.overlay.kind === "approval" || state.overlay.kind === "question") {
+    // Modal overlays swallow every keystroke: a caret blinking in the composer would invite typing
+    // that goes nowhere, and an IME candidate box would open over an input that ignores it.
+    if (busy || isModalOverlay(state.overlay.kind)) {
       app.unparkComposerCursor();
       return;
     }
@@ -1718,7 +1721,7 @@ function InkRoot({ app, revision }: { app: InkTuiApp; revision: number }): React
           </Text>
           <Text>
             {composerPrefix(state.overlay.kind).endsWith(" ") ? " " : ""}
-            {renderComposerLines(editorLines, cursor.row, cursor.column, busy)}
+            {renderComposerLines(editorLines, cursor.row, cursor.column, busy || isModalOverlay(state.overlay.kind))}
           </Text>
           {ghostCommandSuggestion(state, composerValue(state.composer)) ? (
             <Text dimColor>{ghostCommandSuggestion(state, composerValue(state.composer))}</Text>

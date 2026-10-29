@@ -257,9 +257,40 @@ export function OverlayRow({ line }: { line: OverlayLine }): React.JSX.Element {
 }
 
 export function composerPrefix(kind: TuiState["overlay"]["kind"]): string {
-  // Keep the exclusive-overlay bang only for modal overlays that own the input.
-  // Commands/files still edit the free-form composer and should keep the prompt.
-  return kind === "none" || kind === "commands" || kind === "files" ? "> " : kind === "connect" ? "connect> " : "! ";
+  // The prefix names the surface that owns the keyboard. Commands/files still edit the free-form
+  // composer and keep the prompt; every other overlay swallows keystrokes, so the composer says
+  // which one is in charge instead of looking editable.
+  switch (kind) {
+    case "none":
+    case "commands":
+    case "files":
+      return "> ";
+    case "approval":
+      return "approval> ";
+    case "question":
+      return "question> ";
+    case "models":
+      return "model> ";
+    case "providers":
+      return "providers> ";
+    case "sessions":
+      return "sessions> ";
+    case "delete-confirm":
+      return "confirm> ";
+    case "follow-ups":
+      return "follow-ups> ";
+    case "tasks":
+      return "tasks> ";
+    case "details":
+      return "details> ";
+    case "connect":
+      return "connect> ";
+  }
+}
+
+/** Overlays that swallow keystrokes: the composer is not the focused surface under them. */
+export function isModalOverlay(kind: TuiState["overlay"]["kind"]): boolean {
+  return kind !== "none" && kind !== "commands" && kind !== "files";
 }
 
 export function renderComposerLines(

@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import { createTuiState } from "../src/tui/state.js";
 import {
   composerPrefix,
+  isModalOverlay,
   fileQuery,
   fitOverlayLines,
   ghostCommandSuggestion,
@@ -117,8 +118,18 @@ describe("TUI render helpers", () => {
     expect(composerPrefix("none")).toBe("> ");
     expect(composerPrefix("commands")).toBe("> ");
     expect(composerPrefix("files")).toBe("> ");
+  });
+
+  it("names the overlay that owns the keyboard", () => {
     expect(composerPrefix("connect")).toBe("connect> ");
-    expect(composerPrefix("approval")).toBe("! ");
+    expect(composerPrefix("approval")).toBe("approval> ");
+    expect(composerPrefix("sessions")).toBe("sessions> ");
+    expect(composerPrefix("tasks")).toBe("tasks> ");
+    expect(composerPrefix("delete-confirm")).toBe("confirm> ");
+    expect(isModalOverlay("sessions")).toBe(true);
+    expect(isModalOverlay("commands")).toBe(false);
+    expect(isModalOverlay("files")).toBe(false);
+    expect(isModalOverlay("none")).toBe(false);
   });
 
   it("suggests the ghost completion for a command prefix", () => {
