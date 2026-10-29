@@ -31,8 +31,20 @@ export function redactSecretText(value: string): string {
   );
 }
 
+/**
+ * Human duration for anything from a tool call to a whole task. One-tenth of a second under ten
+ * seconds, whole seconds under a minute, then minutes — the same shape the TUI's working line and
+ * the CLI statuses use, so a duration never reads differently in two places.
+ */
 export function formatDuration(value: number): string {
-  return value >= 1000 ? `${(value / 1000).toFixed(1)}s` : `${Math.max(0, Math.round(value))}ms`;
+  const ms = Math.max(0, Math.round(value));
+  if (ms < 1000) return `${ms}ms`;
+  const seconds = ms / 1000;
+  if (seconds < 10) return `${seconds.toFixed(1)}s`;
+  if (seconds < 60) return `${Math.round(seconds)}s`;
+  const minutes = Math.floor(seconds / 60);
+  const rem = Math.round(seconds % 60);
+  return `${minutes}m ${rem}s`;
 }
 
 /** Truncates by UTF-16 length and marks the cut; used on the plain terminal path. */
@@ -40,6 +52,9 @@ export function truncateText(value: string, limit: number): string {
   return value.length <= limit ? value : `${value.slice(0, limit)}\n...[truncated]`;
 }
 
+/** Tokens per second: one decimal below ten, then whole numbers, then thousands. */
 export function formatRate(value: number): string {
-  return value < 10 ? value.toFixed(1) : String(Math.round(value));
+  if (value < 10) return value.toFixed(1);
+  if (value < 1000) return String(Math.round(value));
+  return `${(value / 1000).toFixed(1)}k`;
 }

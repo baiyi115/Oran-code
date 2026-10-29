@@ -5,6 +5,14 @@ import type { QuestionDialogItem } from "./tui/types.js";
 import { subagentOriginLabel, type SubagentOrigin } from "./subagent/types.js";
 import { stripPlanCompleteMarkers } from "./message-utils.js";
 import { formatDuration, formatRate, redactSecretText, truncateText } from "./formatting.js";
+import {
+  compactionChangeSummary,
+  compactionCompletedSummary,
+  compactionFailedSummary,
+  compactionStartedSummary,
+  offloadedSummary,
+  retrySummary,
+} from "./event-summary.js";
 
 export interface PromptOutputHooks {
   before: () => void;
@@ -176,8 +184,7 @@ export class TerminalRenderer implements SessionRenderer {
 
   retry(message: string, nextAttempt: number, maxRetries: number): void {
     // Non-TUI path: a single short line; the eventual success supersedes it.
-    const reason = message.trim().split(/\r?\n/)[0] || "request failed";
-    this.status(`retrying (${nextAttempt}/${maxRetries})${reason ? `: ${reason}` : ""}`, "yellow");
+    this.status(retrySummary(nextAttempt, maxRetries, message), "yellow");
   }
 
   approval(call: ToolCall, level: number, description: string, origin: SubagentOrigin): void {
@@ -254,27 +261,19 @@ export class TerminalRenderer implements SessionRenderer {
         break;
       case "context_compaction": {
         if (event.phase === "started") {
-          this.status(
-            event.reason === "emergency"
-              ? "Context limit reached; compacting before retry..."
-              : "Compacting context...",
-            "cyan",
-          );
+          this.status(compactionStartedSummary(event.reason), "cyan");
         } else if (event.phase === "completed") {
-          const change =
-            event.beforeTokens !== undefined && event.afterTokens !== undefined
-              ? `${event.beforeTokens} -> ${event.afterTokens} estimated tokens`
-              : "token estimate unavailable";
-          this.status(`Context compacted (${change}).`, "green");
+          const change = compactionChangeSummary(event.beforeTokens, event.afterTokens);
+          this.status(compactionCompletedSummary(change, event.replacementCount ?? 0), "green");
         } else if (event.phase === "offloaded") {
           if ((event.replacementCount ?? 0) > 0) {
-            this.status(`Offloaded ${event.replacementCount} large tool result(s) from active context.`, "cyan");
+            this.status(offloadedSummary(event.replacementCount ?? 0), "cyan");
           }
           if (event.message) this.error(`Tool-result offload was incomplete: ${event.message}`);
         } else if (/cancelled|canceled|aborted/i.test(event.message ?? "")) {
           this.status(event.message ?? "Context compaction cancelled.", "yellow");
         } else {
-          this.error(`Context compaction failed (${event.reason}): ${event.message ?? "unknown compaction error"}`);
+          this.error(compactionFailedSummary(event.reason, event.message));
         }
         break;
       }

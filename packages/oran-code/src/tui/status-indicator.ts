@@ -1,6 +1,8 @@
 import type { TuiBackgroundTask, TuiState } from "./types.js";
 import { toolDisplayName } from "./tool-names.js";
 import { truncateVisible } from "./text-width.js";
+import { formatDuration } from "../formatting.js";
+import { isLiveMessage } from "./transcript/live-message.js";
 
 /** Braille spinner frames, matching common CLI working indicators (pi/Ink loaders). */
 const WORKING_SPINNER_FRAMES = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"] as const;
@@ -15,17 +17,42 @@ export function hasActiveBackgroundTasks(state: TuiState): boolean {
   return (state.session.backgroundTasks ?? []).some((task) => task.status === "running" || task.status === "queued");
 }
 
+/** The slices of the background-task list the footer and the panels all ask for. */
+export interface BackgroundTaskPartition {
+  readonly subagents: readonly TuiBackgroundTask[];
+  readonly jobs: readonly TuiBackgroundTask[];
+  readonly runningSubagents: readonly TuiBackgroundTask[];
+  readonly queuedSubagents: readonly TuiBackgroundTask[];
+  readonly runningJobs: readonly TuiBackgroundTask[];
+}
+
+/** One pass over the list instead of a filter per consumer. */
+export function partitionBackgroundTasks(tasks: readonly TuiBackgroundTask[] = []): BackgroundTaskPartition {
+  const subagents: TuiBackgroundTask[] = [];
+  const jobs: TuiBackgroundTask[] = [];
+  const runningSubagents: TuiBackgroundTask[] = [];
+  const queuedSubagents: TuiBackgroundTask[] = [];
+  const runningJobs: TuiBackgroundTask[] = [];
+  for (const task of tasks) {
+    if (task.kind === "job") {
+      jobs.push(task);
+      if (task.status === "running") runningJobs.push(task);
+      continue;
+    }
+    subagents.push(task);
+    if (task.status === "running") runningSubagents.push(task);
+    else if (task.status === "queued") queuedSubagents.push(task);
+  }
+  return { subagents, jobs, runningSubagents, queuedSubagents, runningJobs };
+}
+
 export function isSessionBusy(state: TuiState): boolean {
   const taskState = String(state.session.taskState);
   if (["planning", "executing", "awaiting_approval"].includes(taskState)) return true;
   if (state.streaming) return true;
   if (state.thoughtMessageId) return true;
   if (state.session.currentTool) return true;
-  return state.transcript.some((message) => {
-    if (message.kind === "tool" && message.status === "running") return true;
-    if ((message.kind === "assistant" || message.kind === "thought") && message.streaming) return true;
-    return false;
-  });
+  return state.transcript.some(isLiveMessage);
 }
 
 /** Color semantics for the subagent task panel (the render layer maps them to COLORS). */
@@ -54,7 +81,7 @@ export function subagentTaskLines(
   width = 80,
   maxRows = TASK_PANEL_MAX_ROWS,
 ): TaskPanelRow[] {
-  const subagents = tasks.filter((task) => task.kind !== "job");
+  const subagents = partitionBackgroundTasks(tasks).subagents;
   if (subagents.length === 0) return [];
   const isActive = (task: TuiBackgroundTask): boolean => task.status === "running" || task.status === "queued";
   const active = subagents.filter(isActive);
@@ -96,7 +123,7 @@ function buildTaskPanelRow(task: TuiBackgroundTask, tick: number, now: number, w
   if (task.status === "running") {
     icon = spinnerFrame(tick);
     tone = "running";
-    timing = Number.isFinite(startedAt) ? formatCompactDuration(Math.max(0, now - startedAt)) : "running";
+    timing = Number.isFinite(startedAt) ? formatDuration(Math.max(0, now - startedAt)) : "running";
   } else if (task.status === "queued") {
     icon = "…";
     tone = "queued";
@@ -106,7 +133,7 @@ function buildTaskPanelRow(task: TuiBackgroundTask, tick: number, now: number, w
     tone = task.status === "completed" ? "done" : "failed";
     const total =
       Number.isFinite(startedAt) && Number.isFinite(endedAt)
-        ? ` ${formatCompactDuration(Math.max(0, endedAt - startedAt))}`
+        ? ` ${formatDuration(Math.max(0, endedAt - startedAt))}`
         : "";
     timing = `${task.status}${total}`;
   }
@@ -124,11 +151,11 @@ function buildTaskPanelRow(task: TuiBackgroundTask, tick: number, now: number, w
 
 /** Live indicator for background shell jobs (dev server / build): counted and worded apart from subagents. */
 function formatBackgroundJobsIndicator(tasks: readonly TuiBackgroundTask[], now = Date.now()): string | undefined {
-  const running = tasks.filter((task) => task.kind === "job" && task.status === "running");
+  const running = partitionBackgroundTasks(tasks).runningJobs;
   if (running.length === 0) return undefined;
   const first = running[0]!;
   const startTime = Date.parse(first.startedAt);
-  const elapsed = Number.isFinite(startTime) ? formatCompactDuration(Math.max(0, now - startTime)) : undefined;
+  const elapsed = Number.isFinite(startTime) ? formatDuration(Math.max(0, now - startTime)) : undefined;
   const command = first.name.length > 40 ? `${first.name.slice(0, 39)}…` : first.name;
   const parts = [
     running.length === 1 ? `[1 background job: ${command}]` : `[${running.length} background jobs running]`,
@@ -223,16 +250,5 @@ function formatWorkingElapsed(state: TuiState, now: number): string | undefined 
   const startedAt = state.session.startedAt;
   if (startedAt === undefined) return undefined;
   const elapsedMs = Math.max(0, now - startedAt);
-  return formatCompactDuration(elapsedMs);
-}
-
-export function formatCompactDuration(value: number): string {
-  const ms = Math.max(0, Math.round(value));
-  if (ms < 1000) return `${ms}ms`;
-  const seconds = ms / 1000;
-  if (seconds < 10) return `${seconds.toFixed(1)}s`;
-  if (seconds < 60) return `${Math.round(seconds)}s`;
-  const minutes = Math.floor(seconds / 60);
-  const rem = Math.round(seconds % 60);
-  return `${minutes}m ${rem}s`;
+  return formatDuration(elapsedMs);
 }

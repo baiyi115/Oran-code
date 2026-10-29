@@ -4,8 +4,16 @@ import { truncateVisible } from "./text-width.js";
 import type { TuiState } from "./types.js";
 import type { RuntimeEvent, ToolCall, ToolResult } from "../types.js";
 import type { FileDiff } from "../diff.js";
-import { normalizeTokenUsage } from "../token-usage.js";
+import { emptyUsage, normalizeTokenUsage } from "../token-usage.js";
 import { stripPlanCompleteMarkers } from "../message-utils.js";
+import {
+  compactionChangeSummary,
+  compactionCompletedSummary,
+  compactionFailedSummary,
+  compactionStartedSummary,
+  offloadedSummary,
+  retrySummary,
+} from "../event-summary.js";
 
 export function reduceRuntimeEvent(state: TuiState, event: RuntimeEvent): void {
   if (event.type === "context_compaction") {
@@ -24,16 +32,8 @@ export function reduceRuntimeEvent(state: TuiState, event: RuntimeEvent): void {
     clearRetryErrorNotice(state);
     finishAssistant(state);
     finishThought(state);
+    resetTaskStreaming(state);
     state.activeTaskId = event.taskId;
-    state.lastSequence = 0;
-    state.activeTaskUsage = {
-      inputTokens: 0,
-      outputTokens: 0,
-      totalTokens: 0,
-      cacheReadTokens: 0,
-      cacheWriteTokens: 0,
-    };
-    state.processedSequences.clear();
   }
   const sequenceKey = `${event.taskId}:${event.sequence}`;
   if (state.processedSequences.has(sequenceKey)) return;
@@ -226,10 +226,9 @@ export function reduceRuntimeEvent(state: TuiState, event: RuntimeEvent): void {
       break;
     }
     case "retry": {
-      const detail = redactSecretText(event.message).trim() || "request failed";
       // Keep the notice to a single short line; a later successful response clears it.
-      const reason = detail.split(/\r?\n/)[0] ?? "";
-      const text = `retrying (${event.nextAttempt}/${event.maxRetries})${reason ? `: ${truncateVisible(reason, 60)}` : ""}`;
+      const reason = truncateVisible(redactSecretText(event.message).trim() || "request failed", 60);
+      const text = retrySummary(event.nextAttempt, event.maxRetries, reason);
       const existing = state.retryErrorId
         ? state.transcript.find((message) => message.id === state.retryErrorId)
         : undefined;
@@ -289,24 +288,18 @@ export function reduceRuntimeEvent(state: TuiState, event: RuntimeEvent): void {
 }
 
 function reduceContextCompaction(state: TuiState, event: Extract<RuntimeEvent, { type: "context_compaction" }>): void {
-  const replacementSuffix =
-    (event.replacementCount ?? 0) > 0 ? `; offloaded ${event.replacementCount} tool result(s)` : "";
   switch (event.phase) {
     case "started": {
-      const message =
-        event.reason === "emergency" ? "Context limit reached; compacting before retry..." : "Compacting context...";
+      const message = compactionStartedSummary(event.reason);
       appendTranscriptMessage(state, { kind: "system", text: message });
       state.session.status = message.replace(/\.\.\.$/, "");
       break;
     }
     case "completed": {
-      const change =
-        event.beforeTokens !== undefined && event.afterTokens !== undefined
-          ? `about ${event.beforeTokens} -> ${event.afterTokens} tokens`
-          : "token estimate unavailable";
+      const change = compactionChangeSummary(event.beforeTokens, event.afterTokens);
       appendTranscriptMessage(state, {
         kind: "system",
-        text: `Context compacted: ${change}${replacementSuffix}.`,
+        text: compactionCompletedSummary(change, event.replacementCount ?? 0),
       });
       state.session.status = runningTaskStatus(state) ?? "context compacted";
       break;
@@ -315,7 +308,7 @@ function reduceContextCompaction(state: TuiState, event: Extract<RuntimeEvent, {
       if ((event.replacementCount ?? 0) > 0) {
         appendTranscriptMessage(state, {
           kind: "system",
-          text: `Offloaded ${event.replacementCount} large tool result(s) from active context.`,
+          text: offloadedSummary(event.replacementCount ?? 0),
         });
       }
       if (event.message) {
@@ -333,7 +326,7 @@ function reduceContextCompaction(state: TuiState, event: Extract<RuntimeEvent, {
       const cancelled = /cancelled|canceled|aborted/i.test(detail);
       appendTranscriptMessage(state, {
         kind: cancelled ? "system" : "error",
-        text: cancelled ? detail : `Context compaction failed (${event.reason}): ${detail}`,
+        text: cancelled ? detail : compactionFailedSummary(event.reason, detail),
       });
       state.session.status =
         event.reason === "manual"
@@ -575,6 +568,20 @@ function clearRetryErrorNotice(state: TuiState): void {
   if (!state.retryErrorId) return;
   removeTranscriptMessage(state, state.retryErrorId);
   state.retryErrorId = undefined;
+}
+
+/**
+ * Drops the bookkeeping that belongs to one task run: streaming flags and ids, the task's own
+ * usage, the sequence sets. Message contents are left alone — callers that must also finalize a
+ * streaming row call finishAssistant/finishThought first.
+ */
+export function resetTaskStreaming(state: TuiState): void {
+  state.streaming = false;
+  state.assistantMessageId = undefined;
+  state.thoughtMessageId = undefined;
+  state.activeTaskUsage = emptyUsage();
+  state.lastSequence = 0;
+  state.processedSequences.clear();
 }
 
 /**

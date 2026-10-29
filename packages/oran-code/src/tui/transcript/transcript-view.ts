@@ -3,6 +3,8 @@ import { MarkdownRenderer } from "./markdown-renderer.js";
 import { renderMessage } from "./message-renderer.js";
 import { wrapDisplayText } from "../text-width.js";
 import { ANSI } from "../theme.js";
+import { formatDuration } from "../../formatting.js";
+import { isLiveMessage } from "./live-message.js";
 
 export interface TranscriptRenderLine {
   text: string;
@@ -262,8 +264,7 @@ function renderCollapsedSegment(segment: TranscriptSegment, width: number): stri
   const lines: string[] = [];
   if (segment.thoughtCount > 0) {
     const label = segment.thoughtCount === 1 ? "Thought" : "Thoughts";
-    const thought =
-      segment.thoughtDurationMs > 0 ? `${label} for ${formatSegmentDuration(segment.thoughtDurationMs)}` : label;
+    const thought = segment.thoughtDurationMs > 0 ? `${label} for ${formatDuration(segment.thoughtDurationMs)}` : label;
     lines.push(...wrapDisplayText(`${ANSI.amberBold}${thought}${ANSI.reset}`, width));
   }
   const tools = `${segment.toolCount} tool${segment.toolCount === 1 ? "" : "s"}`;
@@ -271,16 +272,10 @@ function renderCollapsedSegment(segment: TranscriptSegment, width: number): stri
   return [...lines, ""];
 }
 
-function formatSegmentDuration(value: number): string {
-  return value >= 1000 ? `${(value / 1000).toFixed(1)}s` : `${Math.max(0, Math.round(value))}ms`;
-}
-
 function liveSignature(message: TranscriptMessage, liveTick: number): number {
   // Only rows that draw a spinner depend on the tick; an assistant row is pure text, so tying it to
   // the tick would force a full markdown re-render on every spinner frame for no visible change.
-  if (message.kind === "thought" && message.streaming) return liveTick;
-  if (message.kind === "tool" && message.status === "running") return liveTick;
-  return 0;
+  return isLiveMessage(message) && message.kind !== "assistant" ? liveTick : 0;
 }
 
 function messageSignature(message: TranscriptMessage): string {

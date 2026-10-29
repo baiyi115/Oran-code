@@ -1,7 +1,7 @@
 import type { TranscriptMessage, TuiState } from "./types.js";
 import { abbreviatePath, truncateVisible, visibleWidth } from "./text-width.js";
-import { hasActiveBackgroundTasks, isSessionBusy } from "./status-indicator.js";
-import { formatCompactDuration } from "./status-indicator.js";
+import { hasActiveBackgroundTasks, isSessionBusy, partitionBackgroundTasks } from "./status-indicator.js";
+import { formatDuration, formatRate } from "../formatting.js";
 
 /**
  * Footer layout (bottom chrome): the mode line, then the workspace path with
@@ -18,15 +18,10 @@ export function footerLines(state: TuiState, width: number): string[] {
   const workspace = state.session.workspace || ".";
   const usage = usageLabel(state);
   const queue = state.session.followUpCount > 0 ? `follow-ups: ${state.session.followUpCount}` : undefined;
-  const runningBgCount = (state.session.backgroundTasks ?? []).filter(
-    (t) => t.kind !== "job" && t.status === "running",
-  ).length;
-  const queuedBgCount = (state.session.backgroundTasks ?? []).filter(
-    (t) => t.kind !== "job" && t.status === "queued",
-  ).length;
-  const runningJobCount = (state.session.backgroundTasks ?? []).filter(
-    (t) => t.kind === "job" && t.status === "running",
-  ).length;
+  const background = partitionBackgroundTasks(state.session.backgroundTasks);
+  const runningBgCount = background.runningSubagents.length;
+  const queuedBgCount = background.queuedSubagents.length;
+  const runningJobCount = background.runningJobs.length;
   const subagentBadge =
     runningBgCount > 0
       ? `${runningBgCount} subagent${runningBgCount === 1 ? "" : "s"} running${queuedBgCount > 0 ? ` (+${queuedBgCount} queued)` : ""}`
@@ -94,7 +89,7 @@ export function workSummaryLine(state: TuiState): WorkSummary | undefined {
         : state.session.taskState === "paused"
           ? "■ Paused"
           : "✓ Done";
-  const details = [label, formatCompactDuration(elapsed)];
+  const details = [label, formatDuration(elapsed)];
   const toolCount = currentTaskMessages(state).filter((message) => message.kind === "tool").length;
   if (toolCount > 0) details.push(`${toolCount} tool${toolCount === 1 ? "" : "s"}`);
   const usage = state.activeTaskUsage;
@@ -178,11 +173,6 @@ function compactNumber(value: number): string {
   if (value < 10_000) return `${(value / 1000).toFixed(1)}k`;
   if (value < 1_000_000) return `${Math.round(value / 1000)}k`;
   return `${(value / 1_000_000).toFixed(1)}m`;
-}
-
-function formatRate(value: number): string {
-  if (value < 10) return value.toFixed(1);
-  return compactNumber(Math.round(value));
 }
 
 /**

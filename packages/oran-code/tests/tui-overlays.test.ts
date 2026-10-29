@@ -1,7 +1,8 @@
 import { describe, expect, it } from "vitest";
 import { approvalDialogLines } from "../src/tui/approval-dialog.js";
 import { commandCandidates, commandPaletteLines } from "../src/tui/command-palette.js";
-import { modelSelectorLines } from "../src/tui/model-selector.js";
+import { renderOverlayLines } from "../src/tui/render.js";
+import { createTuiState } from "../src/tui/state.js";
 import type { ToolCall } from "../src/types.js";
 
 const call: ToolCall = {
@@ -44,10 +45,16 @@ describe("TUI overlays", () => {
   });
 
   it("renders model selection rows", () => {
-    const lines = modelSelectorLines(["Demo/chat", "OpenAI/gpt"], 1);
-    expect(lines[0]?.text).toBe("  Demo/chat");
-    expect(lines[1]?.selected).toBe(true);
-    expect(lines[1]?.text).not.toContain("> OpenAI/gpt");
+    const state = createTuiState("/workspace", "demo/model");
+    const lines = renderOverlayLines(
+      { ...state, overlay: { kind: "models", selectedIndex: 1, options: ["Demo/chat", "OpenAI/gpt"] } },
+      [],
+      80,
+    );
+    const rows = lines.slice(-2);
+    expect(rows[0]?.text).toBe("  Demo/chat");
+    expect(rows[1]?.selected).toBe(true);
+    expect(rows[1]?.text).not.toContain("> OpenAI/gpt");
   });
 
   it("renders the approval choices without leaking secrets", () => {

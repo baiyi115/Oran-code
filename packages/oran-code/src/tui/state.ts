@@ -10,6 +10,7 @@ import type { PermissionMode, ReasoningEffort, WorkMode } from "../types.js";
 import { graphemeLength } from "./text-width.js";
 import { pushUndoSnapshot } from "./composer.js";
 import { DEFAULT_COMMAND_REGISTRY } from "../commands.js";
+import { emptyUsage } from "../token-usage.js";
 
 export function createComposerState(history: readonly string[] = []): ComposerState {
   return {
@@ -54,8 +55,8 @@ function createTuiSessionState(
     startedAt: undefined,
     elapsedMs: undefined,
     outputTokensPerSecond: undefined,
-    usage: { inputTokens: 0, outputTokens: 0, totalTokens: 0, cacheReadTokens: 0, cacheWriteTokens: 0 },
-    subagentUsage: { inputTokens: 0, outputTokens: 0, totalTokens: 0, cacheReadTokens: 0, cacheWriteTokens: 0 },
+    usage: emptyUsage(),
+    subagentUsage: emptyUsage(),
     followUpCount: 0,
     backgroundTasks: [],
   };
@@ -100,7 +101,7 @@ export function createTuiState(
     nextMessageId: nextMessageNumber(initialTranscript),
     lastSequence: 0,
     activeTaskId: undefined,
-    activeTaskUsage: { inputTokens: 0, outputTokens: 0, totalTokens: 0, cacheReadTokens: 0, cacheWriteTokens: 0 },
+    activeTaskUsage: emptyUsage(),
     processedSequences: new Set<string>(),
     retiredTaskIds: new Set<string>(),
     retryErrorId: undefined,

@@ -1,7 +1,6 @@
 import React from "react";
 import { Text } from "ink";
 import { commandCandidates } from "./command-palette.js";
-import { modelSelectorLines } from "./model-selector.js";
 import { approvalDialogLines } from "./approval-dialog.js";
 import { questionDialogLines } from "./question-dialog.js";
 import { currentSessionLine, filterSessionOptions, sessionOptionLabel, sessionSearchLine } from "./session-list.js";
@@ -73,7 +72,14 @@ export function renderOverlayLines(
       // (see openListOverlay), so there is no separate loading/error state to draw here.
       const lines = textLines(["Select model", dimHorizontalRule(width), "↑↓ Select   Enter Confirm   Esc Close", ""]);
       if (!overlay.options.length) lines.push(overlayLine("  (no models available)"));
-      else lines.push(...modelSelectorLines(overlay.options, overlay.selectedIndex, width));
+      else {
+        // One row per model; the selection is the row flag, not a marker inside the text.
+        overlay.options.forEach((model, index) => {
+          lines.push(
+            highlightSelection(`  ${truncateVisible(model, Math.max(1, width - 2))}`, index === overlay.selectedIndex),
+          );
+        });
+      }
       return lines;
     }
     case "approval":

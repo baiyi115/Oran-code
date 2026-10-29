@@ -6,6 +6,7 @@ import { formatErrorMessage } from "../error-format.js";
 import { commandCandidates } from "./command-palette.js";
 import { navigateHistory } from "./interaction.js";
 import { TuiTranscriptRenderer } from "./renderer.js";
+import { isLiveMessage } from "./transcript/live-message.js";
 import {
   composerValue,
   createTuiState,
@@ -33,7 +34,8 @@ import {
   type TerminalMouseEvent,
 } from "./terminal-streams.js";
 import type { ConnectInput, ConnectPrefill } from "./types.js";
-import { appendSystemMessage } from "./message-reducer.js";
+import { appendSystemMessage, resetTaskStreaming } from "./message-reducer.js";
+import { emptyUsage } from "../token-usage.js";
 import { graphemeLength } from "./text-width.js";
 import {
   composerCursorOffset,
@@ -91,12 +93,7 @@ interface StaticTranscriptItem {
 
 /** Only in-progress transcript entries need Ink's height-bounded live frame. */
 export function staticTranscriptCount(messages: readonly TranscriptMessage[]): number {
-  const firstMutableIndex = messages.findIndex(
-    (message) =>
-      (message.kind === "assistant" && message.streaming) ||
-      (message.kind === "thought" && message.streaming) ||
-      (message.kind === "tool" && message.status === "running"),
-  );
+  const firstMutableIndex = messages.findIndex(isLiveMessage);
   return firstMutableIndex >= 0 ? firstMutableIndex : messages.length;
 }
 
@@ -685,7 +682,7 @@ export class InkTuiApp {
             this.state.overlay.tokenStart === file.start
           ) {
             this.state.overlay = { ...this.state.overlay, options: [], loading: false };
-            this.state.session.status = errorMessage(error);
+            this.state.session.status = formatErrorMessage(error);
             this.invalidate();
           }
         });
@@ -770,40 +767,17 @@ export class InkTuiApp {
     setComposerValue(this.state.composer, "");
     this.state.composer.pastes = [];
     this.state.nextMessageId = nextMessageNumber(this.state.transcript);
-    this.state.assistantMessageId = undefined;
-    this.state.thoughtMessageId = undefined;
-    this.state.streaming = false;
+    resetTaskStreaming(this.state);
     this.state.cancelArmedUntil = undefined;
     this.state.activeTaskId = undefined;
-    this.state.activeTaskUsage = {
-      inputTokens: 0,
-      outputTokens: 0,
-      totalTokens: 0,
-      cacheReadTokens: 0,
-      cacheWriteTokens: 0,
-    };
-    this.state.lastSequence = 0;
-    this.state.processedSequences.clear();
     this.state.session.taskState = "ready";
     this.state.session.status = "";
     this.state.session.currentTool = undefined;
     this.state.session.startedAt = undefined;
     this.state.session.elapsedMs = undefined;
     this.state.session.outputTokensPerSecond = undefined;
-    this.state.session.usage = {
-      inputTokens: 0,
-      outputTokens: 0,
-      totalTokens: 0,
-      cacheReadTokens: 0,
-      cacheWriteTokens: 0,
-    };
-    this.state.session.subagentUsage = {
-      inputTokens: 0,
-      outputTokens: 0,
-      totalTokens: 0,
-      cacheReadTokens: 0,
-      cacheWriteTokens: 0,
-    };
+    this.state.session.usage = emptyUsage();
+    this.state.session.subagentUsage = emptyUsage();
     this.state.session.followUpCount = this.options.getFollowUpCount?.() ?? 0;
     this.state.overlay = { kind: "none" };
     this.resetStaticTranscript();
@@ -846,7 +820,7 @@ export class InkTuiApp {
       this.refreshContext();
     } catch (error) {
       if (!accepted) setComposerValue(this.state.composer, previousValue || value);
-      this.state.session.status = errorMessage(error);
+      this.state.session.status = formatErrorMessage(error);
     } finally {
       this.submitBusy = false;
       this.invalidate();
@@ -879,7 +853,7 @@ export class InkTuiApp {
         this.refreshContext();
       }
     } catch (error) {
-      this.state.session.status = errorMessage(error);
+      this.state.session.status = formatErrorMessage(error);
       this.invalidate();
     }
   }
@@ -902,7 +876,7 @@ export class InkTuiApp {
         this.refreshContext();
       }
     } catch (error) {
-      this.state.session.status = errorMessage(error);
+      this.state.session.status = formatErrorMessage(error);
       this.invalidate();
     }
   }
@@ -924,7 +898,7 @@ export class InkTuiApp {
         this.refreshContext();
       }
     } catch (error) {
-      this.state.session.status = errorMessage(error);
+      this.state.session.status = formatErrorMessage(error);
       this.invalidate();
     }
   }
@@ -1472,11 +1446,6 @@ function dropSubmittedPastes(composer: ComposerState, submittedCount: number): v
     }),
   );
   composer.cursor.column = Math.min(composer.cursor.column, graphemeLength(composer.lines[composer.cursor.line] ?? ""));
-}
-
-function errorMessage(error: unknown): string {
-  // Footer/status lines are single-line truncated; keep the headline only there.
-  return formatErrorMessage(error);
 }
 
 /** ink's color prop rejects an explicit undefined under exactOptionalPropertyTypes; omit it in mono. */

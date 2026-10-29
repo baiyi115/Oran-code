@@ -2,7 +2,7 @@ import type { TuiBackgroundTask } from "./types.js";
 import { highlightSelection, overlayLine, type OverlayLine } from "./overlay/select-list.js";
 import { truncateVisible } from "./text-width.js";
 import { dimHorizontalRule } from "./theme.js";
-import { formatCompactDuration } from "./status-indicator.js";
+import { formatDuration } from "../formatting.js";
 
 /**
  * Rendering for the /tasks overlay: every background task the session still knows about, including
@@ -37,7 +37,7 @@ function taskListLabel(task: TuiBackgroundTask, width: number, now: number): str
   const role = task.definitionName ?? (task.kind === "job" ? "job" : "");
   const startedAt = Date.parse(task.startedAt);
   const endedAt = task.endedAt ? Date.parse(task.endedAt) : now;
-  const duration = Number.isFinite(startedAt) ? formatCompactDuration(Math.max(0, endedAt - startedAt)) : "";
+  const duration = Number.isFinite(startedAt) ? formatDuration(Math.max(0, endedAt - startedAt)) : "";
   const metadata = [task.id, task.status, duration].filter(Boolean).join(" · ");
   const prefix = `${icon} `;
   const label = role ? `${task.name} · ${role}` : task.name;
@@ -54,7 +54,7 @@ export function taskDetailLines(task: TuiBackgroundTask): string[] {
   const ended = task.endedAt ? Date.parse(task.endedAt) : undefined;
   const duration =
     Number.isFinite(started) && ended !== undefined && Number.isFinite(ended)
-      ? formatCompactDuration(Math.max(0, ended - started))
+      ? formatDuration(Math.max(0, ended - started))
       : undefined;
   const header = [
     `${task.id} · ${task.kind === "job" ? "shell job" : "subagent"}`,

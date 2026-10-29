@@ -6,6 +6,11 @@ export interface TokenUsage {
   cacheWriteTokens: number;
 }
 
+/** A zeroed usage record, so initial state and resets share one definition. */
+export function emptyUsage(): TokenUsage {
+  return { inputTokens: 0, outputTokens: 0, totalTokens: 0, cacheReadTokens: 0, cacheWriteTokens: 0 };
+}
+
 export function normalizeTokenUsage(usage: Record<string, number>): TokenUsage {
   const reportedInput = numberFrom(usage, "input_tokens", "prompt_tokens", "inputTokens");
   const outputTokens = numberFrom(usage, "output_tokens", "completion_tokens", "outputTokens") ?? 0;
