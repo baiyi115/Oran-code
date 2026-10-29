@@ -147,7 +147,7 @@ describe("OverlayHandlers", () => {
 
   it("runs the session delete confirmation flow with index clamping", async () => {
     const h = harness();
-    h.state.overlay = { kind: "sessions", selectedIndex: 1, options: [...h.sessionsLoaded] };
+    h.state.overlay = { kind: "sessions", selectedIndex: 1, options: [...h.sessionsLoaded], query: "" };
     h.handlers.handleSessionKey("d", key({ ctrl: true }));
     expect(h.state.overlay).toMatchObject({ kind: "session-delete-confirm", sessionId: "s2", returnSelectedIndex: 1 });
 
@@ -240,6 +240,49 @@ describe("approval quick answers", () => {
   });
 });
 
+describe("session search", () => {
+  function searchHarness(): Harness {
+    const h = harness();
+    h.state.overlay = { kind: "sessions", selectedIndex: 0, options: h.sessionsLoaded, query: "" };
+    return h;
+  }
+
+  it("narrows the list as text is typed and widens it again on backspace", () => {
+    const h = searchHarness();
+    h.handlers.handleSessionKey("t", key());
+    h.handlers.handleSessionKey("w", key());
+    expect(h.state.overlay).toMatchObject({ kind: "sessions", query: "tw", selectedIndex: 0 });
+    h.handlers.handleSessionKey("", key({ backspace: true }));
+    expect(h.state.overlay).toMatchObject({ kind: "sessions", query: "t" });
+  });
+
+  it("resumes the highlighted row of the filtered list", async () => {
+    const h = searchHarness();
+    h.handlers.handleSessionKey("t", key());
+    h.handlers.handleSessionKey("w", key());
+    h.handlers.handleSessionKey("", enter);
+    await Promise.resolve();
+    expect(h.restored.map((session) => session.id)).toEqual(["s2"]);
+  });
+
+  it("keeps the query when the delete confirmation is cancelled", async () => {
+    const h = searchHarness();
+    h.handlers.handleSessionKey("t", key());
+    h.handlers.handleSessionKey("w", key());
+    h.handlers.handleSessionKey("d", key({ ctrl: true }));
+    expect(h.state.overlay).toMatchObject({ kind: "session-delete-confirm", sessionId: "s2" });
+    await h.handlers.handleSessionDeleteConfirmKey("", escape);
+    expect(h.state.overlay).toMatchObject({ kind: "sessions", query: "tw", selectedIndex: 0 });
+  });
+
+  it("does not treat navigation keys or modified letters as search text", () => {
+    const h = searchHarness();
+    h.handlers.handleSessionKey("", key({ upArrow: true }));
+    h.handlers.handleSessionKey("x", key({ ctrl: true }));
+    expect(h.state.overlay).toMatchObject({ kind: "sessions", query: "" });
+  });
+});
+
 describe("session delete confirmation", () => {
   function sessionsHarness(): Harness {
     const h = harness();
@@ -247,20 +290,21 @@ describe("session delete confirmation", () => {
       kind: "sessions",
       selectedIndex: 0,
       options: h.sessionsLoaded,
+      query: "",
     };
     return h;
   }
 
   it("defaults to Cancel when asking to delete a session", () => {
     const h = sessionsHarness();
-    // Backspace/Del trigger a delete request (goes through the confirm layer, no longer a direct delete)
-    h.handlers.handleSessionKey("", key({ delete: true }));
+    // Ctrl+D asks to delete (through the confirm layer, no longer a direct delete)
+    h.handlers.handleSessionKey("d", key({ ctrl: true }));
     expect(h.state.overlay).toMatchObject({ kind: "session-delete-confirm", selectedIndex: 1 });
   });
 
   it("Enter on Cancel backs out with nothing deleted", async () => {
     const h = sessionsHarness();
-    h.handlers.handleSessionKey("", key({ delete: true }));
+    h.handlers.handleSessionKey("d", key({ ctrl: true }));
     await h.handlers.handleSessionDeleteConfirmKey("", enter);
     expect(h.sessionsDeleted).toEqual([]);
     expect(h.state.overlay.kind).toBe("sessions");
@@ -268,7 +312,7 @@ describe("session delete confirmation", () => {
 
   it("Backspace while Cancel is focused no longer deletes; only Enter on Delete deletes", async () => {
     const h = sessionsHarness();
-    h.handlers.handleSessionKey("", key({ delete: true }));
+    h.handlers.handleSessionKey("d", key({ ctrl: true }));
     await h.handlers.handleSessionDeleteConfirmKey("", key({ backspace: true }));
     expect(h.sessionsDeleted).toEqual([]);
 

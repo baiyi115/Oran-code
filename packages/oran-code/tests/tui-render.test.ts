@@ -57,6 +57,7 @@ describe("TUI render helpers", () => {
         kind: "sessions" as const,
         selectedIndex: 0,
         options: [{ id: "s1", name: "one", updatedAt: "", messageCount: 3, isCurrent: true } satisfies SessionOption],
+        query: "",
       },
     };
     const sessionLines = renderOverlayLines(sessions, [], 60);

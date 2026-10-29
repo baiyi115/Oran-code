@@ -276,7 +276,7 @@ export type OverlayState =
       loading: boolean;
       error?: string | undefined;
     }
-  | { kind: "sessions"; selectedIndex: number; options: SessionOption[] }
+  | { kind: "sessions"; selectedIndex: number; options: SessionOption[]; query: string }
   | {
       kind: "session-delete-confirm";
       sessionId: string;
@@ -284,6 +284,8 @@ export type OverlayState =
       selectedIndex: number;
       returnSelectedIndex: number;
       options: SessionOption[];
+      /** Search text to restore when the confirmation is cancelled. */
+      returnQuery: string;
     }
   | { kind: "follow-ups"; selectedIndex: number; options: FollowUpOption[] }
   | {

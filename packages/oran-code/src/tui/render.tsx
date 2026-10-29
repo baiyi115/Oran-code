@@ -4,7 +4,7 @@ import { commandCandidates } from "./command-palette.js";
 import { modelSelectorLines } from "./model-selector.js";
 import { approvalDialogLines } from "./approval-dialog.js";
 import { questionDialogLines } from "./question-dialog.js";
-import { currentSessionLine, sessionOptionLabel } from "./session-list.js";
+import { currentSessionLine, filterSessionOptions, sessionOptionLabel, sessionSearchLine } from "./session-list.js";
 import { providerDeleteConfirmLines, providersListLines } from "./providers-list.js";
 import { ANSI, dimHorizontalRule } from "./theme.js";
 import { highlightSelection, overlayLine, type OverlayLine } from "./overlay/select-list.js";
@@ -129,16 +129,24 @@ export function renderOverlayLines(
     }
     case "sessions": {
       const overlay = state.overlay;
+      // Same filter the key handler navigates: the stored index counts rows on screen, so both
+      // sides must agree on which rows those are.
+      const visible = filterSessionOptions(overlay.options, overlay.query);
+      const selected = Math.min(overlay.selectedIndex, Math.max(0, visible.length - 1));
       return [
         overlayLine(currentSessionLine(overlay.options, width)),
         overlayLine(dimHorizontalRule(width)),
         overlayLine(
-          listHint("↑↓ Select   Enter Resume   Del Remove   Esc Close", overlay.selectedIndex, overlay.options.length),
+          listHint("Type to search   ↑↓ Select   Enter Resume   Del Remove   Esc Close", selected, visible.length),
         ),
-        overlayLine(""),
-        ...overlay.options.map((item, index) =>
-          highlightSelection(`  ${sessionOptionLabel(item, Math.max(1, width - 2))}`, index === overlay.selectedIndex),
+        overlayLine(
+          overlay.query ? sessionSearchLine(overlay.query, width) : `${ANSI.gray}${sessionSearchLine("", width)}${ANSI.reset}`,
         ),
+        ...(visible.length
+          ? visible.map((item, index) =>
+              highlightSelection(`  ${sessionOptionLabel(item, Math.max(1, width - 2))}`, index === selected),
+            )
+          : [overlayLine("  (no matching sessions)")]),
       ];
     }
     case "session-delete-confirm": {

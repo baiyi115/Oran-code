@@ -1,12 +1,14 @@
 import type { Key } from "ink";
 import type { ApprovalResponse } from "../types.js";
-import type { SessionOption, SessionView, TuiState } from "./types.js";
+import type { OverlayState, SessionOption, SessionView, TuiState } from "./types.js";
 import { composerValue, setComposerValue, setOverlay } from "./state.js";
 import { composerCursorOffset } from "./composer.js";
 import { commandCandidates } from "./command-palette.js";
 import { approvalResponse, moveSelection, stepSelection } from "./interaction.js";
+import { filterSessionOptions } from "./session-list.js";
+import { graphemes } from "./text-width.js";
 import { formatErrorMessage } from "../error-format.js";
-import { isSessionDeleteKey, isSubmitKey } from "./keys.js";
+import { isDeleteBackward, isDeleteForward, isSessionDeleteKey, isSubmitKey } from "./keys.js";
 
 /**
  * Context between the overlay key state machine and InkTuiApp. The app keeps render scheduling,
@@ -176,7 +178,7 @@ export class OverlayHandlers {
     if (!this.ctx.loadSessions) return;
     try {
       const options = await this.ctx.loadSessions();
-      setOverlay(this.ctx.state, { kind: "sessions", selectedIndex: 0, options: options ?? [] });
+      setOverlay(this.ctx.state, this.sessionOverlay(options ?? [], "", 0));
     } catch (error) {
       this.ctx.state.session.status = formatErrorMessage(error);
     }
@@ -264,21 +266,45 @@ export class OverlayHandlers {
   handleSessionKey(input: string, key: Key): void {
     if (this.ctx.state.overlay.kind !== "sessions") return;
     if (this.selectingSession) return;
-    const options = this.ctx.state.overlay.options;
+    const overlay = this.ctx.state.overlay;
+    // Row indices address what is on screen, not the full list, so every action below works off
+    // the same filtered view the renderer draws.
+    const visible = filterSessionOptions(overlay.options, overlay.query);
     if (key.upArrow || key.downArrow) {
       this.ctx.state.overlay = {
-        ...this.ctx.state.overlay,
-        selectedIndex: stepSelection(this.ctx.state.overlay.selectedIndex, key.upArrow ? -1 : 1, options.length),
+        ...overlay,
+        selectedIndex: stepSelection(overlay.selectedIndex, key.upArrow ? -1 : 1, visible.length),
       };
     } else if (key.escape) this.ctx.state.overlay = { kind: "none" };
-    else if (isSessionDeleteKey(input, key)) {
-      const selected = options[this.ctx.state.overlay.selectedIndex];
+    else if ((key.ctrl && input === "d") || isDeleteForward(input)) {
+      // Backspace (Ink reports it as `delete`) edits the search text instead — see isDeleteBackward
+      // below — so only the explicit delete keys remove a session and a typo cannot open the dialog.
+      const selected = visible[overlay.selectedIndex];
       if (selected) this.requestSessionDelete(selected);
+    } else if (isDeleteBackward(input, key)) {
+      if (overlay.query) {
+        const symbols = graphemes(overlay.query);
+        symbols.pop();
+        this.ctx.state.overlay = this.sessionOverlay(overlay.options, symbols.join(""), 0);
+      }
     } else if (isSubmitKey(input, key)) {
-      const selected = options[this.ctx.state.overlay.selectedIndex];
+      const selected = visible[overlay.selectedIndex];
       if (selected && this.ctx.onSessionSelected) void this.selectSession(selected.id);
+    } else if (isSearchText(input, key)) {
+      this.ctx.state.overlay = this.sessionOverlay(overlay.options, `${overlay.query}${input}`, 0);
     }
     this.ctx.invalidate();
+  }
+
+  /** The sessions overlay with its selection clamped to the rows the current query leaves visible. */
+  private sessionOverlay(options: readonly SessionOption[], query: string, selectedIndex: number): OverlayState {
+    const visibleCount = filterSessionOptions(options, query).length;
+    return {
+      kind: "sessions",
+      selectedIndex: Math.min(Math.max(0, selectedIndex), Math.max(0, visibleCount - 1)),
+      options: [...options],
+      query,
+    };
   }
 
   async selectSession(id: string): Promise<void> {
@@ -339,6 +365,7 @@ export class OverlayHandlers {
       selectedIndex: 1,
       returnSelectedIndex: this.ctx.state.overlay.selectedIndex,
       options: [...this.ctx.state.overlay.options],
+      returnQuery: this.ctx.state.overlay.query,
     };
     this.ctx.invalidate();
   }
@@ -363,11 +390,7 @@ export class OverlayHandlers {
             this.ctx.state.session.status = "session deleted";
             const options = await this.ctx.loadSessions?.();
             if (options) {
-              this.ctx.state.overlay = {
-                kind: "sessions",
-                        selectedIndex: Math.min(overlay.returnSelectedIndex, Math.max(0, options.length - 1)),
-                options: [...options],
-              };
+              this.ctx.state.overlay = this.sessionOverlay(options, overlay.returnQuery, overlay.returnSelectedIndex);
             } else {
               this.ctx.state.overlay = { kind: "none" };
             }
@@ -376,11 +399,7 @@ export class OverlayHandlers {
           }
         } catch (error) {
           this.ctx.state.session.status = formatErrorMessage(error);
-          this.ctx.state.overlay = {
-            kind: "sessions",
-                selectedIndex: overlay.returnSelectedIndex,
-            options: overlay.options,
-          };
+          this.ctx.state.overlay = this.sessionOverlay(overlay.options, overlay.returnQuery, overlay.returnSelectedIndex);
         } finally {
           this.deletingEntry = false;
         }
@@ -392,11 +411,7 @@ export class OverlayHandlers {
   private cancelSessionDeleteConfirmation(): void {
     if (this.ctx.state.overlay.kind !== "session-delete-confirm") return;
     const overlay = this.ctx.state.overlay;
-    this.ctx.state.overlay = {
-      kind: "sessions",
-      selectedIndex: overlay.returnSelectedIndex,
-      options: overlay.options,
-    };
+    this.ctx.state.overlay = this.sessionOverlay(overlay.options, overlay.returnQuery, overlay.returnSelectedIndex);
     this.ctx.invalidate();
   }
 
@@ -536,4 +551,17 @@ export class OverlayHandlers {
       this.ctx.resolveQuestion(updatedAnswers);
     }
   }
+}
+
+/**
+ * Printable text typed into the session picker's search field. Modifier chords, navigation keys and
+ * escape sequences are not text: Ink sets the flags for named keys, and some terminals deliver the
+ * raw CSI sequence as `input`.
+ */
+function isSearchText(input: string, key: Key): boolean {
+  if (!input || key.ctrl || key.meta || key.tab || key.escape) return false;
+  if (key.return || key.upArrow || key.downArrow || key.leftArrow || key.rightArrow) return false;
+  if (key.pageUp || key.pageDown || key.backspace || key.delete) return false;
+  if (input.startsWith("\u001b")) return false;
+  return input >= " ";
 }

@@ -6,6 +6,30 @@ export function currentSessionLine(options: readonly SessionOption[], width: num
   return truncateVisible(`Sessions · Current: ${current?.name ?? "(unavailable)"}`, Math.max(1, width));
 }
 
+/**
+ * Sessions matching the typed filter, in their original order (newest first). Every whitespace-
+ * separated term has to appear somewhere in the name or id, so "oran tui" narrows to the sessions
+ * whose names carry both words; an empty query keeps every session.
+ */
+export function filterSessionOptions(options: readonly SessionOption[], query: string): SessionOption[] {
+  const terms = query.toLowerCase().split(/\s+/).filter(Boolean);
+  if (!terms.length) return [...options];
+  return options.filter((option) => {
+    const haystack = `${option.name} ${option.id}`.toLowerCase();
+    return terms.every((term) => haystack.includes(term));
+  });
+}
+
+/**
+ * The search row. Its own line rather than a suffix on the hint line: the hint is truncated first
+ * on a narrow terminal, and the text being typed is the part that must stay visible.
+ */
+export function sessionSearchLine(query: string, width: number): string {
+  const label = "Search: ";
+  const value = truncateVisible(query, Math.max(1, Math.max(1, width) - label.length));
+  return query ? `${label}${value}` : `${label}type to filter`;
+}
+
 export function sessionOptionLabel(option: SessionOption, width: number): string {
   const available = Math.max(1, width);
   const marker = option.isCurrent ? "● current " : "  ";
