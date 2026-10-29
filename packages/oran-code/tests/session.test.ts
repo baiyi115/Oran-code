@@ -35,7 +35,11 @@ class FakeProvider implements ModelProvider {
   }
 }
 
-describe("TerminalSession", () => {
+/** Every test here builds a session against a real workspace and model catalog; alone that takes
+ * under a second, but under the full suite one of them has timed out against vitest's 5s default. */
+const SESSION_TEST_TIMEOUT_MS = 30_000;
+
+describe("TerminalSession", { timeout: SESSION_TEST_TIMEOUT_MS }, () => {
   let originalUserDataDir: string | undefined;
   let testUserDataDir: string | undefined;
 
