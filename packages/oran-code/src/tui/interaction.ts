@@ -1,17 +1,13 @@
-import { DEFAULT_COMMAND_REGISTRY, type SlashCommand } from "../commands.js";
 import type { ApprovalResponse } from "../types.js";
-import { commandCandidates } from "./command-palette.js";
 
 export function moveSelection(index: number, delta: number, length: number): number {
   if (length <= 0) return 0;
   return (((index + delta) % length) + length) % length;
 }
 
-export function filterCommands(
-  query: string,
-  commands: readonly SlashCommand[] = DEFAULT_COMMAND_REGISTRY.list(),
-): SlashCommand[] {
-  return commandCandidates(query.trim() || "/", commands);
+/** Move a list cursor by `delta` and stop at either end (lists that do not wrap). */
+export function stepSelection(index: number, delta: number, length: number): number {
+  return Math.max(0, Math.min(Math.max(0, length - 1), index + delta));
 }
 
 export function approvalResponse(index: number): ApprovalResponse {

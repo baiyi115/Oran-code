@@ -37,7 +37,19 @@ export function footerLines(state: TuiState, width: number): string[] {
     runningJobCount > 0 ? `${runningJobCount} job${runningJobCount === 1 ? "" : "s"} running` : undefined;
   const status = explicitStatus(state);
 
-  const detail = [usage, queue, permissionChip(state), contextChip(state), subagentBadge, jobBadge, status]
+  // Status first: the detail line is truncated from the right, and an error or hint is the part
+  // that must never be cut away. Usage is bracketed so the two levels read as two levels.
+  const detail = [
+    status,
+    usage,
+    subagentUsageChip(state),
+    queue,
+    permissionChip(state),
+    contextChip(state),
+    subagentBadge,
+    jobBadge,
+    detailsHint(state),
+  ]
     .filter(Boolean)
     .join(" · ");
   const lines = [truncateVisible(primary, available)];
@@ -55,11 +67,25 @@ export function footerLines(state: TuiState, width: number): string[] {
   return lines;
 }
 
+/** Outcome tone of a finished turn, so the summary row can stop painting a failure green. */
+export type WorkSummaryTone = "done" | "failed" | "cancelled";
+
+export interface WorkSummary {
+  text: string;
+  tone: WorkSummaryTone;
+}
+
 /** Compact completed-turn summary shown above the composer. */
-export function workSummaryLine(state: TuiState): string | undefined {
+export function workSummaryLine(state: TuiState): WorkSummary | undefined {
   if (isSessionBusy(state) || hasActiveBackgroundTasks(state)) return undefined;
   const elapsed = state.session.elapsedMs;
   if (elapsed === undefined || elapsed < 0) return undefined;
+  const tone: WorkSummaryTone =
+    state.session.taskState === "failed"
+      ? "failed"
+      : state.session.taskState === "cancelled" || state.session.taskState === "paused"
+        ? "cancelled"
+        : "done";
   const label =
     state.session.taskState === "failed"
       ? "× Failed"
@@ -74,11 +100,11 @@ export function workSummaryLine(state: TuiState): string | undefined {
   const usage = state.activeTaskUsage;
   if (usage.totalTokens > 0) {
     const tokenParts = [`in ${compactNumber(usage.inputTokens)}`, `out ${compactNumber(usage.outputTokens)}`];
-    details.push(`${compactNumber(usage.totalTokens)} tokens (${tokenParts.join(", ")})`);
+    details.push(`task ${compactNumber(usage.totalTokens)} tokens (${tokenParts.join(", ")})`);
   }
   const outputRate = state.session.outputTokensPerSecond;
   if (outputRate !== undefined && outputRate > 0) details.push(`${formatRate(outputRate)} output tok/s`);
-  return details.join(" · ");
+  return { text: details.join(" · "), tone };
 }
 
 function currentTaskMessages(state: TuiState): readonly TranscriptMessage[] {
@@ -102,20 +128,41 @@ function latestUserMessageIndex(state: TuiState): number {
   return -1;
 }
 
-export function formatFooter(state: TuiState, width: number): string {
-  return footerLines(state, width).join("\n");
+/**
+ * Session usage, with subagent work folded in. The completion summary above the composer is the
+ * other scope on screen, so this chip names its own: "session" here, "task" there.
+ */
+function usageLabel(state: TuiState): string | undefined {
+  const main = state.session.usage;
+  const agents = state.session.subagentUsage;
+  const inputTokens = main.inputTokens + agents.inputTokens;
+  const outputTokens = main.outputTokens + agents.outputTokens;
+  const cacheReadTokens = main.cacheReadTokens + agents.cacheReadTokens;
+  const cacheWriteTokens = main.cacheWriteTokens + agents.cacheWriteTokens;
+  if (inputTokens <= 0 && outputTokens <= 0) return undefined;
+  const parts = [`in ${compactNumber(inputTokens)}`, `out ${compactNumber(outputTokens)}`];
+  if (cacheReadTokens > 0) parts.push(cacheReadLabel(cacheReadTokens, inputTokens));
+  if (cacheWriteTokens > 0) parts.push(`write ${compactNumber(cacheWriteTokens)}`);
+  // tok/s is deliberately absent: it is a per-turn figure and the completion summary owns it.
+  // Brackets group the counts together, so they read as one block next to the single-value chips.
+  return `session [${parts.join(" · ")}]`;
 }
 
-function usageLabel(state: TuiState): string | undefined {
-  const usage = state.session.usage;
-  if (usage.totalTokens <= 0 && usage.inputTokens <= 0 && usage.outputTokens <= 0) return undefined;
-  const parts = [`in ${compactNumber(usage.inputTokens)}`, `out ${compactNumber(usage.outputTokens)}`];
-  if (usage.cacheReadTokens > 0) parts.push(cacheReadLabel(usage.cacheReadTokens, usage.inputTokens));
-  if (usage.cacheWriteTokens > 0) parts.push(`write ${compactNumber(usage.cacheWriteTokens)}`);
-  if (state.session.outputTokensPerSecond !== undefined && state.session.outputTokensPerSecond > 0) {
-    parts.push(`${formatRate(state.session.outputTokensPerSecond)} tok/s`);
-  }
-  return parts.join(" · ");
+/** How much of that session total came from subagents; hidden until a subagent has run. */
+function subagentUsageChip(state: TuiState): string | undefined {
+  const usage = state.session.subagentUsage;
+  const tokens = usage.totalTokens > 0 ? usage.totalTokens : usage.inputTokens + usage.outputTokens;
+  return tokens > 0 ? `subagents ${compactNumber(tokens)}` : undefined;
+}
+
+/**
+ * How to reopen an activity row, stated once. The transcript used to repeat it on every collapsed
+ * thought and tool segment — dozens of identical hints in a long task — while the shortcut always
+ * targets the latest activity anyway.
+ */
+function detailsHint(state: TuiState): string | undefined {
+  const hasActivity = state.transcript.some((message) => message.kind === "thought" || message.kind === "tool");
+  return hasActivity ? "ctrl+t details" : undefined;
 }
 
 function cacheReadLabel(cacheReadTokens: number, inputTokens: number): string {
@@ -170,8 +217,4 @@ function explicitStatus(state: TuiState): string | undefined {
   if (lower.startsWith("completed in")) return undefined;
   if (lower === "task completed" || lower === "task completed." || lower.startsWith("task completed")) return undefined;
   return raw;
-}
-
-export function footerWidth(value: string): number {
-  return visibleWidth(value);
 }

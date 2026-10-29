@@ -215,7 +215,6 @@ describe("TUI runtime event reducer", () => {
     });
     expect(state.session.usage).toEqual(state.activeTaskUsage);
     expect(state.session.elapsedMs).toBe(2_500);
-    expect(state.session.modelElapsedMs).toBe(100);
     expect(state.session.outputTokensPerSecond).toBe(20);
   });
 

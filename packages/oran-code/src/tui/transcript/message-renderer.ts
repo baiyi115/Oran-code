@@ -2,7 +2,7 @@ import type { TranscriptMessage, VerificationMessage } from "../types.js";
 import { formatDuration } from "../../formatting.js";
 import { renderMarkdown, type MarkdownRenderer } from "./markdown-renderer.js";
 import { renderToolMessage } from "./tool-message.js";
-import { stripTerminalMarkup, visibleWidth, wrapDisplayText } from "../text-width.js";
+import { stripTerminalMarkup, wrapDisplayText, wrapDisplayTextLimited, visibleWidth } from "../text-width.js";
 import { ANSI } from "../theme.js";
 import { spinnerFrame } from "../status-indicator.js";
 
@@ -145,8 +145,9 @@ function renderThought(
     return lines;
   }
 
-  // Collapsed finished thoughts collapse to a single line; Ctrl+T shows its content in the details overlay.
-  return [`${styleThoughtLabel(label)}${ANSI.gray}  (ctrl+t details)${ANSI.reset}`];
+  // Collapsed finished thoughts collapse to a single line. The row names what it is; how to open it
+  // is stated once, in the footer, instead of repeated on every thought the session produces.
+  return [styleThoughtLabel(label)];
 }
 
 function thoughtLabel(message: Extract<TranscriptMessage, { kind: "thought" }>): string {
@@ -156,9 +157,7 @@ function thoughtLabel(message: Extract<TranscriptMessage, { kind: "thought" }>):
 }
 
 function thoughtPreviewLines(body: string, width: number, maxLines: number): string[] {
-  const wrapped = wrapDisplayText(body, width);
-  if (wrapped.length <= maxLines) return wrapped;
-  return [...wrapped.slice(0, maxLines - 1), "…"];
+  return wrapDisplayTextLimited(body, width, maxLines);
 }
 
 function styleThought(value: string): string {

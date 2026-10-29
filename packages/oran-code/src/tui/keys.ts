@@ -1,4 +1,5 @@
 import type { Key } from "ink";
+import { FORWARD_DELETE_SEQUENCE } from "./terminal-streams.js";
 
 /** Unified key predicates: Ink's Key flags differ per terminal, so compatibility lives here. */
 
@@ -8,30 +9,27 @@ export function isSubmitKey(input: string, key: Key): boolean {
 }
 
 export function isSessionDeleteKey(input: string, key: Key): boolean {
-  return (key.ctrl && input === "d") || key.delete || key.backspace;
+  // Physical Delete is rewritten by the input transform, so it arrives as the marker here too.
+  return (key.ctrl && input === "d") || key.delete || key.backspace || input === FORWARD_DELETE_SEQUENCE;
 }
 
 export function isHomeKey(input: string, key: Key): boolean {
-  // Ink Key has no home flag; accept Ctrl+A and common terminal sequences.
-  return (key.ctrl && input === "a") || input === "\x1b[H" || input === "\x1b[1~" || input === "\x1bOH";
+  // Ink has no home flag and blanks `input` for the sequence; the input transform rewrites physical
+  // Home to Ctrl+A before it reaches the app (see KEY_SEQUENCE_REWRITES in terminal-streams.ts).
+  return key.ctrl === true && input === "a";
 }
 
 export function isEndKey(input: string, key: Key): boolean {
-  // Ink Key has no end flag; accept Ctrl+E and common terminal sequences.
-  return (key.ctrl && input === "e") || input === "\x1b[F" || input === "\x1b[4~" || input === "\x1bOF";
+  // Physical End arrives as Ctrl+E, for the same reason as Home above.
+  return key.ctrl === true && input === "e";
 }
 
 export function isDeleteBackward(_input: string, key: Key): boolean {
-  // Ink clears `input` for non-alphanumeric keys. On Windows, physical Backspace is
-  // usually reported as key.delete (raw DEL 0x7f), so both flags must erase backward.
+  // Ink clears `input` for the backspace key (raw DEL 0x7f) and reports it as `delete`, so both
+  // flags erase backward; forward delete no longer shares the flag (it has its own marker).
   return key.backspace || key.delete;
 }
 
-export function isDeleteForward(input: string, key: Key): boolean {
-  // Prefer backward delete for bare Windows Backspace/DEL.
-  // Treat explicit forward-delete sequences (often delivered as "\x1b[3~") as forward.
-  if (key.backspace) return false;
-  if (input === "\x1b[3~" || input === "\x1b[3;1~") return true;
-  // Some hosts set delete without backspace for Fn+Backspace / Del.
-  return Boolean(key.delete && input.length > 1);
+export function isDeleteForward(input: string): boolean {
+  return input === FORWARD_DELETE_SEQUENCE;
 }

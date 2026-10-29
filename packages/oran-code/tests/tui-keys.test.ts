@@ -8,6 +8,7 @@ import {
   isSubmitKey,
 } from "../src/tui/keys.js";
 import type { Key } from "ink";
+import { FORWARD_DELETE_SEQUENCE } from "../src/tui/terminal-streams.js";
 
 function key(partial: Partial<Key> = {}): Key {
   return partial as Key;
@@ -28,11 +29,12 @@ describe("TUI key predicates", () => {
     expect(isSessionDeleteKey("d", key())).toBeFalsy();
   });
 
-  it("accepts ctrl+a and common home/end escape sequences", () => {
+  it("accepts ctrl+a / ctrl+e, which is what the input transform sends for Home/End", () => {
     expect(isHomeKey("a", { ctrl: true } as Key)).toBe(true);
-    expect(isHomeKey("\x1b[H", key())).toBe(true);
     expect(isEndKey("e", { ctrl: true } as Key)).toBe(true);
-    expect(isEndKey("\x1b[F", key())).toBe(true);
+    // Ink blanks `input` for the raw sequences, so they never reach the predicates.
+    expect(isHomeKey("\x1b[H", key())).toBe(false);
+    expect(isEndKey("\x1b[F", key())).toBe(false);
     expect(isHomeKey("a", key())).toBe(false);
   });
 
@@ -42,10 +44,10 @@ describe("TUI key predicates", () => {
     expect(isDeleteBackward("", { delete: true } as Key)).toBe(true);
   });
 
-  it("erases forward only for explicit forward-delete sequences", () => {
-    expect(isDeleteForward("\x1b[3~", { delete: true } as Key)).toBe(true);
-    // Bare DEL (short input) stays backward; backspace never deletes forward.
-    expect(isDeleteForward("", { delete: true } as Key)).toBe(false);
-    expect(isDeleteForward("\x1b[3~", { backspace: true, delete: true } as Key)).toBe(false);
+  it("erases forward only for the marker the input transform emits", () => {
+    expect(isDeleteForward(FORWARD_DELETE_SEQUENCE)).toBe(true);
+    // Bare DEL stays backward; ordinary text is never a forward delete.
+    expect(isDeleteForward("")).toBe(false);
+    expect(isDeleteForward("a")).toBe(false);
   });
 });

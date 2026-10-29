@@ -3,6 +3,7 @@ import { appendTranscriptMessage, getToolMessage } from "./state.js";
 import { truncateVisible } from "./text-width.js";
 import type { TuiState } from "./types.js";
 import type { RuntimeEvent, ToolCall, ToolResult } from "../types.js";
+import type { FileDiff } from "../diff.js";
 import { normalizeTokenUsage } from "../token-usage.js";
 import { stripPlanCompleteMarkers } from "../message-utils.js";
 
@@ -54,7 +55,6 @@ export function reduceRuntimeEvent(state: TuiState, event: RuntimeEvent): void {
       ) {
         state.session.startedAt = Date.now();
         state.session.elapsedMs = undefined;
-        state.session.modelElapsedMs = undefined;
         state.session.outputTokensPerSecond = undefined;
         state.session.currentTool = undefined;
       }
@@ -82,7 +82,6 @@ export function reduceRuntimeEvent(state: TuiState, event: RuntimeEvent): void {
       clearAbortOnlyAssistants(state);
       state.streaming = true;
       state.waitingForFirstChunk = true;
-      state.session.currentStep = event.step;
       state.assistantMessageId = appendTranscriptMessage(state, {
         kind: "assistant",
         text: "",
@@ -104,7 +103,6 @@ export function reduceRuntimeEvent(state: TuiState, event: RuntimeEvent): void {
       }
       assistant.streaming = true;
       state.streaming = true;
-      state.session.currentStep = event.step;
       break;
     }
     case "assistant_end": {
@@ -264,7 +262,6 @@ export function reduceRuntimeEvent(state: TuiState, event: RuntimeEvent): void {
         cacheWriteTokens: event.cacheWriteTokens,
       });
       state.session.elapsedMs = event.elapsedMs;
-      state.session.modelElapsedMs = event.modelElapsedMs;
       state.session.outputTokensPerSecond = event.outputTokensPerSecond;
       finishAssistant(state);
       finishThought(state);
@@ -420,6 +417,9 @@ function updateToolResult(state: TuiState, call: ToolCall, result: ToolResult, t
   const badges = metadataBadges(result);
   if (badges) target.badges = badges;
   else delete target.badges;
+  const diff = metadataDiff(result);
+  if (diff) target.diff = diff;
+  else delete target.diff;
 }
 
 function ensureAssistant(
@@ -640,6 +640,23 @@ function metadataBadges(result: ToolResult): string[] | undefined {
   if (metadata.repaired === true) badges.push("repaired");
   if (metadata.toolUnavailable === true) badges.push("unavailable");
   return badges.length ? badges : undefined;
+}
+
+/**
+ * The on-disk diff a write tool reported, validated at the boundary: metadata is an untyped bag
+ * (`Record<string, unknown>`) and can also come back from a session archive.
+ */
+function metadataDiff(result: ToolResult): FileDiff | undefined {
+  const value = result.metadata?.diff;
+  if (!value || typeof value !== "object") return undefined;
+  const record = value as { text?: unknown; added?: unknown; removed?: unknown; truncated?: unknown };
+  if (typeof record.text !== "string") return undefined;
+  return {
+    text: record.text,
+    added: typeof record.added === "number" ? record.added : 0,
+    removed: typeof record.removed === "number" ? record.removed : 0,
+    truncated: record.truncated === true,
+  };
 }
 
 function isCancelled(result: ToolResult): boolean {

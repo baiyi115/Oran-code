@@ -1,42 +1,11 @@
 import { describe, expect, it } from "vitest";
-import {
-  approvalResponse,
-  filterCommands,
-  moveSelection,
-  navigateHistory,
-  redactSecrets,
-} from "../src/tui/interaction.js";
+import { approvalResponse, moveSelection, navigateHistory, redactSecrets } from "../src/tui/interaction.js";
 
 describe("TUI interaction helpers", () => {
   it("wraps selection movement", () => {
     expect(moveSelection(0, -1, 3)).toBe(2);
     expect(moveSelection(2, 1, 3)).toBe(0);
     expect(moveSelection(0, 1, 0)).toBe(0);
-  });
-
-  it("filters slash commands by the typed command", () => {
-    expect(filterCommands("/mo").map((command) => command.name)).toEqual(["/model", "/connect", "/memory", "/plan"]);
-    expect(filterCommands("/").map((command) => command.name)).toEqual([
-      "/clear",
-      "/compact",
-      "/connect",
-      "/exit",
-      "/graph",
-      "/help",
-      "/memory",
-      "/model",
-      "/new",
-      "/plan",
-      "/rename",
-      "/resume",
-      "/rewind",
-      "/session",
-      "/skills",
-      "/status",
-      "/tasks",
-      "/undo",
-      "/worktree",
-    ]);
   });
 
   it("maps approval choices and redacts secrets", () => {

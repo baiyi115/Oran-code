@@ -64,7 +64,9 @@ describe("TUI render commit scheduling", () => {
       await app.flushPendingRender("terminal");
       expect(Date.now() - started).toBeLessThan(5_000);
       // The fallback path forces one extra render, so committed should catch up with revision
-      // (the extra render itself bumps revision again, hence >= rather than exact equality).
+      // (the extra render itself bumps revision again, hence >= rather than exact equality). That
+      // render commits on its own tick, which is what the removed fixed paint barrier used to cover.
+      await new Promise<void>((resolve) => setImmediate(resolve));
       expect(internals.committedRenderRevision).toBeGreaterThanOrEqual(7);
     } finally {
       app.destroy();

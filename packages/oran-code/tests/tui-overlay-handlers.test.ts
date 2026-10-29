@@ -61,7 +61,7 @@ function harness(overrides: Partial<TuiState> = {}): Harness {
       h.modelsSelected.push(reference);
       return true;
     },
-    loadFollowUps: async () => (h.followUpsCancelled.length ? [] : [{ id: "f1", prompt: "run tests", createdAt: "" }]),
+    loadFollowUps: async () => (h.followUpsCancelled.length ? [] : [{ id: "f1", prompt: "run tests" }]),
     onFollowUpCancelled: async (id) => {
       h.followUpsCancelled.push(id);
       return true;
@@ -133,7 +133,6 @@ describe("OverlayHandlers", () => {
     const h = harness();
     h.state.overlay = {
       kind: "models",
-      query: "",
       selectedIndex: 0,
       options: ["openai/a", "openai/b"],
       loading: false,
@@ -148,7 +147,7 @@ describe("OverlayHandlers", () => {
 
   it("runs the session delete confirmation flow with index clamping", async () => {
     const h = harness();
-    h.state.overlay = { kind: "sessions", query: "", selectedIndex: 1, options: [...h.sessionsLoaded] };
+    h.state.overlay = { kind: "sessions", selectedIndex: 1, options: [...h.sessionsLoaded] };
     h.handlers.handleSessionKey("d", key({ ctrl: true }));
     expect(h.state.overlay).toMatchObject({ kind: "session-delete-confirm", sessionId: "s2", returnSelectedIndex: 1 });
 
@@ -246,7 +245,6 @@ describe("session delete confirmation", () => {
     const h = harness();
     h.state.overlay = {
       kind: "sessions",
-      query: "",
       selectedIndex: 0,
       options: h.sessionsLoaded,
     };

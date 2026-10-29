@@ -21,21 +21,11 @@ export class TranscriptView {
       markdownRenderer: MarkdownRenderer;
     }
   >();
-
-  render(messages: readonly TranscriptMessage[], width: number): string[] {
-    const safeWidth = Math.max(12, width);
-    const activeIds = new Set(messages.map((message) => message.id));
-    for (const id of this.cache.keys()) {
-      if (!activeIds.has(id)) this.cache.delete(id);
-    }
-    return this.renderItems(messages, safeWidth, 0, new Set()).map((line) => line.text);
-  }
-
-  lines(state: TuiState, width: number): string[] {
-    const safeWidth = Math.max(12, width);
-    this.pruneCache(state.transcript);
-    return this.renderItems(state.transcript, safeWidth, 0, state.expandedToolGroupIds).map((line) => line.text);
-  }
+  /**
+   * Collapsed segments are pure functions of their counts and the width, so their rows are cached
+   * too: a long session holds many of them and re-wrapping every row per frame is measurable.
+   */
+  private readonly segmentCache = new Map<string, { signature: string; lines: string[] }>();
 
   renderLines(
     messages: readonly TranscriptMessage[],
@@ -57,6 +47,11 @@ export class TranscriptView {
     for (const id of this.cache.keys()) {
       if (!activeIds.has(id)) this.cache.delete(id);
     }
+    // A segment id is `segment:<first message id>`, so the first message still being present is
+    // enough to keep its cached rows.
+    for (const id of this.segmentCache.keys()) {
+      if (!activeIds.has(id.slice(SEGMENT_ID_PREFIX.length))) this.segmentCache.delete(id);
+    }
   }
 
   private renderItems(
@@ -67,9 +62,10 @@ export class TranscriptView {
   ): TranscriptRenderLine[] {
     return transcriptRenderItems(messages, expandedToolGroupIds).flatMap((item) => {
       if (item.kind === "segment") {
-        return renderCollapsedSegment(item.segment, width).map((text, lineOffset) => ({
+        const segment = item.segment;
+        return this.renderSegment(segment, width).map((text, lineOffset) => ({
           text,
-          messageId: item.segment.messages[0]!.id,
+          messageId: segment.messages[0]!.id,
           lineOffset,
         }));
       }
@@ -81,6 +77,15 @@ export class TranscriptView {
         }),
       );
     });
+  }
+
+  private renderSegment(segment: TranscriptSegment, width: number): string[] {
+    const signature = `${width}:${segment.thoughtCount}:${segment.toolCount}:${segment.thoughtDurationMs}`;
+    const cached = this.segmentCache.get(segment.id);
+    if (cached?.signature === signature) return cached.lines;
+    const lines = renderCollapsedSegment(segment, width);
+    this.segmentCache.set(segment.id, { signature, lines });
+    return lines;
   }
 
   private renderMessage(
@@ -109,6 +114,8 @@ export class TranscriptView {
 const NON_COLLAPSIBLE_TOOL_NAMES = new Set(["write_file", "edit_file", "apply_patch", "run_command"]);
 /** A thought+tool run collapses only when it contains at least this many tools. */
 const SEGMENT_MIN_TOOLS = 2;
+/** Segment ids are derived from the first message id; the cache prunes by that id. */
+const SEGMENT_ID_PREFIX = "segment:";
 
 type TranscriptRenderItem =
   | { kind: "message"; message: TranscriptMessage; expandThoughts?: boolean }
@@ -138,7 +145,7 @@ function buildSegment(messages: readonly TranscriptMessage[]): TranscriptSegment
   return {
     // The first message is stable while more tools append to the same batch,
     // so an expanded batch does not collapse again mid-run when its tail grows.
-    id: `segment:${messages[0]?.id ?? ""}`,
+    id: `${SEGMENT_ID_PREFIX}${messages[0]?.id ?? ""}`,
     messages: [...messages],
     thoughtCount,
     toolCount,
@@ -204,6 +211,23 @@ export function collapsibleSegments(messages: readonly TranscriptMessage[]): Tra
   return segments;
 }
 
+/**
+ * Index where the transcript's trailing collapsible segment starts, or `messages.length` when the
+ * tail does not collapse. A segment renders under its first message id and Ink Static never
+ * re-renders a committed item, so a segment that can still gain members (the next read-only tool of
+ * the same batch finishing) must stay in the live frame; committing it earlier would freeze its
+ * "◇ N tools" row at the old count and the later rows would never appear anywhere.
+ */
+export function trailingSegmentStart(messages: readonly TranscriptMessage[]): number {
+  let runStart = messages.length;
+  while (runStart > 0 && isSegmentMember(messages[runStart - 1]!)) runStart -= 1;
+  if (runStart === messages.length) return messages.length;
+  const trailing = splitRunIntoSegments(messages.slice(runStart)).at(-1);
+  // Below the collapse threshold the run renders per message, so those ids commit on their own.
+  if (!trailing || trailing.toolCount < SEGMENT_MIN_TOOLS) return messages.length;
+  return messages.length - trailing.messages.length;
+}
+
 function transcriptRenderItems(
   messages: readonly TranscriptMessage[],
   expandedToolGroupIds: ReadonlySet<string>,
@@ -243,14 +267,7 @@ function renderCollapsedSegment(segment: TranscriptSegment, width: number): stri
     lines.push(...wrapDisplayText(`${ANSI.amberBold}${thought}${ANSI.reset}`, width));
   }
   const tools = `${segment.toolCount} tool${segment.toolCount === 1 ? "" : "s"}`;
-  lines.push(
-    ...wrapDisplayText(
-      // ctrl+t expands only the "latest segment"; saying "ctrl+t details" would suggest this row
-      // can expand, while the segment's member rows have no entry point (see openLatestActivityDetails).
-      `${ANSI.greenBold}◇${ANSI.reset} ${ANSI.toolBold}${tools}${ANSI.reset} ${ANSI.gray}· ctrl+t: latest details${ANSI.reset}`,
-      width,
-    ),
-  );
+  lines.push(...wrapDisplayText(`${ANSI.greenBold}◇${ANSI.reset} ${ANSI.toolBold}${tools}${ANSI.reset}`, width));
   return [...lines, ""];
 }
 
@@ -259,14 +276,11 @@ function formatSegmentDuration(value: number): string {
 }
 
 function liveSignature(message: TranscriptMessage, liveTick: number): number {
-  if (message.kind === "assistant" && message.streaming) return liveTick;
+  // Only rows that draw a spinner depend on the tick; an assistant row is pure text, so tying it to
+  // the tick would force a full markdown re-render on every spinner frame for no visible change.
   if (message.kind === "thought" && message.streaming) return liveTick;
   if (message.kind === "tool" && message.status === "running") return liveTick;
   return 0;
-}
-
-export function transcriptLines(entries: readonly TranscriptMessage[], width: number): string[] {
-  return new TranscriptView().render(entries, width);
 }
 
 function messageSignature(message: TranscriptMessage): string {
@@ -280,7 +294,7 @@ function messageSignature(message: TranscriptMessage): string {
     case "tool":
       // Concatenating the full output into the signature would copy huge strings on every repaint
       // (120ms); status/summary plus the length cover all real changes (they always accompany a
-      // state transition).
+      // state transition). The diff arrives with the result, so its length and counts join them.
       return [
         "tool",
         message.status,
@@ -289,6 +303,7 @@ function messageSignature(message: TranscriptMessage): string {
         message.summary ?? "",
         message.output?.length ?? 0,
         message.error?.length ?? 0,
+        message.diff ? `${message.diff.text.length}:${message.diff.added}:${message.diff.removed}` : "",
       ].join(":");
     case "verification":
       return `verification:${JSON.stringify(message.results)}`;

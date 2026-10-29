@@ -19,6 +19,14 @@ function createState(): TuiState {
   return createTuiState("D:\\workspace", "demo/chat");
 }
 
+/** Full transcript text, including the live tail and any expanded segments. */
+function transcriptText(view: TranscriptView, state: TuiState): string {
+  return view
+    .linesWithAnchors(state, 80)
+    .map((line) => line.text)
+    .join("\n");
+}
+
 let nextSequence = 0;
 
 function event(value: Record<string, unknown>): RuntimeEvent {
@@ -91,7 +99,7 @@ describe("TuiTranscriptRenderer", () => {
       streaming: true,
     });
 
-    const rendered = new TranscriptView().lines(state, 80).join("\n");
+    const rendered = transcriptText(new TranscriptView(), state);
 
     expect(rendered).toContain("first item");
     expect(rendered).toContain("second item is still streaming");
@@ -139,7 +147,9 @@ describe("TuiTranscriptRenderer", () => {
     state.transcript.push({ id: "user-1", kind: "user", text: "hello" });
     state.transcript.push({ id: "assistant-1", kind: "assistant", text: "hi" });
 
-    expect(workSummaryLine(state)).toBe("✓ Done · 1.5s · 12 tokens (in 10, out 2) · 20 output tok/s");
+    const summary = workSummaryLine(state);
+    expect(summary?.text).toBe("✓ Done · 1.5s · task 12 tokens (in 10, out 2) · 20 output tok/s");
+    expect(summary?.tone).toBe("done");
   });
 
   it("hides the footer spinner while an assistant row streams", () => {
@@ -173,14 +183,14 @@ describe("TuiTranscriptRenderer", () => {
     );
     const view = new TranscriptView();
 
-    const collapsed = view.lines(state, 80).join("\n");
+    const collapsed = transcriptText(view, state);
     expect(collapsed).toContain("Thought for 2.2s");
     expect(collapsed).toContain("3 tools");
     expect(collapsed).not.toContain("Inspect the relevant files.");
 
     const segment = collapsibleSegments(state.transcript)[0]!;
     state.expandedToolGroupIds.add(segment.id);
-    const expanded = view.lines(state, 80).join("\n");
+    const expanded = transcriptText(view, state);
     expect(expanded).not.toContain("3 tools");
     expect(expanded).toContain("Inspect the relevant files.");
     expect(expanded).toContain("Read");

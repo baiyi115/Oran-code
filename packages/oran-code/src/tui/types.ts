@@ -1,16 +1,15 @@
 import type {
-  ApprovalResponse,
   Message,
   ModelReference,
   PermissionMode,
   ReasoningEffort,
-  RuntimeEvent,
   TaskState,
   ToolCall,
   VerificationResult,
   WorkMode,
 } from "../types.js";
 import type { SlashCommand } from "../commands.js";
+import type { FileDiff } from "../diff.js";
 import type { SubagentOrigin } from "../subagent/types.js";
 
 export interface TuiAppOptions {
@@ -19,12 +18,13 @@ export interface TuiAppOptions {
   getWorkspace: () => string;
   getModelLabel: () => string;
   getSessionName?: () => string;
-  getApprovalPolicy?: () => "ask" | "all";
   getFollowUpCount?: () => number;
   /** Live list of background subagents and shell jobs (async source, Promise allowed). */
   getBackgroundTasks?: () => readonly TuiBackgroundTask[] | Promise<readonly TuiBackgroundTask[]>;
   /** Current session context-usage estimate (tokens), used by the footer's ctx% indicator. */
   getContextEstimate?: () => number | undefined;
+  /** Subagent usage accumulated for the current session, shown beside the session total. */
+  getSubagentUsage?: () => UsageState | undefined;
   onInput: (value: string) => Promise<void>;
   onCancel: () => boolean;
   loadModels: () => Promise<string[]>;
@@ -37,7 +37,6 @@ export interface TuiAppOptions {
   onConnect?: (input: ConnectInput) => Promise<boolean | void>;
   loadSessions?: () => Promise<SessionOption[]>;
   onSessionSelected?: (id: string) => Promise<SessionView | undefined>;
-  onSessionCreated?: (name?: string) => Promise<SessionView | undefined>;
   onSessionDeleted?: (id: string) => Promise<SessionView | undefined>;
   loadProviders?: () => Promise<ProviderOption[]>;
   onProviderSelected?: (name: string) => Promise<boolean | void>;
@@ -45,11 +44,14 @@ export interface TuiAppOptions {
   loadFollowUps?: () => Promise<FollowUpOption[]> | FollowUpOption[];
   onFollowUpCancelled?: (id: string) => Promise<boolean> | boolean;
   loadFiles?: (query: string) => Promise<string[]>;
-  onSessionChanged?: (view: SessionView) => void | Promise<void>;
   initialSession?: SessionView;
   getWorkMode?: () => WorkMode;
   onWorkModeChanged?: (mode: WorkMode) => boolean | Promise<boolean>;
   getPermissionMode?: () => PermissionMode;
+  /**
+   * Switches how much needs approval. Unlike the work-mode and effort callbacks this may be
+   * accepted while a task runs: the running policy reads the mode live.
+   */
   onPermissionModeChanged?: (mode: PermissionMode) => boolean | Promise<boolean>;
   getReasoningEffort?: () => ReasoningEffort;
   onReasoningEffortChanged?: (effort: ReasoningEffort) => boolean | Promise<boolean>;
@@ -70,19 +72,6 @@ export interface TuiRenderDebugInfo {
 }
 
 export type TuiRenderCommitKind = "normal" | "boundary" | "terminal";
-
-export type TuiOverlay =
-  | "none"
-  | "commands"
-  | "models"
-  | "sessions"
-  | "session-delete-confirm"
-  | "follow-ups"
-  | "files"
-  | "approval"
-  | "details"
-  | "connect"
-  | "question";
 
 export interface QuestionDialogOption {
   label: string;
@@ -158,8 +147,6 @@ export interface TuiBackgroundTask {
   readonly startedAt: string;
   readonly endedAt?: string | undefined;
   readonly error?: string | undefined;
-  /** Task output (result text once finished, shown in the details view). */
-  readonly output?: string | undefined;
 }
 
 export interface TuiSessionState {
@@ -175,16 +162,16 @@ export interface TuiSessionState {
   contextWindow?: number;
   /** Estimated token count of the current session context (used to derive ctx%). */
   contextEstimate?: number | undefined;
-  approvalPolicy: "ask" | "all";
   taskState: TaskState | "ready";
   status: string;
-  currentStep: number | undefined;
   currentTool: string | undefined;
   startedAt: number | undefined;
   elapsedMs: number | undefined;
-  modelElapsedMs: number | undefined;
   outputTokensPerSecond: number | undefined;
+  /** Usage of the main task in this session; subagents are counted separately. */
   usage: UsageState;
+  /** Usage produced by subagents in this session, reported by the runner when a run ends. */
+  subagentUsage: UsageState;
   followUpCount: number;
   backgroundTasks: readonly TuiBackgroundTask[];
 }
@@ -235,6 +222,12 @@ export interface ToolMessage {
   progress?: string;
   /** Semantic badges derived from the result metadata (cached/denied/hook/repaired/unavailable). */
   badges?: string[];
+  /**
+   * Diff the tool actually applied, reported through its result metadata. Absent means "not
+   * reported" (an older session, a non-file tool), not "no change": the row then falls back to a
+   * preview derived from the call's arguments.
+   */
+  diff?: FileDiff;
   taskId?: string;
 }
 
@@ -278,13 +271,12 @@ export type OverlayState =
   | { kind: "commands"; query: string; selectedIndex: number }
   | {
       kind: "models";
-      query: string;
       selectedIndex: number;
       options: string[];
       loading: boolean;
       error?: string | undefined;
     }
-  | { kind: "sessions"; query: string; selectedIndex: number; options: SessionOption[] }
+  | { kind: "sessions"; selectedIndex: number; options: SessionOption[] }
   | {
       kind: "session-delete-confirm";
       sessionId: string;
@@ -301,8 +293,6 @@ export type OverlayState =
       options: string[];
       loading: boolean;
       tokenStart: number;
-      /** Whether the trigger was @fragment or @" ... (spaced path); decides if completion is quoted. */
-      quoted: boolean;
     }
   | { kind: "approval"; approval: ApprovalDetails; selectedIndex: number }
   | {
@@ -398,7 +388,6 @@ export interface SessionOption {
 export interface FollowUpOption {
   id: string;
   prompt: string;
-  createdAt: string;
 }
 
 export interface SessionView {
@@ -445,19 +434,10 @@ export interface TuiState {
    * scrolling to the bottom leaves a long stretch of dead key presses.
    */
   detailsScrollMax: number;
+  /**
+   * Deadline (epoch ms) of the "press Esc again to cancel" window. The footer suppresses statuses
+   * while a task runs, so this hint is rendered on the working line instead of through `status`.
+   */
+  cancelArmedUntil: number | undefined;
 }
 
-export interface TuiEventSink {
-  render(event: RuntimeEvent): void;
-  user(prompt: string, queued?: boolean): void;
-  status(message: string, style?: string): void;
-  markdown(title: string, content: string): void;
-  error(message: string): void;
-  clearTranscript(): void;
-  approval(
-    call: ToolCall,
-    level: number,
-    description: string,
-    origin: SubagentOrigin,
-  ): Promise<ApprovalResponse> | void;
-}

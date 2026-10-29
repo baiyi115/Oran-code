@@ -1,12 +1,19 @@
 import React, { useEffect, useState } from "react";
 import { Box, Static, Text, render, useInput, useStdout, type Key } from "ink";
 import type { ApprovalResponse, ToolCall } from "../types.js";
-import { REASONING_EFFORTS, type WorkMode } from "../types.js";
+import { REASONING_EFFORTS, type PermissionMode, type WorkMode } from "../types.js";
 import { formatErrorMessage } from "../error-format.js";
 import { commandCandidates } from "./command-palette.js";
 import { navigateHistory } from "./interaction.js";
 import { TuiTranscriptRenderer } from "./renderer.js";
-import { composerValue, createTuiState, setComposerValue, setOverlay } from "./state.js";
+import {
+  composerValue,
+  createTuiState,
+  nextMessageNumber,
+  normalizeRestoredTranscript,
+  setComposerValue,
+  setOverlay,
+} from "./state.js";
 import type {
   ComposerState,
   PasteBlock,
@@ -27,12 +34,12 @@ import {
 } from "./terminal-streams.js";
 import type { ConnectInput, ConnectPrefill } from "./types.js";
 import { appendSystemMessage } from "./message-reducer.js";
-import { nextMessageNumber } from "./state.js";
+import { graphemeLength } from "./text-width.js";
 import {
   composerCursorOffset,
   composerRedo,
   composerUndo,
-  cursorVisualPosition,
+  cursorVisualPositionIn,
   deleteBackward,
   deleteForward,
   deleteWordBackward,
@@ -43,13 +50,14 @@ import {
   moveWordForward,
   visualLines,
 } from "./composer.js";
-import { TranscriptView, collapsibleSegments } from "./transcript/transcript-view.js";
+import { TranscriptView, collapsibleSegments, trailingSegmentStart } from "./transcript/transcript-view.js";
 import { footerLines, workSummaryLine } from "./footer.js";
 import type { SubagentOrigin } from "../subagent/types.js";
 import { commandPaletteLines } from "./command-palette.js";
 import { COLORS, horizontalRule } from "./theme.js";
 import { scrollPercent, scrollTranscript, shouldCaptureWheel, syncTranscriptScroll } from "./scroll-controller.js";
 import {
+  TASK_PANEL_MAX_ROWS,
   hasActiveBackgroundTasks,
   isSessionBusy,
   subagentTaskLines,
@@ -57,10 +65,11 @@ import {
   type TaskPanelTone,
 } from "./status-indicator.js";
 import { isDeleteBackward, isDeleteForward, isEndKey, isHomeKey, isSubmitKey } from "./keys.js";
+import { APPROVAL_DEFAULT_INDEX } from "./approval-dialog.js";
 import { ConnectWizard } from "./connect-wizard.js";
 import { OverlayHandlers } from "./overlay-handlers.js";
 import {
-  HighlightedLine,
+  OverlayRow,
   composerPrefix,
   fileQuery,
   fitOverlayLines,
@@ -90,13 +99,24 @@ export function staticTranscriptCount(messages: readonly TranscriptMessage[]): n
   return firstMutableIndex >= 0 ? firstMutableIndex : messages.length;
 }
 
+/**
+ * How many entries this frame may hand to Ink Static: everything finished, minus a trailing
+ * collapsible segment that can still grow (see trailingSegmentStart). Committing a segment whose
+ * row is keyed by its first message id freezes that row for good, so a third tool finishing in the
+ * same batch would be rendered nowhere at all.
+ */
+function staticCommitBoundary(messages: readonly TranscriptMessage[]): number {
+  return Math.min(staticTranscriptCount(messages), trailingSegmentStart(messages));
+}
+
 // Mouse reporting prevents the terminal emulator from starting its native text
 // selection. Clear every common tracking mode in case a previous process exited
 // before restoring the terminal.
 const RESTORE_NATIVE_MOUSE = "\x1b[?1003l\x1b[?1002l\x1b[?1000l\x1b[?1015l\x1b[?1006l\x1b[?1005l";
 /** How many transcript lines one wheel event scrolls. */
 const WHEEL_SCROLL_LINES = 3;
-const INK_PAINT_BARRIER_MS = 40;
+/** How long a single Esc stays armed before it has to be pressed again to cancel. */
+const ESC_CANCEL_WINDOW_MS = 1_200;
 /** Max wait for boundary/terminal events to see a render commit; on timeout it proceeds and re-renders. */
 const RENDER_WAIT_TIMEOUT_MS = 1_000;
 
@@ -127,7 +147,6 @@ export class InkTuiApp {
   private parkedComposerCursor = false;
   /** True while this process has taken the wheel from the host terminal (mouse reporting on). */
   private wheelCaptured = false;
-  private lastEscapeCancelAt = 0;
   private submitBusy = false;
   private renderScheduled = false;
   private renderRevision = 0;
@@ -139,6 +158,7 @@ export class InkTuiApp {
   private readonly renderWaiters: Array<{ revision: number; resolve: () => void }> = [];
   private lastTranscriptRenderLines: ReturnType<TranscriptView["linesWithAnchors"]> = [];
   private questionResolve: ((answers: Record<string, string>) => void) | undefined;
+  private detachResizeUnpark: (() => void) | undefined;
 
   constructor(options: TuiAppOptions, dependencies: InkTuiAppDependencies = {}) {
     this.options = options;
@@ -153,11 +173,10 @@ export class InkTuiApp {
       options.getContextWindow?.(),
       options.initialSession?.id,
       options.initialSession?.name,
-      options.initialSession?.messages,
+      options.initialSession?.messages ? normalizeRestoredTranscript(options.initialSession.messages) : undefined,
       options.initialSession?.modelReference ?? options.getModelReference?.(),
       options.initialSession?.modelWarning ?? options.getModelWarning?.(),
     );
-    this.state.session.approvalPolicy = options.getApprovalPolicy?.() ?? "ask";
     this.preloadBackgroundTasks();
     this.overlayHandlers = new OverlayHandlers({
       state: this.state,
@@ -233,6 +252,18 @@ export class InkTuiApp {
       onMouse: (event) => this.handleTerminalMouse(event),
     });
     const wrappedOutput = createSynchronizedWriteStream(this.options.output);
+    // Ink repaints on resize from wherever the real cursor is, erasing the previous frame's line
+    // count above that point. The composer caret is parked mid-frame for IME anchoring, so a resize
+    // would repaint from the wrong row and leave the rows above the erase behind (duplicated summary
+    // and rules) while pushing the new frame down. Registered before render() so this listener runs
+    // ahead of Ink's own resize handler.
+    const unparkBeforeResizePaint = (): void => this.unparkComposerCursor();
+    if (typeof this.options.output.on === "function") {
+      this.options.output.on("resize", unparkBeforeResizePaint);
+      this.detachResizeUnpark = () => {
+        this.options.output.off?.("resize", unparkBeforeResizePaint);
+      };
+    }
     this.inkInstance = this.renderInk(<InkRoot app={this} revision={this.renderRevision} />, {
       // Ink's stdin option wants a ReadStream; the filter layer is a Transform, used as a stream here.
       stdin: wrappedInput as unknown as NodeJS.ReadStream,
@@ -254,6 +285,8 @@ export class InkTuiApp {
     }
     this.unparkComposerCursor();
     this.restoreNativeMouse();
+    this.detachResizeUnpark?.();
+    this.detachResizeUnpark = undefined;
     this.inkInstance?.unmount();
     this.inkInstance = undefined;
     this.resolveRenderWaiters(this.renderRevision);
@@ -321,12 +354,12 @@ export class InkTuiApp {
     this.state.session.workspace = this.options.getWorkspace();
     this.state.session.modelLabel = this.options.getModelLabel();
     this.state.session.sessionName = this.options.getSessionName?.() ?? this.state.session.sessionName;
-    this.state.session.approvalPolicy = this.options.getApprovalPolicy?.() ?? this.state.session.approvalPolicy;
     this.state.session.workMode = this.options.getWorkMode?.() ?? this.state.session.workMode;
     this.state.session.permissionMode = this.options.getPermissionMode?.() ?? this.state.session.permissionMode;
     this.state.session.reasoningEffort = this.options.getReasoningEffort?.() ?? this.state.session.reasoningEffort;
     this.state.session.followUpCount = this.options.getFollowUpCount?.() ?? this.state.session.followUpCount;
     this.state.session.contextEstimate = this.options.getContextEstimate?.() ?? this.state.session.contextEstimate;
+    this.state.session.subagentUsage = this.options.getSubagentUsage?.() ?? this.state.session.subagentUsage;
     this.preloadBackgroundTasks();
     this.state.commands = [...(this.options.getCommands?.() ?? this.state.commands)];
     const reference = this.options.getModelReference?.();
@@ -402,13 +435,14 @@ export class InkTuiApp {
     // idle, Esc only clears the input box.
     if (key.escape && this.state.overlay.kind === "none" && (this.isBlocked() || isSessionBusy(this.state))) {
       const now = Date.now();
-      if (now - this.lastEscapeCancelAt < 1200) {
+      if (this.state.cancelArmedUntil !== undefined && now < this.state.cancelArmedUntil) {
         this.options.onCancel();
         if (!this.state.session.status) this.state.session.status = "cancelling...";
-        this.lastEscapeCancelAt = 0;
+        this.state.cancelArmedUntil = undefined;
       } else {
-        this.state.session.status = "press Esc again to cancel";
-        this.lastEscapeCancelAt = now;
+        // The armed hint belongs on the working line: the footer drops every status while a task
+        // runs, so writing "press Esc again to cancel" there showed the user nothing at all.
+        this.state.cancelArmedUntil = now + ESC_CANCEL_WINDOW_MS;
       }
       this.invalidate();
       return;
@@ -504,6 +538,10 @@ export class InkTuiApp {
       return;
     }
     if (key.shift && key.tab) {
+      void this.cyclePermissionMode();
+      return;
+    }
+    if (key.ctrl && input === "r") {
       void this.toggleReasoningEffort();
       return;
     }
@@ -560,7 +598,7 @@ export class InkTuiApp {
     } else if (isDeleteBackward(input, key)) {
       this.detachInputHistory();
       deleteBackward(this.state.composer);
-    } else if (isDeleteForward(input, key)) {
+    } else if (isDeleteForward(input)) {
       this.detachInputHistory();
       deleteForward(this.state.composer);
     } else if (key.pageUp) this.scrollTranscriptBy(this.pageScrollDelta());
@@ -619,7 +657,6 @@ export class InkTuiApp {
         options: sameQuery ? previous.options : [],
         loading: true,
         tokenStart: file.start,
-        quoted: file.quoted,
       };
       void this.options
         .loadFiles(file.query)
@@ -709,9 +746,9 @@ export class InkTuiApp {
     else delete this.state.session.modelReference;
     if (session.modelWarning) this.state.session.modelWarning = session.modelWarning;
     else delete this.state.session.modelWarning;
-    this.state.transcript = session.messages
-      .filter((message) => !isTransientRestoredMessage(message))
-      .map((message) => ({ ...message }));
+    this.state.transcript = normalizeRestoredTranscript(
+      session.messages.filter((message) => !isTransientRestoredMessage(message)).map((message) => ({ ...message })),
+    );
     this.state.expandedToolGroupIds.clear();
     if (
       session.modelWarning &&
@@ -728,6 +765,7 @@ export class InkTuiApp {
     this.state.assistantMessageId = undefined;
     this.state.thoughtMessageId = undefined;
     this.state.streaming = false;
+    this.state.cancelArmedUntil = undefined;
     this.state.activeTaskId = undefined;
     this.state.activeTaskUsage = {
       inputTokens: 0,
@@ -740,13 +778,18 @@ export class InkTuiApp {
     this.state.processedSequences.clear();
     this.state.session.taskState = "ready";
     this.state.session.status = "";
-    this.state.session.currentStep = undefined;
     this.state.session.currentTool = undefined;
     this.state.session.startedAt = undefined;
     this.state.session.elapsedMs = undefined;
-    this.state.session.modelElapsedMs = undefined;
     this.state.session.outputTokensPerSecond = undefined;
     this.state.session.usage = {
+      inputTokens: 0,
+      outputTokens: 0,
+      totalTokens: 0,
+      cacheReadTokens: 0,
+      cacheWriteTokens: 0,
+    };
+    this.state.session.subagentUsage = {
       inputTokens: 0,
       outputTokens: 0,
       totalTokens: 0,
@@ -772,6 +815,9 @@ export class InkTuiApp {
     if (!value) return;
     this.submitBusy = true;
     const previousValue = composerValue(this.state.composer);
+    // Only the pastes expanded into `value` may be dropped on success: input stays live while
+    // onInput runs, so a paste registered meanwhile belongs to the next draft.
+    const submittedPastes = this.state.composer.pastes.length;
     this.state.composer.historyIndex = undefined;
     this.state.composer.historyDraft = "";
     setComposerValue(this.state.composer, "");
@@ -782,9 +828,9 @@ export class InkTuiApp {
     try {
       await this.options.onInput(value);
       accepted = true;
-      // Pastes are cleared only on success; on failure the composer is
-      // restored with its placeholders so they can be re-expanded.
-      this.state.composer.pastes = [];
+      // Pastes are dropped only on success; on failure the composer is restored with its
+      // placeholders so they can be re-expanded.
+      dropSubmittedPastes(this.state.composer, submittedPastes);
       this.state.composer.history = [value, ...this.state.composer.history.filter((entry) => entry !== value)].slice(
         0,
         1000,
@@ -795,6 +841,37 @@ export class InkTuiApp {
       this.state.session.status = errorMessage(error);
     } finally {
       this.submitBusy = false;
+      this.invalidate();
+    }
+  }
+
+  /**
+   * shift+tab: default ↔ accept-edits, the everyday "stop asking about edits" switch.
+   * Plan mode stays on `/permission plan` — it changes the workflow the task runs under — and
+   * bypass is deliberately not one keystroke away.
+   */
+  private async cyclePermissionMode(): Promise<void> {
+    const current = this.options.getPermissionMode?.() ?? this.state.session.permissionMode;
+    if (current !== "default" && current !== "accept-edits") {
+      this.state.session.status = `permission: ${current} (use /permission to change)`;
+      this.invalidate();
+      return;
+    }
+    const next: PermissionMode = current === "accept-edits" ? "default" : "accept-edits";
+    try {
+      const changed = await this.options.onPermissionModeChanged?.(next);
+      if (changed === false) {
+        this.state.session.status = "cannot change permission mode right now";
+        this.invalidate();
+        return;
+      }
+      if (changed) {
+        this.state.session.permissionMode = next;
+        this.state.session.status = `permission: ${next}`;
+        this.refreshContext();
+      }
+    } catch (error) {
+      this.state.session.status = errorMessage(error);
       this.invalidate();
     }
   }
@@ -855,7 +932,7 @@ export class InkTuiApp {
     this.state.overlay = {
       kind: "approval",
       approval: { call, level, description, workspace: this.options.getWorkspace(), origin },
-      selectedIndex: 0,
+      selectedIndex: APPROVAL_DEFAULT_INDEX,
     };
     this.state.session.status = "approval required";
     this.invalidate();
@@ -959,7 +1036,7 @@ export class InkTuiApp {
   private canMoveComposerVertically(direction: "up" | "down"): boolean {
     const lines = visualLines(this.state.composer, this.editorWidth());
     if (lines.length <= 1) return false;
-    const position = cursorVisualPosition(this.state.composer, this.editorWidth());
+    const position = cursorVisualPositionIn(lines, this.state.composer);
     return direction === "up" ? position.row > 0 : position.row < lines.length - 1;
   }
 
@@ -1008,6 +1085,10 @@ export class InkTuiApp {
     });
   }
 
+  /**
+   * Wait for the frame that carries `commit` to be committed. The wait resolves on the commit
+   * itself, so there is no extra fixed delay: a per-turn sleep only made every model turn slower.
+   */
   async flushPendingRender(commit: TuiRenderCommitKind = "normal"): Promise<void> {
     const revision = this.renderRevision;
     if (!this.inkInstance || this.destroyed) return;
@@ -1035,9 +1116,6 @@ export class InkTuiApp {
         };
         this.renderWaiters.push({ revision, resolve: settle });
       });
-    }
-    if (commit === "terminal" && !this.destroyed && this.inkInstance) {
-      await new Promise<void>((resolve) => setTimeout(resolve, INK_PAINT_BARRIER_MS));
     }
   }
 
@@ -1185,7 +1263,7 @@ export class InkTuiApp {
     liveLines: ReturnType<TranscriptView["linesWithAnchors"]>;
   } {
     const lines = this.transcript.linesWithAnchors(this.state, Math.max(12, width), liveTick);
-    const candidateStaticCount = staticTranscriptCount(this.state.transcript);
+    const candidateStaticCount = staticCommitBoundary(this.state.transcript);
     const staticMessages = this.state.transcript.slice(0, candidateStaticCount);
     const groupedLines = new Map<string, string[]>();
 
@@ -1329,6 +1407,8 @@ function isTransientRestoredMessage(message: TranscriptMessage): boolean {
 
 /** Pastes longer than this many characters (or any multi-line paste) fold. */
 const PASTE_FOLD_CHARS = 100;
+/** A folded paste's short stand-in; group 1 is its 1-based index, group 2 the "+M lines" tail. */
+const PASTE_PLACEHOLDER_PATTERN = /\[paste #(\d+) (\+[^\]]*)\]/g;
 
 /** Register a folded paste payload and return its short placeholder text. */
 function registerPaste(composer: ComposerState, text: string): string {
@@ -1341,10 +1421,29 @@ function registerPaste(composer: ComposerState, text: string): string {
 /** Replace [paste #N +M lines] placeholders with the raw payloads they stand for. */
 function expandPastes(value: string, pastes: readonly PasteBlock[]): string {
   if (!pastes.length || !value.includes("[paste #")) return value;
-  return value.replace(/\[paste #(\d+) \+\d+ lines\]/g, (match, rawIndex) => {
+  return value.replace(PASTE_PLACEHOLDER_PATTERN, (match, rawIndex: string) => {
     const index = Number(rawIndex) - 1;
     return pastes[index]?.text ?? match;
   });
+}
+
+/**
+ * Drop the pastes a submit expanded. Anything registered while `onInput` was in flight stays —
+ * input is not blocked during a submit — and its placeholders are renumbered against the remaining
+ * array, or the next draft would point at an index that no longer exists and be sent literally.
+ */
+function dropSubmittedPastes(composer: ComposerState, submittedCount: number): void {
+  if (submittedCount === 0) return;
+  const remaining = composer.pastes.slice(submittedCount);
+  composer.pastes = remaining;
+  if (!remaining.length) return;
+  composer.lines = composer.lines.map((line) =>
+    line.replace(PASTE_PLACEHOLDER_PATTERN, (match, rawIndex: string, tail: string) => {
+      const index = Number(rawIndex) - submittedCount;
+      return index >= 1 ? `[paste #${index} ${tail}]` : match;
+    }),
+  );
+  composer.cursor.column = Math.min(composer.cursor.column, graphemeLength(composer.lines[composer.cursor.line] ?? ""));
 }
 
 function errorMessage(error: unknown): string {
@@ -1404,19 +1503,35 @@ function InkRoot({ app, revision }: { app: InkTuiApp; revision: number }): React
   }, [app, stdout]);
   useInput((input, key) => app.handleKey(input, key));
 
-  const terminalWidth = Math.max(20, terminalSize.columns || stdout.columns || 80);
-  const rows = Math.max(1, terminalSize.rows || stdout.rows || 24);
+  // Prefer the live terminal size over the state copy: Ink repaints from its own resize handler
+  // before React commits the new size here, and that frame must already be laid out for the new
+  // width. A line longer than the terminal (the rules and the pre-wrapped transcript rows are
+  // strings built from this width) is hard-wrapped by the terminal itself, leaving rows Ink did not
+  // count and therefore never erases.
+  const terminalWidth = Math.max(20, stdout.columns || terminalSize.columns || 80);
+  const rows = Math.max(1, stdout.rows || terminalSize.rows || 24);
   // All TUI regions share one content width. The outer frame reserves one cell
   // on each side; composer text additionally reserves the two-cell prompt.
   const width = terminalWidth - 2;
   const editorWidth = Math.max(1, width - 2);
   const editorLines = visualLines(state.composer, editorWidth);
-  const cursor = cursorVisualPosition(state.composer, editorWidth);
+  // Reuse the rows computed for the frame: recomputing them inside the cursor lookup doubled the
+  // wrap work on every repaint and keystroke.
+  const cursor = cursorVisualPositionIn(editorLines, state.composer);
   const footer = footerLines(state, width);
   const summary = workSummaryLine(state);
   const workingLine = workingIndicatorLine(state, spinnerTick);
   // Per-task subagent panel below the input box: what each task is and how far along, at a glance.
-  const taskRows = subagentTaskLines(state.session.backgroundTasks ?? [], spinnerTick, Date.now(), width);
+  // The panel never takes more than a quarter of the terminal: a short window must not be mostly
+  // chrome, and six rows on a 24-row terminal used to be half of it.
+  const taskPanelRows = Math.min(TASK_PANEL_MAX_ROWS, Math.max(2, Math.floor(rows / 4)));
+  const taskRows = subagentTaskLines(
+    state.session.backgroundTasks ?? [],
+    spinnerTick,
+    Date.now(),
+    width,
+    taskPanelRows,
+  );
   useEffect(() => {
     if (!activeSpinner) return;
     // The same tick animates the fallback Working line, Subagent indicator, and live Thought/Tool rows.
@@ -1428,7 +1543,9 @@ function InkRoot({ app, revision }: { app: InkTuiApp; revision: number }): React
   const welcomeLines =
     state.transcript.length === 0 && state.overlay.kind === "none" ? oranWelcomeLines(state, width) : [];
   const showScrollStatus = state.transcriptScroll.offsetFromBottom > 0;
-  const summaryLine = summary;
+  const summaryLine = summary?.text;
+  const summaryColor =
+    summary?.tone === "failed" ? COLORS.danger : summary?.tone === "cancelled" ? COLORS.warning : COLORS.success;
   // Count the actual chrome rows rendered below the transcript. Keeping this
   // derived from the rendered pieces prevents long composers/footers from
   // stealing rows from the transcript or pushing the prompt off-screen.
@@ -1539,6 +1656,10 @@ function InkRoot({ app, revision }: { app: InkTuiApp; revision: number }): React
     state.overlay.kind,
     editorLines.length,
     footer.length,
+    // A resize unparked the caret and changed the geometry parkUp was measured against; re-park
+    // once this frame has settled at the new size.
+    terminalWidth,
+    rows,
   ]);
 
   return (
@@ -1551,7 +1672,7 @@ function InkRoot({ app, revision }: { app: InkTuiApp; revision: number }): React
       {overlayLines.length > 0 && (
         <Box flexDirection="column" flexShrink={0} marginBottom={1}>
           {overlayLines.map((line, index) => (
-            <HighlightedLine key={`overlay-${index}`} value={line} />
+            <OverlayRow key={`overlay-${index}`} line={line} />
           ))}
         </Box>
       )}
@@ -1562,7 +1683,7 @@ function InkRoot({ app, revision }: { app: InkTuiApp; revision: number }): React
       >
         {scrollStatusLine ? <Text {...colorProps(COLORS.accentDim)}>{scrollStatusLine}</Text> : null}
         {workingLine ? <Text {...colorProps(COLORS.activity)}>{workingLine}</Text> : null}
-        {summaryLine ? <Text {...colorProps(COLORS.success)}>{summaryLine}</Text> : null}
+        {summaryLine ? <Text {...colorProps(summaryColor)}>{summaryLine}</Text> : null}
         <Text dimColor>{horizontalRule(width)}</Text>
         <Text>
           <Text {...colorProps(COLORS.accent)} bold>
