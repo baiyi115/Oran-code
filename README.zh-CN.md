@@ -1,209 +1,108 @@
-# Oran code
+<h1 align="center">Oran Code</h1>
 
-[English](README.md) | [简体中文](README.zh-CN.md)
+<p align="center">
+  <a href="README.md">English</a> | <a href="README.zh-CN.md">简体中文</a>
+</p>
 
-基于 TypeScript 构建的轻量级终端 AI 编程助手，专为快速编码、安全修改和后台多任务协作而设计。
+<p align="center">
+  <strong>一个自带循环、权限判定和上下文预算的终端编程 Agent。</strong>
+</p>
 
-Oran code 结合了基于 React Ink 的终端交互界面与灵活的 Agent 调度引擎：能够自主探索项目代码、生成多步骤修改计划、通过快照提供一键安全回滚、在后台并发执行子任务（Subagent），并支持接入 DeepSeek、Claude、GPT、Gemini 及本地 Ollama 等多种大模型。
+<p align="center">
+  <img alt="语言：TypeScript" src="https://img.shields.io/badge/Language-TypeScript-3178C6?logo=typescript&logoColor=white&style=flat-square">
+  <img alt="运行时：Node.js 22+" src="https://img.shields.io/badge/Runtime-Node.js%2022%2B-5FA04E?logo=nodedotjs&logoColor=white&style=flat-square">
+  <img alt="界面：React Ink" src="https://img.shields.io/badge/UI-React%20Ink-61DAFB?logo=react&logoColor=black&style=flat-square">
+  <img alt="许可证：Apache-2.0" src="https://img.shields.io/badge/License-Apache--2.0-D22128?logo=apache&logoColor=white&style=flat-square">
+</p>
 
-![Oran code 终端界面](docs/tui.png)
+<p align="center">
+  <em>状态：v0.1.0，早期开发中，CLI 参数与配置键可能变化。</em>
+</p>
 
----
+<p align="center">
+  <img src="docs/tui.png" alt="Oran Code 终端界面">
+</p>
 
-## 核心特性
+Oran Code 在终端里直接处理真实仓库：读代码、改文件、执行命令，并在多轮工具调用中继续推进。Agent 循环、模型协议适配、命令解析和上下文管理都在本仓库实现，没有交给 Agent 框架，因此每一步都可以读、可以替换、可以测试。
 
-- **终端交互界面 (TUI)**：基于 React Ink 构建，支持模型思考流式展示、工具调用折叠，以及 `/` 命令面板、`/model` 模型切换器与 `/session` 会话管理等浮层。
-- **安全执行与一键回滚**：Agent 执行文件修改前自动记录快照，输入 `/undo` 即可立即恢复；支持在独立的临时 Git Worktree 沙箱中运行探索性修改。
-- **后台子智能体 (Subagent)**：可将耗时较长的代码检索、测试执行或架构探索交给后台并行处理，不阻塞前台终端主交互。
-- **通用模型接入**：原生支持 OpenAI、Anthropic Claude、DeepSeek（V3 / R1）、Google Gemini、Ollama 及任意 OpenAI 兼容接口。
-- **高可扩展性与上下文管理**：支持标准 MCP（Model Context Protocol）协议、自定义技能（`SKILL.md`）、项目级规范注入（`AGENTS.md`）、自动上下文压缩与 Markdown 长期记忆。
+## 为什么要有 Oran Code
 
----
+如果你想要开箱即用，Claude Code、Cursor、Codex 更合适。Oran 面向的是想看懂并改动循环的人：决定“跑什么”的那几层足够小，可以逐行读完。
 
-## 快速上手
+- **两套协议收敛成一条事件流。** OpenAI 的 tool call 参数按索引分片下发，Anthropic 按 content block 下发；按到达顺序拼接会让参数错位，服务端的错误事件也可能被当成正常结束。Oran 在适配层处理跨 chunk 缓冲、UTF-8 尾字节和结尾缺少分隔符，上层不再区分厂商。
+- **命令先解析，再执行。** shell 输入先分词成 AST，再按管道逐段对照白名单。加引号绕过、管道注入解释器、`rg --pre` 这类写法在解析层就被拦下。规则不可能覆盖全部，所以文件修改还有快照和一次性 Git worktree 兜底。
+- **上下文按协议结构做预算。** tool call 与 result 始终保持 1:1 配对；大输出落盘，只留有限预览；旧轮次压成结构化摘要；下一轮请求由“模型还需要什么才能决策”组装，而不是由“最长能塞多少”决定。
+- **子 Agent 是隔离的，不只是并发的。** 慢检索和多文件探索在后台子 Agent 中运行，各自有独立的上下文和工具权限，完成后只回传结构化结果。
 
-### 环境要求
+## 功能
 
-- Node.js >= 22.5
-- pnpm >= 10.0
+- **终端界面（React/Ink）**：思考流式展示、工具输出折叠、`/` 命令面板、模型切换与会话列表。
+- **不绑定模型厂商**：支持 OpenAI 兼容的 Chat Completions 与 Anthropic Messages，可接 DeepSeek、Gemini、Ollama 或任意自定义端点。
+- **默认偏安全**：Plan 模式只读；高风险命令先询问；`/undo` 回滚最近一批文件修改；探索性改动能放进一次性 worktree。
+- **后台子 Agent**：内置 `general`、`plan`、`explore` 三个角色，也支持在 `~/.oran/agents/` 与 `.oran/agents/` 中用 YAML frontmatter 自定义。
+- **MCP、Skills、AGENTS.md**：接入 MCP Server、加载 `SKILL.md` 能力包、自动注入项目规范。
+- **可脚本化**：`oran run` 完全非交互，输出 `oran-event/1` JSONL 事件日志和稳定退出码，同一个二进制可以放进 CI 或评测 harness。
 
-### 安装与运行
+## 快速开始
+
+需要 Node.js >= 22.5 与 pnpm >= 10。
 
 ```bash
-# 克隆仓库并安装依赖
 git clone https://github.com/baiyi115/Oran-code.git
 cd "Oran-code"
 pnpm install
-
-# 以开发模式启动
-pnpm dev
-
-# 或者编译后运行
 pnpm build
 pnpm start
 ```
 
-首次启动后，输入 `/connect` 即可交互式添加模型 Provider 与 API Key；之后随时可再次运行 `/connect` 管理供应商（编辑配置或刷新模型列表）。
+首次启动后输入 `/connect` 添加模型供应商与 API Key，然后直接给任务：
 
-如需使用独立的 `oran` 命令，构建完成后链接一次即可：
+```text
+> 找出分页测试失败的原因，修好它，并跑一遍测试。
+```
+
+Oran 会读文件、提出修改、在危险命令前询问，并把会话保存在 `.oran/`。用 `/undo` 回滚最近一批修改，用 `/tasks` 查看后台子 Agent。
+
+## 它是怎么工作的
+
+```text
+prompt
+  -> controller loop ──> provider adapter (OpenAI / Anthropic) ──> internal events
+  -> tool scheduler ──> permission gate ──> snapshot / worktree ──> workspace
+  -> context manager (pairing, offload, compaction) ──> next request
+```
+
+每一轮是一个循环，不是固定工作流：模型选择下一个工具，权限门决定它能不能跑，上下文管理器决定下一轮请求保留什么。会话与 trace 存在 `.oran/`，项目记忆存在 `~/.oran/memory/`。
+
+## 评测
+
+评测 harness 把“完成”当作环境事实，而不是 Agent 的自述：只有受保护路径未被改动、验证命令全部通过、隐藏验证器通过，任务才算完成。失败会按 setup、超时、受保护路径变更、验证失败、隐藏验证器失败分类，而不是压成一个数字。
+
+harness 与基线目前还没有进入 `main`。合并后会在这里写明任务集、模型与 commit、运行次数、通过率、成本与失败分布，原始 JSONL 一并入库。
+
+## 限制与非目标
+
+- **不是沙箱。** worktree 只隔离工作副本，不隔离进程、网络或宿主机文件访问。只在你愿意让 Agent 改动的仓库里运行。
+- **本地单用户。** 没有多租户服务端、远程执行或托管工作区。
+- **不宣称 benchmark 成绩。** 没有与 SWE-bench、Terminal-Bench 做对比；仓库中出现的数字都来自自有任务集，并会注明条件。
+- **功能范围有限。** 目标不是对齐 Claude Code、Cursor、Codex 的完整功能。想要托管且长期支持的产品，请直接用它们。
+
+## 文档
+
+- [使用手册：CLI、Headless、快捷键、配置、子 Agent](docs/usage.md)
+
+## 开发
 
 ```bash
-pnpm build
-cd packages/oran-code
-npm link
+pnpm typecheck   # 类型检查
+pnpm test        # Vitest
+pnpm lint        # ESLint
+pnpm build       # 构建 CLI
+pnpm coverage    # 覆盖率
 ```
 
----
+CI 在每次 push 和 pull request 上执行 format check、lint、typecheck、build 与 coverage。
 
-## CLI 命令与使用
-
-```bash
-# 启动交互式 TUI 会话（默认）
-oran
-
-# 单次执行任务（非交互模式）
-oran run "修复 src/index.ts 中的类型错误"
-
-# 脚本化运行：从文件读提示词，并落一份结构化 JSONL 事件日志
-oran run --task prompt.md --output run.jsonl --timeout 300
-
-# 指定模型或工作区目录
-oran --model deepseek/deepseek-v4-flash --workspace ./my-project
-
-# 查看当前工作区支持的工具与权限
-oran inspect
-
-# 查看历史任务执行记录
-oran tasks
-```
-
-### 脚本化运行（Headless）
-
-`oran run` 完全非交互，可直接放进脚本或 CI：
-
-| 参数                        | 说明                                                                          |
-| :-------------------------- | :---------------------------------------------------------------------------- |
-| `--task FILE`               | 从文件读取提示词（避免 Windows 命令行长度限制）                               |
-| `--output FILE.jsonl`, `-o` | 逐行写出 `oran-event/1` 事件日志（`run_start` / `runtime_event` / `run_end`） |
-| `--timeout SECONDS`         | 超时后取消任务                                                                |
-
-这三个参数仅在 `run` 子命令下有效，其他子命令使用会以用法错误退出。
-退出码：`0` 完成、`1` 失败或运行时错误、`2` 用法错误、`3` 超时、`4` 被取消（非超时）。
-若外层 harness 强杀了进程，以 JSONL 中的 `run_end` 记录为准。
-
-### 终端快捷键
-
-| 快捷键                  | 功能说明                                                        |
-| :---------------------- | :-------------------------------------------------------------- |
-| `Enter`                 | 提交输入或确认选中项                                            |
-| `Ctrl + Z` / `Ctrl + Y` | 撤销 / 重做输入框编辑(文本、光标与粘贴内容一并恢复)             |
-| `Up` / `Down`           | 浏览历史输入或选择浮层列表项                                    |
-| `Tab`                   | 在斜杠命令 / `@file` 浮层中补全;空闲输入框切换 plan / auto 模式 |
-| `Shift + Tab`           | 循环思考强度(low / medium / high / xhigh)                       |
-| `Ctrl + T`              | 打开"最近活动"详情浮层(只展开最近一段;可滚动;再按关闭)          |
-| `Ctrl + W`              | 删除光标前一个词                                                |
-| `Ctrl + Q`              | 查看并取消排队中的 follow-up                                    |
-| `Esc`                   | 关闭当前浮层 / 取消焦点(任务运行中连按两次取消任务)             |
-| `Ctrl + C`              | 中断当前生成或退出当前会话                                      |
-
-多行输入靠粘贴:整段内容在输入框里折叠成占位符,提交时按原文展开成一条消息。没有独立的
-换行键——`Shift + Enter` 在未实现 modified-keys 协议的终端里与 `Enter` 是同一个字节,
-而 `Ctrl + J` 的 LF 也无法与"某些终端用 LF 表示 Enter"区分。
-
-### 常用命令 (Slash Commands)
-
-| 命令                    | 功能说明                                  |
-| :---------------------- | :---------------------------------------- |
-| `/connect`              | 管理模型供应商：查看、新增、编辑、删除    |
-| `/model`                | 打开模型选择器快速切换模型                |
-| `/plan`                 | 切换至 Plan 规划模式（只读安全探索）      |
-| `/undo`                 | 一键回滚 Agent 最近一次修改的文件批次     |
-| `/rewind [N] [--files]` | 把对话回退到某条更早的用户消息之前        |
-| `/resume`               | 继续被进度门禁暂停的任务(该轮关闭门禁)    |
-| `/graph`                | 构建代码依赖图谱并打印摘要                |
-| `/session [id]`         | 查看或恢复历史会话                        |
-| `/new`                  | 开启一个全新的对话会话                    |
-| `/status`               | 显示当前 Token 用量、权限模式与 MCP 状态  |
-| `/tasks`                | 查看后台子智能体任务（别名 `/subagents`） |
-| `/compact`              | 手动触发上下文智能压缩以节省 Token        |
-| `/clear`                | 清理终端屏幕记录                          |
-| `/exit`                 | 退出程序                                  |
-
----
-
-## 配置与目录结构
-
-Oran code 将全局用户配置存储于 `~/.oran/`，将项目工作区状态存储于 `.oran/`：
-
-### 全局配置 (`~/.oran/config.json`)
-
-编写这份配置最简单的方式是 `/connect` 命令——它会自动生成下面的条目。Provider 以名称为键，每个 Provider 包含连接 `options` 与模型映射：
-
-```json
-{
-  "providers": {
-    "deepseek": {
-      "options": {
-        "baseURL": "https://api.deepseek.com/v1",
-        "protocol": "openai",
-        "apiKey": "sk-..."
-      },
-      "models": {
-        "deepseek-v4-flash": { "options": { "reasoningEffort": "high", "context_window": 128000 } }
-      }
-    }
-  },
-  "agent": { "lastModel": "deepseek/deepseek-v4-flash" }
-}
-```
-
-- `protocol` 取值 `"openai"`（OpenAI 兼容 Chat Completions）或 `"anthropic"`（Anthropic Messages）。若端点不支持 `reasoning_effort` 参数，Oran 会自动剥离后重试一次，并通过 `disableReasoningEffort` 按模型记住该结论。
-- `agent.lastModel` 记录通过 `/model` 或 `/connect` 选择的模型；单次运行可用 `--model provider/model` 覆盖。
-- `trustWorkspace`（默认 `false`）允许**工作区**的 `.oran/config.json` 与 `.oran/hooks.local.yaml` 设置那些会提权或会执行命令的项：`agent.approveAll`、`agent.permissionMode`、`agent.noProgressLimit`、`mcpServers`、`hooks`、`web.allowPrivateHosts`。除非它为 `true`，工作区文件里的这些键一律忽略（其余键如 `agent.maxSteps`、`web.searchProvider` 照常生效），并会打印一行说明忽略了哪些键。默认关闭，是因为 agent 通常就在被询问的那个仓库里启动；只对你掌控的工作区开启。
-
-### 项目工作区结构 (`.oran/` & `AGENTS.md`)
-
-- `AGENTS.md`：项目专属的开发规范与安全约束，自动注入到 Agent 系统提示词中。
-- `.oran/snapshots/`：本地文件修改快照，支持 `/undo` 安全回滚。
-- `.oran/sessions/`：会话历史记录与执行日志。
-- `~/.oran/memory/<workspace-hash>/`：Agent 自动整理的 Markdown 笔记，沉淀项目知识与长期记忆（与会话、trace 一致，存储在工作区之外的用户目录）。
-- `.oran/skills/`：项目专属自定义技能（`SKILL.md`）。
-
-### 自定义子智能体 (`agents/*.md`)
-
-子智能体通过带 YAML frontmatter 的 Markdown 文件定义，frontmatter 之后的正文即为子智能体的提示词。内置三个角色：`general`（有边界的实现任务）、`plan`（只读规划）、`explore`（只读探索）。自定义定义放在：
-
-- `~/.oran/agents/*.md`：所有工作区可用。
-- `.oran/agents/*.md`：项目专属，同名时覆盖用户级定义。
-
-```markdown
----
-name: reviewer
-description: 审查近期改动的正确性与风格。
-allowedTools: [list_files, read_file, glob_files, search_code]
-permissionMode: plan
----
-
-你是代码审查子智能体。检查最近的改动并给出具体结论。
-```
-
-支持的 frontmatter 键：`name`、`description`、`allowedTools`、`deniedTools`、`model`（provider/model 覆盖）、`maxSteps`、`permissionMode`、`forceBackground`，以及 `isolation`（`shared-workspace` 或 `worktree`，后者使用独立的一次性 Git worktree）。
-
----
-
-## 开发与验证
-
-```bash
-# 类型检查
-pnpm typecheck
-
-# 运行单元测试
-pnpm test
-
-# 生产构建
-pnpm build
-```
-
-## 开源协议
+## 许可证
 
 Apache-2.0

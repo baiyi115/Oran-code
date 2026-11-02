@@ -1,214 +1,143 @@
-# Oran code
+<h1 align="center">Oran Code</h1>
 
-[English](README.md) | [简体中文](README.zh-CN.md)
+<p align="center">
+  <a href="README.md">English</a> | <a href="README.zh-CN.md">简体中文</a>
+</p>
 
-A lightweight, terminal-native AI coding agent in TypeScript, built for fast iteration, safe autonomous editing, and background multi-tasking.
+<p align="center">
+  <strong>A terminal coding agent with its own loop, its own permission gate, and its own context budget.</strong>
+</p>
 
-Oran code pairs an interactive React/Ink terminal UI with a flexible agent engine: inspect codebases, generate multi-step execution plans, edit files with instant rollback snapshots, delegate subtasks in the background, and connect to DeepSeek, Claude, GPT, Gemini, or local Ollama instances.
+<p align="center">
+  <img alt="Language: TypeScript" src="https://img.shields.io/badge/Language-TypeScript-3178C6?logo=typescript&logoColor=white&style=flat-square">
+  <img alt="Runtime: Node.js 22+" src="https://img.shields.io/badge/Runtime-Node.js%2022%2B-5FA04E?logo=nodedotjs&logoColor=white&style=flat-square">
+  <img alt="UI: React Ink" src="https://img.shields.io/badge/UI-React%20Ink-61DAFB?logo=react&logoColor=black&style=flat-square">
+  <img alt="License: Apache-2.0" src="https://img.shields.io/badge/License-Apache--2.0-D22128?logo=apache&logoColor=white&style=flat-square">
+</p>
 
-![Oran code terminal UI](docs/tui.png)
+<p align="center">
+  <em>Status: v0.1.0, early development. CLI flags and configuration keys may change.</em>
+</p>
 
----
+<p align="center">
+  <img src="docs/tui.png" alt="Oran Code terminal UI">
+</p>
 
-## Key Highlights
+Oran Code works on a real repository from your terminal: it explores code, edits files, runs
+commands, and keeps going across tool-call rounds. The agent loop, provider adapters, command
+parser, and context manager are implemented in this repository rather than delegated to an
+agent framework, so every step is readable, replaceable, and testable.
 
-- **Terminal-Native TUI**: Real-time streaming thoughts, collapsible tool outputs, and fast keyboard overlays for commands (`/`), models (`/model`), and sessions (`/session`).
-- **Safety & Instant Rollback**: Automatically snapshots file changes before execution. Revert recent edits at any time with `/undo`, or run exploratory tasks in temporary Git worktrees.
-- **Background Subagents**: Offload slow searches, benchmarks, and multi-file explorations to concurrent background subagents without locking your interactive prompt.
-- **Universal Model Support**: Connect directly to OpenAI, Anthropic Claude, DeepSeek (V3/R1), Google Gemini, Ollama, or any custom OpenAI-compatible endpoint.
-- **Extensible & Context-Aware**: Native Model Context Protocol (MCP) support, custom skills (`SKILL.md`), project guidelines (`AGENTS.md`), automated context compaction, and Markdown-based project memory.
+## Why Oran Code
 
----
+Oran is for people who want to read and change the loop. The parts that decide what runs are
+small enough to audit.
+
+- **One event stream over two protocols.** OpenAI returns tool-call arguments in indexed
+  fragments; Anthropic returns them as content blocks. Concatenating them in arrival order
+  misaligns arguments, and provider error events can look like a normal finish. Oran adapts
+  both into one internal event stream — including cross-chunk buffering, UTF-8 tail bytes, and
+  a missing final separator — so the layers above never branch on provider.
+- **Commands are parsed, not pattern-matched.** Before execution, shell input is tokenized
+  into an AST and each pipeline stage is checked against the allowlist. Quoting tricks,
+  interpreter pipes such as `... | sh`, and `rg --pre` are handled at the parse layer. Rules
+  cannot cover everything, so edits also get snapshots and a disposable Git worktree as a
+  backstop.
+- **Context is budgeted by protocol structure.** Tool calls and results stay paired 1:1.
+  Large outputs are written to disk with a bounded preview, old rounds are compacted into a
+  structured summary, and the next request is assembled from what the model still needs to
+  decide — not from the longest string that fits.
+- **Subagents are isolated, not just concurrent.** Slow searches and multi-file exploration
+  run in background subagents with their own context and tool permissions, and return a
+  structured result to the main loop.
+
+## Features
+
+- **Terminal UI (React/Ink)** — streaming reasoning, collapsible tool output, a `/` command
+  palette, model switcher, and session list.
+- **Provider-agnostic** — OpenAI-compatible Chat Completions and Anthropic Messages; works
+  with DeepSeek, Gemini, Ollama, and any custom endpoint.
+- **Safe by default** — plan mode is read-only; risky commands ask first; `/undo` restores the
+  last batch of file changes; exploratory work can run in a throwaway worktree.
+- **Background subagents** — three built-in roles (`general`, `plan`, `explore`) plus custom
+  definitions in `~/.oran/agents/` and `.oran/agents/`.
+- **MCP, Skills, AGENTS.md** — connect MCP servers, load `SKILL.md` capability packs, and
+  inject project rules automatically.
+- **Scriptable** — `oran run` is non-interactive and writes a structured `oran-event/1` JSONL
+  log with stable exit codes, so the same binary can run in CI or inside an evaluation harness.
 
 ## Quickstart
 
-### Prerequisites
-
-- Node.js >= 22.5
-- pnpm >= 10.0
-
-### Setup
+Requires Node.js >= 22.5 and pnpm >= 10.
 
 ```bash
 git clone https://github.com/baiyi115/Oran-code.git
 cd "Oran-code"
 pnpm install
-```
-
-### Running Oran
-
-```bash
-# Start in development mode
-pnpm dev
-
-# Or build and run
 pnpm build
 pnpm start
 ```
 
-On first launch, type `/connect` to add a model provider and API key interactively. Re-run `/connect` any time to manage providers (edit settings or refresh their model lists).
+On first launch, run `/connect` to add a provider and API key, then give it a task:
 
-To use the standalone `oran` command, link the built CLI once:
+```text
+> Find why the pagination test fails, fix it, and run the test suite.
+```
+
+Oran reads files, proposes edits, asks before risky commands, and stores the session under
+`.oran/`. Use `/undo` to revert the last batch, or `/tasks` to inspect background subagents.
+
+## How it works
+
+```text
+prompt
+  -> controller loop ──> provider adapter (OpenAI / Anthropic) ──> internal events
+  -> tool scheduler ──> permission gate ──> snapshot / worktree ──> workspace
+  -> context manager (pairing, offload, compaction) ──> next request
+```
+
+Each turn is a loop, not a fixed workflow: the model chooses the next tool, the permission
+gate decides whether it may run, and the context manager decides what the next request keeps.
+Sessions and traces live under `.oran/`; memory notes live under `~/.oran/memory/`.
+
+## Evaluation
+
+The evaluation harness treats "done" as an environment fact, not as the agent's claim: a task
+passes only when protected paths are unchanged, verification commands pass, and a hidden
+verifier passes. Failures are classified — setup, timeout, protected-path change,
+verification, hidden verifier — instead of collapsed into one number.
+
+The harness and its baseline are not yet on `main`. When they land, this section will report
+the task set, model and commit, number of trials, pass rate, cost, and failure breakdown, with
+the raw JSONL kept in the repository.
+
+## Limitations and non-goals
+
+- **Not a sandbox.** Worktrees separate working copies; they do not isolate processes,
+  networks, or access to host files. Run Oran only on repositories you are willing to let an
+  agent modify.
+- **Local, single-user.** There is no multi-tenant server, remote execution, or hosted
+  workspace.
+- **No published benchmark claim.** Oran is not compared against SWE-bench or Terminal-Bench;
+  any number in this repository comes from its own task set, under the stated conditions.
+- **Feature scope.** It is not trying to match the feature set of Claude Code, Cursor, or
+  Codex. If you want a hosted, fully supported product, use one of those.
+
+## Documentation
+
+- [Usage: CLI, headless mode, shortcuts, configuration, subagents](docs/usage.md)
+
+## Development
 
 ```bash
-pnpm build
-cd packages/oran-code
-npm link
+pnpm typecheck   # TypeScript
+pnpm test        # Vitest
+pnpm lint        # ESLint
+pnpm build       # production CLI
+pnpm coverage    # coverage report
 ```
 
----
-
-## Usage & CLI Commands
-
-```bash
-# Interactive TUI session (default)
-oran
-
-# Run a single task non-interactively
-oran run "Fix the type error in src/index.ts"
-
-# Scripted run: read the prompt from a file and write a structured JSONL event log
-oran run --task prompt.md --output run.jsonl --timeout 300
-
-# Choose a specific model or workspace
-oran --model deepseek/deepseek-v4-flash --workspace ./my-project
-
-# Inspect active workspace tools and permissions
-oran inspect
-
-# Review past task execution traces
-oran tasks
-```
-
-### Scripted Runs (Headless)
-
-`oran run` is fully non-interactive and can be driven from scripts or CI:
-
-| Flag                        | Description                                                                                              |
-| :-------------------------- | :------------------------------------------------------------------------------------------------------- |
-| `--task FILE`               | Reads the prompt from a file (avoids the Windows command-line length limit)                              |
-| `--output FILE.jsonl`, `-o` | Writes an `oran-event/1` event log, one JSON object per line (`run_start` / `runtime_event` / `run_end`) |
-| `--timeout SECONDS`         | Cancels the task after this many seconds                                                                 |
-
-These flags are only accepted by `run`; other subcommands reject them as a usage error.
-Exit codes: `0` completed, `1` failed or runtime error, `2` invalid usage, `3` timed out,
-`4` cancelled otherwise. If an outer harness kills the process, the JSONL `run_end` record
-is authoritative.
-
-### Keyboard Shortcuts
-
-| Key                     | Action                                                                          |
-| :---------------------- | :------------------------------------------------------------------------------ |
-| `Enter`                 | Submit prompt or confirm selection                                              |
-| `Ctrl + Z` / `Ctrl + Y` | Undo / redo composer edits (restores text, cursor, and pasted content)          |
-| `Up` / `Down`           | Browse input history or navigate overlay options                                |
-| `Tab`                   | Complete slash / `@file` overlays; toggle plan / auto work mode when idle       |
-| `Shift + Tab`           | Cycle the reasoning effort (low / medium / high / xhigh)                        |
-| `Ctrl + T`              | Open the latest segment's thought / tool details overlay (scrollable)           |
-| `Ctrl + W`              | Delete the word before the cursor                                               |
-| `Ctrl + Q`              | Manage queued follow-ups                                                        |
-| `Esc`                   | Close active overlay / cancel focus (press twice while busy to cancel the task) |
-| `Ctrl + C`              | Cancel current generation or exit                                               |
-
-Multi-line prompts are composed by pasting: the paste folds into a placeholder in the
-composer and is expanded back into the whole message on submit. There is no newline key —
-`Shift + Enter` is indistinguishable from `Enter` unless the terminal implements a
-modified-keys protocol, and a bare `Ctrl + J` cannot be told apart from the LF that some
-terminals send for `Enter`.
-
-### Essential Slash Commands
-
-| Command                 | Description                                                  |
-| :---------------------- | :----------------------------------------------------------- |
-| `/connect`              | Manage model providers: list, add, edit, or remove them      |
-| `/model`                | Open model picker overlay to switch active model             |
-| `/plan`                 | Switch to read-only Plan mode for safe workspace exploration |
-| `/undo`                 | Immediately revert the most recent batch of file changes     |
-| `/rewind [N] [--files]` | Roll the conversation back to before an earlier user message |
-| `/resume`               | Continue the task a progress gate paused (gate off for it)   |
-| `/graph`                | Build the code dependency graph and print its summary        |
-| `/session [id]`         | Switch between active sessions or resume past sessions       |
-| `/new`                  | Start a clean conversation session                           |
-| `/status`               | View token usage, active permissions, and MCP connections    |
-| `/tasks`                | List background subagent tasks (alias `/subagents`)          |
-| `/compact`              | Trigger manual context compaction to save tokens             |
-| `/clear`                | Clear terminal transcript output                             |
-| `/exit`                 | Exit session                                                 |
-
----
-
-## Configuration
-
-Oran code stores global settings in `~/.oran/` and workspace-specific state in `.oran/`:
-
-### Global Config (`~/.oran/config.json`)
-
-The easiest way to write this file is the `/connect` command — it generates the entries below for you. Providers are keyed by name; each has connection `options` and a map of models:
-
-```json
-{
-  "providers": {
-    "deepseek": {
-      "options": {
-        "baseURL": "https://api.deepseek.com/v1",
-        "protocol": "openai",
-        "apiKey": "sk-..."
-      },
-      "models": {
-        "deepseek-v4-flash": { "options": { "reasoningEffort": "high", "context_window": 128000 } }
-      }
-    }
-  },
-  "agent": { "lastModel": "deepseek/deepseek-v4-flash" }
-}
-```
-
-- `protocol` is `"openai"` (OpenAI-compatible Chat Completions) or `"anthropic"` (Anthropic Messages). Endpoints that reject the `reasoning_effort` parameter are handled automatically: Oran retries without it once and remembers per model via `disableReasoningEffort`.
-- `agent.lastModel` remembers the model picked via `/model` or `/connect`; pass `--model provider/model` to override it for one run.
-- `trustWorkspace` (default `false`) lets the **workspace's** `.oran/config.json` and `.oran/hooks.local.yaml` set things that raise permissions or run commands: `agent.approveAll`, `agent.permissionMode`, `agent.noProgressLimit`, `mcpServers`, `hooks`, and `web.allowPrivateHosts`. These keys are ignored from a workspace file unless this is `true` (the values it does not drop, such as `agent.maxSteps` or `web.searchProvider`, still apply), and the agent says which keys it ignored. It is off by default because the agent is normally started inside the repository it is asked about; enable it only for workspaces you control.
-
-### Workspace Structure (`.oran/` & `AGENTS.md`)
-
-- `AGENTS.md`: Project-specific engineering standards, rules, and constraints automatically injected into the agent's system prompt.
-- `.oran/snapshots/`: Local workspace snapshots for `/undo` rollback support.
-- `.oran/sessions/`: Persisted session history and logs.
-- `~/.oran/memory/<workspace-hash>/`: Markdown notes curated by the agent for long-term project knowledge (stored next to sessions and traces, outside the workspace).
-- `.oran/skills/`: Project-local custom skills (`SKILL.md`).
-
-### Custom Subagents (`agents/*.md`)
-
-Subagents are Markdown files with YAML frontmatter; the body below the frontmatter is the subagent's prompt. Three built-in roles ship by default: `general` (bounded implementation tasks), `plan` (read-only planning), and `explore` (read-only exploration). Add your own at:
-
-- `~/.oran/agents/*.md`: available in every workspace.
-- `.oran/agents/*.md`: project-specific, overrides a user-level definition of the same name.
-
-```markdown
----
-name: reviewer
-description: Review recent changes for correctness and style.
-allowedTools: [list_files, read_file, glob_files, search_code]
-permissionMode: plan
----
-
-You are a code review subagent. Inspect recent changes and report concrete findings.
-```
-
-Supported frontmatter keys: `name`, `description`, `allowedTools`, `deniedTools`, `model` (provider/model override), `maxSteps`, `permissionMode`, `forceBackground`, and `isolation` (`shared-workspace` or `worktree` for a disposable Git worktree).
-
----
-
-## Development & Verification
-
-```bash
-# Typecheck
-pnpm typecheck
-
-# Run unit tests
-pnpm test
-
-# Build production bundle
-pnpm build
-```
+CI runs format check, lint, typecheck, build, and coverage on every push and pull request.
 
 ## License
 
