@@ -359,32 +359,12 @@ export function selectRecentRawMessages(messages: readonly Message[], contextWin
     count += unit.length;
   }
 
-  // The recent slice must start at a legitimate user turn: if the chosen start lands mid-turn (an
-  // orphaned assistant tool call or tool result, say), it must never become the head of the
-  // post-compaction non-system messages (Gemini/Anthropic/OpenAI all require the conversation to be
-  // opened by user).
+  // Prefer a real user turn when one fits the retained tail. During a long tool-heavy turn,
+  // walking back to its original user message would retain the entire turn and defeat compaction.
+  // The compaction caller inserts a user-role recovery lead-in when this tail starts mid-turn.
   if (start < units.length && units[start]?.[0]?.role !== "user") {
-    // Search forward first: if a user message exists after the current position, the candidate set
-    // overreached and pulled in the tail of an earlier turn; drop that earlier turn's orphaned units
-    // and retain from the nearest legitimate user turn.
     const forwardUserIndex = units.findIndex((unit, idx) => idx >= start && unit[0]?.role === "user");
-    if (forwardUserIndex !== -1) {
-      start = forwardUserIndex;
-    } else {
-      // If there is no user message further on (meaning the whole candidate range sits inside one
-      // very long turn), walk backwards to the user message that opened the current turn, keeping
-      // that turn whole and starting on a legitimate role.
-      let backwardUserIndex = -1;
-      for (let i = start - 1; i >= 0; i--) {
-        if (units[i]?.[0]?.role === "user") {
-          backwardUserIndex = i;
-          break;
-        }
-      }
-      if (backwardUserIndex !== -1) {
-        start = backwardUserIndex;
-      }
-    }
+    if (forwardUserIndex !== -1) start = forwardUserIndex;
   }
 
   return cloneMessages(units.slice(start).flat());

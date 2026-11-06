@@ -14,7 +14,7 @@ import {
   type RecoveryCoverage,
 } from "./compaction.js";
 import { estimatedRequestTokens, resolveContextWindow, usageTotal, type UsageAnchor } from "./estimator.js";
-import { CONTEXT_LIMITS } from "./limits.js";
+import { automaticCompactionThreshold, CONTEXT_LIMITS } from "./limits.js";
 import {
   isStableRequestPrefix,
   offloadCandidates,
@@ -215,12 +215,7 @@ export class ContextManager {
     tools: readonly Record<string, unknown>[] = [],
   ): boolean {
     if (this.autoCompactionDisabled) return false;
-    const threshold = contextWindow - CONTEXT_LIMITS.summaryOutputTokens - CONTEXT_LIMITS.automaticSafetyTokens;
-    // With a large window, fire early at window × 80%: waiting until the limit means hitting the
-    // ceiling during compaction, and compaction itself still sends a request. With a small window,
-    // W−O−headroom is the real constraint.
-    const windowBudget = Math.floor(contextWindow * CONTEXT_LIMITS.automaticWindowFraction);
-    return this.estimateTokens(messages, tools) >= Math.max(1, Math.min(windowBudget, threshold));
+    return this.estimateTokens(messages, tools) >= automaticCompactionThreshold(contextWindow);
   }
 
   async offloadAndSnip(messages: readonly Message[]): Promise<ContextOffloadResult> {

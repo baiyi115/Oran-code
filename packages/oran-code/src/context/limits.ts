@@ -66,6 +66,13 @@ export const CONTEXT_LIMITS = Object.freeze({
   microcompactMinBytes: 4_000,
 });
 
+/** Fire at 80% for large windows, or earlier when summary output and safety headroom require it. */
+export function automaticCompactionThreshold(contextWindow: number): number {
+  const headroom = contextWindow - CONTEXT_LIMITS.summaryOutputTokens - CONTEXT_LIMITS.automaticSafetyTokens;
+  const windowBudget = Math.floor(contextWindow * CONTEXT_LIMITS.automaticWindowFraction);
+  return Math.max(1, Math.min(windowBudget, headroom));
+}
+
 /**
  * Retry ceiling for spilling a single tool result to disk: past it the result is let through,
  * avoiding a retry every turn while the disk keeps failing.

@@ -2,7 +2,7 @@ import { cloneMessages } from "../message-utils.js";
 import type { Message, ModelProvider } from "../types.js";
 import { isAbortError } from "../utils/abort-error.js";
 import { estimatedRequestTokens, HAS_CJK_PATTERN } from "./estimator.js";
-import { CONTEXT_LIMITS } from "./limits.js";
+import { automaticCompactionThreshold, CONTEXT_LIMITS } from "./limits.js";
 import {
   isStableRequestPrefix,
   isTransientRequestMessage,
@@ -125,27 +125,43 @@ export async function compactConversation(
       }),
       metadata: { promptBlock: "context-recovery", contextManaged: true },
     };
-    const recent = selectRecentRawMessages(summarized.coveredMessages, options.contextWindow);
-    const compacted = [...cloneMessages(prefix), summaryMessage, recoveryMessage, ...recent];
-
-    // Defensive safeguard: downstream models (Gemini/Anthropic/OpenAI) all strictly require that
-    // the first business message after the system prompt be a user-role message. If `recent` is
-    // empty, or the first non-system message is not user, splice in a recovery lead-in user message.
-    const firstNonSystemIndex = compacted.findIndex((message) => message.role !== "system");
-    if (firstNonSystemIndex === -1) {
-      compacted.push({
-        role: "user",
-        content: "Continue from the conversation summary above.",
-      });
-    } else if (compacted[firstNonSystemIndex]?.role !== "user") {
-      compacted.splice(firstNonSystemIndex, 0, {
-        role: "user",
-        content: "Continue from the conversation summary above.",
-      });
-    }
+    const buildCompacted = (tail: readonly Message[]): Message[] => {
+      const compacted = [...cloneMessages(prefix), summaryMessage, recoveryMessage, ...tail];
+      // A bounded tail may start inside a long user turn. Give the provider a valid user lead-in
+      // instead of restoring the entire turn merely to keep a user message at the front.
+      const firstNonSystemIndex = compacted.findIndex((message) => message.role !== "system");
+      if (firstNonSystemIndex === -1) {
+        compacted.push({ role: "user", content: "Continue from the conversation summary above." });
+      } else if (compacted[firstNonSystemIndex]?.role !== "user") {
+        compacted.splice(firstNonSystemIndex, 0, {
+          role: "user",
+          content: "Continue from the conversation summary above.",
+        });
+      }
+      return compacted;
+    };
+    let recent = selectRecentRawMessages(summarized.coveredMessages, options.contextWindow);
+    let compacted = buildCompacted(recent);
 
     host.resetUsageAnchor();
-    const afterTokens = host.estimateTokens(compacted, options.tools);
+    let afterTokens = host.estimateTokens(compacted, options.tools);
+    if (options.reason === "auto") {
+      const threshold = automaticCompactionThreshold(options.contextWindow);
+      // The summary, recovery context, and minimum recent-message count can exceed the regular
+      // tail budget. Remove oldest complete tool units until the result is below the auto trigger.
+      while (afterTokens >= threshold && recent.length) {
+        let dropCount = 1;
+        if (recent[0]?.role === "assistant" && recent[0].toolCalls?.length) {
+          while (recent[dropCount]?.role === "tool") dropCount += 1;
+        }
+        recent = recent.slice(dropCount);
+        compacted = buildCompacted(recent);
+        afterTokens = host.estimateTokens(compacted, options.tools);
+      }
+      if (afterTokens >= threshold) {
+        throw new Error(`automatic compaction cannot fit the stable context below ${threshold} estimated tokens`);
+      }
+    }
     if (options.reason === "emergency" && afterTokens >= options.contextWindow - CONTEXT_LIMITS.manualSafetyTokens) {
       throw new Error(
         `context remains too large after emergency compaction (${afterTokens} estimated tokens; ` +
@@ -286,7 +302,7 @@ async function requestSummary(
   let dropRound = 0;
   // Compatibility endpoints (the Gemini family, for instance) often drop the <summary> tag or answer
   // with a single empty phrase; throwing the compaction failure straight back to the main loop would
-  // burn the token budget on "compaction failed" every turn, so retry a few times with corrective
+  // waste tokens on "compaction failed" every turn, so retry a few times with corrective
   // feedback and only throw upward once that still fails.
   let rejected: { text: string; reason: string } | undefined;
   for (let attempt = 0; groups.length; attempt += 1) {
