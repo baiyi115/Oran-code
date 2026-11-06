@@ -1,4 +1,4 @@
-import { mkdtemp, rm, writeFile } from "node:fs/promises";
+import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
@@ -331,6 +331,51 @@ describe("ToolBatchExecutor readonly cache", () => {
     await executor.runTools(task, [], [call("read_file", { path: "a.ts" })], loopStub);
     expect(invoke).toHaveBeenCalledTimes(2);
     expect(ports.readonlyCache.size).toBe(1);
+  });
+
+  it("does not reuse cached results for distinct volatile-looking paths", async () => {
+    const workspace = await makeWorkspace();
+    const invoke = vi.fn(async (toolCall: ToolCall) => ({ ok: true, output: String(toolCall.arguments.path) }));
+    const { executor, loopStub } = makeHarness(workspace, {
+      tools: [makeTool("read_file", "readonly", invoke)],
+    });
+    const task = createTask(workspace, "read distinct files");
+    const first = join(tmpdir(), "first.txt");
+    const second = join(tmpdir(), "second.txt");
+    const messages = runMessages();
+
+    await executor.runTools(task, messages, [call("read_file", { path: first })], loopStub);
+    await executor.runTools(task, messages, [call("read_file", { path: second })], loopStub);
+
+    expect(invoke).toHaveBeenCalledTimes(2);
+    expect(messages.map((message) => message.content)).toEqual([first, second]);
+  });
+
+  it("invalidates readonly results when a failed write changes a file", async () => {
+    const workspace = await makeWorkspace();
+    const path = join(workspace, "note.txt");
+    await writeFile(path, "before");
+    const read = vi.fn(async () => ({ ok: true, output: await readFile(path, "utf8") }));
+    const { executor, ports, loopStub } = makeHarness(workspace, {
+      tools: [
+        makeTool("read_file", "readonly", read),
+        makeTool("write_file", "write", async () => {
+          await writeFile(path, "after the failed write");
+          return { ok: false, output: "", error: "write reported an error" };
+        }),
+      ],
+    });
+    const task = createTask(workspace, "read and write");
+    const messages = runMessages();
+
+    await executor.runTools(task, messages, [call("read_file", { path: "note.txt" })], loopStub);
+    expect(ports.readonlyCache.size).toBe(1);
+    await executor.runTools(task, messages, [call("write_file", { path: "note.txt" })], loopStub);
+    expect(ports.readonlyCache.size).toBe(0);
+    await executor.runTools(task, messages, [call("read_file", { path: "note.txt" })], loopStub);
+
+    expect(read).toHaveBeenCalledTimes(2);
+    expect(messages.at(-1)?.content).toBe("after the failed write");
   });
 });
 

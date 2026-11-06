@@ -1,6 +1,6 @@
 import { createHash } from "node:crypto";
 import { execFile } from "node:child_process";
-import { readdir, readFile, stat } from "node:fs/promises";
+import { lstat, readdir, readFile, stat } from "node:fs/promises";
 import { relative, resolve, sep } from "node:path";
 import { promisify } from "node:util";
 import { structuredPermissionDenial, type ApprovalDecision } from "./security.js";
@@ -351,14 +351,45 @@ export interface WorkspaceSnapshot {
  *  before/after line lists to compute a difference. */
 export async function workspaceSnapshot(root: string): Promise<WorkspaceSnapshot> {
   try {
-    const result = await execFileAsync("git", ["-C", root, "status", "--porcelain=v1", "--untracked-files=all"], {
+    // -z keeps paths literal (including spaces and non-ASCII characters) and pairs rename paths.
+    const result = await execFileAsync("git", ["-C", root, "status", "--porcelain=v1", "-z", "--untracked-files=all"], {
       encoding: "utf8",
       maxBuffer: 1024 * 1024,
       timeout: WORKSPACE_FINGERPRINT_TIMEOUT_MS,
       windowsHide: true,
     });
-    const entries = result.stdout.split(/\r?\n/).filter(Boolean).sort();
-    return { fingerprint: `git:${entries.join("\n")}`, entries };
+    const records = result.stdout.split("\0");
+    const entries: string[] = [];
+    const dirtyPaths: string[] = [];
+    for (let index = 0; index < records.length; index += 1) {
+      const record = records[index];
+      if (!record) continue;
+      const status = record.slice(0, 2);
+      const path = record.slice(3);
+      dirtyPaths.push(path);
+      const from = status.includes("R") || status.includes("C") ? records[++index] : undefined;
+      entries.push(from ? `${status} ${path} -> ${from}` : record);
+    }
+    entries.sort();
+    // Status alone stays " M file" when an already-dirty file changes again. Include cheap file
+    // metadata so command mutations and cross-task readonly-cache invalidation still see that change.
+    const metadata: string[] = [];
+    for (let offset = 0; offset < dirtyPaths.length; offset += 32) {
+      const batch = dirtyPaths.slice(offset, offset + 32);
+      metadata.push(
+        ...(await Promise.all(
+          batch.map(async (path) => {
+            try {
+              const info = await lstat(resolve(root, path));
+              return `${path}:${info.size}:${info.mtimeMs}:${info.ctimeMs}`;
+            } catch {
+              return `${path}:missing`;
+            }
+          }),
+        )),
+      );
+    }
+    return { fingerprint: `git:${entries.join("\n")}\0${metadata.sort().join("\n")}`, entries };
   } catch {
     return { fingerprint: await collectWorkspaceEntries(resolve(root)), entries: [] };
   }

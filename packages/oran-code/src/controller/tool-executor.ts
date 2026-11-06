@@ -20,7 +20,7 @@ import type {
 } from "../types.js";
 import { transitionTask } from "../types.js";
 import type { AgentLoop } from "../loop.js";
-import { toolCallSignature } from "../loop.js";
+import { toolCacheKey } from "../loop.js";
 import type { ToolRegistry } from "../tools.js";
 import { isMutatingToolName, isPlanModeTool } from "../tools.js";
 import {
@@ -247,7 +247,7 @@ export class ToolBatchExecutor {
             prepared.push({ index, call, skip: denied });
             continue;
           }
-          const cacheKey = kind === "readonly" && tool.cacheable !== false ? toolCallSignature(call) : undefined;
+          const cacheKey = kind === "readonly" && tool.cacheable !== false ? toolCacheKey(call) : undefined;
           if (cacheKey && this.ports.readonlyCache.has(cacheKey)) {
             const cached = this.ports.readonlyCache.get(cacheKey)!;
             this.ports.debugLogger(
@@ -348,7 +348,7 @@ export class ToolBatchExecutor {
                 (tool.kind ?? inferToolKind(item.call.name)) === "readonly" &&
                 tool.cacheable !== false
               ) {
-                const cacheKey = toolCallSignature(item.call);
+                const cacheKey = toolCacheKey(item.call);
                 this.ports.readonlyCache.set(cacheKey, {
                   ...executedResult,
                   metadata: { ...executedResult.metadata, cached: false },
@@ -395,7 +395,9 @@ export class ToolBatchExecutor {
               entry.result = withWorkspaceChangesReceipt(entry.result, batchBefore.entries, batchAfter.entries);
             }
           }
-          if (entry.result.ok && this.isPotentiallyMutating(entry.call)) this.ports.readonlyCache.clear();
+          if (this.isPotentiallyMutating(entry.call) && (entry.result.ok || entry.mutated)) {
+            this.ports.readonlyCache.clear();
+          }
           if (entry.result.ok && entry.call.name === "read_file") {
             await this.ports.trackSuccessfulFileRead(task.workspace, entry.call);
           }
@@ -575,7 +577,7 @@ export class ToolBatchExecutor {
         ? undefined
         : await this.authorizeTool(task, call, tool.permissionLevel, kind, tool.description);
     if (denied) return complete(denied, 0, false, false, false);
-    const cacheKey = kind === "readonly" && tool.cacheable !== false ? toolCallSignature(call) : undefined;
+    const cacheKey = kind === "readonly" && tool.cacheable !== false ? toolCacheKey(call) : undefined;
     if (cacheKey && this.ports.readonlyCache.has(cacheKey)) {
       const cached = this.ports.readonlyCache.get(cacheKey)!;
       loop.record(call);
@@ -634,7 +636,7 @@ export class ToolBatchExecutor {
         metadata: { ...result.metadata, cached: false },
       });
     }
-    if (result.ok && this.isPotentiallyMutating(call)) this.ports.readonlyCache.clear();
+    if (this.isPotentiallyMutating(call) && (result.ok || mutated)) this.ports.readonlyCache.clear();
     if (result.ok && call.name === "read_file") await this.ports.trackSuccessfulFileRead(task.workspace, call);
     return complete(
       { ...result, durationMs: duration },

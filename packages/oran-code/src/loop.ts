@@ -69,6 +69,11 @@ export function toolCallSignature(call: ToolCall): string {
   return `${call.name}:${stableStringify(normalizeToolArguments(call.arguments))}`;
 }
 
+/** Exact arguments for caching: volatile IDs, timestamps and temp paths can identify different resources. */
+export function toolCacheKey(call: ToolCall): string {
+  return `${call.name}:${stableStringify(call.arguments)}`;
+}
+
 /** Stable, compact representation of the meaningful part of a tool result. */
 export function toolResultSignature(result: ToolResult): string {
   const content = result.error || result.output || "";

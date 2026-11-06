@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { AgentLoop, toolCallSignature, toolResultSignature } from "../src/loop.js";
+import { AgentLoop, toolCacheKey, toolCallSignature, toolResultSignature } from "../src/loop.js";
 import type { LoopConfig, ToolCall, ToolResult } from "../src/types.js";
 
 const baseConfig: LoopConfig = {
@@ -44,6 +44,16 @@ describe("tool signatures", () => {
       toolCallSignature(call("read_file", { path: "b.ts" })),
     );
     expect(toolResultSignature(result("done"))).not.toBe(toolResultSignature(result("failed")));
+  });
+
+  it("uses exact arguments for cache keys even when diagnostics normalize them", () => {
+    const first = call("read_file", { path: "C:\\Users\\test\\AppData\\Local\\Temp\\first.txt" });
+    const second = call("read_file", { path: "C:\\Users\\test\\AppData\\Local\\Temp\\second.txt" });
+    expect(toolCallSignature(first)).toBe(toolCallSignature(second));
+    expect(toolCacheKey(first)).not.toBe(toolCacheKey(second));
+    expect(toolCacheKey(call("read_file", { path: "a.ts", limit: 10 }))).toBe(
+      toolCacheKey(call("read_file", { limit: 10, path: "a.ts" })),
+    );
   });
 
   it("normalizes volatile timestamps in results", () => {
