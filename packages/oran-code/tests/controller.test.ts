@@ -7,6 +7,8 @@ import { createRuntimeConfig } from "../src/runtime.js";
 import { InMemoryTraceStore } from "../src/trace.js";
 import { createTask } from "../src/types.js";
 import { ToolRegistry } from "../src/tools.js";
+import { goalFingerprint } from "../src/progress/capture.js";
+import { EMPTY_PROGRESS_STATE, ProgressStateStore } from "../src/progress/store.js";
 import type {
   HookEnginePort,
   Message,
@@ -548,6 +550,39 @@ describe("TaskController", () => {
   });
 
   describe("truncated model output", () => {
+    it("does not count cut-off replies as failed rehearsal attempts", async () => {
+      const workspace = await mkdtemp(join(tmpdir(), "oran-rehearsal-"));
+      const prompt = "continue the investigation";
+      try {
+        const store = new ProgressStateStore(workspace);
+        await store.save({
+          ...EMPTY_PROGRESS_STATE,
+          goalFingerprint: goalFingerprint(prompt),
+          rehearsal: { phase: "requested", requestedTurn: 1 },
+        });
+        const rehearsal = JSON.stringify({
+          hypothesis: "found cause",
+          excluded: ["src/old.ts"],
+          candidateSet: ["src/new.ts"],
+          nextCheck: "verify",
+        });
+        const provider = new FakeProvider([
+          truncatedTextResponse("draft rehearsal"),
+          truncatedTextResponse("still composing"),
+          textResponse(rehearsal),
+        ]);
+        const { controller } = createController(workspace, provider, new ToolRegistry(), []);
+
+        const task = await controller.execute(createTask(workspace, prompt));
+
+        expect(task.state).toBe("completed");
+        expect(provider.requests).toHaveLength(3);
+        expect((await new ProgressStateStore(workspace).load()).rehearsal).toBeUndefined();
+      } finally {
+        await rm(workspace, { recursive: true, force: true });
+      }
+    });
+
     it("discards tool calls from a truncated response and asks the model to continue", async () => {
       const workspace = await mkdtemp(join(tmpdir(), "liteagent-controller-"));
       try {

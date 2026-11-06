@@ -107,9 +107,8 @@ export class TurnRequester {
   }
 
   /**
-   * Raise the per-request output budget after the model spent the whole limit on reasoning and
-   * returned no text. Returns the new limit, or undefined when it is already at the ceiling (so
-   * the caller gives up instead of repeating an identical request).
+   * Raise the per-request output budget after a truncated reply. Returns the new limit,
+   * or undefined when it is already at the ceiling.
    */
   escalateOutputTokenLimit(): number | undefined {
     const next = Math.min(MAX_OUTPUT_TOKEN_LIMIT, this.outputTokenLimit * 2);

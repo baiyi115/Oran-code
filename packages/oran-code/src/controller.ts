@@ -496,13 +496,6 @@ export class TaskController {
           messages.push(assistantMessage(response));
           this.syncConversation(messages);
         }
-        // A pending structured rehearsal is judged on this reply before any
-        // tool of the turn executes; divergence twice in a row pauses.
-        const rehearsalPause = await this.consumeRehearsal(task, response.text);
-        if (rehearsalPause) {
-          await this.pauseForNoProgress(task, rehearsalPause);
-          return task;
-        }
         if (this.abortController?.signal.aborted) {
           // Partial assistant already synced; if there are tool calls, pair them with cancelled results.
           if (response.toolCalls.length) {
@@ -535,18 +528,16 @@ export class TaskController {
         if (response.truncated) {
           // Output truncated by the limit: the content is incomplete, so it can neither be the final
           // answer nor have its tool calls executed (turn-requester already dropped every call in a
-          // truncated message). A pure-text truncation is recorded first, giving the model one
-          // explicit chance to correct course; when the budget runs out, the text received so far
-          // wraps up the task, rather than throwing away what was generated along with the failure.
+          // truncated message). A pure-text truncation gets a bounded chance to recover, including
+          // on the final turn. When recovery runs out, keep the partial text rather than discard it.
           this.truncationRecoveries += 1;
           const reason = response.finishReason ?? "length";
           if (isTextOnlyTruncation(response) && response.text.trim()) {
             this.truncatedTextChunks.push(response.text.trim());
           }
           const receivedChars = this.truncatedTextChunks.reduce((total, chunk) => total + chunk.length, 0);
-          // Nothing was received at all: the model spent the whole output budget on reasoning. There
-          // is no text to "continue", and repeating the same limit would only be spent on reasoning
-          // again, so the retry raises the per-request output budget instead.
+          // A retry needs more room even when a little text was produced: the model may have
+          // spent most of its budget reasoning before starting the visible answer.
           const reasoningOnly = isTextOnlyTruncation(response) && !response.text.trim();
           this.appendDiagnosticStep("model_truncated", {
             finishReason: reason,
@@ -558,12 +549,14 @@ export class TaskController {
             droppedToolCalls: response.truncatedToolCalls ?? 0,
             finalTurn,
           });
-          const canRetry =
-            (!finalTurn || reasoningOnly) && this.truncationRecoveries <= MAX_TRUNCATION_RECOVERIES;
-          const escalatedTo = canRetry && reasoningOnly ? this.turnRequester.escalateOutputTokenLimit() : undefined;
-          // A reasoning-only truncation did not consume the turn (nothing was produced), so hand it
-          // back: otherwise the retry cannot start once the turn budget is already used up.
-          if (escalatedTo !== undefined) loop.refundTurn();
+          const canRetry = this.truncationRecoveries <= MAX_TRUNCATION_RECOVERIES;
+          // A short answer after extensive reasoning also needs more room: only escalating an
+          // entirely empty response leaves that answer cut off again on the final turn.
+          const escalatedTo = canRetry ? this.turnRequester.escalateOutputTokenLimit() : undefined;
+          // A truncated final answer is not a finished turn. Give back the final-turn slot so
+          // bounded recovery can run with tools still disabled; reasoning-only retries likewise
+          // must not spend another turn when no answer or tool call was produced.
+          if (canRetry && (finalTurn || reasoningOnly)) loop.refundTurn();
           if (!canRetry || (reasoningOnly && escalatedTo === undefined)) {
             const assembled = this.assembleTruncatedText();
             if (assembled) {
@@ -596,7 +589,8 @@ export class TaskController {
             : `Your previous response was cut off by the output token limit (finish_reason: ${reason}); ` +
               `nothing after the cut-off was received` +
               (receivedChars ? ` (about ${receivedChars} characters so far)` : "") +
-              `. Continue from exactly where it stopped, in smaller pieces (e.g. one section or one file per turn), ` +
+              `. ${escalatedTo ? `The output budget is now ${escalatedTo} tokens. ` : ""}` +
+              `Continue from exactly where it stopped, in smaller pieces (e.g. one section or one file per turn), ` +
               `do not repeat content you already emitted, and re-issue any tool call you intended in full.`;
           this.logger(
             reasoningOnly
@@ -606,6 +600,13 @@ export class TaskController {
                   `(${this.truncationRecoveries}/${MAX_TRUNCATION_RECOVERIES}).`,
           );
           continue;
+        }
+        // A cut-off reply is not a rehearsal attempt. Judge only complete text (including any
+        // recovered text chunks), before executing tools from the completed response.
+        const rehearsalPause = await this.consumeRehearsal(task, this.assembleTruncatedText(response.text));
+        if (rehearsalPause) {
+          await this.pauseForNoProgress(task, rehearsalPause);
+          return task;
         }
         if (finalTurn && response.toolCalls.length) {
           for (const [index, call] of response.toolCalls.entries()) {
