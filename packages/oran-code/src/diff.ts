@@ -60,10 +60,7 @@ export function createFileDiff(before: string, after: string, options: FileDiffO
   while (prefix < oldLines.length && prefix < newLines.length && oldLines[prefix] === newLines[prefix]) prefix += 1;
   const maxSuffix = Math.min(oldLines.length, newLines.length) - prefix;
   let suffix = 0;
-  while (
-    suffix < maxSuffix &&
-    oldLines[oldLines.length - 1 - suffix] === newLines[newLines.length - 1 - suffix]
-  ) {
+  while (suffix < maxSuffix && oldLines[oldLines.length - 1 - suffix] === newLines[newLines.length - 1 - suffix]) {
     suffix += 1;
   }
 
@@ -184,7 +181,11 @@ function toRows(blocks: readonly ChangeBlock[]): DiffRow[] {
   return rows;
 }
 
-function renderHunks(rows: readonly DiffRow[], context: number, maxBodyLines: number): { text: string; truncated: boolean } {
+function renderHunks(
+  rows: readonly DiffRow[],
+  context: number,
+  maxBodyLines: number,
+): { text: string; truncated: boolean } {
   const out: string[] = [];
   let budget = maxBodyLines;
   let truncated = false;

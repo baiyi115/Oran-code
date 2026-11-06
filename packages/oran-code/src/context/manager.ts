@@ -68,8 +68,7 @@ export class ContextManager {
    * identity (messages are immutable once queued).
    */
   private estimateMemo:
-    | { messages: readonly Message[]; tools: readonly Record<string, unknown>[]; tokens: number }
-    | undefined;
+    { messages: readonly Message[]; tools: readonly Record<string, unknown>[]; tokens: number } | undefined;
 
   constructor(options: ContextManagerOptions) {
     this.workspace = resolve(options.workspace);

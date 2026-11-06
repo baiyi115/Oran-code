@@ -34,7 +34,6 @@ describe("terminal input stream key rewriting", () => {
 });
 
 describe("terminal input stream mouse reporting", () => {
-
   it("strips SGR wheel reports and forwards parsed events", async () => {
     const { stream, events } = streamWithMouse(["ab", "\x1b[<64;12;34M", "\x1b[<65;12;34M", "c"]);
     expect(await collect(stream)).toBe("abc");

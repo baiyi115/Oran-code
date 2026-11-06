@@ -14,17 +14,7 @@ describe("createFileDiff", () => {
     const diff = createFileDiff(before, after);
     expect(diff).toBeDefined();
     expect(diff).toMatchObject({ added: 1, removed: 1, truncated: false });
-    expect(diff!.text.split("\n")).toEqual([
-      "@@ -2,7 +2,7 @@",
-      " 2",
-      " 3",
-      " 4",
-      "-5",
-      "+changed",
-      " 6",
-      " 7",
-      " 8",
-    ]);
+    expect(diff!.text.split("\n")).toEqual(["@@ -2,7 +2,7 @@", " 2", " 3", " 4", "-5", "+changed", " 6", " 7", " 8"]);
   });
 
   it("reports a new file as pure additions", () => {

@@ -288,12 +288,13 @@ describe("standing approval rules", () => {
   it("scopes a write rule to the file's directory", async () => {
     const policy = new PermissionPolicy(permissionConfig(await makeWorkspace()));
     policy.registerTools([{ name: "edit_file", kind: "write" }]);
-    expect(policy.suggestRule(call("edit_file", { path: "src/features/a.ts", old_string: "a", new_string: "b" })))
-      .toMatchObject({ pattern: "src/features/**", match: "glob" });
+    expect(
+      policy.suggestRule(call("edit_file", { path: "src/features/a.ts", old_string: "a", new_string: "b" })),
+    ).toMatchObject({ pattern: "src/features/**", match: "glob" });
     // Nothing to scope to at the workspace root.
-    expect(policy.suggestRule(call("edit_file", { path: "README.md", old_string: "a", new_string: "b" }))).toMatchObject(
-      { pattern: "README.md", match: "exact" },
-    );
+    expect(
+      policy.suggestRule(call("edit_file", { path: "README.md", old_string: "a", new_string: "b" })),
+    ).toMatchObject({ pattern: "README.md", match: "exact" });
   });
 
   it("covers variants of a permanently-allowed command but never a compound one", async () => {

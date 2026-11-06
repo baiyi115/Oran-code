@@ -15,14 +15,9 @@ interface GraphemeSegmenter {
   segment(value: string): Iterable<{ segment: string }>;
 }
 
-type GraphemeSegmenterConstructor = new (
-  locale?: string,
-  options?: { granularity?: string },
-) => GraphemeSegmenter;
+type GraphemeSegmenterConstructor = new (locale?: string, options?: { granularity?: string }) => GraphemeSegmenter;
 
-const SegmenterConstructor = (
-  Intl as typeof Intl & { Segmenter?: GraphemeSegmenterConstructor }
-).Segmenter;
+const SegmenterConstructor = (Intl as typeof Intl & { Segmenter?: GraphemeSegmenterConstructor }).Segmenter;
 
 /** Constructing an Intl.Segmenter costs far more than segmenting a short string; keep one. */
 let cachedSegmenter: GraphemeSegmenter | undefined;

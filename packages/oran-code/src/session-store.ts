@@ -309,12 +309,12 @@ export class SessionStore {
           ? messageRecords(after.slice(before.length), now)
           : [
               compactionBoundaryRecord(after, now) ??
-              contextEditRecord(before, after, now) ?? {
-                type: "session-reset",
-                role: "system",
-                timestamp: now,
-                content: { messages: cloneMessages(after) },
-              },
+                contextEditRecord(before, after, now) ?? {
+                  type: "session-reset",
+                  role: "system",
+                  timestamp: now,
+                  content: { messages: cloneMessages(after) },
+                },
             ];
     const changes: SessionJsonlRecord[] = [...planRecords, ...conversationChanges];
     // Derived counters must be set before persist so the sidecar snapshot carries them.
@@ -1008,10 +1008,7 @@ function contextEditRecord(
   return { type: "context-edit", role: "system", timestamp, content: { replacements } };
 }
 
-function applyContextEdits(
-  messages: Message[],
-  replacements: readonly SessionContextEditReplacement[],
-): void {
+function applyContextEdits(messages: Message[], replacements: readonly SessionContextEditReplacement[]): void {
   if (!replacements.length) return;
   const byId = new Map(replacements.map((item) => [item.toolCallId, item.content]));
   for (const message of messages) {

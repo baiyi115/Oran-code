@@ -76,9 +76,7 @@ describe("SessionStore JSONL archives", () => {
         {
           role: "assistant",
           content: "",
-          toolCalls: [
-            { id: "call_1", name: "read_file", arguments: {}, createdAt: "2026-10-28T00:00:00.000Z" },
-          ],
+          toolCalls: [{ id: "call_1", name: "read_file", arguments: {}, createdAt: "2026-10-28T00:00:00.000Z" }],
         },
         { role: "tool", toolCallId: "call_1", content: "x".repeat(4_000) },
       ];
@@ -86,7 +84,10 @@ describe("SessionStore JSONL archives", () => {
       // Offload keeps the message count and ids and only rewrites the body.
       const rewritten = original.map((message) =>
         message.role === "tool"
-          ? { ...message, content: "<cleared-tool-result>4000 bytes in .oran/tool-results/call_1</cleared-tool-result>" }
+          ? {
+              ...message,
+              content: "<cleared-tool-result>4000 bytes in .oran/tool-results/call_1</cleared-tool-result>",
+            }
           : message,
       );
       await store.update(created.id, { conversation: rewritten });

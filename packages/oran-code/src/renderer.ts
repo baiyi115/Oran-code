@@ -298,7 +298,8 @@ export class TerminalRenderer implements SessionRenderer {
         this.status(`[cancelled] ${event.message}`, "yellow");
         break;
       case "permission_review":
-        if (event.phase === "completed") this.status(`Auto: ${event.verdict} — ${redactSecretText(event.reason ?? "")}`);
+        if (event.phase === "completed")
+          this.status(`Auto: ${event.verdict} — ${redactSecretText(event.reason ?? "")}`);
         break;
       case "approval_request":
         break;
