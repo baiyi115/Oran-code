@@ -9,7 +9,7 @@ import {
   PROJECT_STATE_DIRECTORY,
   userDataRoot,
 } from "./paths.js";
-import { isPermissionMode, isReasoningEffort } from "./types.js";
+import { normalizePermissionMode, isReasoningEffort } from "./types.js";
 import type {
   AgentSettings,
   HookRule,
@@ -137,15 +137,11 @@ function normalizeConfig(value: unknown): UserConfig {
   // Legacy top-level model/default fields stay ignored; the current preference lives at agent.lastModel.
   const legacyAgent: AgentSettings = {};
   const approveAll = booleanOrUndefined(item.approve_all ?? item.approveAll);
-  const maxSteps = numberOrUndefined(item.max_steps ?? item.maxSteps);
   const noProgressLimit = numberOrUndefined(item.no_progress_limit ?? item.noProgressLimit);
-  const tokenBudget = numberOrUndefined(item.token_budget ?? item.tokenBudget);
   const permissionModeValue = item.permission_mode ?? item.permissionMode;
-  const permissionMode = isPermissionMode(permissionModeValue) ? permissionModeValue : undefined;
+  const permissionMode = normalizePermissionMode(permissionModeValue);
   if (approveAll !== undefined) legacyAgent.approveAll = approveAll;
-  if (maxSteps !== undefined) legacyAgent.maxSteps = maxSteps;
   if (noProgressLimit !== undefined) legacyAgent.noProgressLimit = noProgressLimit;
-  if (tokenBudget !== undefined) legacyAgent.tokenBudget = tokenBudget;
   if (permissionMode !== undefined) legacyAgent.permissionMode = permissionMode;
   if (Object.keys(legacyAgent).length) result.agent = { ...legacyAgent, ...result.agent };
 
@@ -293,17 +289,13 @@ function normalizeAgentSettings(value: unknown): AgentSettings | undefined {
   const item = value as Record<string, unknown>;
   const result: AgentSettings = {};
   const approveAll = booleanOrUndefined(item.approveAll ?? item.approve_all);
-  const maxSteps = numberOrUndefined(item.maxSteps ?? item.max_steps);
   const noProgressLimit = numberOrUndefined(item.noProgressLimit ?? item.no_progress_limit);
-  const tokenBudget = numberOrUndefined(item.tokenBudget ?? item.token_budget);
   const workMode = item.workMode === "plan" || item.workMode === "auto" ? item.workMode : undefined;
   const permissionModeValue = item.permissionMode ?? item.permission_mode;
-  const permissionMode = isPermissionMode(permissionModeValue) ? permissionModeValue : undefined;
+  const permissionMode = normalizePermissionMode(permissionModeValue);
   const lastModel = stringOrUndefined(item.lastModel ?? item.last_model);
   if (approveAll !== undefined) result.approveAll = approveAll;
-  if (maxSteps !== undefined) result.maxSteps = maxSteps;
   if (noProgressLimit !== undefined) result.noProgressLimit = noProgressLimit;
-  if (tokenBudget !== undefined) result.tokenBudget = tokenBudget;
   if (workMode !== undefined) result.workMode = workMode;
   if (permissionMode !== undefined) result.permissionMode = permissionMode;
   if (lastModel !== undefined) result.lastModel = lastModel;

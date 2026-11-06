@@ -2,7 +2,7 @@ import { readFile, readdir } from "node:fs/promises";
 import { extname, resolve } from "node:path";
 import { parseDocument } from "yaml";
 import { projectStateRoot, userDataRoot } from "../paths.js";
-import { isPermissionMode } from "../types.js";
+import { normalizePermissionMode } from "../types.js";
 import { isRecord } from "../types.js";
 import type { AgentDefinition, AgentDefinitionScope } from "./types.js";
 
@@ -135,10 +135,9 @@ function parseAgentDefinition(raw: string, scope: AgentDefinitionScope, filePath
   if (!allowedTools || !deniedTools) return undefined;
   const model = optionalString(metadata.model);
   if (metadata.model !== undefined && !model) return undefined;
-  const maxSteps = optionalPositiveInteger(metadata.maxSteps ?? metadata["max-steps"]);
-  if ((metadata.maxSteps ?? metadata["max-steps"]) !== undefined && maxSteps === undefined) return undefined;
   const permissionModeValue = metadata.permissionMode ?? metadata["permission-mode"];
-  if (permissionModeValue !== undefined && !isPermissionMode(permissionModeValue)) return undefined;
+  const permissionMode = normalizePermissionMode(permissionModeValue);
+  if (permissionModeValue !== undefined && !permissionMode) return undefined;
   const forceBackgroundValue = metadata.forceBackground ?? metadata["force-background"];
   if (forceBackgroundValue !== undefined && typeof forceBackgroundValue !== "boolean") return undefined;
   const isolationModeValue = metadata.isolation ?? metadata.isolationMode ?? metadata["isolation-mode"];
@@ -160,9 +159,8 @@ function parseAgentDefinition(raw: string, scope: AgentDefinitionScope, filePath
     allowedTools: Object.freeze(allowedTools),
     deniedTools: Object.freeze(deniedTools),
     ...(model ? { model } : {}),
-    ...(maxSteps !== undefined ? { maxSteps } : {}),
-    ...(permissionModeValue !== undefined ? { permissionMode: permissionModeValue } : {}),
-    ...(permissionModeValue === "plan" ? { workMode: "plan" as const } : {}),
+    ...(permissionMode ? { permissionMode } : {}),
+    ...(permissionMode === "plan" ? { workMode: "plan" as const } : {}),
     ...(forceBackgroundValue !== undefined ? { forceBackground: forceBackgroundValue } : {}),
     ...(isolationModeValue !== undefined ? { isolationMode: isolationModeValue } : {}),
     ...(skills ? { skills: Object.freeze(skills) } : {}),
@@ -195,8 +193,4 @@ function stringArray(value: unknown): string[] | undefined {
 function optionalStringArray(value: unknown): string[] | undefined | null {
   if (value === undefined) return undefined;
   return stringArray(value) ?? null;
-}
-
-function optionalPositiveInteger(value: unknown): number | undefined {
-  return typeof value === "number" && Number.isInteger(value) && value > 0 ? value : undefined;
 }

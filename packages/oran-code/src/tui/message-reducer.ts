@@ -197,7 +197,7 @@ export function reduceRuntimeEvent(state: TuiState, event: RuntimeEvent): void {
       });
       if (event.autoExecute) {
         state.session.workMode = event.workMode ?? "auto";
-        state.session.permissionMode = event.permissionMode ?? (state.session.workMode === "plan" ? "plan" : "default");
+        state.session.permissionMode = event.permissionMode ?? (state.session.workMode === "plan" ? "plan" : "auto");
         state.session.status = "executing plan";
       } else {
         state.session.status = "plan decision required";
@@ -282,6 +282,17 @@ export function reduceRuntimeEvent(state: TuiState, event: RuntimeEvent): void {
     case "log":
       appendTranscriptMessage(state, { kind: "system", text: redactSecretText(event.message) });
       break;
+    case "permission_review": {
+      if (event.phase === "started") {
+        state.session.status = `Auto reviewing ${event.call.name}`;
+      } else {
+        const usage = usageDelta(event.usage ?? {});
+        state.session.usage = addUsage(state.session.usage, usage);
+        state.activeTaskUsage = addUsage(state.activeTaskUsage, usage);
+        state.session.status = `Auto: ${event.verdict ?? "ask"} — ${redactSecretText(event.reason ?? "")}`;
+      }
+      break;
+    }
     case "approval_request":
       state.session.status = "approval required";
       break;

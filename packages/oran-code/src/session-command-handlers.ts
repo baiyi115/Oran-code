@@ -40,7 +40,7 @@ import type { ConnectInput, ConnectPrefill, SessionView } from "./tui/types.js";
 import type { InkTuiApp } from "./tui/ink-app.js";
 import { resolveProviderProtocolFor } from "./provider.js";
 import { isAbortError } from "./utils/abort-error.js";
-import { isReasoningEffort, PERMISSION_MODES } from "./types.js";
+import { isReasoningEffort, normalizePermissionMode, PERMISSION_MODES, PERMISSION_MODE_LABELS } from "./types.js";
 
 export interface SessionCommandHandlersPort {
   readonly workspace: string;
@@ -97,23 +97,33 @@ export class SessionCommandHandlers {
     if (!value) {
       this.port
         .renderer()
-        .status(`Permission mode: ${this.port.permissionMode()}. Valid modes: ${PERMISSION_MODES.join(", ")}.`, "cyan");
+        .status(
+          `Permission mode: ${PERMISSION_MODE_LABELS[this.port.permissionMode()]}. Modes: auto (model review), accept-edits (local edits), plan (read-only + plans), bypass (skip ordinary approvals). Use Shift+Tab to cycle, or /permission MODE.`,
+          "cyan",
+        );
       return;
     }
-    if (!(PERMISSION_MODES as readonly string[]).includes(value)) {
+    const mode = normalizePermissionMode(value);
+    if (!mode) {
       this.port.renderer().error(`invalid permission mode: ${value}; use ${PERMISSION_MODES.join(", ")}`);
       return;
     }
-    await this.changePermissionMode(value as PermissionMode);
+    await this.changePermissionMode(mode);
   }
 
   async changePermissionMode(mode: PermissionMode): Promise<boolean> {
     // Switching how much has to be approved is safe while a task runs — the running policy reads
     // the mode live, which is the point of the shift+tab shortcut. Entering or leaving plan mode is
     // not: it changes the workflow the task was started under, and plan mode stops writes.
+    if (mode === this.port.permissionMode()) {
+      this.port.renderer().status(`Permission: ${PERMISSION_MODE_LABELS[mode]} is already active.`, "cyan");
+      return true;
+    }
     const crossesPlan = mode === "plan" || this.port.permissionMode() === "plan";
     if (crossesPlan && (this.port.interactionRunning() || this.port.hasPendingApprovals())) {
-      this.port.renderer().status("finish or cancel the current task before changing permission mode", "yellow");
+      this.port
+        .renderer()
+        .status("Permission: finish or cancel the current task before entering or leaving Plan", "yellow");
       return false;
     }
     if (mode === "plan" && this.port.permissionMode() !== "plan") {
@@ -127,7 +137,7 @@ export class SessionCommandHandlers {
     this.port.setWorkMode(workModeForPermission(mode));
     this.port.refreshTui();
     await this.port.persistTuiSession();
-    this.port.renderer().status(`Permission mode set to ${mode}.`, "cyan");
+    this.port.renderer().status(`Permission mode set to ${PERMISSION_MODE_LABELS[mode]}.`, "cyan");
     return true;
   }
 
@@ -136,7 +146,7 @@ export class SessionCommandHandlers {
     this.port.setPreviousPlanPermissionMode(undefined);
     if (previous && previous !== "plan") return previous;
     const configured = configuredPermissionMode(this.port.config(), this.port.approveAll());
-    return configured === "plan" ? "default" : configured;
+    return configured === "plan" ? "auto" : configured;
   }
 
   async handleConnect(argument = ""): Promise<void> {

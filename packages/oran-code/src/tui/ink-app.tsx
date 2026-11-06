@@ -1,7 +1,7 @@
 import React, { useEffect, useState } from "react";
 import { Box, Static, Text, render, useInput, useStdout, type Key } from "ink";
 import type { ApprovalResponse, ToolCall } from "../types.js";
-import { REASONING_EFFORTS, type PermissionMode, type WorkMode } from "../types.js";
+import { PERMISSION_MODES, PERMISSION_MODE_LABELS, REASONING_EFFORTS } from "../types.js";
 import { formatErrorMessage } from "../error-format.js";
 import { commandCandidates } from "./command-palette.js";
 import { navigateHistory } from "./interaction.js";
@@ -146,6 +146,7 @@ export class InkTuiApp {
   /** True while this process has taken the wheel from the host terminal (mouse reporting on). */
   private wheelCaptured = false;
   private submitBusy = false;
+  private permissionChangeBusy = false;
   private renderScheduled = false;
   private renderRevision = 0;
   private committedRenderRevision = 0;
@@ -166,7 +167,7 @@ export class InkTuiApp {
       options.getModelLabel(),
       options.initialSession?.history ?? options.history,
       options.initialSession?.workMode ?? options.getWorkMode?.() ?? "auto",
-      options.initialSession?.permissionMode ?? options.getPermissionMode?.() ?? "default",
+      options.initialSession?.permissionMode ?? options.getPermissionMode?.() ?? "auto",
       options.initialSession?.reasoningEffort ?? options.getReasoningEffort?.() ?? "medium",
       options.getContextWindow?.(),
       options.initialSession?.id,
@@ -483,6 +484,10 @@ export class InkTuiApp {
       this.overlayHandlers.handleTaskKey(input, key);
       return;
     }
+    if (key.shift && key.tab && ["none", "commands", "files"].includes(this.state.overlay.kind)) {
+      void this.cyclePermissionMode();
+      return;
+    }
     if (this.state.overlay.kind === "commands") {
       this.overlayHandlers.handleCommandKey(input, key);
       return;
@@ -496,8 +501,8 @@ export class InkTuiApp {
       const offset = overlay.scrollOffset ?? 0;
       const delta = (): number => this.pageScrollDelta();
       const maxOffset = this.detailsScrollMax();
-      if (key.escape || (key.ctrl && input === "t")) {
-        // A details view opened from a list returns to it; ctrl+t opens one from no overlay at all.
+      if (key.escape || (key.ctrl && (input === "t" || input === "o"))) {
+        // Details opened from another overlay return to it on close.
         setOverlay(this.state, overlay.returnTo ?? { kind: "none" });
         this.invalidate();
         return;
@@ -534,22 +539,20 @@ export class InkTuiApp {
       void this.overlayHandlers.openFollowUps();
       return;
     }
-    if (key.ctrl && input === "t") {
-      this.openLatestActivityDetails();
+    if (key.ctrl && input === "o") {
+      this.openTranscriptDetails();
       return;
     }
-    if (key.shift && key.tab) {
-      void this.cyclePermissionMode();
+    if (key.ctrl && input === "t") {
+      this.openLatestActivityDetails();
       return;
     }
     if (key.ctrl && input === "r") {
       void this.toggleReasoningEffort();
       return;
     }
-    if (key.tab && !key.shift) {
-      void this.toggleWorkMode();
-      return;
-    }
+    // Completion overlays handle Tab above; an unclaimed Tab must not change mode or input.
+    if (key.tab) return;
     this.handleComposerKey(input, key);
   }
 
@@ -743,7 +746,7 @@ export class InkTuiApp {
     this.state.session.permissionMode =
       session.permissionMode ??
       this.options.getPermissionMode?.() ??
-      (this.state.session.workMode === "plan" ? "plan" : "default");
+      (this.state.session.workMode === "plan" ? "plan" : "auto");
     this.state.session.reasoningEffort =
       session.reasoningEffort ?? this.options.getReasoningEffort?.() ?? this.state.session.reasoningEffort;
     if (session.modelReference) this.state.session.modelReference = { ...session.modelReference };
@@ -825,57 +828,44 @@ export class InkTuiApp {
     }
   }
 
-  /**
-   * shift+tab: default ↔ accept-edits, the everyday "stop asking about edits" switch.
-   * Plan mode stays on `/permission plan` — it changes the workflow the task runs under — and
-   * bypass is deliberately not one keystroke away.
-   */
+  /** Cycle one permission state; Plan transitions require the execution loop to be idle. */
   private async cyclePermissionMode(): Promise<void> {
-    const current = this.options.getPermissionMode?.() ?? this.state.session.permissionMode;
-    if (current !== "default" && current !== "accept-edits") {
-      this.state.session.status = `permission: ${current} (use /permission to change)`;
-      this.invalidate();
-      return;
-    }
-    const next: PermissionMode = current === "accept-edits" ? "default" : "accept-edits";
+    if (this.permissionChangeBusy) return;
+    this.permissionChangeBusy = true;
     try {
+      const current = this.options.getPermissionMode?.() ?? this.state.session.permissionMode;
+      const busy = this.isBlocked() || isSessionBusy(this.state);
+      if (current === "plan" && busy) {
+        this.state.session.status = "Permission: finish or cancel the current task before leaving Plan";
+        this.invalidate();
+        return;
+      }
+      const modes = busy ? PERMISSION_MODES.filter((mode) => mode !== "plan") : PERMISSION_MODES;
+      const next = modes[(modes.indexOf(current) + 1) % modes.length]!;
       const changed = await this.options.onPermissionModeChanged?.(next);
-      if (changed === false) {
-        this.state.session.status = "cannot change permission mode right now";
+      if (changed !== true) {
+        this.state.session.status = "Permission: finish or cancel the current operation before switching modes";
         this.invalidate();
         return;
       }
-      if (changed) {
-        this.state.session.permissionMode = next;
-        this.state.session.status = `permission: ${next}`;
-        this.refreshContext();
-      }
-    } catch (error) {
-      this.state.session.status = formatErrorMessage(error);
+      this.state.session.permissionMode = next;
+      this.state.session.workMode = next === "plan" ? "plan" : "auto";
+      this.refreshContext();
+      const hint =
+        next === "bypass"
+          ? "ordinary approvals skipped; explicit rules still apply"
+          : next === "plan"
+            ? "read-only tools and plan files only"
+            : next === "accept-edits"
+              ? "file edits allowed; other operations may ask"
+              : "current model reviews operations that need approval";
+      this.state.session.status = `Permission: ${PERMISSION_MODE_LABELS[next]} — ${hint}${busy ? "; Plan skipped while running" : ""}`;
       this.invalidate();
-    }
-  }
-
-  private async toggleWorkMode(): Promise<void> {
-    const current = this.options.getWorkMode?.() ?? this.state.session.workMode;
-    const next: WorkMode = current === "plan" ? "auto" : "plan";
-    try {
-      const changed = await this.options.onWorkModeChanged?.(next);
-      if (changed === false) {
-        this.state.session.status = "finish or cancel the current task before switching mode";
-        this.invalidate();
-        return;
-      }
-      if (changed) {
-        this.state.session.workMode = next;
-        if (next === "plan") this.state.session.permissionMode = "plan";
-        else if (this.state.session.permissionMode === "plan") this.state.session.permissionMode = "default";
-        this.state.session.status = next;
-        this.refreshContext();
-      }
     } catch (error) {
-      this.state.session.status = formatErrorMessage(error);
+      this.state.session.status = `Permission: ${formatErrorMessage(error)}`;
       this.invalidate();
+    } finally {
+      this.permissionChangeBusy = false;
     }
   }
 
@@ -1283,6 +1273,19 @@ export class InkTuiApp {
 
   staticTranscriptKey(): number {
     return this.staticTranscriptGeneration;
+  }
+
+  private openTranscriptDetails(): void {
+    const messages = this.state.transcript.map((message) =>
+      message.kind === "thought" || message.kind === "tool" ? { ...message, expanded: true } : { ...message },
+    );
+    if (!messages.length) return;
+    const width = Math.max(20, (this.options.output.columns || 80) - 2);
+    const lines = new TranscriptView()
+      .renderLines(messages, width, 0, { expandSegments: true })
+      .map((line) => line.text);
+    setOverlay(this.state, { kind: "details", title: "Transcript details", lines });
+    this.invalidate();
   }
 
   private openLatestActivityDetails(): void {

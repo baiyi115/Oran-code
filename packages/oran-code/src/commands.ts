@@ -50,11 +50,10 @@ export const DEFAULT_COMMANDS: readonly SlashCommand[] = [
   { name: "/new", description: "start a new session", kind: "ui", action: "new" },
   {
     name: "/permission",
-    description: "set advanced permission policy",
+    description: "set permissions: auto, accept-edits, plan, bypass",
     argumentHint: "MODE",
     kind: "ui",
     action: "permission",
-    hidden: true,
   },
   { name: "/plan", description: "enter plan mode", kind: "ui", action: "plan" },
   { name: "/rename", description: "rename current session", argumentHint: "NAME", kind: "ui", action: "rename" },

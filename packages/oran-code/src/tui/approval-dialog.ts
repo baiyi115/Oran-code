@@ -5,7 +5,7 @@ import { highlightSelection, overlayLine, type OverlayLine } from "./overlay/sel
 import { truncateVisible, wrapDisplayTextLimited } from "./text-width.js";
 import { subagentOriginLabel, type SubagentOrigin } from "../subagent/types.js";
 
-const APPROVAL_OPTIONS = ["Allow for this task", "Allow once", "Always allow", "Reject"] as const;
+const APPROVAL_OPTIONS = ["Allow rule for this task", "Allow once", "Save rule for this project", "Reject"] as const;
 
 /**
  * "Allow once" is the default: the dialog pops up while the user is still typing, so Enter must not

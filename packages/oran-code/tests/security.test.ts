@@ -22,7 +22,7 @@ async function makeWorkspace(): Promise<string> {
 function call(name: string, args: Record<string, unknown>): ToolCall {
   return { name, arguments: args, createdAt: "2026-08-28T00:00:00.000Z" };
 }
-function permissionConfig(root: string, mode: PermissionConfig["mode"] = "default"): PermissionConfig {
+function permissionConfig(root: string, mode: PermissionConfig["mode"] = "auto"): PermissionConfig {
   return {
     workspace: root,
     workMode: mode === "plan" ? "plan" : "auto",
@@ -102,7 +102,7 @@ describe("PermissionPolicy", () => {
       await policy.decide(call("write_plan", { path: join(root, ".oran", "plans", "task.md") }), 1, "write"),
     ).toMatchObject({ verdict: "allow", source: "plan-directory" });
     expect(await policy.decide(call("write_plan", { path: join(root, "README.md") }), 1, "write")).toMatchObject({
-      verdict: "ask",
+      verdict: "deny",
       source: "permission-mode",
     });
   });
@@ -354,7 +354,7 @@ describe("standing approval rules", () => {
 
   it("reads the permission mode live, so a mid-task switch applies", async () => {
     const root = await makeWorkspace();
-    let mode: PermissionMode = "default";
+    let mode: PermissionMode = "auto";
     const policy = new PermissionPolicy(permissionConfig(root), () => mode);
     policy.registerTools([{ name: "edit_file", kind: "write" }]);
     const write = call("edit_file", { path: join(root, "src", "a.ts"), old_string: "a", new_string: "b" });

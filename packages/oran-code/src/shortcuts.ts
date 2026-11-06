@@ -22,9 +22,8 @@ export const SHORTCUTS: readonly ShortcutGroup[] = [
       ["Ctrl/Alt + ←/→", "按词移动光标;Home/End 到当前行首尾;Delete 删除光标后的字符"],
       ["Ctrl+Q", "查看并取消排队中的 follow-up"],
       ["@", '补全文件路径(@"带空格的路径" 也支持)'],
-      // Idle-only: while a task runs both callbacks refuse and the TUI says to finish
-      // or cancel first, so this cannot live under "While a task is running".
-      ["Tab / Shift+Tab", "切换工作模式(plan/auto)/切换审批模式(default/accept-edits，任务运行中也生效)"],
+      ["Tab", "补全命令或文件路径;没有补全项时不切换模式"],
+      ["Shift+Tab", "切换权限:Auto → Accept edit → Plan → Bypass permission;运行中跳过 Plan"],
       ["Ctrl+R", "切换思考强度(空闲时;任务运行中会提示先结束当前任务)"],
     ],
   },
@@ -42,6 +41,7 @@ export const SHORTCUTS: readonly ShortcutGroup[] = [
         "滚轮",
         "滚活动区;活动区没有可滚内容时滚终端自身的回滚缓冲(那里有全部历史);详情覆盖层内滚详情。选中文字改用 Shift+拖选",
       ],
+      ["Ctrl+O", "展开对话详情(包含历史工具输出与 diff;可滚动,再按关闭)"],
       ["Ctrl+T", "打开“最近活动”详情(只展开最近一段;可滚动,再按关闭)"],
       ["Esc(空闲)", "清空 composer(文本、光标与粘贴内容都可用 Ctrl+Z 恢复)"],
     ],
@@ -56,7 +56,7 @@ export const SHORTCUTS: readonly ShortcutGroup[] = [
   {
     topic: "Dialogs & approvals",
     lines: [
-      ["y / n", "审批快捷回答:允许一次 / 拒绝(“总是允许”用 ↑↓ 选中后回车)"],
+      ["y / n", "审批快捷回答:允许一次 / 拒绝(任务授权和保存项目规则用 ↑↓ 选中后回车)"],
       ["Esc", "关闭当前弹层;删除类确认默认落在 Cancel,只有 Enter 落在 Delete 才生效"],
     ],
   },

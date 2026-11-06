@@ -61,7 +61,6 @@ export function createSubagentToolFilter(options: SubagentToolFilterOptions): (t
     if (options.background && !BACKGROUND_SUBAGENT_ALLOWED_TOOLS.has(name)) return false;
     if (roleDenied.has(name)) return false;
     if (roleAllowed.size > 0 && !wildcardOnly && !roleAllowed.has(name)) return false;
-    if (options.isMcpTool(name)) return true;
     return options.parentFilter?.(tool) ?? true;
   };
 }

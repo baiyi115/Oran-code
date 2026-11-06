@@ -1,3 +1,4 @@
+import { PERMISSION_MODE_LABELS } from "../types.js";
 import type { TranscriptMessage, TuiState } from "./types.js";
 import { abbreviatePath, truncateVisible, visibleWidth } from "./text-width.js";
 import { hasActiveBackgroundTasks, isSessionBusy } from "./status-indicator.js";
@@ -11,7 +12,12 @@ import { formatDuration, formatRate } from "../formatting.js";
  */
 export function footerLines(state: TuiState, width: number): string[] {
   const available = Math.max(1, Math.floor(width));
-  const primary = [state.session.workMode, state.session.reasoningEffort, state.session.modelLabel || "(not selected)"]
+  const mode = permissionChip(state);
+  const primary = [
+    available >= 70 ? `${mode} (shift+tab)` : mode,
+    state.session.reasoningEffort,
+    state.session.modelLabel || "(not selected)",
+  ]
     .filter(Boolean)
     .join(" · ");
 
@@ -25,15 +31,7 @@ export function footerLines(state: TuiState, width: number): string[] {
 
   // Status first: the detail line is truncated from the right, and an error or hint is the part
   // that must never be cut away. Usage is bracketed so the two levels read as two levels.
-  const detail = [
-    status,
-    usage,
-    subagentUsageChip(state),
-    queue,
-    permissionChip(state),
-    contextChip(state),
-    detailsHint(state),
-  ]
+  const detail = [status, usage, subagentUsageChip(state), queue, contextChip(state), detailsHint(state)]
     .filter(Boolean)
     .join(" · ");
   const lines = [truncateVisible(primary, available)];
@@ -139,14 +137,10 @@ function subagentUsageChip(state: TuiState): string | undefined {
   return tokens > 0 ? `subagents ${compactNumber(tokens)}` : undefined;
 }
 
-/**
- * How to reopen an activity row, stated once. The transcript used to repeat it on every collapsed
- * thought and tool segment — dozens of identical hints in a long task — while the shortcut always
- * targets the latest activity anyway.
- */
+/** Keep both the full transcript and recent-activity entry points discoverable. */
 function detailsHint(state: TuiState): string | undefined {
   const hasActivity = state.transcript.some((message) => message.kind === "thought" || message.kind === "tool");
-  return hasActivity ? "ctrl+t details" : undefined;
+  return hasActivity ? "ctrl+o transcript · ctrl+t latest" : undefined;
 }
 
 function cacheReadLabel(cacheReadTokens: number, inputTokens: number): string {
@@ -164,15 +158,11 @@ function compactNumber(value: number): string {
   return `${(value / 1_000_000).toFixed(1)}m`;
 }
 
-/**
- * Permission-mode chip: bypass/readonly/plan/accept-edits deserve to be visible at all times
- * (the safety baseline line must not let you think you are in default); the default mode displays
- * default like any other.
- */
+/** Keep the active approval mode visible, including the default Auto mode. */
 function permissionChip(state: TuiState): string | undefined {
   const mode = state.session.permissionMode;
   if (!mode) return undefined;
-  return `perm:${mode}`;
+  return `perm:${PERMISSION_MODE_LABELS[mode]}`;
 }
 
 /** Context-usage percentage indicator (estimated); at ≥80% it appends a "!" to hint at wrapping up. */
@@ -186,8 +176,8 @@ function contextChip(state: TuiState): string | undefined {
 }
 
 function explicitStatus(state: TuiState): string | undefined {
-  if (isSessionBusy(state)) return undefined;
   const raw = (state.session.status || "").trim();
+  if (isSessionBusy(state) && !raw.startsWith("Permission:")) return undefined;
   if (!raw) return undefined;
   // Suppress noisy machine states; keep user-facing hints (exit, errors, renames).
   // Duration already appears as "- Work for ..." above the composer.

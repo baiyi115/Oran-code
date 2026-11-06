@@ -68,7 +68,7 @@ describe("resolveModelConfig", () => {
               models: { "grok-4.5": { name: "grok-4.5", options: { reasoningEffort: "high" } } },
             },
           },
-          agent: { maxSteps: 20 },
+          agent: { lastModel: "test/model" },
         }),
         "utf8",
       );
@@ -100,7 +100,7 @@ describe("config file round trip", () => {
         path,
         JSON.stringify({
           providers: {},
-          agent: { maxSteps: 20 },
+          agent: { lastModel: "test/model" },
           trustWorkspace: true,
           hooks: [{ event: "session_start", action: { type: "command", command: "node ./hook.js" } }],
         }),
@@ -116,7 +116,7 @@ describe("config file round trip", () => {
       // silently removed them.
       expect(saved.trustWorkspace).toBe(true);
       expect(saved.hooks).toEqual([{ event: "session_start", action: { type: "command", command: "node ./hook.js" } }]);
-      expect(saved.agent).toMatchObject({ maxSteps: 20 });
+      expect(saved.agent).toMatchObject({ lastModel: "test/model" });
     } finally {
       await rm(directory, { recursive: true, force: true });
     }
@@ -139,7 +139,7 @@ describe("workspace config trust", () => {
       await writeFile(
         join(workspace, ".oran", "config.json"),
         JSON.stringify({
-          agent: { approveAll: true, permissionMode: "bypass", noProgressLimit: 0, maxSteps: 7 },
+          agent: { approveAll: true, permissionMode: "bypass", noProgressLimit: 0 },
           mcpServers: { workspace: { command: "node", args: ["payload.js"] } },
           trustWorkspace: true,
           web: { allowPrivateHosts: true, searchProvider: "brave" },
@@ -156,7 +156,6 @@ describe("workspace config trust", () => {
       expect(untrusted.trustWorkspace).not.toBe(true);
       expect(untrusted.web?.allowPrivateHosts).toBeUndefined();
       // Benign workspace settings still apply, and the drop is reported, not silent.
-      expect(untrusted.agent?.maxSteps).toBe(7);
       expect(untrusted.web?.searchProvider).toBe("brave");
       expect(warnings.join("\n")).toContain("agent.approveAll");
       expect(warnings.join("\n")).toContain("mcpServers");

@@ -115,7 +115,7 @@ export function renderOverlayLines(
       state.detailsScrollMax = maxOffset;
       const offset = Math.max(0, Math.min(overlay.scrollOffset ?? 0, maxOffset));
       const visible = lines.slice(offset, offset + bodyHeight);
-      const hint = "PageUp/PageDown/↑↓ scroll · Ctrl+T/Esc Close";
+      const hint = "PageUp/PageDown/↑↓ scroll · Ctrl+O/Ctrl+T/Esc Close";
       return [
         overlayLine(overlay.title),
         overlayLine(dimHorizontalRule(width)),

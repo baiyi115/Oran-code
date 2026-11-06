@@ -26,6 +26,7 @@ describe("TUI overlays", () => {
       "/memory",
       "/model",
       "/new",
+      "/permission",
       "/plan",
       "/rename",
       "/resume",
@@ -71,9 +72,9 @@ describe("TUI overlays", () => {
     expect(text).toContain("Tool: run_command");
     expect(text).not.toContain("Tool: run_command (L3)");
     expect(text).toContain("Command: pnpm test");
-    expect(rows.some((row) => row.selected === true && row.text.includes("Allow for this task"))).toBe(true);
+    expect(rows.some((row) => row.selected === true && row.text.includes("Allow rule for this task"))).toBe(true);
     expect(text).toContain("Allow once");
-    expect(text).toContain("Always allow");
+    expect(text).toContain("Save rule for this project");
     expect(text).toContain("Reject");
     expect(text).not.toContain("sk-super-secret-value");
   });

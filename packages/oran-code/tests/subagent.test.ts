@@ -136,12 +136,12 @@ describe("createSubagentToolFilter", () => {
     expect(wildcard(tool("write_file"))).toBe(false);
   });
 
-  it("lets MCP tools pass through ahead of the parent filter", () => {
+  it("applies the parent filter to MCP tools", () => {
     const filter = createSubagentToolFilter({
       background: false,
       customAgent: false,
       isMcpTool: (name) => name.startsWith("mcp__"),
-      parentFilter: () => false,
+      parentFilter: (candidate) => candidate.name.startsWith("mcp__"),
     });
     expect(filter(tool("mcp__server__query"))).toBe(true);
     expect(filter(tool("read_file"))).toBe(false);
@@ -169,7 +169,6 @@ allowedTools:
 deniedTools:
   - write_file
 permissionMode: plan
-maxSteps: 5
 isolation: worktree
 ---
 You are a code reviewer subagent.`;
@@ -210,7 +209,6 @@ You are a code reviewer subagent.`;
       scope: "user",
       permissionMode: "plan",
       workMode: "plan",
-      maxSteps: 5,
       isolationMode: "worktree",
       allowedTools: ["read_file", "glob_files"],
       deniedTools: ["write_file"],
@@ -250,7 +248,6 @@ You are a code reviewer subagent.`;
     ["missing description", "---\nname: reviewer\n---\nbody"],
     ["missing prompt body", "---\nname: reviewer\ndescription: desc\n---\n"],
     ["invalid permission mode", "---\nname: reviewer\ndescription: desc\npermissionMode: chaos\n---\nbody"],
-    ["invalid maxSteps", "---\nname: reviewer\ndescription: desc\nmaxSteps: 0\n---\nbody"],
     ["invalid isolation", "---\nname: reviewer\ndescription: desc\nisolation: chroot\n---\nbody"],
   ])("skips malformed definitions: %s", async (_label, content) => {
     const workspace = await makeWorkspace();

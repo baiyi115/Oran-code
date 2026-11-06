@@ -798,6 +798,8 @@ export class TerminalSession {
         trace,
         baseConfig: runtimeConfig,
         baseModel: requestModel,
+        permissionMode: () => this.permissionMode,
+        permissionUserRequest: prompt,
         providerFactory: this.providerFactory,
         resolveModel: (reference) => resolveModelConfig(this.config, reference),
         approvalCallback: (call, level, description, requestId, origin) =>
@@ -1973,24 +1975,6 @@ export class TerminalSession {
       getWorkMode: () => this.workMode,
       getPermissionMode: () => this.permissionMode,
       onPermissionModeChanged: (mode) => this.handlers.changePermissionMode(mode),
-      onWorkModeChanged: async (mode) => {
-        if (this.interactionRunning() || this.hasPendingApprovals()) return false;
-        if (mode === "plan") {
-          if (this.permissionMode !== "plan") {
-            this.previousPlanPermissionMode = this.permissionMode;
-            this.pendingPlanExecute = undefined;
-          }
-          this.permissionMode = "plan";
-          this.workMode = "plan";
-        } else {
-          if (mode !== this.workMode) this.pendingPlanExecute = undefined;
-          this.permissionMode =
-            this.permissionMode === "plan" ? this.handlers.permissionModeAfterPlan() : this.permissionMode;
-          this.workMode = mode;
-        }
-        await this.persistTuiSession();
-        return true;
-      },
       getReasoningEffort: () => this.reasoningEffort,
       onReasoningEffortChanged: (effort) => {
         if (this.interactionRunning() || this.hasPendingApprovals()) return false;

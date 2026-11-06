@@ -2,7 +2,7 @@ import { randomUUID } from "node:crypto";
 
 export type MessageRole = "system" | "user" | "assistant" | "tool";
 export type WorkMode = "plan" | "auto";
-export type PermissionMode = "readonly" | "default" | "accept-edits" | "plan" | "bypass";
+export type PermissionMode = "auto" | "accept-edits" | "plan" | "bypass";
 export type ReasoningEffort = "low" | "medium" | "high" | "xhigh";
 export type ToolKind = "readonly" | "write" | "command";
 export type SessionTitleMode = "first-message" | "local" | "model";
@@ -12,7 +12,23 @@ export type ModelRetryCategory =
   "rate_limit" | "timeout" | "network" | "http_4xx" | "http_5xx" | "contract" | "empty" | "parse" | "unknown";
 
 export const REASONING_EFFORTS: readonly ReasoningEffort[] = ["low", "medium", "high", "xhigh"];
-export const PERMISSION_MODES: readonly PermissionMode[] = ["readonly", "default", "accept-edits", "plan", "bypass"];
+export const PERMISSION_MODES: readonly PermissionMode[] = ["auto", "accept-edits", "plan", "bypass"];
+
+export const PERMISSION_MODE_LABELS: Readonly<Record<PermissionMode, string>> = {
+  auto: "Auto",
+  "accept-edits": "Accept edit",
+  plan: "Plan",
+  bypass: "Bypass permission",
+};
+
+/** Normalize earlier config/session values without exposing extra permission modes. */
+export function normalizePermissionMode(value: unknown): PermissionMode | undefined {
+  if (value === "default") return "auto";
+  if (value === "readonly") return "plan";
+  if (value === "accept edit" || value === "acceptEdits") return "accept-edits";
+  if (value === "bypass permission" || value === "bypassPermissions") return "bypass";
+  return isPermissionMode(value) ? value : undefined;
+}
 
 export function isPermissionMode(value: unknown): value is PermissionMode {
   return typeof value === "string" && (PERMISSION_MODES as readonly string[]).includes(value);
@@ -399,7 +415,7 @@ export interface ToolDefinition {
   description: string;
   parameters: Record<string, unknown>;
   permissionLevel: number;
-  /** Runtime infrastructure tool that remains visible and bypasses ordinary approval gates. */
+  /** Runtime infrastructure tool, available in Plan; explicit permission rules still apply. */
   system?: boolean;
   /** Safety class used by loop batching and plan-mode tool injection. */
   kind?: ToolKind;
@@ -478,6 +494,15 @@ export interface RuntimeEventPayloads {
     call: ToolCall;
     level: number;
     description: string;
+  };
+  permission_review: {
+    call: ToolCall;
+    phase: "started" | "completed";
+    model: string;
+    verdict?: "allow" | "deny" | "ask";
+    reason?: string;
+    usage?: Record<string, number>;
+    durationMs?: number;
   };
   tool_start: { call: ToolCall; index: number; permissionLevel: number };
   tool_result: { call: ToolCall; index: number; result: ToolResult };

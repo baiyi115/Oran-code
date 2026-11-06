@@ -51,7 +51,7 @@ export class ApprovalQueue {
       this.deps
         .renderer()
         .error(
-          `approval required for ${call.name} but no interactive session is available; use --approve-all to run non-interactively`,
+          `approval required for ${call.name} but no interactive session is available; configure a scoped allow rule or choose --permission-mode bypass explicitly`,
         );
       return Promise.resolve(false);
     }
@@ -109,21 +109,23 @@ export class ApprovalQueue {
   resolveFromInput(value: string): void {
     const pending = this.pending[0];
     if (!pending) return;
-    const answer = value.toLowerCase();
+    const answer = value.trim().toLowerCase();
     if (answer === "y" || answer === "yes") {
       this.settle(pending, true);
+    } else if (answer === "t" || answer === "task") {
+      this.settle(pending, "task");
     } else if (answer === "a" || answer === "always") {
       this.settle(pending, "always");
     } else if (answer === "n" || answer === "no" || answer === "esc" || answer === "") {
       this.settle(pending, false);
     } else {
-      this.deps.renderer().status("Please answer y, a, or n.", "yellow");
+      this.deps.renderer().status("Please answer y (once), t (task), a (save rule), or n (reject).", "yellow");
     }
   }
 }
 
 export function isApprovalAnswer(value: string): boolean {
-  return ["y", "yes", "a", "always", "n", "no", "esc"].includes(value.toLowerCase());
+  return ["y", "yes", "t", "task", "a", "always", "n", "no", "esc"].includes(value.trim().toLowerCase());
 }
 
 function sameApprovalOrigin(left: SubagentOrigin, right: SubagentOrigin): boolean {

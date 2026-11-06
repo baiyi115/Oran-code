@@ -58,6 +58,7 @@ async function executeWithController(options: AgentOptions, registry: ToolRegist
       trace,
       baseConfig: config,
       baseModel: options.model,
+      permissionUserRequest: options.prompt,
       providerFactory: createModelProvider,
       resolveModel,
       ...(options.approve

@@ -46,11 +46,10 @@ export interface TuiAppOptions {
   loadFiles?: (query: string) => Promise<string[]>;
   initialSession?: SessionView;
   getWorkMode?: () => WorkMode;
-  onWorkModeChanged?: (mode: WorkMode) => boolean | Promise<boolean>;
   getPermissionMode?: () => PermissionMode;
   /**
-   * Switches how much needs approval. Unlike the work-mode and effort callbacks this may be
-   * accepted while a task runs: the running policy reads the mode live.
+   * Changes permissions through the session's single mode-switching entry point.
+   * Execution modes may switch live; entering or leaving Plan requires an idle task.
    */
   onPermissionModeChanged?: (mode: PermissionMode) => boolean | Promise<boolean>;
   getReasoningEffort?: () => ReasoningEffort;

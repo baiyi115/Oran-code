@@ -3,6 +3,7 @@ import { resolve, relative, sep } from "node:path";
 import { AgentLoop, type NoProgressDiagnostic } from "./loop.js";
 import { ContextManager } from "./context-manager.js";
 import { PermissionPolicy } from "./security.js";
+import { reviewPermission } from "./permission-review.js";
 import { discoverWorkspace } from "./workspace.js";
 import { isAbortError } from "./utils/abort-error.js";
 import { cloneMessages } from "./message-utils.js";
@@ -108,6 +109,8 @@ export interface TaskControllerOptions {
    * it runs (shift+tab), so the mode is read through this instead of the config snapshot.
    */
   permissionMode?: () => PermissionMode;
+  /** Original user intent for delegated tasks; the delegated prompt cannot grant consent. */
+  permissionUserRequest?: string;
   approvalCallback?: ApprovalCallback;
   eventCallback?: RuntimeEventCallback;
   conversationCallback?: ConversationCallback;
@@ -178,6 +181,7 @@ export class TaskController {
    *  the previous turn". */
   private activeLevelSignals = new Set<string>();
   private readonly pendingSteeringMessages: string[] = [];
+  private readonly reviewUserGuidance: string[] = [];
   /** Correction reminder for truncated model output, injected once before the next request. */
   private pendingTruncationNotice: string | undefined;
   /** Truncation recovery count for this task: past the limit the text received so far wraps up the
@@ -270,6 +274,29 @@ export class TaskController {
       emit: (type, payload) => this.emit(type, payload),
       persist: (task) => this.persist(task),
       requestApproval: (call, level, description) => this.requestApproval(call, level, description),
+      reviewPermission: async (call, kind, description) => {
+        await this.emit("permission_review", { call, phase: "started", model: this.config.model.model });
+        const result = await reviewPermission({
+          provider: this.provider,
+          workspace: this.config.workspace,
+          userRequest: options.permissionUserRequest ?? this.hookUserPrompt,
+          userGuidance: [...this.reviewUserGuidance, ...this.pendingSteeringMessages],
+          call,
+          kind,
+          description,
+          ...(this.abortController ? { signal: this.abortController.signal } : {}),
+        });
+        this.loop?.recordUsage(result.usage);
+        this.loop?.recordModelElapsed(result.durationMs);
+        this.appendDiagnosticStep("permission_review", {
+          tool: call.name,
+          callId: call.id,
+          model: this.config.model.model,
+          ...result,
+        });
+        await this.emit("permission_review", { call, phase: "completed", model: this.config.model.model, ...result });
+        return result;
+      },
       fireHook: (ctx) => this.fireHook(ctx),
       checkBeforeToolHook: (task, call) => this.checkBeforeToolHook(task, call),
       isToolVisible: (tool) => this.isToolVisible(tool),
@@ -324,6 +351,7 @@ export class TaskController {
     const loop = new AgentLoop(this.config.loop, this.previousToolCalls);
     this.loop = loop;
     this.hookUserPrompt = task.prompt;
+    this.reviewUserGuidance.length = 0;
     await this.fireHook({
       event: "session_start",
       workspace: task.workspace,
@@ -413,6 +441,7 @@ export class TaskController {
       const allSteering = [...externalSteering, ...pendingSteering];
       if (allSteering.length > 0) {
         for (const steeringText of allSteering) {
+          this.reviewUserGuidance.push(steeringText);
           messages.push({
             role: "user",
             content: `[User steering guidance provided while task in progress]:\n${steeringText}`,

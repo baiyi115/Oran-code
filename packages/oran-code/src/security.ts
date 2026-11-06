@@ -16,6 +16,8 @@ export type PermissionDecisionSource =
   | "project-rule"
   | "user-rule"
   | "user-decision"
+  | "auto-review"
+  | "rule-error"
   | "permission-mode";
 
 export interface ApprovalDecision {
@@ -28,7 +30,7 @@ export interface ApprovalDecision {
 interface PermissionRule {
   tool: string;
   pattern: string;
-  effect: "allow" | "deny";
+  effect: PermissionVerdict;
   match: "exact" | "glob";
 }
 
@@ -591,6 +593,7 @@ export class PermissionPolicy {
   /** Rules granted by "allow for this task": same shape as file rules, discarded with the policy. */
   private readonly taskRules: PermissionRule[] = [];
   private readonly registeredKinds = new Map<string, ToolKind>();
+  private readonly systemTools = new Set<string>();
   private resolvedRoots: { key: string; roots: (string | undefined)[] } | undefined;
 
   /**
@@ -602,13 +605,18 @@ export class PermissionPolicy {
     private readonly modeProvider?: () => PermissionMode,
   ) {}
 
-  private get mode(): PermissionMode {
+  get mode(): PermissionMode {
     return this.modeProvider?.() ?? this.config.mode;
   }
 
-  registerTools(tools: readonly { name: string; kind?: ToolKind }[]): void {
+  registerTools(tools: readonly { name: string; kind?: ToolKind; system?: boolean }[]): void {
     this.registeredKinds.clear();
-    for (const tool of tools) this.registeredKinds.set(canonicalTool(tool.name), tool.kind ?? inferToolKind(tool.name));
+    this.systemTools.clear();
+    for (const tool of tools) {
+      const name = canonicalTool(tool.name);
+      this.registeredKinds.set(name, tool.kind ?? inferToolKind(tool.name));
+      if (tool.system) this.systemTools.add(name);
+    }
   }
 
   private diffDriverCache: { workspace: string; checkedAt: number; hasDrivers: boolean } | undefined;
@@ -676,19 +684,29 @@ export class PermissionPolicy {
       return decision("deny", `path could not be resolved safely: ${path}`, "path-sandbox", level);
     }
 
+    const infrastructure = this.systemTools.has(canonicalTool(call.name));
+    let planWrite = false;
     if (
       this.mode === "plan" &&
-      kind === "write" &&
-      this.registeredKinds.get(canonicalTool(call.name)) === "write" &&
+      canonicalTool(call.name) === "write_plan" &&
+      this.registeredKinds.get("write_plan") === "write" &&
       resolvedPath !== undefined
     ) {
       const planRoot = await resolvePhysicalPath(this.config.planDirectory, this.config.workspace);
-      if (planRoot !== undefined && isWithinPath(planRoot, resolvedPath)) {
-        return decision("allow", "plan files may be written inside .oran/plans", "plan-directory", level);
-      }
+      planWrite = planRoot !== undefined && resolvedPath !== planRoot && isWithinPath(planRoot, resolvedPath);
+    }
+    // A grant cannot turn Plan into an execution mode.
+    if (this.mode === "plan" && kind !== "readonly" && !planWrite && !infrastructure) {
+      return decision(
+        "deny",
+        "Plan allows read-only tools and write_plan inside .oran/plans",
+        "permission-mode",
+        level,
+      );
     }
 
-    if (kind === "command") {
+    let safeCommand = false;
+    if (kind === "command" && canonicalTool(call.name) === "run_command") {
       const command = extractRuleContent(call, kind);
       if (FORK_BOMB_PATTERN.test(command)) {
         return decision("deny", "blocked dangerous command: shell fork bomb", "dangerous-command", level);
@@ -700,10 +718,7 @@ export class PermissionPolicy {
         return decision("deny", `blocked dangerous command: ${dangerousReason}`, "dangerous-command", level);
       }
       if (isSafeCommand(command) || isReadOnlyShellCommand(ast)) {
-        const allowed = await this.canAutoAllowShellCommand(command, ast);
-        if (allowed) {
-          return decision("allow", "recognized read-only command", "safe-command", level);
-        }
+        safeCommand = await this.canAutoAllowShellCommand(command, ast);
       }
     }
 
@@ -730,30 +745,45 @@ export class PermissionPolicy {
       }
     }
 
-    if (this.mode === "readonly" && kind !== "readonly") {
-      return modeDecision(this.mode, kind, level);
-    }
-
     const layers: readonly [PermissionDecisionSource, string][] = [
       ["local-rule", this.config.localRulesPath],
       ["project-rule", this.config.projectRulesPath],
       ["user-rule", this.config.userRulesPath],
     ];
     const matches: Array<{ source: PermissionDecisionSource; rule: PermissionRule }> = [];
-    for (const [source, file] of layers) {
-      const rule = findMatchingRule(await loadRules(file), call, kind, this.registeredKinds);
-      if (rule) matches.push({ source, rule });
+    try {
+      for (const [source, file] of layers) {
+        const rules = await loadRules(file);
+        for (const effect of ["deny", "ask", "allow"] as const) {
+          const rule = findMatchingRule(
+            rules.filter((item) => item.effect === effect),
+            call,
+            kind,
+            this.registeredKinds,
+          );
+          if (rule) matches.push({ source, rule });
+        }
+      }
+    } catch {
+      return decision(
+        "deny",
+        "permission rules could not be loaded; fix the rules file before continuing",
+        "rule-error",
+        level,
+      );
     }
-    // Deny wins over every allow, including a task grant: a rule written for one directory must not
-    // shadow an explicit deny in project or user config.
     const denied = matches.find((entry) => entry.rule.effect === "deny");
     if (denied) return decision("deny", `deny rule matched ${formatRule(denied.rule)}`, denied.source, level);
+    const asked = matches.find((entry) => entry.rule.effect === "ask");
+    if (asked) return decision("ask", `ask rule matched ${formatRule(asked.rule)}`, asked.source, level);
     if (findMatchingRule(this.taskRules, call, kind, this.registeredKinds)) {
       return decision("allow", "allowed for the current task", "session-rule", level);
     }
-    const allowed = matches[0];
+    const allowed = matches.find((entry) => entry.rule.effect === "allow");
     if (allowed) return decision("allow", `allow rule matched ${formatRule(allowed.rule)}`, allowed.source, level);
-
+    if (infrastructure) return decision("allow", "runtime infrastructure tool", "permission-mode", level);
+    if (planWrite) return decision("allow", "plan files may be written inside .oran/plans", "plan-directory", level);
+    if (safeCommand) return decision("allow", "recognized read-only command", "safe-command", level);
     return modeDecision(this.mode, kind, level);
   }
 
@@ -841,14 +871,16 @@ function decision(
 
 function modeDecision(mode: PermissionMode, kind: ToolKind, level: number): ApprovalDecision {
   const allow = kind === "readonly" || mode === "bypass" || (mode === "accept-edits" && kind === "write");
-  const deny = mode === "readonly" && kind !== "readonly";
+  const deny = mode === "plan" && kind !== "readonly";
   return decision(
     deny ? "deny" : allow ? "allow" : "ask",
     deny
-      ? `readonly mode blocks ${kind} tools`
+      ? `Plan blocks ${kind} tools outside the designated plan writer`
       : allow
         ? `${mode} mode allows ${kind} tools`
-        : `${mode} mode requires approval for ${kind} tools`,
+        : mode === "auto"
+          ? `Auto requires independent model review for ${kind} tools`
+          : `${mode} mode requires approval for ${kind} tools`,
     "permission-mode",
     level,
   );
@@ -989,7 +1021,7 @@ async function loadRules(path: string): Promise<PermissionRule[]> {
     if ((error as { code?: string }).code === "ENOENT") return [];
     const detail = error instanceof Error ? error.message : String(error);
     console.error(`warning: failed to parse permission rules from ${path}: ${detail}`);
-    return [];
+    throw error;
   }
 }
 
@@ -1007,31 +1039,51 @@ async function loadRuleDocumentForWrite(path: string): Promise<Record<string, un
 
 function normalizeRules(document: unknown): PermissionRule[] {
   const records: unknown[] = [];
+  if (document === null || document === undefined) return [];
   if (Array.isArray(document)) records.push(...document);
-  else if (document && typeof document === "object") {
+  else if (typeof document === "object") {
     const root = document as Record<string, unknown>;
+    if (root.rules !== undefined && !Array.isArray(root.rules)) throw new Error("rules must be an array");
     if (Array.isArray(root.rules)) records.push(...root.rules);
     collectEffectRules(records, root.allow, "allow");
+    collectEffectRules(records, root.ask, "ask");
     collectEffectRules(records, root.deny, "deny");
-    if (root.permissions && typeof root.permissions === "object" && !Array.isArray(root.permissions)) {
+    if (root.permissions !== undefined) {
+      if (!root.permissions || typeof root.permissions !== "object" || Array.isArray(root.permissions)) {
+        throw new Error("permissions must be an object");
+      }
       const permissions = root.permissions as Record<string, unknown>;
       collectEffectRules(records, permissions.allow, "allow");
+      collectEffectRules(records, permissions.ask, "ask");
       collectEffectRules(records, permissions.deny, "deny");
     }
-  }
-  return records.map(parseRule).filter((rule): rule is PermissionRule => rule !== undefined);
+  } else throw new Error("permission document must be an object or array");
+  return records.map((record) => {
+    const rule = parseRule(record);
+    if (!rule) throw new Error("invalid permission rule");
+    return rule;
+  });
 }
 
-function collectEffectRules(records: unknown[], value: unknown, effect: "allow" | "deny"): void {
-  if (!Array.isArray(value)) return;
-  for (const rule of value) records.push(typeof rule === "string" ? { rule, effect } : rule);
+function collectEffectRules(records: unknown[], value: unknown, effect: PermissionVerdict): void {
+  if (value === undefined) return;
+  if (!Array.isArray(value)) throw new Error(`${effect} rules must be an array`);
+  for (const rule of value) {
+    records.push(
+      typeof rule === "string"
+        ? { rule, effect }
+        : rule && typeof rule === "object" && !Array.isArray(rule)
+          ? { ...rule, effect }
+          : rule,
+    );
+  }
 }
 
 function parseRule(value: unknown): PermissionRule | undefined {
   if (typeof value === "string") return undefined;
   if (!value || typeof value !== "object" || Array.isArray(value)) return undefined;
   const item = value as Record<string, unknown>;
-  const effect = item.effect === "allow" || item.effect === "deny" ? item.effect : undefined;
+  const effect = item.effect === "allow" || item.effect === "ask" || item.effect === "deny" ? item.effect : undefined;
   const match =
     item.match === undefined || item.match === "glob" ? "glob" : item.match === "exact" ? "exact" : undefined;
   if (!effect || !match) return undefined;
@@ -1044,7 +1096,7 @@ function parseRule(value: unknown): PermissionRule | undefined {
 
 function parseRuleText(
   value: string,
-  effect: "allow" | "deny",
+  effect: PermissionVerdict,
   matchKind: "exact" | "glob",
 ): PermissionRule | undefined {
   const parsed = /^\s*([^()]+?)\s*\(([\s\S]*)\)\s*$/.exec(value);
@@ -1073,7 +1125,7 @@ function findMatchingRule(
     if (!rule || !registeredKinds.has(canonicalTool(rule.tool)) || canonicalTool(rule.tool) !== tool) continue;
     if (rule.match === "exact") {
       if (rule.pattern === content) return rule;
-    } else if (globApplies && matchesPattern(rule.pattern, content)) {
+    } else if ((rule.effect !== "allow" || globApplies) && matchesPattern(rule.pattern, content)) {
       return rule;
     }
   }
@@ -1108,11 +1160,15 @@ export function matchesPattern(pattern: string, value: string): boolean {
   }
 }
 
-function isWritableRule(value: unknown): value is Record<string, unknown> & { effect: "allow" | "deny" } {
+function isWritableRule(value: unknown): value is Record<string, unknown> & { effect: PermissionVerdict } {
   if (!value || typeof value !== "object" || Array.isArray(value)) return false;
   const item = value as Record<string, unknown>;
   const hasRuleText = typeof item.rule === "string";
   const hasStructuredRule = typeof item.tool === "string" && typeof item.pattern === "string";
   const hasValidMatch = item.match === undefined || item.match === "exact" || item.match === "glob";
-  return (hasRuleText || hasStructuredRule) && (item.effect === "allow" || item.effect === "deny") && hasValidMatch;
+  return (
+    (hasRuleText || hasStructuredRule) &&
+    (item.effect === "allow" || item.effect === "ask" || item.effect === "deny") &&
+    hasValidMatch
+  );
 }

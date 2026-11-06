@@ -193,7 +193,7 @@ export class TerminalRenderer implements SessionRenderer {
       `${paint("Approval required", "yellow", this.colorEnabled)}: ${call.name} (L${level})\n` +
         `Source: ${subagentOriginLabel(origin)}\n` +
         `${description}\n${truncateText(args, 1200)}\n` +
-        "Reply y to allow once, a to always allow this exact tool request, or n to reject.\n",
+        "Reply y to allow once, t for this task's displayed rule, a to save that rule in .oran/permissions.local.yaml, or n to reject.\n",
     );
   }
 
@@ -296,6 +296,9 @@ export class TerminalRenderer implements SessionRenderer {
       }
       case "cancelled":
         this.status(`[cancelled] ${event.message}`, "yellow");
+        break;
+      case "permission_review":
+        if (event.phase === "completed") this.status(`Auto: ${event.verdict} — ${redactSecretText(event.reason ?? "")}`);
         break;
       case "approval_request":
         break;

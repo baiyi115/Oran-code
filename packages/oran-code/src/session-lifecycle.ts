@@ -8,7 +8,7 @@ import type { SessionOption, SessionView } from "./tui/types.js";
 /** Derives the initial permission mode from the config and approve-all. */
 export function configuredPermissionMode(config: UserConfig, approveAll: boolean): PermissionMode {
   if (config.agent?.workMode === "plan") return "plan";
-  return config.agent?.permissionMode ?? (approveAll ? "bypass" : "default");
+  return config.agent?.permissionMode ?? (approveAll ? "bypass" : "auto");
 }
 
 export function workModeForPermission(mode: PermissionMode): WorkMode {

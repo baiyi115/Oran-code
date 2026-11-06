@@ -103,7 +103,12 @@ describe("TUI render helpers", () => {
     expect(fitOverlayLines(lines, 10)).toEqual(lines);
     expect(fitOverlayLines(lines, 1)).toEqual([{ text: "b", selected: true }]);
     expect(fitOverlayLines(lines, 2)).toEqual([{ text: "header" }, { text: "b", selected: true }]);
-    expect(fitOverlayLines(lines, 4)).toEqual([{ text: "header" }, { text: "hint" }, { text: "a" }, { text: "b", selected: true }]);
+    expect(fitOverlayLines(lines, 4)).toEqual([
+      { text: "header" },
+      { text: "hint" },
+      { text: "a" },
+      { text: "b", selected: true },
+    ]);
   });
 
   it("extracts the @file token before the cursor", () => {
@@ -160,7 +165,7 @@ describe("details overlay window", () => {
     expect(lines[0]?.text).toBe("Latest activity");
     expect(texts(lines)).toContain("content line 1");
     expect(texts(lines)).not.toContain("content line 10");
-    expect(texts(lines).some((line) => line.includes("7/40") && line.includes("Ctrl+T/Esc Close"))).toBe(true);
+    expect(texts(lines).some((line) => line.includes("7/40") && line.includes("Ctrl+O/Ctrl+T/Esc Close"))).toBe(true);
   });
 
   it("scrolls through the content without dropping the title or hint", () => {
@@ -185,11 +190,17 @@ describe("details overlay window", () => {
       60,
       10,
     );
-    expect(texts(lines)).toEqual(["T", expect.any(String), "one", "two", "PageUp/PageDown/↑↓ scroll · Ctrl+T/Esc Close"]);
+    expect(texts(lines)).toEqual([
+      "T",
+      expect.any(String),
+      "one",
+      "two",
+      "PageUp/PageDown/↑↓ scroll · Ctrl+O/Ctrl+T/Esc Close",
+    ]);
   });
 });
 
-describe("tool output head/tail preview", () => {
+describe("tool output preview and details", () => {
   function tailMessage(output: string): ToolMessage {
     return {
       id: "tool-1",
@@ -338,14 +349,14 @@ describe("footer permission and context chips", () => {
       ...state(),
       session: { ...state().session, permissionMode: "bypass" as const, contextWindow: 1000, contextEstimate: 420 },
     };
-    expect(footerLines(withChips, 120).join("\n")).toContain("perm:bypass");
+    expect(footerLines(withChips, 120).join("\n")).toContain("perm:Bypass permission");
     expect(footerLines(withChips, 120).join("\n")).toContain("ctx 42%");
   });
 
   it("warns when the context window is close to full", () => {
     const nearlyFull = {
       ...state(),
-      session: { ...state().session, permissionMode: "default" as const, contextWindow: 2000, contextEstimate: 1700 },
+      session: { ...state().session, permissionMode: "auto" as const, contextWindow: 2000, contextEstimate: 1700 },
     };
     expect(footerLines(nearlyFull, 120).join("\n")).toContain("ctx 85%!");
   });

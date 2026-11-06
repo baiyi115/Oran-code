@@ -14,6 +14,7 @@ import {
   userConfigPath,
   userConfigReadPath,
 } from "./config.js";
+import { isPermissionMode, normalizePermissionMode, PERMISSION_MODES } from "./types.js";
 import type { Task, UserConfig } from "./types.js";
 import type { JsonlEventLog } from "./headless-events.js";
 import { formatErrorDetail } from "./error-format.js";
@@ -81,9 +82,23 @@ export async function main(argv = process.argv.slice(2)): Promise<void> {
 
   const config = await loadConfig(workspace);
   const requestedModel = valueAfter(argv, "--model", "-m");
-  const approveAll = argv.includes("--approve-all") || argv.includes("-y") || config.agent?.approveAll === true;
+  const bypassFlag = argv.includes("--approve-all") || argv.includes("-y");
   const acceptEdits = argv.includes("--accept-edits") || argv.includes("-a");
-  const requestedPermissionMode = approveAll ? "bypass" : acceptEdits ? "accept-edits" : undefined;
+  const modeArgument = valueAfter(argv, "--permission-mode");
+  if (argv.includes("--permission-mode") && !isPermissionMode(modeArgument)) {
+    throw new UsageError(`--permission-mode must be ${PERMISSION_MODES.join(", ")}`);
+  }
+  if (Number(bypassFlag) + Number(acceptEdits) + Number(modeArgument !== undefined) > 1) {
+    throw new UsageError("choose only one of --permission-mode, --accept-edits, or --approve-all");
+  }
+  const requestedPermissionMode = isPermissionMode(modeArgument)
+    ? modeArgument
+    : bypassFlag
+      ? "bypass"
+      : acceptEdits
+        ? "accept-edits"
+        : undefined;
+  const approveAll = requestedPermissionMode ? requestedPermissionMode === "bypass" : config.agent?.approveAll === true;
   const outputPath = valueAfter(argv, "--output", "-o");
   const taskFile = valueAfter(argv, "--task");
   const timeoutSeconds = secondsOption(argv, "--timeout");
@@ -284,7 +299,9 @@ function firstPositional(args: readonly string[]): string | undefined {
   for (let index = 0; index < args.length; index += 1) {
     const arg = args[index];
     if (arg === undefined) continue;
-    if (["--model", "-m", "--workspace", "-w", "--output", "-o", "--task", "--timeout"].includes(arg)) {
+    if (
+      ["--model", "-m", "--workspace", "-w", "--output", "-o", "--task", "--timeout", "--permission-mode"].includes(arg)
+    ) {
       index += 1;
       continue;
     }
@@ -500,8 +517,9 @@ Usage:
   oran config unset KEY              remove an agent or session-title setting
   oran --model provider/model       choose the configured model
   oran --workspace PATH             choose the active workspace
-  oran --accept-edits, -a           auto-apply file edits (only confirm shell commands)
-  oran --approve-all, -y            skip all tool approvals (bypass mode)
+  oran --permission-mode MODE       auto | accept-edits | plan | bypass
+  oran --accept-edits, -a           allow local file edits; ask for other operations
+  oran --approve-all, -y            alias for --permission-mode bypass
 
 Scripted runs (oran run):
   --task FILE                       read the prompt from a file instead of argv

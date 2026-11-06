@@ -10,6 +10,7 @@ import type {
   Message,
   ModelConfig,
   ModelProvider,
+  PermissionMode,
   RuntimeConfig,
   ToolCall,
   ToolDefinition,
@@ -45,6 +46,8 @@ export interface SubagentRunnerDependencies {
   readonly trace: TraceStore;
   readonly baseConfig: RuntimeConfig;
   readonly baseModel: ModelConfig;
+  readonly permissionMode?: () => PermissionMode;
+  readonly permissionUserRequest?: string;
   readonly providerFactory: (model: ModelConfig) => ModelProvider;
   readonly resolveModel: (reference: string) => ModelConfig;
   readonly approvalCallback?: (
@@ -105,7 +108,17 @@ export class SubagentRunner {
         options.model ??
         (options.definition?.model ? this.deps.resolveModel(options.definition.model) : this.deps.baseModel);
       const config = subagentRuntimeConfig(this.deps.baseConfig, model, options, executionWorkspace);
-      const permission = new PermissionPolicy(config.permissions);
+      const currentPermissionMode = (): PermissionMode => {
+        const parent = this.deps.permissionMode?.() ?? this.deps.baseConfig.permissionMode;
+        const requested = options.definition?.permissionMode;
+        // A role may enter Plan, but cannot relax its parent's approval policy.
+        return parent === "plan" || requested === "plan"
+          ? "plan"
+          : parent === "bypass"
+            ? (requested ?? parent)
+            : parent;
+      };
+      const permission = new PermissionPolicy(config.permissions, currentPermissionMode);
       permission.registerTools(this.deps.registry.list());
       const contextManager = new ContextManager({ workspace: executionWorkspace, conversation });
       const filter = createSubagentToolFilter({
@@ -124,6 +137,9 @@ export class SubagentRunner {
         registry: this.deps.registry,
         trace: this.deps.trace,
         permission,
+        ...(this.deps.permissionUserRequest !== undefined
+          ? { permissionUserRequest: this.deps.permissionUserRequest }
+          : {}),
         conversation,
         contextManager,
         toolFilter: filter,
@@ -140,6 +156,7 @@ export class SubagentRunner {
             if (event.text.trim()) assistantText.push(event.text.trim());
             addUsage(usage, event.usage);
           }
+          if (event.type === "permission_review" && event.phase === "completed") addUsage(usage, event.usage ?? {});
           if (event.type === "assistant_abort") {
             // Partial usage accrued before the cancellation must still be counted, matching the main loop.
             addUsage(usage, event.usage ?? {});
@@ -265,18 +282,21 @@ function subagentRuntimeConfig(
   options: SubagentRunOptions,
   workspace: string,
 ): RuntimeConfig {
-  const permissionMode = options.definition?.permissionMode ?? base.permissionMode;
-  const workMode = options.definition?.workMode ?? (permissionMode === "plan" ? "plan" : base.workMode);
+  const requested = options.definition?.permissionMode;
+  const permissionMode =
+    base.permissionMode === "plan" || requested === "plan"
+      ? "plan"
+      : base.permissionMode === "bypass"
+        ? (requested ?? base.permissionMode)
+        : base.permissionMode;
+  const workMode = base.workMode === "plan" || permissionMode === "plan" ? "plan" : "auto";
   return {
     ...base,
     workspace,
     model: { ...model },
     permissionMode,
     workMode,
-    loop: {
-      ...base.loop,
-      ...(options.definition?.maxSteps !== undefined ? { maxSteps: options.definition.maxSteps } : {}),
-    },
+    loop: { ...base.loop },
     permissions: {
       ...base.permissions,
       workspace,

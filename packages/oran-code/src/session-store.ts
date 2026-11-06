@@ -12,7 +12,7 @@ import {
 import { comparablePath } from "./utils/path-containment.js";
 import type { Message, ModelReference, TaskPlanState } from "./types.js";
 import {
-  isPermissionMode,
+  normalizePermissionMode,
   isReasoningEffort,
   type PermissionMode,
   type ReasoningEffort,
@@ -1076,6 +1076,11 @@ function isStoredSession(value: unknown): value is StoredSession {
 function isStoredSessionState(value: unknown): value is StoredSessionState {
   if (!value || typeof value !== "object") return false;
   const item = value as Partial<StoredSession>;
+  if (item.permissionMode !== undefined) {
+    const mode = normalizePermissionMode(item.permissionMode);
+    if (!mode) return false;
+    item.permissionMode = mode;
+  }
   return (
     typeof item.id === "string" &&
     isSafeSessionId(item.id) &&
@@ -1088,7 +1093,6 @@ function isStoredSessionState(value: unknown): value is StoredSessionState {
     Array.isArray(item.history) &&
     item.history.every((entry) => typeof entry === "string") &&
     (item.workMode === undefined || item.workMode === "plan" || item.workMode === "auto") &&
-    (item.permissionMode === undefined || isPermissionMode(item.permissionMode)) &&
     (item.reasoningEffort === undefined || isReasoningEffort(item.reasoningEffort)) &&
     (item.autoNamed === undefined || typeof item.autoNamed === "boolean") &&
     (item.titleSource === undefined ||

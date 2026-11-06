@@ -1,6 +1,7 @@
 import type { ContextManager } from "../context-manager.js";
 import { CONTEXT_LIMITS } from "../context-manager.js";
 import type { PermissionPolicy } from "../security.js";
+import type { PermissionReviewResult } from "../permission-review.js";
 import type { TraceStore } from "../trace.js";
 import type { SnapshotStorePort } from "../snapshot.js";
 import type {
@@ -81,6 +82,7 @@ export interface ToolExecutorPorts {
   emit<K extends keyof RuntimeEventPayloads>(type: K, payload: RuntimeEventPayloads[K]): Promise<void>;
   persist(task: Task): Promise<void>;
   requestApproval(call: ToolCall, level: number, description: string): Promise<ApprovalResponse>;
+  reviewPermission?(call: ToolCall, kind: ToolKind, description: string): Promise<PermissionReviewResult>;
   fireHook(ctx: HookEventPortContext): Promise<void>;
   checkBeforeToolHook(task: Task, call: ToolCall): Promise<ToolResult | undefined>;
   isToolVisible(tool: ToolDefinition): boolean;
@@ -239,10 +241,7 @@ export class ToolBatchExecutor {
             prepared.push({ index, call, skip: planModeDeniedResult(call) });
             continue;
           }
-          const denied =
-            tool.system && (kind === "readonly" || this.ports.config.permissions.mode !== "readonly")
-              ? undefined
-              : await this.authorizeTool(task, call, tool.permissionLevel, kind, tool.description);
+          const denied = await this.authorizeTool(task, call, tool.permissionLevel, kind, tool.description);
           if (denied) {
             prepared.push({ index, call, skip: denied });
             continue;
@@ -428,6 +427,17 @@ export class ToolBatchExecutor {
     index: number,
     loop: AgentLoop,
   ): Promise<boolean> {
+    const tool = this.ports.registry.get(BATCH_TOOL_NAME);
+    const blocked = await this.ports.checkBeforeToolHook(task, call);
+    const denied =
+      blocked ??
+      (!this.ports.isToolVisible(tool)
+        ? toolUnavailableResult(call)
+        : await this.authorizeTool(task, call, tool.permissionLevel, tool.kind ?? "command", tool.description));
+    if (denied) {
+      await this.recordTool(task, messages, call, index, denied, 0, { executed: false });
+      return false;
+    }
     let script: BatchScriptSpec;
     try {
       script = parseBatchScript(call.arguments);
@@ -555,10 +565,7 @@ export class ToolBatchExecutor {
     if (this.ports.config.workMode === "plan" && !isPlanModeTool(tool)) {
       return complete(planModeDeniedResult(call), 0, false, false, false);
     }
-    const denied =
-      tool.system && (kind === "readonly" || this.ports.config.permissions.mode !== "readonly")
-        ? undefined
-        : await this.authorizeTool(task, call, tool.permissionLevel, kind, tool.description);
+    const denied = await this.authorizeTool(task, call, tool.permissionLevel, kind, tool.description);
     if (denied) return complete(denied, 0, false, false, false);
     const cacheKey = kind === "readonly" && tool.cacheable !== false ? toolCacheKey(call) : undefined;
     if (cacheKey && this.ports.readonlyCache.has(cacheKey)) {
@@ -671,9 +678,23 @@ export class ToolBatchExecutor {
     kind: ToolKind,
     description: string,
   ): Promise<ToolResult | undefined> {
-    const decision = await this.ports.permission.decide(call, level, kind);
+    let decision = await this.ports.permission.decide(call, level, kind);
     if (decision.verdict === "allow") return undefined;
     if (decision.verdict === "deny") return permissionDeniedResult(call, decision);
+
+    if (this.ports.permission.mode === "auto" && decision.source === "permission-mode" && this.ports.reviewPermission) {
+      const review = await this.ports.reviewPermission(call, kind, description);
+      this.ports.throwIfCancelled();
+      // The user may switch modes or update rules while the reviewer is running.
+      decision = await this.ports.permission.decide(call, level, kind);
+      if (decision.verdict === "allow") return undefined;
+      if (decision.verdict === "deny") return permissionDeniedResult(call, decision);
+      if (this.ports.permission.mode === "auto" && decision.source === "permission-mode") {
+        decision = { verdict: review.verdict, reason: review.reason, source: "auto-review", level };
+        if (review.verdict === "allow") return undefined;
+        if (review.verdict === "deny") return permissionDeniedResult(call, decision);
+      }
+    }
 
     const resumeState = task.state === "planning" ? "planning" : "executing";
     transitionTask(task, "awaiting_approval");
@@ -686,7 +707,7 @@ export class ToolBatchExecutor {
       approval = await this.ports.requestApproval(
         call,
         level,
-        `${description}\nReason: ${decision.reason}\nRule: ${rule}`,
+        `${description}\nMode: ${this.ports.permission.mode}\nReason: ${decision.reason}\nSource: ${decision.source}\nRule: ${rule}\nScope: once = this call; task = this rule until the task ends; save = .oran/permissions.local.yaml`,
       );
     } finally {
       if (task.state === "awaiting_approval" && !this.ports.getAbortSignal()?.aborted) {
@@ -696,6 +717,10 @@ export class ToolBatchExecutor {
     }
     this.ports.throwIfCancelled();
 
+    if (approval !== false) {
+      const latest = await this.ports.permission.decide(call, level, kind);
+      if (latest.verdict === "deny") return permissionDeniedResult(call, latest);
+    }
     if (approval === true) return undefined;
     if (approval === "task") {
       this.ports.permission.allowForTask(call);
