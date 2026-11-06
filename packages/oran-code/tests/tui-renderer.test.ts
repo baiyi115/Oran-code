@@ -185,11 +185,14 @@ describe("TuiTranscriptRenderer", () => {
 
     const collapsed = transcriptText(view, state);
     expect(collapsed).toContain("Thought for 2.2s");
-    expect(collapsed).toContain("3 tools");
+    expect(collapsed).toContain("read 1 file");
+    expect(collapsed).toContain("searched for 1 pattern");
+    expect(collapsed).toContain("listed 1 directory");
+    expect(collapsed).toContain("ctrl+o details");
     expect(collapsed).not.toContain("Inspect the relevant files.");
 
     const expanded = transcriptText(view, state, true);
-    expect(expanded).not.toContain("3 tools");
+    expect(expanded).not.toContain("ctrl+o details");
     expect(expanded).toContain("Inspect the relevant files.");
     expect(expanded).toContain("Read");
     expect(expanded).toContain("Search");

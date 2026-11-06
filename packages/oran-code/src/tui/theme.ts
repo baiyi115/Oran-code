@@ -116,6 +116,9 @@ export interface AnsiPalette {
   red: string;
   redBold: string;
   yellow: string;
+  userBackground: string;
+  additionBackground: string;
+  deletionBackground: string;
 }
 
 function ansiPalette(code: (n: number) => string, mode: ColorMode): AnsiPalette {
@@ -140,6 +143,9 @@ function ansiPalette(code: (n: number) => string, mode: ColorMode): AnsiPalette 
       red: "",
       redBold: "\u001b[1m",
       yellow: "",
+      userBackground: "",
+      additionBackground: "",
+      deletionBackground: "",
     };
   }
   const dark = mode === "dark";
@@ -164,6 +170,9 @@ function ansiPalette(code: (n: number) => string, mode: ColorMode): AnsiPalette 
     red: code(dark ? 167 : 131),
     redBold: `\u001b[1m${code(dark ? 167 : 131)}`,
     yellow: code(dark ? 179 : 136),
+    userBackground: `\u001b[48;5;${dark ? 236 : 254}m`,
+    additionBackground: `\u001b[48;5;${dark ? 22 : 194}m`,
+    deletionBackground: `\u001b[48;5;${dark ? 52 : 224}m`,
   };
 }
 

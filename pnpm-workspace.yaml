@@ -1,2 +1,6 @@
 packages:
   - packages/*
+
+patchedDependencies:
+  ink@5.2.1: patches/ink@5.2.1.patch
+  string-width@7.2.0: patches/string-width@7.2.0.patch

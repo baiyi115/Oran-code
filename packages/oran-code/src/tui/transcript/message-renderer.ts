@@ -14,6 +14,7 @@ export interface MessageRenderContext {
 }
 
 export function renderMessage(message: TranscriptMessage, width: number, context: MessageRenderContext = {}): string[] {
+  if (message.kind === "user") return withMessageSpacing(renderUser(message, width));
   if (message.kind === "tool") return withMessageSpacing(renderToolMessage(message, width, context.liveTick));
   if (message.kind === "verification") return withMessageSpacing(renderVerification(message, width));
   if (message.kind === "thought")
@@ -23,7 +24,7 @@ export function renderMessage(message: TranscriptMessage, width: number, context
 
   const prefix = prefixFor(message.kind);
   const prefixWidth = prefixVisibleWidth(message.kind);
-  let text = message.kind === "user" && message.queued ? `[Queued] ${message.text}` : message.text;
+  let text = message.text;
   // An aborted turn appends "[reason]" to the assistant text. Keep that line
   // out of the Markdown pass so cancellation reasons with markdown characters
   // render as plain text instead of being parsed as syntax.
@@ -58,6 +59,16 @@ export function renderMessage(message: TranscriptMessage, width: number, context
   return withMessageSpacing(lines);
 }
 
+function renderUser(message: Extract<TranscriptMessage, { kind: "user" }>, width: number): string[] {
+  const text = message.queued ? `[Queued] ${message.text}` : message.text;
+  const lines = wrapDisplayText(stripTerminalMarkup(text).trimEnd(), Math.max(1, width - 3));
+  return lines.map((line, index) => {
+    const row = `${index === 0 ? "❯ " : "  "}${line}`;
+    const padding = " ".repeat(Math.max(0, width - visibleWidth(row)));
+    return `${ANSI.userBackground}${index === 0 ? ANSI.bold : ""}${row}${padding}${ANSI.reset}`;
+  });
+}
+
 function withMessageSpacing(lines: string[]): string[] {
   if (!lines.length) return lines;
   // Trailing blank line keeps turns from packing against the next block/composer.
@@ -68,9 +79,9 @@ function withMessageSpacing(lines: string[]): string[] {
 function prefixFor(kind: TranscriptMessage["kind"]): string {
   switch (kind) {
     case "user":
-      return `${ANSI.orangeBold}>${ANSI.reset} `;
+      return "❯ ";
     case "assistant":
-      return "  ";
+      return `${ANSI.bold}●${ANSI.reset} `;
     case "thought":
       return "+ ";
     case "plan":
@@ -126,14 +137,14 @@ function renderThought(
   if (!body && !message.streaming) return [];
 
   const label = thoughtLabel(message);
-  const contentWidth = Math.max(1, width - 2);
+  const contentWidth = Math.max(1, width - 4);
 
   if (message.streaming) {
     const lines = [styleThoughtLabel(`${spinnerFrame(liveTick)} ${label}`)];
     if (body) {
       // Live preview stays short so the answer stream remains the focus.
       for (const line of thoughtPreviewLines(body, contentWidth, 3)) {
-        lines.push(styleThought(`  ${line}`));
+        lines.push(styleThought(`    ${line}`));
       }
     }
     return lines;
@@ -141,7 +152,7 @@ function renderThought(
 
   if (message.expanded || forceExpand) {
     const lines = [styleThoughtLabel(`◆ ${label}`)];
-    lines.push(...wrapDisplayText(body, contentWidth).map((line) => styleThought(`  ${line}`)));
+    lines.push(...wrapDisplayText(body, contentWidth).map((line) => styleThought(`    ${line}`)));
     return lines;
   }
 
@@ -165,7 +176,7 @@ function styleThought(value: string): string {
 }
 
 function styleThoughtLabel(value: string): string {
-  return `${ANSI.amberBold}${value}${ANSI.reset}`;
+  return `  ${ANSI.gray}${value}${ANSI.reset}`;
 }
 
 function renderVerification(message: VerificationMessage, width: number): string[] {

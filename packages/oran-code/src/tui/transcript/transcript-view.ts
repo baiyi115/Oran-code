@@ -96,7 +96,10 @@ export class TranscriptView {
   }
 
   private renderSegment(segment: TranscriptSegment, width: number): string[] {
-    const signature = `${width}:${segment.thoughtCount}:${segment.toolCount}:${segment.thoughtDurationMs}`;
+    const signature = `${width}:${segment.thoughtCount}:${segment.toolCount}:${segment.thoughtDurationMs}:${segment.messages
+      .filter((message) => message.kind === "tool")
+      .map((message) => message.name)
+      .join(",")}`;
     const cached = this.segmentCache.get(segment.id);
     if (cached?.signature === signature) return cached.lines;
     const lines = renderCollapsedSegment(segment, width);
@@ -126,8 +129,16 @@ export class TranscriptView {
   }
 }
 
-/** File-mutating and command-executing tools always render individually so actions stay visible. */
-const NON_COLLAPSIBLE_TOOL_NAMES = new Set(["write_file", "edit_file", "apply_patch", "run_command"]);
+/** Only known exploration tools collapse; commands, edits and extension actions stay visible. */
+const COLLAPSIBLE_TOOL_NAMES = new Set([
+  "read_file",
+  "search_code",
+  "glob_files",
+  "list_files",
+  "show_signature",
+  "git_status",
+  "get_diff",
+]);
 /** A thought+tool run collapses only when it contains at least this many tools. */
 const SEGMENT_MIN_TOOLS = 2;
 /** Segment ids are derived from the first message id; the cache prunes by that id. */
@@ -174,7 +185,7 @@ function isSegmentThought(message: TranscriptMessage): boolean {
 }
 
 function isSegmentTool(message: TranscriptMessage): boolean {
-  return message.kind === "tool" && message.status === "success" && !NON_COLLAPSIBLE_TOOL_NAMES.has(message.name);
+  return message.kind === "tool" && message.status === "success" && COLLAPSIBLE_TOOL_NAMES.has(message.name);
 }
 
 function isSegmentMember(message: TranscriptMessage): boolean {
@@ -275,15 +286,31 @@ function transcriptRenderItems(
 }
 
 function renderCollapsedSegment(segment: TranscriptSegment, width: number): string[] {
-  const lines: string[] = [];
-  if (segment.thoughtCount > 0) {
-    const label = segment.thoughtCount === 1 ? "Thought" : "Thoughts";
-    const thought = segment.thoughtDurationMs > 0 ? `${label} for ${formatDuration(segment.thoughtDurationMs)}` : label;
-    lines.push(...wrapDisplayText(`${ANSI.amberBold}${thought}${ANSI.reset}`, width));
+  const counts = new Map<string, number>();
+  for (const message of segment.messages) {
+    if (message.kind === "tool") counts.set(message.name, (counts.get(message.name) ?? 0) + 1);
   }
-  const tools = `${segment.toolCount} tool${segment.toolCount === 1 ? "" : "s"}`;
-  lines.push(...wrapDisplayText(`${ANSI.greenBold}◇${ANSI.reset} ${ANSI.toolBold}${tools}${ANSI.reset}`, width));
-  return [...lines, ""];
+  const parts: string[] = [];
+  if (segment.thoughtCount > 0) {
+    parts.push(segment.thoughtDurationMs > 0 ? `Thought for ${formatDuration(segment.thoughtDurationMs)}` : "Thought");
+  }
+  const activities: Array<[string, string, string]> = [
+    ["read_file", "read", "file"],
+    ["search_code", "searched for", "pattern"],
+    ["glob_files", "matched", "file pattern"],
+    ["list_files", "listed", "directory"],
+    ["show_signature", "inspected", "outline"],
+    ["git_status", "checked", "git status"],
+    ["get_diff", "viewed", "diff"],
+  ];
+  for (const [name, verb, noun] of activities) {
+    const count = counts.get(name) ?? 0;
+    if (!count) continue;
+    const plural = noun === "directory" ? "directories" : noun === "git status" ? "git statuses" : `${noun}s`;
+    parts.push(`${verb} ${count} ${count === 1 ? noun : plural}`);
+  }
+  const text = `${parts.join(", ")} (ctrl+o details)`;
+  return [...wrapDisplayText(text, Math.max(1, width - 2)).map((line) => `  ${ANSI.gray}${line}${ANSI.reset}`), ""];
 }
 
 function liveSignature(message: TranscriptMessage, liveTick: number): number {

@@ -24,6 +24,7 @@ interface InlineStyle {
   italic?: boolean;
   strike?: boolean;
   underline?: boolean;
+  code?: boolean;
   color?: InlineColor;
 }
 
@@ -48,6 +49,8 @@ export class MarkdownRenderer {
   private normalizedValue = "";
   private scanOffset = 0;
   private scanFence: FenceState | undefined;
+  private scanTable = false;
+  private scanTableHeader = false;
   private stableEnd = 0;
   private stablePrefix = "";
   private stableLines: string[] = [];
@@ -92,6 +95,8 @@ export class MarkdownRenderer {
     this.normalizedValue = normalizeMarkdown(value);
     this.scanOffset = 0;
     this.scanFence = undefined;
+    this.scanTable = false;
+    this.scanTableHeader = false;
     this.stableEnd = 0;
     this.stablePrefix = "";
     this.stableLines = [];
@@ -109,7 +114,15 @@ export class MarkdownRenderer {
       const newline = value.indexOf("\n", this.scanOffset);
       if (newline < 0) return;
       const line = value.slice(this.scanOffset, newline).trimEnd();
+      if (this.scanTable && !isTableRow(line)) {
+        // A table is one block: committing a few of its rows would leave the tail
+        // without its header and delimiter, so later rows render as plain text.
+        this.scanTable = false;
+        this.stableEnd = this.scanOffset;
+        holdBack.length = 0;
+      }
       if (this.scanFence) {
+        this.scanTableHeader = false;
         if (isFenceClose(line, this.scanFence)) {
           this.scanFence = undefined;
           // A fence block completes at its closing marker; commit the whole
@@ -121,15 +134,23 @@ export class MarkdownRenderer {
       } else {
         this.scanFence = parseFenceOpen(line);
         if (this.scanFence) {
+          this.scanTableHeader = false;
           holdBack.length = 0;
         } else if (!line.trim()) {
+          this.scanTableHeader = false;
           this.stableEnd = newline + 1;
           holdBack.length = 0;
-        } else {
+        } else if (this.scanTableHeader && isTableDelimiter(line)) {
+          this.scanTable = true;
+          this.scanTableHeader = false;
+          holdBack.length = 0;
+        } else if (!this.scanTable) {
+          this.scanTableHeader = isTableRow(line);
           holdBack.push(newline + 1);
           if (holdBack.length > HOLD_BACK_LINES) holdBack.shift();
           const commitTo = holdBack[0];
           if (
+            !this.scanTableHeader &&
             commitTo !== undefined &&
             commitTo > this.stableEnd &&
             value.length - this.stableEnd > COMMIT_THRESHOLD_CHARS
@@ -394,12 +415,38 @@ function isTableRow(value: string): boolean {
 
 function isTableDelimiter(value: string): boolean {
   const cells = parseTableRow(value);
-  return cells.length > 1 && cells.every((cell) => /^:?-{3,}:?$/.test(cell.trim()));
+  // Models sometimes shorten delimiter cells to two dashes. Accept that form in both
+  // the streaming block scanner and the renderer so the table stays one block.
+  return cells.length > 1 && cells.every((cell) => /^:?-{2,}:?$/.test(cell.trim()));
 }
 
 function parseTableRow(value: string): string[] {
-  const trimmed = value.trim().replace(/^\|/, "").replace(/\|$/, "");
-  return trimmed.split("|").map((cell) => cell.trim());
+  const source = value.trim();
+  const cells: string[] = [];
+  let start = source.startsWith("|") ? 1 : 0;
+  let codeRun = 0;
+
+  for (let index = start; index < source.length; index += 1) {
+    if (source[index] === "\\" && index + 1 < source.length) {
+      index += 1;
+      continue;
+    }
+    if (source[index] === "`") {
+      let end = index + 1;
+      while (source[end] === "`") end += 1;
+      const run = end - index;
+      if (codeRun === 0) codeRun = run;
+      else if (codeRun === run) codeRun = 0;
+      index = end - 1;
+      continue;
+    }
+    if (source[index] !== "|" || codeRun !== 0) continue;
+    cells.push(source.slice(start, index).trim());
+    if (index === source.length - 1) return cells;
+    start = index + 1;
+  }
+  cells.push(source.slice(start).trim());
+  return cells;
 }
 
 function parseTableAlignments(value: string): TableAlignment[] {
@@ -411,38 +458,139 @@ function parseTableAlignments(value: string): TableAlignment[] {
   });
 }
 
+const TABLE_EMOJI_PATTERN = /[\p{Extended_Pictographic}\p{Regional_Indicator}\p{Emoji_Presentation}⃣]/u;
+const TABLE_EMOJI_LABELS: Readonly<Record<string, string>> = {
+  ℹ: "[info]",
+  "⚠": "[warn]",
+  "✅": "[ok]",
+  "✔": "[ok]",
+  "❌": "[fail]",
+  "✖": "[fail]",
+  "❗": "[!]",
+  "❓": "[?]",
+};
+
+function tableDisplaySegments(segments: readonly InlineSegment[]): InlineSegment[] {
+  const text = segments.map((segment) => segment.text).join("");
+  if (!TABLE_EMOJI_PATTERN.test(text)) return [...segments];
+
+  const output: InlineSegment[] = [];
+  let segmentIndex = 0;
+  let segmentEnd = segments[0]?.text.length ?? 0;
+  let offset = 0;
+  // Segment across style boundaries so a selector, modifier or ZWJ cannot be
+  // detached. Convert before measuring: terminal fonts may overpaint cell spans
+  // even when every layer agrees on the Unicode width.
+  for (const symbol of graphemes(text)) {
+    while (offset >= segmentEnd && segmentIndex < segments.length - 1) {
+      segmentIndex += 1;
+      segmentEnd += segments[segmentIndex]!.text.length;
+    }
+    const style = segments[segmentIndex]?.style ?? {};
+    let display = symbol;
+    if (TABLE_EMOJI_PATTERN.test(symbol)) {
+      const codes = Array.from(symbol, (character) => character.codePointAt(0)!.toString(16).toUpperCase());
+      if (style.code) {
+        display = codes.map((code) => (code.length <= 4 ? `\\u${code.padStart(4, "0")}` : `\\u{${code}}`)).join("");
+      } else {
+        const base = symbol.replace(/[︎️]/gu, "");
+        display = TABLE_EMOJI_LABELS[base] ?? `[${codes.map((code) => `U+${code}`).join(" ")}]`;
+      }
+    }
+    pushSegment(output, display, style);
+    offset += symbol.length;
+  }
+  return output;
+}
+
 function renderTable(
   rows: readonly string[][],
   width: number,
   streaming: boolean,
   alignments: readonly TableAlignment[],
 ): string[] {
-  const columnCount = Math.max(1, ...rows.map((row) => row.length));
-  const available = width - columnCount * 3 - 1;
-  if (available < columnCount * 6) {
-    return renderCompactTable(rows, width, streaming);
-  }
-
-  const naturalWidths = Array.from({ length: columnCount }, (_, column) =>
-    Math.max(3, ...rows.map((row) => visibleWidth(row[column] ?? ""))),
+  const columnCount = Math.max(1, rows[0]?.length ?? 0);
+  // The header defines the table shape. A stray pipe in a body cell must not create
+  // extra columns and squeeze every row into unreadable slivers.
+  const tableRows = rows.map((row) =>
+    row.length > columnCount ? [...row.slice(0, columnCount - 1), row.slice(columnCount - 1).join(" | ")] : row,
   );
-  // Allot each column up to 40% of available width so long paths can breathe
-  // instead of being chopped at 24 chars and wrapped mid-filename.
-  const columnCap = Math.max(8, Math.floor(available * 0.4));
-  const columnWidths = naturalWidths.map((item) => Math.min(columnCap, item));
-  while (columnWidths.reduce((sum, item) => sum + item, 0) > available) {
-    const largest = Math.max(...columnWidths);
-    const index = columnWidths.findIndex((item) => item === largest && item > 3);
-    if (index < 0) break;
-    columnWidths[index] = Math.max(3, (columnWidths[index] ?? 3) - 1);
+  const available = width - columnCount * 3 - 1;
+  // Measure the same parsed content that will be wrapped; Markdown syntax and link
+  // targets must not compete with visible text for column space.
+  const cells = tableRows.map((row, rowIndex) =>
+    Array.from({ length: columnCount }, (_, column) =>
+      withStyle(
+        tableDisplaySegments(parseInline((row[column] ?? "").replace(/\t/g, "  "), streaming)),
+        rowIndex === 0 ? { bold: true, color: "orange" } : {},
+      ),
+    ),
+  );
+  const naturalWidths = Array<number>(columnCount).fill(1);
+  const minimumWidths = Array<number>(columnCount).fill(1);
+  const preferredWidths = Array<number>(columnCount).fill(1);
+  for (const row of cells) {
+    row.forEach((segments, column) => {
+      const text = segments.map((segment) => segment.text).join("");
+      naturalWidths[column] = Math.max(naturalWidths[column]!, visibleWidth(text));
+      // Even under pressure a column must fit its widest grapheme, otherwise Ink
+      // would wrap the finished table row and split its borders.
+      for (const segment of segments) {
+        for (const symbol of graphemes(segment.text)) {
+          minimumWidths[column] = Math.max(minimumWidths[column]!, graphemeWidth(symbol));
+        }
+      }
+      for (const word of text.split(/\s+/u)) {
+        preferredWidths[column] = Math.max(preferredWidths[column]!, Math.min(30, visibleWidth(word)));
+      }
+      preferredWidths[column] = Math.max(preferredWidths[column]!, minimumWidths[column]!);
+      naturalWidths[column] = Math.max(naturalWidths[column]!, preferredWidths[column]!);
+    });
   }
-
+  if (minimumWidths.reduce((sum, item) => sum + item, 0) > available) {
+    return renderCompactTable(tableRows, width, streaming);
+  }
+  const columnWidths = allocateTableColumnWidths(naturalWidths, preferredWidths, minimumWidths, available);
+  const separator = renderTableBorder(columnWidths, "├", "┼", "┤");
   const output = [renderTableBorder(columnWidths, "┌", "┬", "┐")];
-  output.push(...renderTableRow(rows[0] ?? [], columnWidths, true, streaming, alignments));
-  output.push(renderTableBorder(columnWidths, "├", "┼", "┤"));
-  for (const row of rows.slice(1)) output.push(...renderTableRow(row, columnWidths, false, streaming, alignments));
+  cells.forEach((row, index) => {
+    if (index > 0) output.push(separator);
+    output.push(...renderTableRow(row, columnWidths, alignments));
+  });
   output.push(renderTableBorder(columnWidths, "└", "┴", "┘"));
   return output;
+}
+
+function allocateTableColumnWidths(
+  natural: readonly number[],
+  preferred: readonly number[],
+  minimum: readonly number[],
+  available: number,
+): number[] {
+  if (natural.reduce((sum, item) => sum + item, 0) <= available) return [...natural];
+  const preferredFits = preferred.reduce((sum, item) => sum + item, 0) <= available;
+  const base = preferredFits ? preferred : minimum;
+  const target = preferredFits ? natural : preferred;
+  const remaining = available - base.reduce((sum, item) => sum + item, 0);
+  const growth = target.map((item, index) => item - base[index]!);
+  const totalGrowth = growth.reduce((sum, item) => sum + item, 0);
+  if (totalGrowth === 0) return [...base];
+
+  const shares = growth.map((item) => (item / totalGrowth) * remaining);
+  const widths = base.map((item, index) => item + Math.floor(shares[index]!));
+  let spare = available - widths.reduce((sum, item) => sum + item, 0);
+  // Award rounding remainders by fractional share so the allocation fills the
+  // budget without repeatedly shrinking the widest column or exceeding a target.
+  const order = shares
+    .map((share, index) => ({ index, fraction: share - Math.floor(share) }))
+    .sort((left, right) => right.fraction - left.fraction);
+  for (const { index } of order) {
+    if (spare === 0) break;
+    if (widths[index]! >= target[index]!) continue;
+    widths[index] = widths[index]! + 1;
+    spare -= 1;
+  }
+  return widths;
 }
 
 function renderCompactTable(rows: readonly string[][], width: number, streaming: boolean): string[] {
@@ -450,7 +598,7 @@ function renderCompactTable(rows: readonly string[][], width: number, streaming:
   const records = rows.slice(1);
   if (records.length === 0) {
     return wrapInlineSegments(
-      withStyle(parseInline(headers.join("  "), streaming), { bold: true, color: "orange" }),
+      withStyle(tableDisplaySegments(parseInline(headers.join("  "), streaming)), { bold: true, color: "orange" }),
       width,
     );
   }
@@ -462,7 +610,7 @@ function renderCompactTable(rows: readonly string[][], width: number, streaming:
         { text: ": ", style: {} },
         ...parseInline(row[column] ?? "", streaming),
       ];
-      return wrapInlineSegments(segments, width);
+      return wrapInlineSegments(tableDisplaySegments(segments), width);
     }).flat();
     if (rowIndex < records.length - 1) lines.push("");
     return lines;
@@ -474,18 +622,11 @@ function renderTableBorder(widths: readonly number[], left: string, middle: stri
 }
 
 function renderTableRow(
-  row: readonly string[],
+  row: readonly InlineSegment[][],
   widths: readonly number[],
-  header: boolean,
-  streaming: boolean,
   alignments: readonly TableAlignment[],
 ): string[] {
-  const cells = widths.map((cellWidth, index) =>
-    wrapInlineSegments(
-      withStyle(parseInline(row[index] ?? "", streaming), header ? { bold: true, color: "orange" } : {}),
-      cellWidth,
-    ),
-  );
+  const cells = widths.map((cellWidth, index) => wrapInlineSegments(row[index] ?? [], cellWidth));
   const height = Math.max(1, ...cells.map((cell) => cell.length));
   return Array.from({ length: height }, (_, lineIndex) => {
     const content = cells
@@ -591,7 +732,7 @@ function inlineMarkerAt(value: string, index: number): { text: string; style: In
     return { text: value.slice(index, index + 2), style: { bold: true } };
   }
   if (value.startsWith("~~", index)) return { text: "~~", style: { strike: true } };
-  if (value[index] === "`") return { text: "`", style: { color: "amber" } };
+  if (value[index] === "`") return { text: "`", style: { color: "amber", code: true } };
   if (value[index] === "*" || value[index] === "_") {
     return { text: value[index] ?? "*", style: { italic: true } };
   }
@@ -694,7 +835,7 @@ function pushSegment(target: InlineSegment[], text: string, style: InlineStyle):
 }
 
 function styleKey(style: InlineStyle): string {
-  return `${style.bold ? 1 : 0}${style.italic ? 1 : 0}${style.strike ? 1 : 0}${style.underline ? 1 : 0}:${style.color ?? ""}`;
+  return `${style.bold ? 1 : 0}${style.italic ? 1 : 0}${style.strike ? 1 : 0}${style.underline ? 1 : 0}${style.code ? 1 : 0}:${style.color ?? ""}`;
 }
 
 function renderCodeLine(value: string, width: number): string[] {

@@ -1,0 +1,93 @@
+diff --git a/build/output.js b/build/output.js
+index 5f0dcf82af3f372a304441ce92ae7bcb57b7e8bb..78f19c432cee0bcd299ad9467b51e7c6b2f71597 100644
+--- a/build/output.js
++++ b/build/output.js
+@@ -1,7 +1,44 @@
+-import sliceAnsi from 'slice-ansi';
+ import stringWidth from 'string-width';
+ import widestLine from 'widest-line';
+ import { styledCharsFromTokens, styledCharsToString, tokenize, } from '@alcalzone/ansi-tokenize';
++const segmenter = new Intl.Segmenter(undefined, { granularity: 'grapheme' });
++function styledGraphemes(line) {
++    const characters = styledCharsFromTokens(tokenize(line));
++    const text = characters.map(character => character.value).join('');
++    if (/^[\x20-\x7e]*$/.test(text)) {
++        return characters;
++    }
++    const result = [];
++    let index = 0;
++    for (const { segment } of segmenter.segment(text)) {
++        // A grapheme occupies one terminal cell span even if ANSI styles change
++        // inside it. Keep its base character's style without splitting the glyph.
++        const first = characters[index];
++        let length = 0;
++        while (length < segment.length) {
++            length += characters[index++].value.length;
++        }
++        result.push({ ...first, value: segment });
++    }
++    return result;
++}
++function sliceStyledLine(line, from, to) {
++    const result = [];
++    let column = 0;
++    for (const character of styledGraphemes(line)) {
++        const width = stringWidth(character.value);
++        const end = column + width;
++        if (column >= to) break;
++        if (width > 0 && end > from) {
++            const visible = Math.min(end, to) - Math.max(column, from);
++            result.push(visible === width
++                ? character
++                : { ...character, value: ' '.repeat(visible) });
++        }
++        column = end;
++    }
++    return styledCharsToString(result);
++}
+ export default class Output {
+     width;
+     height;
+@@ -85,7 +122,7 @@ export default class Output {
+                             const from = x < clip.x1 ? clip.x1 - x : 0;
+                             const width = stringWidth(line);
+                             const to = x + width > clip.x2 ? clip.x2 - x : width;
+-                            return sliceAnsi(line, from, to);
++                            return from === 0 && to === width ? line : sliceStyledLine(line, from, to);
+                         });
+                         if (x < clip.x1) {
+                             x = clip.x1;
+@@ -111,22 +148,26 @@ export default class Output {
+                     for (const transformer of transformers) {
+                         line = transformer(line, index);
+                     }
+-                    const characters = styledCharsFromTokens(tokenize(line));
++                    const characters = styledGraphemes(line);
+                     let offsetX = x;
+                     for (const character of characters) {
++                        const code = character.value.charCodeAt(0);
++                        const characterWidth = character.value.length === 1 && code >= 0x20 && code <= 0x7e
++                            ? 1
++                            : stringWidth(character.value);
++                        if (characterWidth === 0) {
++                            continue;
++                        }
+                         currentLine[offsetX] = character;
+-                        // Some characters take up more than one column. In that case, the following
+-                        // pixels need to be cleared to avoid printing extra characters
+-                        const isWideCharacter = character.fullWidth || character.value.length > 1;
+-                        if (isWideCharacter) {
+-                            currentLine[offsetX + 1] = {
++                        for (let column = 1; column < characterWidth; column++) {
++                            currentLine[offsetX + column] = {
+                                 type: 'char',
+                                 value: '',
+                                 fullWidth: false,
+                                 styles: character.styles,
+                             };
+                         }
+-                        offsetX += isWideCharacter ? 2 : 1;
++                        offsetX += characterWidth;
+                     }
+                     offsetY++;
+                 }

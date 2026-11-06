@@ -204,16 +204,15 @@ describe("tool output head/tail preview", () => {
     };
   }
 
-  it("keeps head and tail lines for long outputs instead of only the head", () => {
+  it("shows long output in the scrollable details view", () => {
     const output = Array.from({ length: 30 }, (_, index) => `log ${index + 1}`).join("\n");
     const lines = renderToolMessage(tailMessage(output), 80);
     const text = lines.join("\n");
     expect(text).toContain("log 1");
-    expect(text).toContain("log 8");
-    expect(text).not.toContain("log 12");
+    expect(text).toContain("log 12");
     expect(text).toContain("log 27");
     expect(text).toContain("log 30");
-    expect(text).toContain("18 lines hidden");
+    expect(text).not.toContain("output truncated");
   });
 
   it("shows everything for short outputs", () => {
@@ -244,7 +243,7 @@ describe("diff rendering", () => {
     expect(text).toContain("50 lines hidden");
   });
 
-  it("keeps the diff out of the transcript row and shows it only in details", () => {
+  it("shows a short diff inline and retains it in details", () => {
     const message: ToolMessage = {
       id: "tool-1",
       kind: "tool",
@@ -259,10 +258,9 @@ describe("diff rendering", () => {
       diff: { text: "@@ -1,1 +1,1 @@\n-old line\n+new line", added: 1, removed: 1, truncated: false },
     };
     const collapsed = renderToolMessage(message, 80);
-    // One row: the counts in the heading answer "how big", the body would only push the transcript
-    // apart for a change the user can open on demand.
-    expect(collapsed).toHaveLength(1);
-    expect(collapsed.join("\n")).toContain("+1 -1");
+    expect(collapsed.join("\n")).toContain("Added 1 line, removed 1 line");
+    expect(collapsed.join("\n")).toContain("- old line");
+    expect(collapsed.join("\n")).toContain("+ new line");
 
     const expanded = renderToolMessage({ ...message, expanded: true }, 80).join("\n");
     expect(expanded).toContain("- old line");

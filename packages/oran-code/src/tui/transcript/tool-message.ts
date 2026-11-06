@@ -1,96 +1,107 @@
 import type { ToolMessage } from "../types.js";
 import { formatDuration } from "../../formatting.js";
 import { renderDiff } from "./diff-renderer.js";
-import { truncateVisible, visibleWidth, wrapDisplayText } from "../text-width.js";
+import { stripTerminalMarkup, truncateVisible, wrapDisplayText, wrapDisplayTextLimited } from "../text-width.js";
 import { ANSI } from "../theme.js";
 import { spinnerFrame } from "../status-indicator.js";
 import { toolDisplayName } from "../tool-names.js";
 
 export function renderToolMessage(message: ToolMessage, width: number, liveTick = 0, now = Date.now()): string[] {
-  const indicator =
-    message.status === "running"
-      ? spinnerFrame(liveTick)
-      : message.status === "success"
-        ? "◇"
-        : message.status === "failure"
-          ? "×"
-          : message.status === "rejected"
-            ? "!"
-            : "-";
-  const label = toolDisplayName(message.name);
-  const argument = toolArgumentSummary(message);
-  const call = argument
-    ? `${ANSI.toolBold}${label}${ANSI.reset} ${ANSI.gray}${argument}${ANSI.reset}`
-    : `${ANSI.toolBold}${label}${ANSI.reset}`;
-  // What the call changed, in the heading: the counts answer "how big was this edit" without
-  // opening the row, and they stay correct even when the diff text below is truncated.
-  const changeDiff = writeToolDiff(message);
-  const changeCounts = changeDiff ? diffCounters(changeDiff) : "";
-  // A finished call shows its total duration; a running one shows elapsed time (so a long tool's
-  // stuck step is visible at a glance).
-  const duration =
-    message.durationMs !== undefined
-      ? `  ${ANSI.gray}${formatDuration(message.durationMs)}${ANSI.reset}`
-      : message.status === "running" && message.startedAt
-        ? `  ${ANSI.gray}${formatDuration(Math.max(0, now - Date.parse(message.startedAt)))}${ANSI.reset}`
-        : "";
-  const badges =
-    message.badges && message.badges.length ? `  ${ANSI.gray}[${message.badges.join(", ")}]${ANSI.reset}` : "";
-  const status =
-    message.status === "running" || message.status === "success"
-      ? ""
-      : `  ${message.status === "failure" || message.status === "rejected" ? ANSI.redBold : ANSI.amberBold}${message.status}${ANSI.reset}`;
+  const indicator = message.status === "running" ? spinnerFrame(liveTick) : message.status === "cancelled" ? "■" : "●";
   const indicatorColor =
     message.status === "failure" || message.status === "rejected"
       ? ANSI.redBold
       : message.status === "success"
         ? ANSI.greenBold
         : ANSI.orangeBold;
-  // A running call has no summary yet; a progress note stands in, so a long tool
-  // (a cold code-graph build) says what it is doing instead of only how long it
-  // has been at it. The result summary takes over as soon as it lands.
-  const detail = message.summary || message.error || message.progress || "";
-  const summary =
-    detail && (message.status !== "success" || shouldShowSuccessSummary(detail))
-      ? ` ${ANSI.gray}\u00b7 ${truncateVisible(detail.replace(/\s+/g, " ").trim(), 80)}${ANSI.reset}`
-      : "";
-  const headingPrefix = `${indicatorColor}${indicator}${ANSI.reset} `;
-  const headingBody = `${call}${changeCounts}${status}${duration}${summary}${badges}`;
-  const headingWidth = Math.max(1, width - visibleWidth(headingPrefix));
-  const lines = wrapDisplayText(headingBody, headingWidth).map(
-    (line, index) => `${index === 0 ? headingPrefix : " ".repeat(2)}${line}`,
+  const label = toolDisplayName(message.name);
+  const argument = stripTerminalMarkup(toolArgumentSummary(message));
+  const call = argument ? `${label}(${argument})` : label;
+  const elapsed =
+    message.durationMs ??
+    (message.status === "running" && message.startedAt ? Math.max(0, now - Date.parse(message.startedAt)) : undefined);
+  const duration = elapsed !== undefined ? ` · ${formatDuration(elapsed)}` : "";
+  const status = message.status === "running" || message.status === "success" ? "" : ` · ${message.status}`;
+  const badges = message.badges?.length ? ` [${message.badges.join(", ")}]` : "";
+  const lines = wrapDisplayText(call, Math.max(1, width - 2)).map((line, index) =>
+    index === 0 ? `${indicatorColor}${indicator}${ANSI.reset} ${ANSI.bold}${line}${ANSI.reset}` : `  ${line}`,
   );
-  const output = message.error || message.output || "";
-  if (message.expanded && output && !changeDiff?.text) {
-    // Showing only the first 12 lines drops the valuable part of long output (failure stacks and
-    // summary lines almost always sit at the end), so it became "8 head lines + an omission
-    // marker + 4 tail lines"; head and tail stay visible, ctrl+t gives the detail.
-    const preview = output.split(/\r?\n/).filter(Boolean);
-    const HEAD = 8;
-    const TAIL = 4;
-    const shown =
-      preview.length <= HEAD + TAIL ? preview : [...preview.slice(0, HEAD), undefined, ...preview.slice(-TAIL)];
-    for (const line of shown) {
-      if (line === undefined) {
-        lines.push(
-          `${ANSI.gray}  \u2502 ... ${preview.length - HEAD - TAIL} lines hidden (PageUp/PageDown in details) ...${ANSI.reset}`,
-        );
-        continue;
-      }
-      lines.push(...wrapDisplayText(`\u2502 ${line}`, Math.max(1, width - 2)).map((wrapped) => `  ${wrapped}`));
+  const bodyWidth = Math.max(1, width - 4);
+  const appendDetail = (text: string): void => {
+    wrapDisplayText(text, bodyWidth).forEach((line, index) => {
+      lines.push(`  ${ANSI.gray}${index === 0 ? "└ " : "  "}${line}${ANSI.reset}`);
+    });
+  };
+  if (status || badges || message.status === "running") {
+    appendDetail(`${message.status === "running" ? "Running" : message.status}${duration}${badges}`);
+  }
+  const changeDiff = writeToolDiff(message);
+  const detail = message.summary || message.error || message.progress || "";
+  if (changeDiff) {
+    appendDetail(`${diffCounters(changeDiff)}${duration}`);
+    if (changeDiff.text) {
+      const diffLines = renderDiff(changeDiff.text, bodyWidth);
+      const shown = message.expanded ? diffLines : diffLines.slice(0, 8);
+      lines.push(...shown.map((line) => `    ${line}`));
+      if (shown.length < diffLines.length)
+        appendDetail(`… +${diffLines.length - shown.length} diff rows (ctrl+o details)`);
+      if (message.diff?.truncated) appendDetail("Diff truncated by tool; use get_diff for the remaining changes");
     }
-  } else if (output && message.status !== "success" && output.trim() !== detail.trim()) {
-    const error = truncateVisible(output.replace(/\s+/g, " ").trim(), Math.max(40, width * 2));
+  } else {
+    if (message.error && message.error !== detail && message.error !== message.output) appendDetail(message.error);
+    const output = message.output || message.error || "";
+    const hasDetail = Boolean(
+      detail && detail.trim() !== output.trim() && (message.status !== "success" || detail.trim() !== "ok"),
+    );
+    if (hasDetail) {
+      appendDetail(
+        `${truncateVisible(stripTerminalMarkup(detail).replace(/\s+/g, " ").trim(), 160)}${message.status === "success" ? duration : ""}`,
+      );
+    }
+    // Preserve command output alongside its error; failure summaries must not hide the useful log.
+    if (output.trim()) {
+      lines.push(...renderOutputPreview(output, bodyWidth, message.expanded, message.status === "failure", !hasDetail));
+    } else if (!hasDetail && message.status === "success") {
+      appendDetail(`Completed${duration}`);
+    }
+  }
+  return lines;
+}
+
+function renderOutputPreview(
+  output: string,
+  width: number,
+  expanded: boolean,
+  failed: boolean,
+  connector: boolean,
+): string[] {
+  const source = stripTerminalMarkup(output).replace(/\r\n/g, "\n").trimEnd().split("\n");
+  const limit = expanded ? 400 : 3;
+  const head = failed && source.length > limit ? limit - 1 : limit;
+  const shown: Array<string | undefined> =
+    source.length <= limit ? source : [...source.slice(0, head), undefined, ...(failed ? source.slice(-1) : [])];
+  const lines: string[] = [];
+  let clipped = false;
+  for (const line of shown) {
+    const text =
+      line === undefined
+        ? `… +${source.length - limit} lines (${expanded ? "output truncated" : "ctrl+o details"})`
+        : line;
+    const wrapped =
+      expanded || line === undefined ? wrapDisplayText(text, width) : wrapDisplayTextLimited(text, width, 2);
+    if (!expanded && line !== undefined && wrapped.at(-1) === "…") clipped = true;
+    for (const row of wrapped) {
+      const prefix = connector && lines.length === 0 ? "  └ " : "    ";
+      lines.push(`${prefix}${ANSI.gray}${row}${ANSI.reset}`);
+    }
+  }
+  if (clipped) {
     lines.push(
-      ...wrapDisplayText(`\u2502 ${error}`, Math.max(1, width - 2))
-        .map((wrapped) => `  ${wrapped}`)
-        .slice(0, 2),
+      ...wrapDisplayText("Long lines shortened (ctrl+o details)", width).map(
+        (line) => `    ${ANSI.gray}${line}${ANSI.reset}`,
+      ),
     );
   }
-  // The heading already says how big the edit was (+N -M); the diff body itself only renders in the
-  // details view. Padding every finished write with a few preview lines pushes the conversation
-  // apart for something the counts already answer, and a write is never folded into "N tools".
-  if (changeDiff?.text && message.expanded) lines.push(...renderDiff(changeDiff.text, width));
   return lines;
 }
 
@@ -103,22 +114,14 @@ interface DisplayDiff {
 
 function diffCounters(diff: DisplayDiff): string {
   const parts: string[] = [];
-  if (diff.added > 0) parts.push(`${ANSI.green}+${diff.added}${ANSI.reset}`);
-  if (diff.removed > 0) parts.push(`${ANSI.red}-${diff.removed}${ANSI.reset}`);
-  return parts.length ? ` ${parts.join(" ")}` : "";
+  if (diff.added > 0) parts.push(`Added ${diff.added} ${diff.added === 1 ? "line" : "lines"}`);
+  if (diff.removed > 0) parts.push(`removed ${diff.removed} ${diff.removed === 1 ? "line" : "lines"}`);
+  return parts.join(", ") || "No changed lines";
 }
 
-/**
- * What the call changed: the diff the tool actually applied when it reported one, else a preview
- * derived from the call's arguments (older sessions, and any writer that does not report a diff),
- * and undefined for read-only tools.
- */
+/** Prefer the applied diff; old sessions can still reconstruct edit/patch previews. */
 function writeToolDiff(message: ToolMessage): DisplayDiff | undefined {
-  // Failed, rejected, cancelled, and running calls did not produce a confirmed
-  // file change, so do not present their requested arguments as an applied diff.
   if (message.status !== "success") return undefined;
-  // A reported diff is authoritative even when empty: the writer knows there was nothing worth
-  // showing, and falling back to the arguments would claim a whole-file addition for an overwrite.
   if (message.diff) {
     return {
       text: message.diff.text || undefined,
@@ -131,44 +134,29 @@ function writeToolDiff(message: ToolMessage): DisplayDiff | undefined {
   return { text, ...countDiffLines(text) };
 }
 
-/** Diff preview reconstructed from the call arguments; has no before-state to compare against. */
+/** Old tool arguments lack a before-state, so whole-file writes cannot reconstruct a diff. */
 function argumentDiff(message: ToolMessage): string | undefined {
   if (message.name === "edit_file") {
-    if (Array.isArray(message.arguments.edits)) {
-      const diffs: string[] = [];
-      for (const edit of message.arguments.edits as Array<Record<string, unknown>>) {
-        const oldString = typeof edit.old_string === "string" ? edit.old_string : "";
-        const newString = typeof edit.new_string === "string" ? edit.new_string : "";
-        if (!oldString && !newString) continue;
-        const removals = oldString.split(/\r?\n/).map((line) => `-${line}`);
-        const additions = newString.split(/\r?\n/).map((line) => `+${line}`);
-        diffs.push([...removals, ...additions].join("\n"));
-      }
-      return diffs.length > 0 ? diffs.join("\n") : undefined;
+    const edits = Array.isArray(message.arguments.edits) ? message.arguments.edits : [message.arguments];
+    const diffs: string[] = [];
+    for (const edit of edits as Array<Record<string, unknown>>) {
+      if (!edit || typeof edit !== "object") continue;
+      const oldString = typeof edit.old_string === "string" ? edit.old_string : "";
+      const newString = typeof edit.new_string === "string" ? edit.new_string : "";
+      if (!oldString && !newString) continue;
+      const removals = oldString ? oldString.split(/\r?\n/).map((line) => `-${line}`) : [];
+      const additions = newString ? newString.split(/\r?\n/).map((line) => `+${line}`) : [];
+      diffs.push([...removals, ...additions].join("\n"));
     }
-    const oldString = typeof message.arguments.old_string === "string" ? message.arguments.old_string : "";
-    const newString = typeof message.arguments.new_string === "string" ? message.arguments.new_string : "";
-    if (!oldString && !newString) return undefined;
-    const removals = oldString.split(/\r?\n/).map((line) => `-${line}`);
-    const additions = newString.split(/\r?\n/).map((line) => `+${line}`);
-    return [...removals, ...additions].join("\n");
+    return diffs.length > 0 ? diffs.join("\n") : undefined;
   }
   if (message.name === "apply_patch") {
     const diff = typeof message.arguments.diff === "string" ? message.arguments.diff : "";
     return diff.trim() ? diff : undefined;
   }
-  if (message.name === "write_file") {
-    const content = typeof message.arguments.content === "string" ? message.arguments.content : "";
-    if (!content.trim()) return undefined;
-    return content
-      .split(/\r?\n/)
-      .map((line) => `+${line}`)
-      .join("\n");
-  }
   return undefined;
 }
 
-/** Added/removed line counts from diff text, ignoring hunk and file headers. */
 function countDiffLines(text: string): { added: number; removed: number } {
   let added = 0;
   let removed = 0;
@@ -181,24 +169,21 @@ function countDiffLines(text: string): { added: number; removed: number } {
 }
 
 function toolArgumentSummary(message: ToolMessage): string {
-  // The description argument of agent/team_spawn is what this subagent is doing; without it,
-  // parallel subagents render as indistinguishable rows of agent + seconds.
   if (message.name === "agent" || message.name === "team_spawn") {
     const role = stringArgument(message.arguments.subagent_type) ?? stringArgument(message.arguments.team_name);
     const description = stringArgument(message.arguments.description);
-    if (role && description) return truncateVisible(`${role} · ${description}`, 72);
-    if (description) return truncateVisible(description, 72);
+    if (role && description) return truncateVisible(`${role} · ${description}`, 100);
+    if (description) return truncateVisible(description, 100);
   }
   if (message.name === "read_file") {
     const path = typeof message.arguments.path === "string" ? message.arguments.path.trim() : "";
     const offset = integerArgument(message.arguments.offset, 1);
     const limit = integerArgument(message.arguments.limit, 200);
-    const range = limit > 0 ? `L${offset}\u2013${offset + limit - 1}` : `L${offset}`;
-    if (path) return truncateVisible(`${path} ${range}`, 72);
+    if (path) return truncateVisible(`${path}, L${offset}–${offset + limit - 1}`, 100);
   }
-  for (const key of ["path", "command", "pattern", "glob", "old_string", "workspace"]) {
-    const value = message.arguments[key];
-    if (typeof value === "string" && value.trim()) return truncateVisible(value.replace(/\s+/g, " ").trim(), 72);
+  for (const key of ["path", "command", "pattern", "glob", "workspace"]) {
+    const value = stringArgument(message.arguments[key]);
+    if (value) return truncateVisible(value, 100);
   }
   return "";
 }
@@ -209,10 +194,4 @@ function stringArgument(value: unknown): string | undefined {
 
 function integerArgument(value: unknown, fallback: number): number {
   return typeof value === "number" && Number.isFinite(value) ? Math.max(1, Math.trunc(value)) : fallback;
-}
-
-function shouldShowSuccessSummary(detail: string): boolean {
-  const text = detail.trim();
-  if (!text) return false;
-  return text !== "ok";
 }

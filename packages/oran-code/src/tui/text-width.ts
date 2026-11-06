@@ -1,7 +1,10 @@
+import stringWidth from "string-width";
+
 // eslint-disable-next-line no-control-regex -- control chars are the intended match (ANSI escape/text cleanup)
 const ANSI_PATTERN = /\u001b\[[0-?]*[ -/]*[@-~]/g;
 /** ASCII never forms multi-code-point grapheme clusters, so the Segmenter can be skipped entirely. */
 const ASCII_ONLY_PATTERN = /^[\x00-\x7f]*$/;
+const PRINTABLE_ASCII_PATTERN = /^[\x20-\x7e]*$/;
 export function stripTerminalMarkup(value: string): string {
   // ANSI only: overlay selection is a structured flag now, so no `{tag}` in user text is markup and
   // nothing may be stripped from it (a path holding `{main}` used to lose that segment).
@@ -38,23 +41,13 @@ export function graphemes(value: string): string[] {
 }
 
 export function graphemeWidth(value: string): number {
-  const symbols = Array.from(value);
-  let width = 0;
-  let hasWideSymbol = false;
-  for (const symbol of symbols) {
-    const code = symbol.codePointAt(0) ?? 0;
-    if (isCombining(code) || isVariationSelector(code) || isEmojiModifier(code) || code === 0x200d) continue;
-    if (isWide(code)) hasWideSymbol = true;
-    width += isWide(code) ? 2 : 1;
-  }
-  if (symbols.length > 1 && symbols.some((symbol) => (symbol.codePointAt(0) ?? 0) === 0x200d)) return 2;
-  return hasWideSymbol ? Math.max(2, width) : width;
+  // Match Ink's width rules so its wrapping does not split preformatted rows.
+  return PRINTABLE_ASCII_PATTERN.test(value) ? value.length : stringWidth(value);
 }
 
 export function visibleWidth(value: string): number {
   const stripped = stripTerminalMarkup(value);
-  if (ASCII_ONLY_PATTERN.test(stripped)) return stripped.length;
-  return graphemes(stripped).reduce((total, symbol) => total + graphemeWidth(symbol), 0);
+  return PRINTABLE_ASCII_PATTERN.test(stripped) ? stripped.length : stringWidth(stripped);
 }
 
 export function sliceGraphemes(value: string, start: number, end?: number): string[] {
@@ -73,7 +66,7 @@ export function graphemeOffset(value: string, index: number): number {
 export function truncateVisible(value: string, width: number): string {
   const safeWidth = Math.max(1, Math.floor(width));
   const stripped = stripTerminalMarkup(value);
-  if (ASCII_ONLY_PATTERN.test(stripped)) {
+  if (PRINTABLE_ASCII_PATTERN.test(stripped)) {
     if (stripped.length <= safeWidth) return value;
     if (safeWidth === 1) return "…";
     return `${stripped.slice(0, safeWidth - 1)}…`;
@@ -129,7 +122,7 @@ interface WrapLine {
 }
 
 function wrapLineUnits(line: string): WrapLine {
-  if (ASCII_ONLY_PATTERN.test(line)) return { symbols: Array.from(line), widths: undefined };
+  if (PRINTABLE_ASCII_PATTERN.test(line)) return { symbols: Array.from(line), widths: undefined };
   const symbols = graphemes(line);
   return { symbols, widths: symbols.map((symbol) => graphemeWidth(symbol)) };
 }
@@ -217,43 +210,4 @@ export function wrapDisplayTextLimited(value: string, width: number, maxLines: n
   const limit = Math.max(1, Math.floor(maxLines));
   const { lines, truncated } = wrapDisplayLines(value, Math.max(1, Math.floor(width)), limit);
   return truncated ? [...lines.slice(0, limit - 1), "…"] : lines;
-}
-
-function isCombining(code: number): boolean {
-  return (
-    (code >= 0x300 && code <= 0x36f) ||
-    (code >= 0x591 && code <= 0x5bd) ||
-    (code >= 0x610 && code <= 0x61a) ||
-    (code >= 0x64b && code <= 0x652) ||
-    (code >= 0x1ab0 && code <= 0x1aff) ||
-    (code >= 0x1dc0 && code <= 0x1dff) ||
-    (code >= 0x20d0 && code <= 0x20ff) ||
-    (code >= 0xfe20 && code <= 0xfe2f)
-  );
-}
-
-function isVariationSelector(code: number): boolean {
-  return (code >= 0xfe00 && code <= 0xfe0f) || (code >= 0xe0100 && code <= 0xe01ef);
-}
-
-function isEmojiModifier(code: number): boolean {
-  return code >= 0x1f3fb && code <= 0x1f3ff;
-}
-
-function isWide(code: number): boolean {
-  return (
-    code >= 0x1100 &&
-    (code <= 0x115f ||
-      code === 0x2329 ||
-      code === 0x232a ||
-      (code >= 0x2e80 && code <= 0xa4cf) ||
-      (code >= 0xac00 && code <= 0xd7a3) ||
-      (code >= 0xf900 && code <= 0xfaff) ||
-      (code >= 0xfe10 && code <= 0xfe19) ||
-      (code >= 0xfe30 && code <= 0xfe6f) ||
-      (code >= 0xff00 && code <= 0xff60) ||
-      (code >= 0xffe0 && code <= 0xffe6) ||
-      (code >= 0x1f000 && code <= 0x1faff) ||
-      (code >= 0x20000 && code <= 0x3fffd))
-  );
 }

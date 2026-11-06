@@ -1,0 +1,36 @@
+diff --git a/index.js b/index.js
+index 8a24115cedc830107314135eac2d070089beed48..30c78e0ca552b56a5eba4359e7da695a217c1491 100644
+--- a/index.js
++++ b/index.js
+@@ -1,6 +1,10 @@
+ import stripAnsi from 'strip-ansi';
+ import {eastAsianWidth} from 'get-east-asian-width';
+-import emojiRegex from 'emoji-regex';
++// Match emoji presentation, not every symbol that can optionally become emoji.
++const emojiPresentationRegex = /^\p{RGI_Emoji}$/v;
++const regionalIndicatorRegex = /^\p{Regional_Indicator}$/u;
++const keycapRegex = /^[\d#*]\u{FE0F}?\u{20E3}$/u;
++const pictographicRegex = /\p{Extended_Pictographic}/gu;
+ 
+ const segmenter = new Intl.Segmenter();
+ 
+@@ -69,8 +73,17 @@ export default function stringWidth(string, options = {}) {
+ 			continue;
+ 		}
+ 
+-		// TODO: Use `/\p{RGI_Emoji}/v` when targeting Node.js 20.
+-		if (emojiRegex().test(character)) {
++		// Include partial flags and minimally qualified emoji produced during streaming.
++		if (
++			emojiPresentationRegex.test(character)
++			|| regionalIndicatorRegex.test(character)
++			|| keycapRegex.test(character)
++			|| (
++				character.includes('\u{200D}')
++				&& !character.includes('\u{FE0E}')
++				&& (character.match(pictographicRegex)?.length ?? 0) >= 2
++			)
++		) {
+ 			width += 2;
+ 			continue;
+ 		}
