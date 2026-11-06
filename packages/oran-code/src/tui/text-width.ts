@@ -3,6 +3,7 @@ import stringWidth from "string-width";
 // eslint-disable-next-line no-control-regex -- control chars are the intended match (ANSI escape/text cleanup)
 const ANSI_PATTERN = /\u001b\[[0-?]*[ -/]*[@-~]/g;
 /** ASCII never forms multi-code-point grapheme clusters, so the Segmenter can be skipped entirely. */
+// eslint-disable-next-line no-control-regex -- The ASCII fast path intentionally includes control bytes.
 const ASCII_ONLY_PATTERN = /^[\x00-\x7f]*$/;
 const PRINTABLE_ASCII_PATTERN = /^[\x20-\x7e]*$/;
 export function stripTerminalMarkup(value: string): string {

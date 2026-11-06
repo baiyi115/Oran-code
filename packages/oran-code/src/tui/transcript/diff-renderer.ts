@@ -17,7 +17,7 @@ export function renderDiff(value: string, width: number): string[] {
       output.push(`${ANSI.gray}${truncateVisible(line, Math.max(1, width))}${ANSI.reset}`);
       continue;
     }
-    if (line.startsWith("--- ") || line.startsWith("+++ ") || !/^[ +\-]/.test(line)) {
+    if (line.startsWith("--- ") || line.startsWith("+++ ") || !/^[ +-]/.test(line)) {
       if (line.startsWith("*** ") || line.startsWith("diff ")) oldLine = newLine = undefined;
       output.push(`${ANSI.gray}${truncateVisible(line, Math.max(1, width))}${ANSI.reset}`);
       continue;

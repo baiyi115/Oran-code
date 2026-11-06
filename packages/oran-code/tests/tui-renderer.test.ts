@@ -9,7 +9,7 @@ import {
 } from "../src/tui/status-indicator.js";
 import { footerLines, workSummaryLine } from "../src/tui/footer.js";
 import { staticTranscriptCount } from "../src/tui/ink-app.js";
-import { collapsibleSegments, TranscriptView } from "../src/tui/transcript/transcript-view.js";
+import { TranscriptView } from "../src/tui/transcript/transcript-view.js";
 import { renderMessage } from "../src/tui/transcript/message-renderer.js";
 import { ANSI } from "../src/tui/theme.js";
 import type { TuiBackgroundTask, TuiState } from "../src/tui/types.js";

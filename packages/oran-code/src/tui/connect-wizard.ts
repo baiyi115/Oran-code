@@ -271,6 +271,7 @@ export class ConnectWizard {
     } else if (isSubmitKey(input, key)) {
       const value = editing.value.trim();
       if (editing.field === "id") {
+        // eslint-disable-next-line no-control-regex -- Model IDs must reject control characters and whitespace.
         if (!value || /[\x00-\x1f\x7f\s]/u.test(value) || ["__proto__", "constructor", "prototype"].includes(value)) {
           overlay.error = "model ID is required; whitespace and reserved names are not allowed";
           return;
@@ -299,6 +300,7 @@ export class ConnectWizard {
       overlay.editing = undefined;
       overlay.error = undefined;
     } else if (input && !key.ctrl && !key.meta && !key.tab && !key.upArrow && !key.downArrow) {
+      // eslint-disable-next-line no-control-regex -- Drop terminal control input from editable fields.
       editing.value += input.replace(/[\r\n\x00-\x1f\x7f]/g, "");
     }
   }

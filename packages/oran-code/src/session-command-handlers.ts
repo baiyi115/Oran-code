@@ -253,6 +253,7 @@ export class SessionCommandHandlers {
       for (const model of selectedModels) {
         if (
           !model.id ||
+          // eslint-disable-next-line no-control-regex -- Model IDs must reject control characters and whitespace.
           /[\x00-\x1f\x7f\s]/u.test(model.id) ||
           ["__proto__", "constructor", "prototype"].includes(model.id) ||
           ids.has(model.id)
