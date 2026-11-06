@@ -1,6 +1,7 @@
 import { createHash } from "node:crypto";
 import { readFile } from "node:fs/promises";
 import { relative, resolve } from "node:path";
+import { stripVTControlCharacters } from "node:util";
 import type { ToolCall, ToolResult } from "../types.js";
 import { errorSignature, toolCallSignature, toolResultSignature } from "../loop.js";
 
@@ -85,8 +86,27 @@ export function declaredWritePaths(call: ToolCall, workspace: string): string[] 
 const TESTS_SUMMARY_LINE = /^[ \t]*Tests:?[ \t]+(.*)$/im;
 const TESTS_FILE_SUMMARY_LINE = /^[ \t]*Test (?:Files|Suites)[ \t].*$/gim;
 const TESTS_TOTAL_PATTERN = /(\d+)\s+total\b/i;
+const NODE_SUMMARY_LINE = /^[ \t]*(?:ℹ|#)[ \t]+(tests|pass|fail)[ \t]+(\d+)[ \t]*\r?$/gm;
 
-function readTestCounts(output: string): { passed?: number; failed?: number; source: string } {
+function readTestCounts(output: string): { passed?: number; failed?: number; total?: number; source: string } {
+  output = stripVTControlCharacters(output);
+  // Node's spec and TAP reporters put the total, passes and failures on separate
+  // lines. Keep each summary together; skips, cancellations and todos are part
+  // of the reported total even though they are neither passes nor failures.
+  let nodeCounts: { passed?: number; failed?: number; total: number } | undefined;
+  for (const match of output.matchAll(NODE_SUMMARY_LINE)) {
+    const count = Number(match[2]);
+    if (match[1] === "tests") nodeCounts = { total: count };
+    else if (nodeCounts && match[1] === "pass") nodeCounts.passed = count;
+    else if (nodeCounts && match[1] === "fail") nodeCounts.failed = count;
+  }
+  if (
+    nodeCounts?.passed !== undefined &&
+    nodeCounts.failed !== undefined &&
+    nodeCounts.passed + nodeCounts.failed <= nodeCounts.total
+  ) {
+    return { ...nodeCounts, source: output };
+  }
   const labelled = TESTS_SUMMARY_LINE.exec(output)?.[1];
   // Reporters without a "Tests" line: drop the file/suite summary lines first, so
   // their counts cannot be read as test counts either.
@@ -129,8 +149,8 @@ export function extractEvidence(
     if (counts.passed !== undefined && Number.isFinite(counts.passed)) {
       evidence.testsPassed = counts.passed;
       evidence.commandSig = toolCallSignature(call);
-      const total = TESTS_TOTAL_PATTERN.exec(counts.source)?.[1];
-      // Summaries without a total: total = passed + failed, both from the same line.
+      const total = counts.total ?? TESTS_TOTAL_PATTERN.exec(counts.source)?.[1];
+      // Prefer the reporter's total, which also includes skipped/cancelled tests.
       evidence.testsTotal =
         total !== undefined
           ? Number(total)
