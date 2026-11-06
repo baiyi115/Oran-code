@@ -131,41 +131,13 @@ export class AgentLoop {
   }
 
   canContinue(): boolean {
-    if (this.config.tokenBudget > 0 && this.tokensUsed >= this.config.tokenBudget) return false;
-    if (this.config.maxSteps <= 0) return false;
-    if (this.shouldStopForUnknownTools()) return false;
-    return this.turns < this.config.maxSteps;
-  }
-
-  canRecordToolCall(): boolean {
-    return this.config.maxSteps > 0 && this.turns < this.config.maxSteps;
-  }
-
-  isFinalTurn(): boolean {
-    return this.config.maxSteps > 0 && this.turns >= this.config.maxSteps;
-  }
-
-  remainingTurns(): number {
-    return Math.max(0, this.config.maxSteps - this.turns);
-  }
-
-  tokenBudgetReached(): boolean {
-    return this.config.tokenBudget > 0 && this.tokensUsed >= this.config.tokenBudget;
+    return !this.shouldStopForUnknownTools();
   }
 
   recordTurn(): void {
     this.turns += 1;
     this.turnResultFingerprints = [];
     this.turnExecutions = [];
-  }
-
-  /**
-   * Give back the turn just recorded for a request that produced neither text nor tool calls
-   * (typically the output limit spent on reasoning). The retry then fits inside the same budget,
-   * including on the final turn, where it stays a finalize request.
-   */
-  refundTurn(): void {
-    if (this.turns > 0) this.turns -= 1;
   }
 
   recordUsage(usage: Record<string, number>): void {
@@ -183,7 +155,6 @@ export class AgentLoop {
   }
 
   record(call: ToolCall): void {
-    if (!this.canRecordToolCall()) throw new Error("tool call budget exhausted");
     this.toolCalls.push(call);
     this.consecutiveUnknownTools = 0;
   }

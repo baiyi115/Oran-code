@@ -17,7 +17,6 @@ import {
   isPlanComplete,
   summarizeArguments,
   summarizeToolCalls,
-  tokenBudgetMessage,
 } from "./controller-utils.js";
 import type { TraceStore } from "./trace.js";
 import type {
@@ -68,7 +67,6 @@ import {
   buildEnvironmentPrompt,
   assembleStableSystemPrompt,
   environmentSystemMessage,
-  loopBudgetReminder,
   stableSystemMessage,
   taskPlanReminder,
   taskModeReminder,
@@ -423,12 +421,10 @@ export class TaskController {
         this.syncConversation(messages);
       }
 
-      const finalTurn = loop.isFinalTurn();
       const hookNotices = this.hookEngine ? this.hookEngine.drainNotices() : [];
       const noProgressWarning = loop.noProgressWarning();
       const reminders: string[] = [
         taskModeReminder(planMode, loop.turns),
-        loopBudgetReminder(loop.remainingTurns(), finalTurn),
         ...this.runtimeReminders(),
         ...this.pendingProgressNotices.splice(0),
         ...hookNotices.map((notice) => `[hook:${notice.event}] ${notice.text}`),
@@ -478,13 +474,13 @@ export class TaskController {
         userPrompt: task.prompt,
       });
       try {
-        const tools = finalTurn || casualConversation ? [] : this.toolSchemasForMode();
+        const tools = casualConversation ? [] : this.toolSchemasForMode();
         const request = await this.turnRequester.requestWithContext(
           messages,
           reminders,
           loop,
           loop.turns,
-          finalTurn ? "finalize" : planMode ? "plan" : "turn",
+          planMode ? "plan" : "turn",
           tools,
         );
         messages = request.messages;
@@ -528,8 +524,8 @@ export class TaskController {
         if (response.truncated) {
           // Output truncated by the limit: the content is incomplete, so it can neither be the final
           // answer nor have its tool calls executed (turn-requester already dropped every call in a
-          // truncated message). A pure-text truncation gets a bounded chance to recover, including
-          // on the final turn. When recovery runs out, keep the partial text rather than discard it.
+          // truncated message). A pure-text truncation gets a bounded chance to recover.
+          // When recovery runs out, keep the partial text rather than discard it.
           this.truncationRecoveries += 1;
           const reason = response.finishReason ?? "length";
           if (isTextOnlyTruncation(response) && response.text.trim()) {
@@ -547,16 +543,10 @@ export class TaskController {
             reasoningOnly,
             receivedChars,
             droppedToolCalls: response.truncatedToolCalls ?? 0,
-            finalTurn,
           });
           const canRetry = this.truncationRecoveries <= MAX_TRUNCATION_RECOVERIES;
-          // A short answer after extensive reasoning also needs more room: only escalating an
-          // entirely empty response leaves that answer cut off again on the final turn.
+          // A short answer after extensive reasoning also needs more room before another retry.
           const escalatedTo = canRetry ? this.turnRequester.escalateOutputTokenLimit() : undefined;
-          // A truncated final answer is not a finished turn. Give back the final-turn slot so
-          // bounded recovery can run with tools still disabled; reasoning-only retries likewise
-          // must not spend another turn when no answer or tool call was produced.
-          if (canRetry && (finalTurn || reasoningOnly)) loop.refundTurn();
           if (!canRetry || (reasoningOnly && escalatedTo === undefined)) {
             const assembled = this.assembleTruncatedText();
             if (assembled) {
@@ -606,31 +596,6 @@ export class TaskController {
         const rehearsalPause = await this.consumeRehearsal(task, this.assembleTruncatedText(response.text));
         if (rehearsalPause) {
           await this.pauseForNoProgress(task, rehearsalPause);
-          return task;
-        }
-        if (finalTurn && response.toolCalls.length) {
-          for (const [index, call] of response.toolCalls.entries()) {
-            ensureCallId(call, this.contextManager);
-            await this.toolExecutor.recordTool(
-              task,
-              messages,
-              call,
-              index,
-              {
-                ok: false,
-                output: "",
-                error: "iteration limit reached; no more tools can be run",
-                summary: "not run",
-              },
-              0,
-              { executed: false },
-            );
-          }
-          transitionTask(task, "failed");
-          await this.persist(task);
-          await this.emit("error", {
-            message: `Reached the ${this.config.loop.maxSteps}-iteration limit before the model produced a final answer.`,
-          });
           return task;
         }
         if (planMode && !response.toolCalls.length) {
@@ -768,14 +733,10 @@ export class TaskController {
         });
       }
     }
-    if (loop.tokenBudgetReached()) {
-      await this.pauseForTokenBudget(task, loop);
-      return task;
-    }
     transitionTask(task, "failed");
     await this.persist(task);
     await this.emit("error", {
-      message: `Reached the ${this.config.loop.maxSteps}-iteration limit before the task completed.`,
+      message: `stopped after ${loop.consecutiveUnknownTools} consecutive unknown tool call(s)`,
     });
     return task;
   }
@@ -827,16 +788,6 @@ export class TaskController {
     }
     await this.emit("log", {
       message: pauseMessage,
-    });
-  }
-
-  private async pauseForTokenBudget(task: Task, loop: AgentLoop): Promise<void> {
-    const budget = this.config.loop.tokenBudget;
-    transitionTask(task, "paused");
-    await this.persist(task);
-    await this.recordProgressStop(task, "stopped_by_budget");
-    await this.emit("log", {
-      message: `${tokenBudgetMessage(loop, budget)} Run /resume to continue this task with a fresh budget.`,
     });
   }
 

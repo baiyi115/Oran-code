@@ -6,7 +6,6 @@ import { promisify } from "node:util";
 import { structuredPermissionDenial, type ApprovalDecision } from "./security.js";
 import { isWriteToolName } from "./tools.js";
 import type { ContextManager } from "./context-manager.js";
-import type { AgentLoop } from "./loop.js";
 import type { Message, ModelResponse, ModelRetryCategory, ToolCall, ToolCallComplete, ToolResult } from "./types.js";
 import { formatErrorMessage } from "./error-format.js";
 import { ModelRequestError, SseIdleTimeoutError } from "./provider.js";
@@ -184,14 +183,6 @@ export function sameToolCall(left: ToolCall, right: ToolCall): boolean {
     left.name === right.name &&
     JSON.stringify(left.arguments) === JSON.stringify(right.arguments)
   );
-}
-
-export function tokenBudgetMessage(loop: AgentLoop, budget: number): string {
-  return [
-    `Token budget reached after ${loop.turns} model iteration(s): ${loop.tokensUsed.toLocaleString("en-US")} / ${budget.toLocaleString("en-US")} task tokens.`,
-    "Oran code preserved the completed response and stopped before another model request.",
-    "Start a new session or use /compact (preferred) or /clear to reduce prior context, lower the reasoning effort, or increase agent.tokenBudget.",
-  ].join(" ");
 }
 
 export function withRuntimeReminders(messages: readonly Message[], reminders: readonly string[]): Message[] {

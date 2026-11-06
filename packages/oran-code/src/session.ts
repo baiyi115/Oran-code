@@ -1773,10 +1773,10 @@ export class TerminalSession {
     if (!this.model) return { ok: false, output: "no model selected; use /model PROVIDER/MODEL first" };
     const state = await new ProgressStateStore(this.workspace).load().catch(() => undefined);
     const stop = state?.stop;
-    if (!state || (stop?.kind !== "blocked" && stop?.kind !== "stopped_by_budget")) {
+    if (!state || stop?.kind !== "blocked") {
       return {
         ok: false,
-        output: "No paused task to resume: use /resume after a progress gate or the token budget pauses one.",
+        output: "No paused task to resume: use /resume after a progress gate pauses one.",
       };
     }
     const prompt =

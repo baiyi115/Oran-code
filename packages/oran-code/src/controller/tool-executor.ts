@@ -448,23 +448,6 @@ export class ToolBatchExecutor {
       );
       return false;
     }
-    if (!loop.canRecordToolCall()) {
-      await this.recordTool(
-        task,
-        messages,
-        call,
-        index,
-        {
-          ok: false,
-          output: "",
-          error: "tool call budget exhausted before batch_tools could run",
-          summary: "budget exhausted",
-        },
-        0,
-        { executed: false },
-      );
-      return false;
-    }
     loop.record(call);
     // The script's own start marker: the batch_tools call is emitted before the step lines, and the
     // aggregated result closes at the end.
@@ -582,15 +565,6 @@ export class ToolBatchExecutor {
       const cached = this.ports.readonlyCache.get(cacheKey)!;
       loop.record(call);
       return complete({ ...cached, metadata: { ...cached.metadata, cached: true } }, 0, false, false, false);
-    }
-    if (!loop.canRecordToolCall()) {
-      return complete(
-        { ok: false, output: "", error: "tool call budget exhausted", summary: "budget exhausted" },
-        0,
-        false,
-        false,
-        false,
-      );
     }
     loop.record(call);
     const started = Date.now();

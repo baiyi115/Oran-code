@@ -198,16 +198,6 @@ export function taskModeReminder(planMode: boolean, turn: number, repeatEvery = 
   ].join("\n");
 }
 
-export function loopBudgetReminder(remainingTurns: number, finalTurn: boolean): string | undefined {
-  if (finalTurn) {
-    return "This is the final model iteration. Do not call tools. Answer from available evidence and state any specific unfinished limitation.";
-  }
-  if (remainingTurns <= 3) {
-    return `Note: Only ${remainingTurns} model iteration(s) remain. Conclude the task or summarize progress soon.`;
-  }
-  return undefined;
-}
-
 export function taskPlanReminder(planState: TaskPlanState): string {
   const lines: string[] = [`[Active Task Plan] Goal: ${planState.goal}`, "Steps:"];
   planState.steps.forEach((step, idx) => {

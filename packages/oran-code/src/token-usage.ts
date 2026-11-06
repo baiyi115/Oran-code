@@ -18,11 +18,9 @@ export function normalizeTokenUsage(usage: Record<string, number>): TokenUsage {
   const cacheReadTokens = cacheNumberFrom(usage, "cache_read_input_tokens", "cache_read_tokens", "cached_tokens");
   const cacheWriteTokens = cacheNumberFrom(usage, "cache_creation_input_tokens", "cache_write_tokens");
   const inputTokens = reportedInput ?? (reportedTotal === undefined ? 0 : Math.max(0, reportedTotal - outputTokens));
-  // Matches the usageTotal convention in context-manager: with no explicit total, cache reads
-  // and writes count too, otherwise the token budget is systematically underestimated once
-  // prompt caching is enabled. For OpenAI-style fields (prompt/completion) cached_tokens is a
-  // subset of prompt_tokens and must not be added into the total; for Anthropic-style fields
-  // cache_read and input_tokens are disjoint, so adding them normally is correct.
+  // With no explicit total, include cache reads and writes in cumulative usage. For OpenAI-style
+  // fields (prompt/completion), cached_tokens is a subset of prompt_tokens and must not be added
+  // again; for Anthropic-style fields, cache_read and input_tokens are disjoint.
   const isOpenAiShape = usage.prompt_tokens !== undefined || usage.completion_tokens !== undefined;
   const totalTokens =
     reportedTotal ??

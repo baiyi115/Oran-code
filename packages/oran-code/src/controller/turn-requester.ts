@@ -32,10 +32,6 @@ import {
   withRuntimeReminders,
 } from "../controller-utils.js";
 
-const BUDGET_COMPACTION_MIN_REQUEST_TOKENS = 32_000;
-const BUDGET_COMPACTION_HEADROOM = 1.5;
-const BUDGET_COMPACTION_GROWTH_FACTOR = 1.25;
-const BUDGET_COMPACTION_COOLDOWN_TURNS = 3;
 /**
  * Ceiling for the escalating output budget. A reasoning-only truncation raises the per-request
  * max_tokens (4096 -> 8192 -> 16384); going higher risks endpoints rejecting a value above what
@@ -86,8 +82,6 @@ export interface TurnRequesterPorts {
 export class TurnRequester {
   private turnSequence = 0;
   private modelResponseStepId: number | undefined;
-  private lastContextCompactionTurn = Number.NEGATIVE_INFINITY;
-  private contextCompactionFloorTokens = 0;
   private outputTokenLimit: number;
 
   constructor(private readonly ports: TurnRequesterPorts) {
@@ -97,8 +91,6 @@ export class TurnRequester {
   resetForTask(): void {
     this.turnSequence = 0;
     this.modelResponseStepId = undefined;
-    this.lastContextCompactionTurn = Number.NEGATIVE_INFINITY;
-    this.contextCompactionFloorTokens = 0;
     this.outputTokenLimit = this.ports.config.model.maxTokens;
   }
 
@@ -133,7 +125,7 @@ export class TurnRequester {
     source: string,
     tools: Record<string, unknown>[],
   ): Promise<{ messages: Message[]; response: ModelResponse }> {
-    let managedMessages = repairToolMessagePairs(await this.prepareContext(messages, reminders, tools, loop));
+    let managedMessages = repairToolMessagePairs(await this.prepareContext(messages, reminders, tools));
     this.ports.syncConversation(managedMessages);
     let requestMessages = withRuntimeReminders(managedMessages, reminders);
     await this.ports.fireHook({
@@ -206,7 +198,6 @@ export class TurnRequester {
     messages: Message[],
     reminders: readonly string[],
     tools: Record<string, unknown>[],
-    loop: AgentLoop,
   ): Promise<Message[]> {
     let managedMessages = messages;
     const beforeOffload = this.ports.contextManager.estimateTokens(
@@ -236,35 +227,13 @@ export class TurnRequester {
     const requestMessages = withRuntimeReminders(managedMessages, reminders);
     const contextWindow = this.ports.contextManager.resolveContextWindow(this.ports.config.model);
     const beforeTokens = this.ports.contextManager.estimateTokens(requestMessages, tools);
-    const compactForContextWindow = this.ports.contextManager.shouldAutoCompact(requestMessages, contextWindow, tools);
+    if (!this.ports.contextManager.shouldAutoCompact(requestMessages, contextWindow, tools)) return managedMessages;
 
-    const tokenBudget = loop.config.tokenBudget;
-    const remainingBudget = Math.max(0, tokenBudget - loop.tokensUsed);
-    const remainingRequests = Math.max(1, loop.remainingTurns() + 1);
-    const sustainableRequestTokens = remainingBudget / remainingRequests;
-    const budgetCompactionThreshold = Math.max(
-      BUDGET_COMPACTION_MIN_REQUEST_TOKENS,
-      sustainableRequestTokens * BUDGET_COMPACTION_HEADROOM,
-      this.contextCompactionFloorTokens * BUDGET_COMPACTION_GROWTH_FACTOR,
-    );
-    const compactForTokenBudget =
-      tokenBudget > 0 &&
-      remainingBudget > 0 &&
-      loop.turns - this.lastContextCompactionTurn >= BUDGET_COMPACTION_COOLDOWN_TURNS &&
-      beforeTokens >= budgetCompactionThreshold;
-    if (!compactForContextWindow && !compactForTokenBudget) return managedMessages;
-
-    const budgetMessage =
-      compactForTokenBudget && !compactForContextWindow
-        ? "Compacting early to keep the remaining model iterations within the task token budget."
-        : undefined;
-    this.lastContextCompactionTurn = loop.turns;
     await this.ports.emit("context_compaction", {
       phase: "started",
       reason: "auto",
       beforeTokens,
       replacementCount: 0,
-      ...(budgetMessage ? { message: budgetMessage } : {}),
     });
     try {
       const compacted = await this.ports.contextManager.compact({
@@ -276,7 +245,6 @@ export class TurnRequester {
         ...(this.ports.getAbortSignal() ? { signal: this.ports.getAbortSignal()! } : {}),
       });
       managedMessages = compacted.messages;
-      this.contextCompactionFloorTokens = Math.max(1, compacted.afterTokens);
       this.ports.syncConversation(managedMessages);
       await this.ports.emit("context_compaction", {
         phase: "completed",
@@ -284,7 +252,6 @@ export class TurnRequester {
         beforeTokens: compacted.beforeTokens,
         afterTokens: compacted.afterTokens,
         replacementCount: compacted.replacementCount,
-        ...(budgetMessage ? { message: budgetMessage } : {}),
       });
     } catch (error) {
       if (isAbortError(error) || this.ports.getAbortSignal()?.aborted) throw error;

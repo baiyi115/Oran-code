@@ -20,7 +20,7 @@ export const MAX_SNAPSHOTS = 20;
 const PERSIST_DEBOUNCE_MS = 500;
 
 /** How the task last ended, as seen by the progress layer. */
-export type ProgressStopKind = "verified" | "review_required" | "blocked" | "stopped_by_budget";
+export type ProgressStopKind = "verified" | "review_required" | "blocked";
 
 export interface ProgressStop {
   kind: ProgressStopKind;
@@ -209,6 +209,9 @@ export class ProgressStateStore {
     try {
       const parsed = JSON.parse(await readFile(this.path(), "utf8")) as Partial<PersistedProgressState>;
       if (parsed.version !== PROGRESS_STATE_VERSION) return { ...EMPTY_PROGRESS_STATE };
+      const stop = parsed.stop && typeof parsed.stop === "object" ? (parsed.stop as ProgressStop) : undefined;
+      // Older runs paused by the removed token limit remain resumable as ordinary paused tasks.
+      if (stop && (stop.kind as string) === "stopped_by_budget") stop.kind = "blocked";
       return {
         version: PROGRESS_STATE_VERSION,
         updatedAt: typeof parsed.updatedAt === "string" ? parsed.updatedAt : "",
@@ -224,7 +227,7 @@ export class ProgressStateStore {
           parsed.rehearsal && typeof parsed.rehearsal === "object"
             ? (parsed.rehearsal as PersistedProgressState["rehearsal"])
             : undefined,
-        stop: parsed.stop && typeof parsed.stop === "object" ? (parsed.stop as ProgressStop) : undefined,
+        stop,
         enforcement: parsed.enforcement === "off" ? "off" : undefined,
         snapshots: Array.isArray(parsed.snapshots) ? parsed.snapshots : [],
       };
