@@ -104,20 +104,17 @@ function makeHarness(
     recordUnknownTool: vi.fn(),
     shouldStopForUnknownTools: vi.fn(() => options.shouldStopForUnknownTools ?? false),
     recordResult: vi.fn(),
-    canRecordToolCall: vi.fn(() => true),
   } as unknown as AgentLoop;
 
   const config: RuntimeConfig = {
     workspace,
     model: { provider: "test", model: "test-model", temperature: 0, maxTokens: 1024 },
     workMode: options.workMode ?? "auto",
-    permissionMode: "default",
+    permissionMode: "auto",
     loop: {
-      maxSteps: 20,
       maxRetries: 2,
       commandTimeout: 5_000,
       noProgressLimit: 0,
-      tokenBudget: 0,
       unknownToolLimit: 0,
       readonlyConcurrency: 4,
     },

@@ -12,7 +12,6 @@ export interface AgentDefinition {
   readonly allowedTools: readonly string[];
   readonly deniedTools: readonly string[];
   readonly model?: string;
-  readonly maxSteps?: number;
   readonly permissionMode?: PermissionMode;
   readonly workMode?: WorkMode;
   readonly forceBackground?: boolean;

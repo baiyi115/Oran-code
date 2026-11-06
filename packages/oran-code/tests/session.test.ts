@@ -193,7 +193,7 @@ describe("TerminalSession", { timeout: SESSION_TEST_TIMEOUT_MS }, () => {
         {
           workspace,
           model,
-          config: { providers: {}, agent: { maxSteps: 10 } },
+          config: { providers: {} },
           approveAll: true,
           providerFactory: () => provider,
         },
@@ -238,7 +238,7 @@ describe("TerminalSession", { timeout: SESSION_TEST_TIMEOUT_MS }, () => {
         {
           workspace,
           model,
-          config: { providers: {}, agent: { maxSteps: 2 } },
+          config: { providers: {} },
           approveAll: true,
           providerFactory: () => provider,
         },
@@ -274,7 +274,7 @@ describe("TerminalSession", { timeout: SESSION_TEST_TIMEOUT_MS }, () => {
         {
           workspace,
           model,
-          config: { providers: {}, agent: { maxSteps: 2 } },
+          config: { providers: {} },
           approveAll: true,
           providerFactory: () => new FakeProvider(),
         },

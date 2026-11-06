@@ -3,11 +3,9 @@ import { AgentLoop, toolCacheKey, toolCallSignature, toolResultSignature } from 
 import type { LoopConfig, ToolCall, ToolResult } from "../src/types.js";
 
 const baseConfig: LoopConfig = {
-  maxSteps: 20,
   maxRetries: 5,
   commandTimeout: 60_000,
   noProgressLimit: 8,
-  tokenBudget: 1_000_000,
   unknownToolLimit: 3,
   readonlyConcurrency: 4,
 };

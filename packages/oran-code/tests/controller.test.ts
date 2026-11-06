@@ -146,7 +146,7 @@ function createController(
 ): { controller: TaskController; trace: InMemoryTraceStore } {
   const trace = new InMemoryTraceStore();
   const controller = new TaskController({
-    config: createRuntimeConfig(workspace, model, { providers: {}, agent: { maxSteps: 5 } }, false),
+    config: createRuntimeConfig(workspace, model, { providers: {} }, false),
     provider,
     registry,
     trace,

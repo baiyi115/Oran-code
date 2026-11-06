@@ -267,10 +267,8 @@ export interface ProviderProfile {
 
 export interface AgentSettings {
   approveAll?: boolean;
-  maxSteps?: number;
   /** Pause after this many consecutive turns without semantic progress. 0 disables this guard. */
   noProgressLimit?: number;
-  tokenBudget?: number;
   workMode?: WorkMode;
   permissionMode?: PermissionMode;
   lastModel?: string;
@@ -343,12 +341,10 @@ export interface WebSettings {
 }
 
 export interface LoopConfig {
-  maxSteps: number;
   maxRetries: number;
   commandTimeout: number;
   /** Pause after this many consecutive turns without semantic progress. 0 disables this guard. */
   noProgressLimit: number;
-  tokenBudget: number;
   /** Stop after this many consecutive unknown tool calls. 0 disables. */
   unknownToolLimit: number;
   /** Max concurrent readonly tool calls inside one batch. */
@@ -598,7 +594,6 @@ export interface AgentOptions {
   workspace: string;
   prompt: string;
   model: ModelConfig;
-  maxSteps: number;
   approveAll: boolean;
   onEvent?: (event: AgentEvent) => void;
   approve?: (call: ToolCall, level: number) => Promise<boolean>;

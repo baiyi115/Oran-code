@@ -440,20 +440,14 @@ function maskSecrets(value: unknown, key?: string): unknown {
 
 function setConfigValue(config: UserConfig, key: string, rawValue: string): void {
   switch (key) {
+    case "agent.permissionMode": {
+      const mode = normalizePermissionMode(rawValue);
+      if (!mode) throw new Error(`agent.permissionMode must be ${PERMISSION_MODES.join(", ")}`);
+      config.agent = { ...config.agent, permissionMode: mode };
+      return;
+    }
     case "agent.approveAll": {
       config.agent = { ...config.agent, approveAll: parseBoolean(rawValue) };
-      return;
-    }
-    case "agent.maxSteps": {
-      const value = Number(rawValue);
-      if (!Number.isInteger(value) || value <= 0) throw new Error("agent.maxSteps must be a positive integer");
-      config.agent = { ...config.agent, maxSteps: value };
-      return;
-    }
-    case "agent.tokenBudget": {
-      const value = Number(rawValue);
-      if (!Number.isInteger(value) || value < 0) throw new Error("agent.tokenBudget must be a non-negative integer");
-      config.agent = { ...config.agent, tokenBudget: value };
       return;
     }
     case "sessionTitles.mode": {
@@ -475,9 +469,8 @@ function setConfigValue(config: UserConfig, key: string, rawValue: string): void
 }
 
 function unsetConfigValue(config: UserConfig, key: string): void {
-  if (key === "agent.approveAll") delete config.agent?.approveAll;
-  else if (key === "agent.maxSteps") delete config.agent?.maxSteps;
-  else if (key === "agent.tokenBudget") delete config.agent?.tokenBudget;
+  if (key === "agent.permissionMode") delete config.agent?.permissionMode;
+  else if (key === "agent.approveAll") delete config.agent?.approveAll;
   else if (key === "sessionTitles.mode") delete config.sessionTitles?.mode;
   else if (key === "sessionTitles.model") delete config.sessionTitles?.model;
   else throw new Error(`unknown config key: ${key}`);

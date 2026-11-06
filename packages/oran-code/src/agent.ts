@@ -29,17 +29,7 @@ export async function runTaskWithController(options: AgentOptions): Promise<Task
 }
 
 async function executeWithController(options: AgentOptions, registry: ToolRegistry): Promise<Task> {
-  const config = createRuntimeConfig(
-    options.workspace,
-    options.model,
-    {
-      providers: {},
-      agent: {
-        maxSteps: options.maxSteps,
-      },
-    },
-    options.approveAll,
-  );
+  const config = createRuntimeConfig(options.workspace, options.model, { providers: {} }, options.approveAll);
   const trace = new InMemoryTraceStore();
   const roles = new AgentDefinitionLoader(options.workspace);
   await roles.scan();
