@@ -1,5 +1,5 @@
 import { execFile } from "node:child_process";
-import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, rm, utimes, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { promisify } from "node:util";
@@ -53,6 +53,9 @@ describe("SnapshotStore /undo", { timeout: SNAPSHOT_TEST_TIMEOUT_MS }, () => {
     await writeFile(join(root, "README.md"), "updated", "utf8");
     await mkdir(join(root, "generated"), { recursive: true });
     await writeFile(join(root, "generated", "report.json"), "{}", "utf8");
+    // A new ignored directory must be detected even when its timestamp predates the task.
+    const oldDate = new Date("2000-01-01T00:00:00.000Z");
+    await utimes(join(root, "generated"), oldDate, oldDate);
     await store.finalize(task);
 
     const result = await store.undoLatest("session-ignored");

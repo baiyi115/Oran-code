@@ -32,6 +32,8 @@ export interface SnapshotManifest {
    * rolled back. Recording them lets that message say what it left alone.
    */
   readonly ignoredChanges?: readonly string[];
+  /** Ignored paths present before the task, used to recognize newly created paths without relying on mtime. */
+  readonly ignoredPathsAtStart?: readonly string[];
   readonly status: SnapshotStatus;
   readonly undoneAt?: string;
 }
@@ -54,6 +56,7 @@ export class SnapshotStore implements SnapshotStorePort {
     if (await exists(path)) return;
     const preTree = await captureTree(task.workspace);
     const preHead = await gitHead(task.workspace);
+    const ignoredPathsAtStart = await listIgnoredPaths(task.workspace);
     const manifest: SnapshotManifest = {
       version: 1,
       id: `${sessionId}:${task.id}`,
@@ -64,6 +67,7 @@ export class SnapshotStore implements SnapshotStorePort {
       preTree,
       preHead,
       changedPaths: [],
+      ...(ignoredPathsAtStart ? { ignoredPathsAtStart } : {}),
       status: "open",
     };
     await writeJsonAtomic(path, manifest);
@@ -88,7 +92,11 @@ export class SnapshotStore implements SnapshotStorePort {
     const changedPaths = [...new Set([...preEntries.keys(), ...postEntries.keys()])]
       .filter((path) => preEntries.get(path) !== postEntries.get(path))
       .sort();
-    const ignoredChanges = await ignoredPathsChangedSince(task.workspace, manifest.createdAt);
+    const ignoredChanges = await ignoredPathsChangedSince(
+      task.workspace,
+      manifest.createdAt,
+      manifest.ignoredPathsAtStart,
+    );
     await writeJsonAtomic(manifestPath, {
       ...manifest,
       completedAt: new Date().toISOString(),
@@ -338,27 +346,37 @@ async function gitBuffer(workspace: string, args: readonly string[]): Promise<Bu
   });
 }
 
-/** Paths git ignores that were modified since the task started (see SnapshotManifest.ignoredChanges). */
-async function ignoredPathsChangedSince(workspace: string, since: string): Promise<string[]> {
-  const cutoff = Date.parse(since);
-  if (!Number.isFinite(cutoff)) return [];
+/** A matching ignored directory is one entry, not a walk into its contents. */
+async function listIgnoredPaths(workspace: string): Promise<string[] | undefined> {
   let stdout: string;
   try {
-    // matching: an ignored directory is one entry, not a walk into it.
     stdout = (await git(workspace, ["status", "--porcelain", "--ignored=matching"])).stdout;
   } catch {
-    return []; // not a repository, or git refused: nothing to report
+    return undefined; // not a repository, or git refused
   }
+  return stdout
+    .split("\n")
+    .filter((line) => line.startsWith("!! "))
+    .map((line) => line.slice(3).trim().replace(/\/$/, ""))
+    .filter((path) => path.length > 0 && !PROJECT_STATE_DIR_NAMES.some((name) => path.split("/").includes(name)));
+}
+
+/** New ignored paths are detected by their absence at task start, even if filesystem timestamps are coarse. */
+async function ignoredPathsChangedSince(
+  workspace: string,
+  since: string,
+  initialPaths?: readonly string[],
+): Promise<string[]> {
+  const cutoff = Date.parse(since);
+  if (!Number.isFinite(cutoff)) return [];
+  const paths = await listIgnoredPaths(workspace);
+  if (!paths) return [];
+  const before = new Set(initialPaths);
   const changed: string[] = [];
-  for (const line of stdout.split("\n")) {
-    if (!line.startsWith("!! ")) continue;
-    const path = line.slice(3).trim().replace(/\/$/, "");
-    if (!path) continue;
-    // The snapshot store itself lives here, under a state directory git ignores, and
-    // this function runs after it has written.
-    if (PROJECT_STATE_DIR_NAMES.some((name) => path.split("/").includes(name))) continue;
+  for (const path of paths) {
     try {
-      if ((await lstat(resolve(workspace, path))).mtimeMs >= cutoff) changed.push(path);
+      const { mtimeMs } = await lstat(resolve(workspace, path));
+      if ((initialPaths !== undefined && !before.has(path)) || mtimeMs >= cutoff) changed.push(path);
     } catch {
       // Removed since: nothing to restore and nothing to warn about.
     }
