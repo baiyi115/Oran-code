@@ -672,14 +672,13 @@ export class TaskController {
           });
           const preExecutionNoProgress = loop.noProgressDiagnosticForNextCalls(nonReadonlyCalls);
           if (preExecutionNoProgress) {
-            // Only fake the blocked write/command calls; the readonly calls in the same batch were not
-            // blocked, so they are left to the repair path to complete the pairing, avoiding a
-            // "blocked" result in the transcript that does not match the facts.
+            // Pausing skips the entire response batch, not just the repeated write. Pair every
+            // advertised call so the conversation remains valid when the task is resumed.
             this.recordNoProgressBlock(task, nonReadonlyCalls, preExecutionNoProgress);
             await this.toolExecutor.reconcileToolCalls(
               task,
               messages,
-              nonReadonlyCalls,
+              response.toolCalls,
               "repeated tool execution blocked before execution",
               false,
             );
@@ -688,6 +687,23 @@ export class TaskController {
           }
           try {
             const turnExecution = await this.toolExecutor.runTools(task, messages, response.toolCalls, loop);
+            if (loop.shouldStopForUnknownTools()) {
+              // The executor may stop in the middle of a response batch. Preserve tool-call
+              // pairing before any later progress gate can return early.
+              await this.toolExecutor.reconcileToolCalls(
+                task,
+                messages,
+                response.toolCalls,
+                "stopped after unknown tool limit",
+                false,
+              );
+              transitionTask(task, "failed");
+              await this.persist(task);
+              await this.emit("error", {
+                message: `stopped after ${loop.consecutiveUnknownTools} consecutive unknown tool call(s)`,
+              });
+              return task;
+            }
             const progress = loop.recordTurnProgress({ hasMutation: turnExecution.workspaceMutated });
             this.appendDiagnosticStep("turn_progress", {
               turn: this.turnRequester.currentTurnSequence,
@@ -721,14 +737,6 @@ export class TaskController {
               cancelled,
             );
             throw error;
-          }
-          if (loop.shouldStopForUnknownTools()) {
-            transitionTask(task, "failed");
-            await this.persist(task);
-            await this.emit("error", {
-              message: `stopped after ${loop.consecutiveUnknownTools} consecutive unknown tool call(s)`,
-            });
-            return task;
           }
         } else {
           // The model finished calling tools and returned its final response; the task is

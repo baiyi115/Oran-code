@@ -83,6 +83,22 @@ function toolResponse(call: ToolCall): ModelStreamChunk[] {
   ];
 }
 
+function toolBatchResponse(calls: ToolCall[]): ModelStreamChunk[] {
+  return [
+    ...calls.map((call, index): ModelStreamChunk => ({
+      type: "tool_call_complete",
+      toolCall: {
+        index,
+        ...(call.id ? { id: call.id } : {}),
+        name: call.name,
+        argumentsJson: JSON.stringify(call.arguments),
+      },
+      streamed: true,
+    })),
+    { type: "response_complete", streamed: true, finishReason: "tool_calls" },
+  ];
+}
+
 /** Arguments are complete, but finish_reason says the output was cut by the limit: the call fails and must not run. */
 function truncatedToolResponse(call: ToolCall): ModelStreamChunk[] {
   return [
@@ -393,6 +409,110 @@ describe("TaskController", () => {
       expect(events.find((event) => event.type === "error")?.message).toBe(
         "provider emitted text_delta after response_complete",
       );
+    } finally {
+      await rm(workspace, { recursive: true, force: true });
+    }
+  });
+
+  it("pairs every tool call before pausing a repeated write batch", async () => {
+    const workspace = await mkdtemp(join(tmpdir(), "oran-loop-pairing-"));
+    try {
+      const registry = new ToolRegistry();
+      const write = { name: "noop_write", arguments: { content: "same" }, createdAt: new Date().toISOString() };
+      const read = { name: "read_file", arguments: { path: "note.txt" }, createdAt: new Date().toISOString() };
+      const provider = new FakeProvider([
+        toolResponse({ ...write, id: "call_write_1" }),
+        toolResponse({ ...write, id: "call_write_2" }),
+        toolBatchResponse([
+          { ...read, id: "call_read_3" },
+          { ...write, id: "call_write_3" },
+        ]),
+      ]);
+      let writes = 0;
+      let reads = 0;
+      registry.register({
+        name: "noop_write",
+        description: "No-op write",
+        parameters: {},
+        permissionLevel: 2,
+        kind: "write",
+        maxOutputChars: 1000,
+        invoke: async () => {
+          writes += 1;
+          return { ok: true, output: "unchanged" };
+        },
+      });
+      registry.register({
+        name: "read_file",
+        description: "Read a file",
+        parameters: {},
+        permissionLevel: 0,
+        kind: "readonly",
+        maxOutputChars: 1000,
+        invoke: async () => {
+          reads += 1;
+          return { ok: true, output: "read" };
+        },
+      });
+      const { controller } = createController(workspace, provider, registry, [], { approvalCallback: () => true });
+
+      const task = await controller.execute(createTask(workspace, "repeat write and inspect file"));
+
+      expect(task.state).toBe("paused");
+      expect(writes).toBe(2);
+      expect(reads).toBe(0);
+      const messages = controller.conversationSnapshot();
+      expect(
+        messages.filter((message) => message.role === "tool" && message.toolCallId === "call_read_3"),
+      ).toHaveLength(1);
+      expect(
+        messages.filter((message) => message.role === "tool" && message.toolCallId === "call_write_3"),
+      ).toHaveLength(1);
+    } finally {
+      await rm(workspace, { recursive: true, force: true });
+    }
+  });
+
+  it("pairs remaining calls when the unknown-tool limit stops a batch", async () => {
+    const workspace = await mkdtemp(join(tmpdir(), "oran-loop-pairing-"));
+    try {
+      const unknown = (index: number): ToolCall => ({
+        id: `call_unknown_${index}`,
+        name: "missing_tool",
+        arguments: {},
+        createdAt: new Date().toISOString(),
+      });
+      const read: ToolCall = {
+        id: "call_unreached",
+        name: "read_file",
+        arguments: { path: "note.txt" },
+        createdAt: new Date().toISOString(),
+      };
+      const provider = new FakeProvider([toolBatchResponse([unknown(1), unknown(2), unknown(3), read])]);
+      let reads = 0;
+      const registry = new ToolRegistry();
+      registry.register({
+        name: "read_file",
+        description: "Read a file",
+        parameters: {},
+        permissionLevel: 0,
+        kind: "readonly",
+        maxOutputChars: 1000,
+        invoke: async () => {
+          reads += 1;
+          return { ok: true, output: "read" };
+        },
+      });
+      const { controller } = createController(workspace, provider, registry, [], { approvalCallback: () => true });
+
+      const task = await controller.execute(createTask(workspace, "call unavailable tools"));
+
+      expect(task.state).toBe("failed");
+      expect(reads).toBe(0);
+      const messages = controller.conversationSnapshot();
+      for (const id of ["call_unknown_1", "call_unknown_2", "call_unknown_3", "call_unreached"]) {
+        expect(messages.filter((message) => message.role === "tool" && message.toolCallId === id)).toHaveLength(1);
+      }
     } finally {
       await rm(workspace, { recursive: true, force: true });
     }

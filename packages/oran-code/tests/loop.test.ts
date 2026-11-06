@@ -127,7 +127,12 @@ describe("AgentLoop no-progress guards", () => {
     loop.recordTurn();
     expect(loop.recordTurnProgress({ hasMutation: true }).stalledTurns).toBe(0);
     loop.recordTurn();
-    loop.recordTurnProgress({ hasMutation: false, externalEvidence: { kind: "verification_changed", value: "pass" } });
+    const progress = loop.recordTurnProgress({
+      hasMutation: false,
+      externalEvidence: { kind: "verification_changed", value: "pass" },
+    });
+    expect(progress.hasNewToolResult).toBe(false);
+    expect(progress.evidence).toContain("verification_changed");
     expect(loop.consecutiveStalledTurns).toBe(0);
   });
 

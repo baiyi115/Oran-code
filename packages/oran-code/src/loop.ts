@@ -219,15 +219,16 @@ export class AgentLoop {
     const fingerprints = externalFingerprint
       ? [...this.turnResultFingerprints, externalFingerprint]
       : this.turnResultFingerprints;
-    const newFingerprints = fingerprints.filter((fingerprint) => !this.seenResultFingerprints.has(fingerprint));
+    const newFingerprints = new Set(
+      fingerprints.filter((fingerprint) => !this.seenResultFingerprints.has(fingerprint)),
+    );
     for (const fingerprint of fingerprints) this.rememberResultFingerprint(fingerprint);
 
     const evidence: string[] = [];
     if (activity.hasMutation) evidence.push("workspace_mutated");
-    if (this.turnResultFingerprints.some((fingerprint) => newFingerprints.includes(fingerprint))) {
-      evidence.push("new_tool_result");
-    }
-    if (externalFingerprint && newFingerprints.includes(externalFingerprint)) {
+    const hasNewToolResult = this.turnResultFingerprints.some((fingerprint) => newFingerprints.has(fingerprint));
+    if (hasNewToolResult) evidence.push("new_tool_result");
+    if (externalFingerprint && newFingerprints.has(externalFingerprint)) {
       evidence.push(activity.externalEvidence!.kind);
     }
 
@@ -237,7 +238,7 @@ export class AgentLoop {
     return {
       stalledTurns: this.consecutiveStalledTurns,
       hasMutation: activity.hasMutation,
-      hasNewToolResult: newFingerprints.length > 0,
+      hasNewToolResult,
       evidence,
     };
   }
