@@ -1499,9 +1499,10 @@ function InkRoot({ app, revision }: { app: InkTuiApp; revision: number }): React
   // count and therefore never erases.
   const terminalWidth = Math.max(20, stdout.columns || terminalSize.columns || 80);
   const rows = Math.max(1, stdout.rows || terminalSize.rows || 24);
-  // All TUI regions share one content width. The outer frame reserves one cell
-  // on each side; composer text additionally reserves the two-cell prompt.
-  const width = terminalWidth - 2;
+  // All TUI regions share one content width. Both the static transcript and the
+  // live frame render inside matching one-cell side padding.
+  const sidePadding = 1;
+  const width = terminalWidth - sidePadding * 2;
   const editorWidth = Math.max(1, width - 2);
   const editorLines = visualLines(state.composer, editorWidth);
   // Reuse the rows computed for the frame: recomputing them inside the cursor lookup doubled the
@@ -1608,7 +1609,7 @@ function InkRoot({ app, revision }: { app: InkTuiApp; revision: number }): React
   // for both baselines so IME composition does not jump onto the upper input rule
   // once a long conversation fills the terminal.
   //   footer lines -> bottom rule -> composer rows below the caret.
-  // Column is absolute CHA: prompt ("> ") is 2 cells, then display-width offset.
+  // Column is absolute CHA: the side padding and prompt ("> ") precede the caret.
   const composerLineCount = Math.max(1, editorLines.length);
   const frameHeight =
     visibleTranscriptLines.length +
@@ -1617,7 +1618,7 @@ function InkRoot({ app, revision }: { app: InkTuiApp; revision: number }): React
     (visibleTranscriptLines.length === 0 && overlayLines.length === 0 ? 1 : 0);
   const frameEndOffset = frameHeight >= rows ? 1 : 2;
   const parkUp = footer.length + taskRows.length + frameEndOffset + Math.max(0, composerLineCount - 1 - cursor.row);
-  const parkColumn = 1 + 2 + Math.max(0, cursor.column);
+  const parkColumn = 1 + sidePadding + 2 + Math.max(0, cursor.column);
   useEffect(() => {
     // Modal overlays swallow every keystroke: a caret blinking in the composer would invite typing
     // that goes nowhere, and an IME candidate box would open over an input that ignores it.
@@ -1658,54 +1659,60 @@ function InkRoot({ app, revision }: { app: InkTuiApp; revision: number }): React
 
   return (
     <Box flexDirection="column" width="100%">
-      <Static key={`${state.session.sessionId}:${app.staticTranscriptKey()}`} items={transcript.staticItems}>
+      <Static
+        key={`${state.session.sessionId}:${app.staticTranscriptKey()}`}
+        items={transcript.staticItems}
+        style={{ width: "100%", paddingX: sidePadding }}
+      >
         {(item) => <Text key={item.id}>{item.text}</Text>}
       </Static>
-      {welcomeLines.length > 0 ? <Text>{welcomeLines.join("\n")}</Text> : null}
-      {visibleTranscriptLines.length > 0 ? <Text>{visibleTranscriptLines.join("\n")}</Text> : null}
-      {overlayLines.length > 0 && (
-        <Box flexDirection="column" flexShrink={0} marginBottom={1}>
-          {overlayLines.map((line, index) => (
-            <OverlayRow key={`overlay-${index}`} line={line} />
-          ))}
-        </Box>
-      )}
-      <Box
-        flexDirection="column"
-        flexShrink={0}
-        marginTop={visibleTranscriptLines.length > 0 || overlayLines.length > 0 ? 0 : 1}
-      >
-        {scrollStatusLine ? <Text {...colorProps(COLORS.accentDim)}>{scrollStatusLine}</Text> : null}
-        {workingLine ? <Text {...colorProps(COLORS.activity)}>{workingLine}</Text> : null}
-        {summaryLine ? <Text {...colorProps(summaryColor)}>{summaryLine}</Text> : null}
-        <Text dimColor>{horizontalRule(width)}</Text>
-        <Text>
-          <Text {...colorProps(COLORS.accent)} bold>
-            {promptPrefix.trimEnd()}
-          </Text>
-          <Text>
-            {promptPrefix.endsWith(" ") ? " " : ""}
-            {renderComposerLines(editorLines, cursor.row, cursor.column, busy || isModalOverlay(state.overlay.kind))}
-          </Text>
-          {ghostSuggestion ? <Text dimColor>{ghostSuggestion}</Text> : null}
-        </Text>
-        <Text dimColor>{horizontalRule(width)}</Text>
-        {taskRows.map((row, index) => (
-          <Text key={`task-${index}`} {...taskRowColorProps(row.tone)}>
-            {row.text}
-          </Text>
-        ))}
-        {footer.map((line, index) =>
-          index === 0 ? (
-            <Text key={`footer-${index}`} {...colorProps(COLORS.accentDim)}>
-              {line}
-            </Text>
-          ) : (
-            <Text key={`footer-${index}`} dimColor>
-              {line}
-            </Text>
-          ),
+      <Box flexDirection="column" width="100%" paddingX={sidePadding}>
+        {welcomeLines.length > 0 ? <Text>{welcomeLines.join("\n")}</Text> : null}
+        {visibleTranscriptLines.length > 0 ? <Text>{visibleTranscriptLines.join("\n")}</Text> : null}
+        {overlayLines.length > 0 && (
+          <Box flexDirection="column" flexShrink={0} marginBottom={1}>
+            {overlayLines.map((line, index) => (
+              <OverlayRow key={`overlay-${index}`} line={line} />
+            ))}
+          </Box>
         )}
+        <Box
+          flexDirection="column"
+          flexShrink={0}
+          marginTop={visibleTranscriptLines.length > 0 || overlayLines.length > 0 ? 0 : 1}
+        >
+          {scrollStatusLine ? <Text {...colorProps(COLORS.accentDim)}>{scrollStatusLine}</Text> : null}
+          {workingLine ? <Text {...colorProps(COLORS.activity)}>{workingLine}</Text> : null}
+          {summaryLine ? <Text {...colorProps(summaryColor)}>{summaryLine}</Text> : null}
+          <Text dimColor>{horizontalRule(width)}</Text>
+          <Text>
+            <Text {...colorProps(COLORS.accent)} bold>
+              {promptPrefix.trimEnd()}
+            </Text>
+            <Text>
+              {promptPrefix.endsWith(" ") ? " " : ""}
+              {renderComposerLines(editorLines, cursor.row, cursor.column, busy || isModalOverlay(state.overlay.kind))}
+            </Text>
+            {ghostSuggestion ? <Text dimColor>{ghostSuggestion}</Text> : null}
+          </Text>
+          <Text dimColor>{horizontalRule(width)}</Text>
+          {taskRows.map((row, index) => (
+            <Text key={`task-${index}`} {...taskRowColorProps(row.tone)}>
+              {row.text}
+            </Text>
+          ))}
+          {footer.map((line, index) =>
+            index === 0 ? (
+              <Text key={`footer-${index}`} {...colorProps(COLORS.accentDim)}>
+                {line}
+              </Text>
+            ) : (
+              <Text key={`footer-${index}`} dimColor>
+                {line}
+              </Text>
+            ),
+          )}
+        </Box>
       </Box>
     </Box>
   );
