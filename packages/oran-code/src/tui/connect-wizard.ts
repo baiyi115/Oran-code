@@ -22,21 +22,18 @@ export interface ConnectWizardDeps {
 }
 
 const INFO_FIELDS: readonly ConnectInfoField[] = ["baseURL", "apiKey", "protocol", "name"];
+type ConnectOverlay = Extract<TuiState["overlay"], { kind: "connect" }>;
 
-/**
- * Two-screen "add/edit model provider" wizard: an info form (baseURL/apiKey/protocol/name on one
- * screen, with protocol and name auto-derived from baseURL) → models multi-select. Reasoning effort
- * has no field of its own: unset means "high" (the provider layer strips the parameter when an
- * endpoint rejects it), and `e` cycles the focused model through
- * unset → low → medium → high → xhigh. State lives entirely in the connect variant of
- * state.overlay.
- */
+/** Provider connection form followed by a model list with repeatable per-model settings. */
 export class ConnectWizard {
+  private fetchGeneration = 0;
+
   constructor(private readonly deps: ConnectWizardDeps) {}
 
   open(prefill?: ConnectPrefill): void {
     if (this.deps.rejectIfBlocked("finish or cancel the current task before connecting a provider")) return;
-    if (!this.deps.onConnect || !this.deps.loadRemoteModels) return;
+    if (!this.deps.onConnect) return;
+    this.fetchGeneration += 1;
     setOverlay(this.deps.state, {
       kind: "connect",
       step: "info",
@@ -45,15 +42,10 @@ export class ConnectWizard {
       baseURL: prefill?.baseURL ?? "",
       apiKey: prefill?.apiKey ?? "",
       protocol: prefill?.protocol ?? "",
+      ...(prefill?.configPath ? { configPath: prefill.configPath } : {}),
       nameTouched: Boolean(prefill),
       protocolTouched: Boolean(prefill),
-      models: prefill
-        ? prefill.models.map((model) => ({
-            id: model.id,
-            selected: true,
-            ...(model.reasoningEffort ? { reasoningEffort: model.reasoningEffort } : {}),
-          }))
-        : [],
+      models: prefill?.models.map((model) => ({ ...model, selected: true })) ?? [],
       selectedIndex: 0,
       loading: false,
     });
@@ -63,60 +55,47 @@ export class ConnectWizard {
   handleKey(input: string, key: Key): void {
     if (this.deps.state.overlay.kind !== "connect") return;
     const overlay = this.deps.state.overlay;
-
-    if (key.escape) {
+    if (overlay.saving) return;
+    if (overlay.editing) {
+      this.handleEditKey(overlay, input, key);
+    } else if (key.escape) {
+      this.fetchGeneration += 1;
       this.deps.state.overlay = { kind: "none" };
-      this.deps.invalidate();
-      return;
+    } else if (overlay.step === "models") {
+      if ((key.ctrl && input === "s") || key.tab) void this.confirm();
+      else this.handleModelsKey(overlay, input, key);
+    } else {
+      this.handleInfoKey(input, key);
     }
-
-    if (overlay.step === "models") {
-      // Ctrl+S or Tab finishes the wizard from the models step.
-      if ((key.ctrl && input === "s") || key.tab) {
-        void this.confirm();
-        this.deps.invalidate();
-        return;
-      }
-      this.handleModelsKey(input, key);
-      this.deps.invalidate();
-      return;
-    }
-
-    this.handleInfoKey(input, key);
     this.deps.invalidate();
   }
 
   private handleInfoKey(input: string, key: Key): void {
     if (this.deps.state.overlay.kind !== "connect") return;
     const overlay = this.deps.state.overlay;
-
-    // Left/right switches the protocol on any field of the info screen (text fields have no
-    // cursor movement, so there is no conflict).
     if (key.leftArrow || key.rightArrow) {
       overlay.protocol = overlay.protocol === "anthropic" ? "openai" : "anthropic";
       overlay.protocolTouched = true;
       return;
     }
-
-    // Tab / up/down move the cursor between the four fields.
     if (key.tab || key.upArrow || key.downArrow) {
-      const offset = key.upArrow ? -1 : 1;
+      const offset = key.upArrow || (key.tab && key.shift) ? -1 : 1;
       const index = INFO_FIELDS.indexOf(overlay.activeField);
       overlay.activeField = INFO_FIELDS[(index + offset + INFO_FIELDS.length) % INFO_FIELDS.length] ?? "baseURL";
       return;
     }
-
     if (key.backspace || key.delete) {
+      if (overlay.configPath && overlay.activeField === "name") return;
       this.deleteActiveChar(overlay.activeField);
       if (overlay.activeField === "name") overlay.nameTouched = true;
       return;
     }
-
     if (isSubmitKey(input, key)) {
       this.advanceToModels();
       return;
     }
     if (input && !key.ctrl && !key.meta && input !== "\t") {
+      if (overlay.configPath && overlay.activeField === "name") return;
       this.appendActiveChar(overlay.activeField, input);
     }
   }
@@ -124,7 +103,7 @@ export class ConnectWizard {
   private deleteActiveChar(field: ConnectInfoField): void {
     if (this.deps.state.overlay.kind !== "connect") return;
     const overlay = this.deps.state.overlay;
-    const trim = (value: string) => (value.length ? value.slice(0, -1) : value);
+    const trim = (value: string) => Array.from(value).slice(0, -1).join("");
     if (field === "baseURL") overlay.baseURL = trim(overlay.baseURL);
     else if (field === "apiKey") overlay.apiKey = trim(overlay.apiKey);
     else if (field === "name") overlay.providerName = trim(overlay.providerName);
@@ -144,7 +123,6 @@ export class ConnectWizard {
     }
   }
 
-  /** Derive protocol and name when baseURL changes; skipped once the user edited them (prefill edit). */
   private autoDeriveFromBaseURL(): void {
     if (this.deps.state.overlay.kind !== "connect") return;
     const overlay = this.deps.state.overlay;
@@ -162,121 +140,209 @@ export class ConnectWizard {
       overlay.error = "base URL is required";
       return;
     }
+    if (overlay.providerName.includes("/")) {
+      overlay.error = "provider name cannot contain /";
+      return;
+    }
     if (!overlay.providerName.trim()) overlay.providerName = safeHostName(overlay.baseURL);
+    if (["__proto__", "constructor", "prototype"].includes(overlay.providerName.trim())) {
+      overlay.error = "choose a different provider name";
+      return;
+    }
     overlay.step = "models";
     overlay.error = undefined;
     overlay.selectedIndex = 0;
-    void this.fetchModels();
+    // Reopening saved settings must work offline and must not require a catalog request.
+    if (!overlay.models.length && this.deps.loadRemoteModels) void this.fetchModels();
   }
 
   private async fetchModels(): Promise<void> {
-    if (this.deps.state.overlay.kind !== "connect") return;
+    if (this.deps.state.overlay.kind !== "connect" || !this.deps.loadRemoteModels) return;
     const overlay = this.deps.state.overlay;
-    const protocol = (overlay.protocol || "openai") as "openai" | "anthropic";
+    const generation = ++this.fetchGeneration;
     overlay.loading = true;
     overlay.error = undefined;
     this.deps.invalidate();
     try {
-      const remote =
-        (await this.deps.loadRemoteModels?.(overlay.baseURL.trim(), overlay.apiKey.trim(), protocol)) ?? [];
-      if (this.deps.state.overlay.kind !== "connect") return;
-      const existing = new Map(this.deps.state.overlay.models.map((model) => [model.id, model]));
-      this.deps.state.overlay.models = remote.map((model): ConnectModelOption => {
+      const remote = await this.deps.loadRemoteModels(
+        overlay.baseURL.trim(),
+        overlay.apiKey.trim(),
+        overlay.protocol || "openai",
+      );
+      if (this.deps.state.overlay !== overlay || generation !== this.fetchGeneration) return;
+      const focused = overlay.models[overlay.selectedIndex]?.id;
+      const existing = new Map(overlay.models.map((model) => [model.id, model]));
+      const merged = new Map<string, ConnectModelOption>();
+      for (const model of remote) {
         const prior = existing.get(model.id);
-        const next: ConnectModelOption = { id: model.id, selected: prior?.selected ?? false };
-        if (model.contextWindow !== undefined) next.contextWindow = model.contextWindow;
-        if (prior?.reasoningEffort) next.reasoningEffort = prior.reasoningEffort;
-        return next;
-      });
-      this.deps.state.overlay.selectedIndex = 0;
-      this.deps.state.overlay.loading = false;
+        // A saved or manually edited context wins; otherwise use catalog metadata.
+        const next: ConnectModelOption = prior ? { ...model, ...prior } : { ...model, selected: false };
+        if (prior?.contextWindowEdited && prior.contextWindow === undefined) delete next.contextWindow;
+        merged.set(model.id, next);
+      }
+      for (const model of overlay.models) {
+        if (!merged.has(model.id)) merged.set(model.id, model);
+      }
+      overlay.models = [...merged.values()];
+      overlay.selectedIndex = Math.max(
+        0,
+        overlay.models.findIndex((model) => model.id === focused),
+      );
     } catch (error) {
-      if (this.deps.state.overlay.kind !== "connect") return;
-      this.deps.state.overlay.loading = false;
-      this.deps.state.overlay.error = formatErrorMessage(error);
+      if (this.deps.state.overlay !== overlay || generation !== this.fetchGeneration) return;
+      overlay.error = formatErrorMessage(error);
+    } finally {
+      if (this.deps.state.overlay === overlay && generation === this.fetchGeneration) {
+        overlay.loading = false;
+        this.deps.invalidate();
+      }
     }
-    this.deps.invalidate();
   }
 
-  private handleModelsKey(input: string, key: Key): void {
-    if (this.deps.state.overlay.kind !== "connect") return;
-    const overlay = this.deps.state.overlay;
-    const options = overlay.models;
+  private handleModelsKey(overlay: ConnectOverlay, input: string, key: Key): void {
+    if (input.toLowerCase() === "b" && !key.ctrl && !key.meta) {
+      this.fetchGeneration += 1;
+      overlay.loading = false;
+      overlay.step = "info";
+      overlay.error = undefined;
+      return;
+    }
+    if (overlay.loading) {
+      if (input.toLowerCase() === "a" && !key.ctrl && !key.meta) {
+        // Manual entry stays available when an endpoint never answers its catalog request.
+        this.fetchGeneration += 1;
+        overlay.loading = false;
+        overlay.editing = { field: "id", value: "" };
+      }
+      return;
+    }
     if (key.upArrow) {
       overlay.selectedIndex = Math.max(0, overlay.selectedIndex - 1);
       return;
     }
     if (key.downArrow) {
-      overlay.selectedIndex = Math.min(Math.max(0, options.length - 1), overlay.selectedIndex + 1);
+      overlay.selectedIndex = Math.min(Math.max(0, overlay.models.length - 1), overlay.selectedIndex + 1);
       return;
     }
-    if (input === "f" || input === "F") {
+    if (key.ctrl || key.meta) return;
+    const action = input.toLowerCase();
+    if (action === "f") {
       void this.fetchModels();
       return;
     }
-    if (input === "e" || input === "E") {
-      const selected = options[overlay.selectedIndex];
-      if (selected) {
-        // unset (default high) → low → medium → high → xhigh → back to unset.
-        const sequence: (ReasoningEffort | undefined)[] = [undefined, "low", "medium", "high", "xhigh"];
-        const at = sequence.indexOf(selected.reasoningEffort);
-        const next = sequence[(at + 1) % sequence.length];
+    overlay.error = undefined;
+    if (action === "a") {
+      overlay.editing = { field: "id", value: "" };
+      return;
+    }
+    const selected = overlay.models[overlay.selectedIndex];
+    if (!selected) return;
+    if (action === "c" || action === "m") {
+      const field = action === "c" ? "contextWindow" : "maxTokens";
+      overlay.editing = { field, value: selected[field]?.toString() ?? "" };
+    } else if (action === "e") {
+      const sequence: (ReasoningEffort | "off" | undefined)[] = [undefined, "low", "medium", "high", "xhigh", "off"];
+      const current = selected.disableReasoningEffort ? "off" : selected.reasoningEffort;
+      const next = sequence[(sequence.indexOf(current) + 1) % sequence.length];
+      delete selected.reasoningEffort;
+      if (next === "off") selected.disableReasoningEffort = true;
+      else {
+        // False explicitly overrides a provider-level disabled setting after a manual change.
+        selected.disableReasoningEffort = false;
         if (next) selected.reasoningEffort = next;
-        else delete selected.reasoningEffort;
       }
-      return;
+    } else if (action === "d") {
+      overlay.models.splice(overlay.selectedIndex, 1);
+      overlay.selectedIndex = Math.min(overlay.selectedIndex, Math.max(0, overlay.models.length - 1));
+    } else if (isSubmitKey(input, key) || input === " ") {
+      selected.selected = !selected.selected;
     }
-    if (input === "d" || input === "D") {
-      const selected = options[overlay.selectedIndex];
-      if (selected) {
-        overlay.models = options.filter((_, index) => index !== overlay.selectedIndex);
-        overlay.selectedIndex = Math.min(overlay.selectedIndex, Math.max(0, overlay.models.length - 1));
+  }
+
+  private handleEditKey(overlay: ConnectOverlay, input: string, key: Key): void {
+    const editing = overlay.editing!;
+    if (key.escape) {
+      overlay.editing = undefined;
+      overlay.error = undefined;
+    } else if (key.ctrl && input === "u") {
+      editing.value = "";
+    } else if (key.backspace || key.delete) {
+      editing.value = Array.from(editing.value).slice(0, -1).join("");
+    } else if (isSubmitKey(input, key)) {
+      const value = editing.value.trim();
+      if (editing.field === "id") {
+        if (!value || /[\x00-\x1f\x7f\s]/u.test(value) || ["__proto__", "constructor", "prototype"].includes(value)) {
+          overlay.error = "model ID is required; whitespace and reserved names are not allowed";
+          return;
+        }
+        const existing = overlay.models.findIndex((model) => model.id === value);
+        if (existing >= 0) {
+          overlay.selectedIndex = existing;
+          overlay.models[existing]!.selected = true;
+        } else {
+          overlay.models.push({ id: value, selected: true });
+          overlay.selectedIndex = overlay.models.length - 1;
+        }
+      } else {
+        const parsed = value ? Number(value) : undefined;
+        if (value && (!/^\d+$/.test(value) || parsed === undefined || !Number.isSafeInteger(parsed) || parsed <= 0)) {
+          overlay.error = "enter a positive integer in tokens, or leave blank for the default";
+          return;
+        }
+        const selected = overlay.models[overlay.selectedIndex];
+        if (selected) {
+          if (parsed === undefined) delete selected[editing.field];
+          else selected[editing.field] = parsed;
+          if (editing.field === "contextWindow") selected.contextWindowEdited = true;
+        }
       }
-      return;
-    }
-    if (isSubmitKey(input, key)) {
-      const selected = options[overlay.selectedIndex];
-      if (selected) {
-        selected.selected = !selected.selected;
-      }
+      overlay.editing = undefined;
+      overlay.error = undefined;
+    } else if (input && !key.ctrl && !key.meta && !key.tab && !key.upArrow && !key.downArrow) {
+      editing.value += input.replace(/[\r\n\x00-\x1f\x7f]/g, "");
     }
   }
 
   private async confirm(): Promise<void> {
     if (this.deps.state.overlay.kind !== "connect") return;
     const overlay = this.deps.state.overlay;
-    const protocol = (overlay.protocol || "openai") as "openai" | "anthropic";
-    const selected = overlay.models.filter((model) => model.selected);
+    if (overlay.loading || overlay.saving || overlay.editing) return;
+    const selected = overlay.models
+      .filter((model) => model.selected)
+      .map(({ contextWindowEdited: _edited, ...model }) => ({ ...model }));
     if (!selected.length) {
       overlay.error = "select at least one model with Enter first";
-      this.deps.invalidate();
       return;
     }
     const payload: ConnectInput = {
       providerName: overlay.providerName.trim() || safeHostName(overlay.baseURL, "provider"),
       baseURL: overlay.baseURL.trim(),
       apiKey: overlay.apiKey.trim(),
-      protocol,
+      protocol: overlay.protocol || "openai",
+      ...(overlay.configPath ? { configPath: overlay.configPath } : {}),
       models: selected,
     };
+    overlay.saving = true;
+    overlay.error = undefined;
     try {
       const ok = await this.deps.onConnect?.(payload);
+      if (this.deps.state.overlay !== overlay) return;
+      if (ok === false) {
+        overlay.error = "provider settings could not be saved or applied; your edits are retained";
+        return;
+      }
+      this.fetchGeneration += 1;
       this.deps.state.overlay = { kind: "none" };
-      const activeModel = selected[0]?.id ? `${payload.providerName}/${selected[0].id}` : undefined;
-      // A completed setup is history, not a status: written to the record it survives scrolling,
-      // and the footer is left free of a line that would otherwise never be cleared.
       appendSystemMessage(
         this.deps.state,
-        ok === false
-          ? "provider connection failed"
-          : `Connected ${payload.providerName} (${selected.length} model${selected.length === 1 ? "" : "s"})${activeModel ? `. Active model: ${activeModel}` : ""}`,
+        `Connected ${payload.providerName} (${selected.length} model${selected.length === 1 ? "" : "s"}). Settings saved.`,
       );
     } catch (error) {
-      if (this.deps.state.overlay.kind === "connect") {
-        this.deps.state.overlay.error = formatErrorMessage(error);
-      }
+      if (this.deps.state.overlay === overlay) overlay.error = formatErrorMessage(error);
+    } finally {
+      overlay.saving = false;
+      this.deps.invalidate();
     }
-    this.deps.invalidate();
   }
 }
 
@@ -290,18 +356,17 @@ function safeHostName(input: string, fallback = "provider"): string {
   }
 }
 
-export function renderConnectLines(
-  overlay: Extract<TuiState["overlay"], { kind: "connect" }>,
-  width: number,
-): OverlayLine[] {
-  function protocolLabel(protocol: "openai" | "anthropic"): string {
-    return protocol === "anthropic" ? "Anthropic Messages" : "OpenAI Chat Completions";
-  }
+export function renderConnectLines(overlay: ConnectOverlay, width: number): OverlayLine[] {
+  const protocolLabel = (protocol: "openai" | "anthropic") =>
+    protocol === "anthropic" ? "Anthropic Messages" : "OpenAI Chat Completions";
   const lines: OverlayLine[] = [];
   if (overlay.step === "info") {
     const cursor = (field: ConnectInfoField) => (overlay.activeField === field ? "▸" : " ");
     const auto = (touched: boolean) => (touched ? "" : "  (auto)");
-    lines.push(overlayLine("Add provider"), overlayLine(dimHorizontalRule(width)));
+    lines.push(
+      overlayLine(overlay.configPath ? "Edit provider" : "Add / edit provider"),
+      overlayLine(dimHorizontalRule(width)),
+    );
     lines.push(overlayLine(`${cursor("baseURL")} Base URL   ${overlay.baseURL || "(e.g. https://api.openai.com/v1)"}`));
     lines.push(
       overlayLine(
@@ -314,46 +379,60 @@ export function renderConnectLines(
       ),
     );
     lines.push(
-      overlayLine(`${cursor("name")} Name       ${overlay.providerName || "(auto)"}${auto(overlay.nameTouched)}`),
+      overlayLine(
+        `${cursor("name")} Name       ${overlay.providerName || "(auto)"}${overlay.configPath ? "  (fixed)" : auto(overlay.nameTouched)}`,
+      ),
     );
     lines.push(overlayLine(""), overlayLine("Tab/↑↓ switch field   ←→ switch protocol   Enter next   Esc close"));
-    if (overlay.error)
-      lines.push(overlayLine(""), overlayLine(`error: ${truncateVisible(overlay.error, Math.max(1, width - 2))}`));
-    return lines;
-  }
-  lines.push(
-    overlayLine(`Provider: ${overlay.providerName} (${protocolLabel(overlay.protocol || "openai")})`),
-    overlayLine(dimHorizontalRule(width)),
-  );
-  lines.push(overlayLine("Select models"));
-  lines.push(overlayLine("↑↓ Select   F Fetch   E Effort   D Delete   Enter Toggle   Ctrl+S Save   Esc Close"));
-  lines.push(overlayLine(""));
-  if (overlay.loading) {
-    lines.push(overlayLine("  fetching models..."));
-  } else if (overlay.error) {
-    lines.push(overlayLine(`  error: ${truncateVisible(overlay.error, Math.max(1, width - 2))}`));
-    lines.push(overlayLine("  press F to retry"));
-  } else if (overlay.models.length === 0) {
-    lines.push(overlayLine("  (no models yet — press F to fetch)"));
   } else {
+    lines.push(
+      overlayLine(`Provider: ${overlay.providerName} (${protocolLabel(overlay.protocol || "openai")})`),
+      overlayLine(dimHorizontalRule(width)),
+      overlayLine("Select models and edit settings"),
+      overlayLine("↑↓ Move · Enter Toggle · F Fetch · A Add · D Delete"),
+      overlayLine("C Context · M Max output · E Effort · B Back · Ctrl+S/Tab Save · Esc Close"),
+      overlayLine(""),
+    );
+    if (overlay.loading) lines.push(overlayLine("  fetching models..."));
+    if (!overlay.models.length)
+      lines.push(overlayLine("  No models yet. Press F to fetch or A to add an ID manually."));
     overlay.models.forEach((model, index) => {
       const mark = model.selected ? "✓" : " ";
-      const effort = `  [effort ${model.reasoningEffort ?? "high"}]`;
-      const ctx = model.contextWindow ? `  [ctx ${model.contextWindow}]` : "";
-      // The badges are appended after the id, so the id's budget has to leave room for them or the
-      // row runs past the overlay width.
-      const idBudget = Math.max(8, width - visibleWidth(mark) - 1 - visibleWidth(effort) - visibleWidth(ctx));
+      const effort = model.disableReasoningEffort ? "off" : (model.reasoningEffort ?? "default (medium)");
+      const badges = ` [effort ${effort}] [ctx ${model.contextWindow ?? "default"}] [out ${model.maxTokens ?? "default"}]`;
+      const idBudget = width - 2 - visibleWidth(badges);
+      const focused = index === overlay.selectedIndex && !overlay.editing && !overlay.error;
+      if (idBudget >= 12) {
+        lines.push(highlightSelection(`${mark} ${truncateVisible(model.id, idBudget)}${badges}`, focused));
+      } else {
+        lines.push(highlightSelection(`${mark} ${truncateVisible(model.id, Math.max(1, width - 2))}`, focused));
+        if (focused) lines.push(overlayLine(`  ${badges.trim()}`));
+      }
+    });
+    const selectedCount = overlay.models.filter((model) => model.selected).length;
+    lines.push(overlayLine(""), overlayLine(`${selectedCount} selected — Ctrl+S/Tab to save`));
+    if (overlay.editing) {
+      const label =
+        overlay.editing.field === "id"
+          ? "Model ID"
+          : overlay.editing.field === "contextWindow"
+            ? "Context window (tokens)"
+            : "Max output (tokens)";
       lines.push(
-        highlightSelection(
-          `${mark} ${truncateVisible(model.id, idBudget)}${effort}${ctx}`,
-          index === overlay.selectedIndex,
+        overlayLine(""),
+        highlightSelection(`${label}: ${overlay.editing.value}▏`, !overlay.error),
+        overlayLine(
+          `Enter Apply · Ctrl+U Clear · Esc Cancel${overlay.editing.field === "id" ? "" : " · blank = default"}`,
         ),
       );
-    });
+    }
+    if (overlay.saving) lines.push(overlayLine("Saving settings..."));
   }
-  const selectedCount = overlay.models.filter((model) => model.selected).length;
-  if (selectedCount > 0) {
-    lines.push(overlayLine(""), overlayLine(`${selectedCount} selected — Ctrl+S/Tab to save`));
-  }
+  if (overlay.configPath) lines.push(overlayLine(`Config: ${overlay.configPath}`));
+  if (overlay.error)
+    lines.push(
+      overlayLine(""),
+      highlightSelection(`error: ${truncateVisible(overlay.error, Math.max(1, width - 7))}`, true),
+    );
   return lines;
 }

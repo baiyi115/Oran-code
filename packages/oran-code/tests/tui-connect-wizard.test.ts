@@ -165,7 +165,11 @@ describe("ConnectWizard", () => {
       baseURL: "https://existing.io/v1",
       apiKey: "sk-old",
       protocol: "anthropic",
-      models: [{ id: "gpt-4o-mini" }, { id: "gpt-4o", reasoningEffort: "low" }],
+      models: [
+        { id: "gpt-4o-mini", contextWindow: 64_000 },
+        { id: "gpt-4o", reasoningEffort: "low" },
+        { id: "local-only", maxTokens: 2048 },
+      ],
     };
     h.wizard.open(prefill);
     expect(overlay(h)).toMatchObject({
@@ -179,17 +183,23 @@ describe("ConnectWizard", () => {
     });
     h.wizard.handleKey("", enter);
     await new Promise((resolve) => setTimeout(resolve, 0));
-    // After merging the remote list, the saved models keep their checked state and per-model effort
+    // Existing settings remain editable offline; fetching is opt-in and merges with the saved list.
+    expect(h.fetched).toHaveLength(0);
+    expect(overlay(h).models.map((model) => model.id)).toEqual(["gpt-4o-mini", "gpt-4o", "local-only"]);
+    h.wizard.handleKey("f", key());
+    await new Promise((resolve) => setTimeout(resolve, 0));
     expect(overlay(h).models).toEqual([
       { id: "gpt-4o", selected: true, reasoningEffort: "low" },
-      { id: "gpt-4o-mini", selected: true, contextWindow: 128_000 },
+      { id: "gpt-4o-mini", selected: true, contextWindow: 64_000 },
+      { id: "local-only", selected: true, maxTokens: 2048 },
     ]);
     // Per-model effort is submitted along with the payload
     h.wizard.handleKey("", tab); // tab on models step = confirm
     await new Promise((resolve) => setTimeout(resolve, 0));
     expect(h.submitted[0]?.models).toEqual([
       { id: "gpt-4o", selected: true, reasoningEffort: "low" },
-      { id: "gpt-4o-mini", selected: true, contextWindow: 128_000 },
+      { id: "gpt-4o-mini", selected: true, contextWindow: 64_000 },
+      { id: "local-only", selected: true, maxTokens: 2048 },
     ]);
   });
 
@@ -203,8 +213,11 @@ describe("ConnectWizard", () => {
     h.wizard.handleKey("e", key()); // -> high
     h.wizard.handleKey("e", key()); // -> xhigh
     expect(overlay(h).models[0]?.reasoningEffort).toBe("xhigh");
-    h.wizard.handleKey("e", key()); // xhigh -> unset (defaults to high)
+    h.wizard.handleKey("e", key()); // xhigh -> off
+    expect(overlay(h).models[0]).toMatchObject({ disableReasoningEffort: true });
+    h.wizard.handleKey("e", key()); // off -> default (medium)
     expect(overlay(h).models[0]).not.toHaveProperty("reasoningEffort");
+    expect(overlay(h).models[0]?.disableReasoningEffort).toBe(false);
   });
 
   it("deletes a model row and re-fetches with F", async () => {
@@ -219,6 +232,13 @@ describe("ConnectWizard", () => {
     await new Promise((resolve) => setTimeout(resolve, 0));
     expect(overlay(h).models.map((model) => model.id)).toEqual(["gpt-4o", "gpt-4o-mini"]);
     expect(h.fetched.length).toBe(2);
+
+    h.wizard.handleKey("c", key());
+    h.wizard.handleKey("u", key({ ctrl: true }));
+    h.wizard.handleKey("", enter);
+    h.wizard.handleKey("f", key());
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    expect(overlay(h).models.find((model) => model.id === "gpt-4o-mini")).not.toHaveProperty("contextWindow");
   });
 
   it("reports fetch failures inline and keeps the wizard open", async () => {

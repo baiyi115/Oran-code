@@ -321,6 +321,9 @@ export type OverlayState =
       selectedIndex: number;
       loading: boolean;
       error?: string | undefined;
+      configPath?: string;
+      saving?: boolean;
+      editing?: { field: "id" | "contextWindow" | "maxTokens"; value: string } | undefined;
     }
   | { kind: "providers"; selectedIndex: number; options: ProviderOption[] }
   | {
@@ -354,12 +357,13 @@ export type ConnectInfoField = "baseURL" | "apiKey" | "protocol" | "name";
 
 export interface ConnectModelOption {
   id: string;
+  /** A blank override must remain blank across another remote fetch. */
+  contextWindowEdited?: boolean;
+  /** Explicit token limits; absence uses the provider/runtime default. */
   contextWindow?: number;
-  /**
-   * Reasoning effort set by hand with E in the wizard; when unset the default high is written
-   * (and the runtime falls back if the endpoint rejects it).
-   */
+  maxTokens?: number;
   reasoningEffort?: ReasoningEffort;
+  disableReasoningEffort?: boolean;
   selected: boolean;
 }
 
@@ -368,8 +372,8 @@ export interface ConnectInput {
   baseURL: string;
   apiKey: string;
   protocol: "openai" | "anthropic";
-  /** No form field of its own: `e` on the model list cycles it, and unset means high. */
-  reasoningEffort?: ReasoningEffort;
+  /** Existing configuration layer being edited; absent creates a user-level provider. */
+  configPath?: string;
   models: ConnectModelOption[];
 }
 
@@ -379,7 +383,8 @@ export interface ConnectPrefill {
   baseURL: string;
   apiKey: string;
   protocol: "openai" | "anthropic";
-  models: { id: string; reasoningEffort?: ReasoningEffort }[];
+  configPath?: string;
+  models: Omit<ConnectModelOption, "selected">[];
 }
 
 export interface ProviderOption {

@@ -9,7 +9,15 @@
  */
 import type { ToolRegistry } from "./tools.js";
 import { formatModelReference, modelCandidates } from "./commands.js";
-import { loadConfig, loadConfigFile, resolveModelConfig, saveConfig, userConfigReadPath } from "./config.js";
+import {
+  legacyProjectConfigPaths,
+  loadConfig,
+  loadConfigFile,
+  projectConfigPath,
+  resolveModelConfig,
+  saveConfig,
+  userConfigReadPath,
+} from "./config.js";
 import { formatErrorMessage } from "./error-format.js";
 import type { SessionRenderer } from "./renderer.js";
 import { configuredPermissionMode, workModeForPermission } from "./session-lifecycle.js";
@@ -153,15 +161,36 @@ export class SessionCommandHandlers {
       this.port.renderer().error(`Provider not found: ${name}`);
       return;
     }
-    const options = profile.options;
+    // Edit the layer that actually defines this provider. Using the merged profile here could
+    // copy a user-level API key into a project config when the workspace overrides it.
+    let configPath = userConfigReadPath();
+    let source = (await loadConfigFile(configPath)).providers[name];
+    for (const path of [...legacyProjectConfigPaths(this.port.workspace), projectConfigPath(this.port.workspace)]) {
+      const candidate = (await loadConfigFile(path)).providers[name];
+      if (candidate) {
+        configPath = path;
+        source = candidate;
+      }
+    }
+    if (!source) {
+      this.port.renderer().error(`Cannot locate the configuration layer for provider: ${name}`);
+      return;
+    }
+    const options = source.options;
     const prefill: ConnectPrefill = {
       providerName: name,
       baseURL: options.baseUrl ?? "",
       apiKey: options.apiKey ?? "",
       protocol: resolveProviderProtocolFor(name, options),
-      models: Object.entries(profile.models).map(([id, item]) => ({
+      configPath,
+      models: Object.entries(source.models).map(([id, item]) => ({
         id,
+        ...(typeof item.options.contextWindow === "number" ? { contextWindow: item.options.contextWindow } : {}),
+        ...(typeof item.options.maxTokens === "number" ? { maxTokens: item.options.maxTokens } : {}),
         ...(isReasoningEffort(item.options.reasoningEffort) ? { reasoningEffort: item.options.reasoningEffort } : {}),
+        ...(typeof item.options.disableReasoningEffort === "boolean"
+          ? { disableReasoningEffort: item.options.disableReasoningEffort }
+          : {}),
       })),
     };
     await tui.openConnect(prefill);
@@ -198,13 +227,41 @@ export class SessionCommandHandlers {
 
   async applyConnectProvider(input: ConnectInput): Promise<boolean | void> {
     try {
-      const configPath = userConfigReadPath();
+      const configPath = input.configPath ?? userConfigReadPath();
       const config = await loadConfigFile(configPath);
       const providerName = input.providerName;
-      // When /connect repeats for the same provider, merge instead of overwriting wholesale: keep
-      // provider-level and model-level manual settings (e.g. disableReasoningEffort) and only
-      // refresh connection info and the model list.
+      const selectedModels = input.models.filter((model) => model.selected);
+      if (!selectedModels.length) throw new Error("select at least one model");
+      if (
+        !providerName.trim() ||
+        providerName.includes("/") ||
+        ["__proto__", "constructor", "prototype"].includes(providerName)
+      ) {
+        throw new Error("invalid provider name");
+      }
+      const ids = new Set<string>();
+      for (const model of selectedModels) {
+        if (
+          !model.id ||
+          /[\x00-\x1f\x7f\s]/u.test(model.id) ||
+          ["__proto__", "constructor", "prototype"].includes(model.id) ||
+          ids.has(model.id)
+        ) {
+          throw new Error(`invalid or duplicate model ID: ${model.id}`);
+        }
+        ids.add(model.id);
+        for (const limit of [model.contextWindow, model.maxTokens]) {
+          if (limit !== undefined && (!Number.isSafeInteger(limit) || limit <= 0)) {
+            throw new Error(`token limit for ${model.id} must be a positive integer`);
+          }
+        }
+      }
+      // Only edit the selected layer, retaining unrelated provider and model options.
       const previous = config.providers[providerName];
+      if (input.configPath && !previous) throw new Error(`provider ${providerName} no longer exists in this config`);
+      if (!input.configPath && !previous && (await loadConfig(this.port.workspace)).providers[providerName]) {
+        throw new Error(`provider ${providerName} already exists; use /connect ${providerName} to edit it`);
+      }
       const carriedOptions: Record<string, unknown> = { ...previous?.options };
       delete carriedOptions.baseUrl;
       delete carriedOptions.baseURL;
@@ -218,27 +275,48 @@ export class SessionCommandHandlers {
       if (input.apiKey) options.apiKey = input.apiKey;
       const previousModels = previous?.models ?? {};
       const models: Record<string, ModelProfile> = {};
-      for (const model of input.models) {
+      for (const model of selectedModels) {
         const modelOptions: Record<string, unknown> = { ...previousModels[model.id]?.options };
-        // The effort set with E in the wizard wins; otherwise the old config is carried over; if
-        // neither, the default high applies.
-        if (model.reasoningEffort) modelOptions.reasoningEffort = model.reasoningEffort;
-        else if (modelOptions.reasoningEffort === undefined) {
-          modelOptions.reasoningEffort = input.reasoningEffort ?? "high";
+        // An empty value clears a prior explicit limit or effort; untouched options survive.
+        if (model.contextWindow === undefined) delete modelOptions.contextWindow;
+        else modelOptions.contextWindow = model.contextWindow;
+        if (model.maxTokens === undefined) delete modelOptions.maxTokens;
+        else modelOptions.maxTokens = model.maxTokens;
+        if (model.reasoningEffort === undefined) delete modelOptions.reasoningEffort;
+        else modelOptions.reasoningEffort = model.reasoningEffort;
+        if (model.disableReasoningEffort !== undefined) {
+          modelOptions.disableReasoningEffort = model.disableReasoningEffort;
+        } else if (model.reasoningEffort) {
+          modelOptions.disableReasoningEffort = false;
         }
-        if (model.contextWindow !== undefined) modelOptions.contextWindow = model.contextWindow;
         models[model.id] = {
           ...(previousModels[model.id]?.name ? { name: previousModels[model.id]!.name } : {}),
           options: modelOptions,
         };
       }
-      const profile: ProviderProfile = { options: options as ProviderOptions, models };
+      const profile: ProviderProfile = {
+        ...(previous?.npm ? { npm: previous.npm } : {}),
+        ...(previous?.name ? { name: previous.name } : {}),
+        options: options as ProviderOptions,
+        models,
+      };
       config.providers = { ...config.providers, [providerName]: profile };
-      const firstSelectedModel = input.models.find((m) => m.selected) ?? input.models[0];
+      const current = this.port.model();
       await saveConfig(config, configPath);
-      this.port.setConfig(await loadConfig(this.port.workspace));
-      if (firstSelectedModel) {
-        await this.handleModel(`${providerName}/${firstSelectedModel.id}`);
+      const updated = await loadConfig(this.port.workspace);
+      this.port.setConfig(updated);
+      // Editing a provider must not unexpectedly switch to its first model (or another provider).
+      const currentStillConfigured =
+        current?.provider === providerName && Boolean(updated.providers[providerName]?.models[current.model]);
+      const modelToActivate = currentStillConfigured
+        ? current!.model
+        : !current || current.provider === providerName || !previous
+          ? selectedModels[0]?.id
+          : undefined;
+      if (modelToActivate) {
+        if (!(await this.handleModel(`${providerName}/${modelToActivate}`))) return false;
+      } else {
+        this.port.refreshTui();
       }
       return true;
     } catch (error) {
