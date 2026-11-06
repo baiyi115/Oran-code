@@ -2,7 +2,7 @@ import type { ToolCall } from "../types.js";
 import { redactSecretText } from "../formatting.js";
 import { redactSecrets } from "./interaction.js";
 import { highlightSelection, overlayLine, type OverlayLine } from "./overlay/select-list.js";
-import { wrapDisplayText } from "./text-width.js";
+import { truncateVisible, wrapDisplayTextLimited } from "./text-width.js";
 import { subagentOriginLabel, type SubagentOrigin } from "../subagent/types.js";
 
 const APPROVAL_OPTIONS = ["Allow for this task", "Allow once", "Always allow", "Reject"] as const;
@@ -14,10 +14,11 @@ const APPROVAL_OPTIONS = ["Allow for this task", "Allow once", "Always allow", "
  */
 export const APPROVAL_DEFAULT_INDEX = 1;
 
-const APPROVAL_HINT = "↑↓ Select   Enter Confirm   y Allow once   n/Esc Reject";
+const APPROVAL_HINT = "↑↓ Select   Enter Confirm   v Details   y Allow once   n/Esc Reject";
 /** Argument values longer than this are summarized: the dialog is for orientation, not for review. */
 const VALUE_MAX_CHARS = 200;
 const VALUE_MAX_LINES = 4;
+const FIELD_MAX_LINES = 3;
 
 export function approvalDialogLines(
   call: ToolCall,
@@ -29,32 +30,71 @@ export function approvalDialogLines(
   width = 80,
   capacity?: number,
 ): OverlayLine[] {
-  const details = redactSecrets(call.arguments) as Record<string, unknown>;
-  // What the call touches comes before where it came from: that is what the user has to judge.
-  const head = ["Permission required", "", `Tool: ${call.name}`];
-  if (typeof details.command === "string") head.push(`Command: ${redactSecretText(details.command)}`);
-  if (typeof details.path === "string") head.push(`Path: ${redactSecretText(details.path)}`);
-  head.push(`Source: ${subagentOriginLabel(origin)}`, `Directory: ${workspace}`, `Permission level: ${level}`);
-
-  const body: string[] = [];
-  if (description.trim()) body.push("", redactSecretText(description.trim()));
-  for (const [key, value] of Object.entries(details)) {
-    if (key === "command" || key === "path") continue;
-    body.push(`${key}: ${summarizeValue(redactSecretText(formatValue(value)))}`);
-  }
-
-  const content = [...head, ...body].flatMap((line) => (line ? wrapDisplayText(line, width) : [""])).map(overlayLine);
-  const options = APPROVAL_OPTIONS.map((option, index) => highlightSelection(`  ${option}`, index === selectedIndex));
-  const tail = [overlayLine(""), ...options, overlayLine(""), overlayLine(APPROVAL_HINT)];
+  // Bound each field before fitting the dialog: a command and its rule can each contain an
+  // entire script. The full, redacted values remain available through the details view.
+  const content = approvalContentLines(call, level, description, workspace, origin, true)
+    .flatMap((line) => (line ? wrapDisplayTextLimited(line, width, FIELD_MAX_LINES) : [""]))
+    .map(overlayLine);
+  const options = APPROVAL_OPTIONS.map((option, index) =>
+    highlightSelection(truncateVisible(`  ${option}`, Math.max(1, width)), index === selectedIndex),
+  );
+  const hint = overlayLine(truncateVisible(APPROVAL_HINT, Math.max(1, width)));
+  const tail = [overlayLine(""), ...options, overlayLine(""), hint];
 
   const limit = capacity === undefined ? Number.POSITIVE_INFINITY : Math.max(1, Math.floor(capacity));
   if (content.length + tail.length <= limit) return [...content, ...tail];
-  // The options and the hint are the part the dialog cannot do without; the details give way.
-  // Before this, a long `content` argument pushed the four options and the hint out of the window.
   const detailBudget = limit - tail.length;
-  if (detailBudget < 1) return [options[selectedIndex] ?? overlayLine(APPROVAL_HINT), overlayLine(APPROVAL_HINT)];
+  if (detailBudget < 1) return limit === 1 ? [options[selectedIndex] ?? hint] : [options[selectedIndex] ?? hint, hint];
   const kept = content.slice(0, detailBudget - 1);
   return [...kept, overlayLine(`… (+${content.length - kept.length} more lines)`), ...tail];
+}
+
+/** Unabridged, redacted fields for the scrollable details view. */
+export function approvalDetailLines(
+  call: ToolCall,
+  level: number,
+  description: string,
+  workspace: string,
+  origin: SubagentOrigin,
+): string[] {
+  return approvalContentLines(call, level, description, workspace, origin, false).flatMap((line) =>
+    line.split(/\r?\n/),
+  );
+}
+
+function approvalContentLines(
+  call: ToolCall,
+  level: number,
+  description: string,
+  workspace: string,
+  origin: SubagentOrigin,
+  compact: boolean,
+): string[] {
+  const details = redactSecrets(call.arguments) as Record<string, unknown>;
+  const command = typeof details.command === "string" ? redactSecretText(details.command) : undefined;
+  // What the call touches comes before where it came from: that is what the user has to judge.
+  const lines = ["Permission required", "", `Tool: ${call.name}`];
+  if (command !== undefined) lines.push(`Command: ${command}`);
+  if (typeof details.path === "string") lines.push(`Path: ${redactSecretText(details.path)}`);
+  lines.push(`Source: ${subagentOriginLabel(origin)}`, `Directory: ${workspace}`, `Permission level: ${level}`);
+  if (description.trim()) {
+    lines.push("");
+    for (const line of redactSecretText(description.trim()).split(/\r?\n/)) {
+      // An exact command rule repeats the entire command. Keep its scope explicit without
+      // printing a second copy of the script in the compact dialog.
+      lines.push(
+        compact && command && line === `Rule: ${call.name}(${command.trim()})`
+          ? `Rule: ${call.name}(this exact command; v to view full)`
+          : line,
+      );
+    }
+  }
+  for (const [key, value] of Object.entries(details)) {
+    if (key === "command" || key === "path") continue;
+    const text = redactSecretText(formatValue(value));
+    lines.push(`${key}: ${compact ? summarizeValue(text) : text}`);
+  }
+  return lines;
 }
 
 /** Collapse a long argument value to its head plus a size note, so one field cannot flood the dialog. */

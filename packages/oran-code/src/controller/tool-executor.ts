@@ -709,7 +709,11 @@ export class ToolBatchExecutor {
       // The rule the standing answers would save, shown before the user commits to one: an
       // approval means something only if its breadth is visible ("pnpm test*" vs the whole tool).
       const rule = this.ports.permission.suggestRuleText(call, kind);
-      approval = await this.ports.requestApproval(call, level, `${description}\nReason: ${decision.reason}\nRule: ${rule}`);
+      approval = await this.ports.requestApproval(
+        call,
+        level,
+        `${description}\nReason: ${decision.reason}\nRule: ${rule}`,
+      );
     } finally {
       if (task.state === "awaiting_approval" && !this.ports.getAbortSignal()?.aborted) {
         transitionTask(task, resumeState);

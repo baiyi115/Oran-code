@@ -14,6 +14,7 @@ import { composerValue, setComposerValue, setOverlay } from "./state.js";
 import { composerCursorOffset } from "./composer.js";
 import { commandCandidates } from "./command-palette.js";
 import { approvalResponse, moveSelection, stepSelection } from "./interaction.js";
+import { approvalDetailLines } from "./approval-dialog.js";
 import { filterSessionOptions } from "./session-list.js";
 import { taskDetailLines } from "./task-list.js";
 import { graphemes, wrapDisplayText } from "./text-width.js";
@@ -508,6 +509,21 @@ export class OverlayHandlers {
     const next = key.upArrow ? Math.max(0, selected - 1) : key.downArrow ? Math.min(3, selected + 1) : selected;
     if (key.escape) this.ctx.resolveApproval(false);
     else if (isSubmitKey(input, key)) this.ctx.resolveApproval(approvalResponse(next));
+    else if (!key.ctrl && !key.meta && input.toLowerCase() === "v") {
+      const overlay = this.ctx.state.overlay;
+      const { call, level, description, workspace, origin } = overlay.approval;
+      const width = this.ctx.contentWidth?.() ?? 80;
+      const lines = approvalDetailLines(call, level, description, workspace, origin).flatMap((line) =>
+        line ? wrapDisplayText(line, width) : [""],
+      );
+      setOverlay(this.ctx.state, {
+        kind: "details",
+        title: "Approval details",
+        lines,
+        scrollOffset: 0,
+        returnTo: overlay,
+      });
+    }
     // Quick answers match the readline side (y / n). A single-key "always allow" is deliberately
     // not offered: the user is often still typing when the approval dialog pops up, and one
     // mistyped key would hand over the whole session's authorization, whereas a mistyped y/n only
