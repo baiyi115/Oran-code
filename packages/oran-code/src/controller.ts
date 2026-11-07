@@ -622,9 +622,18 @@ export class TaskController {
         }
         // A cut-off reply is not a rehearsal attempt. Judge only complete text (including any
         // recovered text chunks), before executing tools from the completed response.
-        const rehearsalPause = await this.consumeRehearsal(task, this.assembleTruncatedText(response.text));
-        if (rehearsalPause) {
-          await this.pauseForNoProgress(task, rehearsalPause);
+        const rehearsalOutcome = await this.consumeRehearsal(task, this.assembleTruncatedText(response.text));
+        if (rehearsalOutcome && rehearsalOutcome !== "consumed") {
+          if (response.toolCalls.length) {
+            await this.toolExecutor.reconcileToolCalls(
+              task,
+              messages,
+              response.toolCalls,
+              "rehearsal check blocked tool execution",
+              false,
+            );
+          }
+          await this.pauseForNoProgress(task, rehearsalOutcome);
           return task;
         }
         if (planMode && !response.toolCalls.length) {
@@ -657,6 +666,11 @@ export class TaskController {
           await this.persist(task);
           this.throwIfCancelled();
           await this.emitCompleted(loop);
+        if (rehearsalOutcome === "consumed") {
+          // An internal status reply is not the user's final answer, even in Plan mode.
+          this.truncatedTextChunks = [];
+          if (!response.toolCalls.length) continue;
+        }
           return task;
         }
         if (response.toolCalls.length) {
@@ -1077,7 +1091,7 @@ export class TaskController {
    * Convergence resets the exploration counter; a second divergence returns
    * a synthesized pause diagnostic for the caller.
    */
-  private async consumeRehearsal(task: Task, reply: string): Promise<NoProgressDiagnostic | undefined> {
+  private async consumeRehearsal(task: Task, reply: string): Promise<"consumed" | NoProgressDiagnostic | undefined> {
     try {
       const store = this.progressStoreFor(task.workspace);
       const state = await store.load();
@@ -1096,7 +1110,7 @@ export class TaskController {
         this.pendingProgressNotices.push(
           "Rehearsal accepted: the exploration state converged. Proceed with your stated next check.",
         );
-        return undefined;
+        return "consumed";
       }
 
       if (rehearsal.phase === "requested") {
@@ -1106,7 +1120,7 @@ export class TaskController {
           updatedAt: new Date().toISOString(),
         });
         this.pendingProgressNotices.push(rehearsalRequestNotice(false));
-        return undefined;
+        return "consumed";
       }
 
       // Already had its second chance and still did not converge.

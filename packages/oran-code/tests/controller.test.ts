@@ -570,13 +570,14 @@ describe("TaskController", () => {
           truncatedTextResponse("draft rehearsal"),
           truncatedTextResponse("still composing"),
           textResponse(rehearsal),
+          textResponse("Investigation complete."),
         ]);
         const { controller } = createController(workspace, provider, new ToolRegistry(), []);
 
         const task = await controller.execute(createTask(workspace, prompt));
 
         expect(task.state).toBe("completed");
-        expect(provider.requests).toHaveLength(3);
+        expect(provider.requests).toHaveLength(4);
         expect((await new ProgressStateStore(workspace).load()).rehearsal).toBeUndefined();
       } finally {
         await rm(workspace, { recursive: true, force: true });
