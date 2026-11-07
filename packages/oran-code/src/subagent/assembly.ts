@@ -5,6 +5,7 @@ import { StructuredSubagentScope } from "./scope.js";
 import { SubagentCoordinator } from "./coordinator.js";
 import type { AgentDefinitionLoader } from "./roles.js";
 import type { BackgroundAgentTaskManager } from "./background.js";
+import type { AgentMessageBus } from "./messages.js";
 import type { TeamManager } from "./team.js";
 
 /**
@@ -19,6 +20,8 @@ export interface SubagentStackOptions {
   readonly roles: AgentDefinitionLoader;
   readonly background: BackgroundAgentTaskManager;
   readonly teams: TeamManager;
+  readonly messages?: AgentMessageBus;
+  readonly getParentSessionId?: () => string | undefined;
   readonly registry: ToolRegistry;
   readonly runnerDeps: SubagentRunnerDependencies;
   /** Whether to create the structured-fork wait scope (joining every fork before the task wraps up). */
@@ -34,15 +37,21 @@ export interface SubagentStack {
 }
 
 export function assembleSubagentStack(options: SubagentStackOptions): SubagentStack {
-  const runner = new SubagentRunner(options.runnerDeps);
+  const runner = new SubagentRunner({
+    ...options.runnerDeps,
+    ...(options.messages ? { messageBus: options.messages } : {}),
+    ...(options.getParentSessionId ? { getParentSessionId: options.getParentSessionId } : {}),
+  });
   const scope = options.joinStructuredForks
-    ? new StructuredSubagentScope(runner, options.forkWaitTimeoutMs)
+    ? new StructuredSubagentScope(runner, options.forkWaitTimeoutMs, undefined, options.messages)
     : undefined;
   new SubagentCoordinator({
     roles: options.roles,
     runner,
     background: options.background,
     teams: options.teams,
+    ...(options.messages ? { messages: options.messages } : {}),
+    ...(options.getParentSessionId ? { getParentSessionId: options.getParentSessionId } : {}),
     parentConversation: options.parentConversation,
     ...(scope ? { scope } : {}),
     resolveModel: options.resolveModel,
@@ -57,7 +66,12 @@ export async function joinStructuredForkSummaries(
   task: Task,
   timeoutMs: number,
 ): Promise<void> {
-  await scope.waitForChildren(timeoutMs);
+  if (task.state !== "completed") {
+    scope.cancelAll();
+    await scope.waitForSettlement();
+  } else {
+    await scope.waitForChildren(timeoutMs);
+  }
   const summary = scope.summary();
   if (summary) {
     task.result = task.result?.trim() ? `${task.result.trim()}\n\n${summary}` : summary;
@@ -67,5 +81,5 @@ export async function joinStructuredForkSummaries(
 /** Cancel every fork in the scope and wait for its promise to settle. */
 export async function disposeStructuredScope(scope: StructuredSubagentScope): Promise<void> {
   scope.cancelAll();
-  await Promise.allSettled(scope.list().map((task) => task.promise));
+  await scope.waitForSettlement();
 }

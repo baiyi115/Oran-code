@@ -23,7 +23,17 @@ export function isWriteToolName(name: string): boolean {
 }
 
 export function isMutatingToolName(name: string): boolean {
-  return isWriteToolName(name) || name === "run_command" || WORKTREE_TOOL_NAMES.includes(name);
+  return (
+    isWriteToolName(name) ||
+    name === "run_command" ||
+    name === "agent" ||
+    name === "team_spawn" ||
+    name === "team_send" ||
+    name === "task_send" ||
+    name === "report_to_parent" ||
+    name === "team_resume" ||
+    WORKTREE_TOOL_NAMES.includes(name)
+  );
 }
 
 export function isPlanModeTool(tool: ToolDefinition): boolean {

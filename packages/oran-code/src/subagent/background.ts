@@ -1,6 +1,7 @@
 import { randomUUID } from "node:crypto";
 import type { ModelConfig } from "../types.js";
 import type { SubagentRunner } from "./runner.js";
+import type { AgentMessageBus } from "./messages.js";
 import type { AgentStateStore, PersistedBackgroundTask } from "./state-store.js";
 import type { AgentDefinition, BackgroundAgentTask, SubagentRunOptions, SubagentRunResult } from "./types.js";
 
@@ -14,19 +15,22 @@ interface QueuedTask {
 
 export class BackgroundAgentTaskManager {
   private readonly tasks = new Map<string, BackgroundAgentTask>();
+  private readonly executing = new Set<string>();
   private readonly queue: QueuedTask[] = [];
   private readonly maxConcurrent: number;
   private readonly maxDurationMs: number;
+  private readonly messages: AgentMessageBus | undefined;
   private nextId = 1;
 
   constructor(
     private readonly stateStore?: AgentStateStore,
     private readonly onTerminal?: () => void | Promise<void>,
     private readonly onChange?: () => void,
-    options?: { readonly maxConcurrent?: number; readonly maxDurationMs?: number },
+    options?: { readonly maxConcurrent?: number; readonly maxDurationMs?: number; readonly messageBus?: AgentMessageBus },
   ) {
     this.maxConcurrent = Math.max(1, options?.maxConcurrent ?? 4);
     this.maxDurationMs = Math.max(60_000, options?.maxDurationMs ?? 30 * 60_000);
+    this.messages = options?.messageBus;
   }
 
   private notifyChange(): void {
@@ -38,11 +42,7 @@ export class BackgroundAgentTaskManager {
   }
 
   private runningCount(): number {
-    let count = 0;
-    for (const task of this.tasks.values()) {
-      if (task.status === "running") count += 1;
-    }
-    return count;
+    return this.executing.size;
   }
 
   async restore(): Promise<void> {
@@ -51,6 +51,7 @@ export class BackgroundAgentTaskManager {
     for (const item of state.background) {
       const status = item.status === "running" || item.status === "queued" ? "interrupted" : item.status;
       this.tasks.set(item.id, { ...structuredClone(item), status });
+      if (status === "interrupted") await this.messages?.finishTask(item.id);
     }
     await this.persist();
     this.notifyChange();
@@ -58,6 +59,7 @@ export class BackgroundAgentTaskManager {
 
   start(runner: SubagentRunner, options: SubagentRunOptions & { readonly retryOf?: string }): BackgroundAgentTask {
     const id = options.taskId ?? `agent-${this.nextId++}-${randomUUID().slice(0, 8)}`;
+    this.messages?.registerTask(id, options.parentSessionId);
     const abortController = options.abortController ?? new AbortController();
 
     let resolvePromise!: (result: SubagentRunResult) => void;
@@ -73,6 +75,7 @@ export class BackgroundAgentTaskManager {
       name: options.description,
       origin: options.origin,
       prompt: options.prompt,
+      ...(options.parentSessionId ? { parentSessionId: options.parentSessionId } : {}),
       startedAt: new Date().toISOString(),
       status: isRunning ? "running" : "queued",
       usage: {},
@@ -104,6 +107,7 @@ export class BackgroundAgentTaskManager {
     resolvePromise: (result: SubagentRunResult) => void,
     _rejectPromise: (error: unknown) => void,
   ): void {
+    this.executing.add(task.id);
     const runPromise = runner.run({
       ...options,
       taskId: task.id,
@@ -131,9 +135,11 @@ export class BackgroundAgentTaskManager {
       task.endedAt = new Date().toISOString();
       task.error = `task exceeded max duration (${Math.round(this.maxDurationMs / 1000)}s)`;
       task.abortController?.abort();
-      this.schedulePersist();
       this.notifyChange();
-      this.drainQueue();
+      void this.persist()
+        .catch(() => undefined)
+        .then(() => this.onTerminal?.())
+        .catch(() => undefined);
       settle({
         taskId: task.id,
         name: task.name,
@@ -153,15 +159,22 @@ export class BackgroundAgentTaskManager {
     void runPromise
       .then(async (result) => {
         clearTimeout(deadline);
+        this.executing.delete(task.id);
         this.finish(task, result);
-        await this.persist();
-        this.notifyChange();
-        this.drainQueue();
-        await this.onTerminal?.();
-        settle(result);
+        try {
+          await this.persist().catch(() => undefined);
+          this.notifyChange();
+          this.drainQueue();
+          await Promise.resolve()
+            .then(() => this.onTerminal?.())
+            .catch(() => undefined);
+        } finally {
+          settle(result);
+        }
       })
       .catch((error) => {
         clearTimeout(deadline);
+        this.executing.delete(task.id);
         const errorResult: SubagentRunResult = {
           taskId: task.id,
           name: task.name,
@@ -202,10 +215,12 @@ export class BackgroundAgentTaskManager {
     options: { readonly definition?: AgentDefinition; readonly model?: ModelConfig } = {},
   ): BackgroundAgentTask | undefined {
     const previous = this.tasks.get(id);
-    if (!previous || previous.status === "running" || previous.status === "queued") return undefined;
+    if (!previous || previous.status === "running" || previous.status === "queued" || previous.origin.kind === "fork")
+      return undefined;
     return this.start(runner, {
       description: previous.name,
       prompt: previous.prompt,
+      ...(previous.parentSessionId ? { parentSessionId: previous.parentSessionId } : {}),
       origin: previous.origin,
       ...(options.definition ? { definition: options.definition } : {}),
       ...(options.model ? { model: options.model } : {}),
@@ -246,8 +261,10 @@ export class BackgroundAgentTaskManager {
       task.endedAt = new Date().toISOString();
       task.output = "Task cancelled while queued.";
       task.abortController.abort();
+      void this.messages?.finishTask(id).catch(() => undefined);
       this.schedulePersist();
       this.notifyChange();
+      void Promise.resolve().then(() => this.onTerminal?.()).catch(() => undefined);
       return true;
     }
     task.abortController.abort();
@@ -258,6 +275,7 @@ export class BackgroundAgentTaskManager {
   cancelAll(): void {
     for (const item of [...this.queue]) {
       item.task.status = "cancelled";
+      void this.messages?.finishTask(item.task.id).catch(() => undefined);
       item.task.endedAt = new Date().toISOString();
       item.task.output = "Task cancelled while queued.";
       item.task.abortController?.abort();
@@ -285,6 +303,7 @@ export class BackgroundAgentTaskManager {
   interruptAll(): void {
     for (const item of [...this.queue]) {
       item.task.status = "interrupted";
+      void this.messages?.finishTask(item.task.id).catch(() => undefined);
       item.task.endedAt = new Date().toISOString();
       item.task.abortController?.abort();
       item.resolve({
@@ -315,9 +334,10 @@ export class BackgroundAgentTaskManager {
     await Promise.allSettled(this.list().flatMap((task) => (task.promise ? [task.promise] : [])));
   }
 
-  drainNotifications(): readonly BackgroundAgentTask[] {
+  drainNotifications(sessionId?: string): readonly BackgroundAgentTask[] {
     const notifications: BackgroundAgentTask[] = [];
     for (const task of this.tasks.values()) {
+      if (task.parentSessionId && task.parentSessionId !== sessionId) continue;
       if (task.status === "running" || task.status === "queued" || task.notified) continue;
       task.notified = true;
       notifications.push(task);
@@ -358,10 +378,13 @@ export class BackgroundAgentTaskManager {
 
 const NOTIFICATION_OUTPUT_LIMIT = 16_000;
 
-export function backgroundTaskNotification(task: BackgroundAgentTask): string {
-  const raw = task.output ?? task.error ?? "No result was produced.";
+export function backgroundTaskNotification(
+  task: Pick<BackgroundAgentTask, "id" | "name" | "status" | "output" | "error">,
+): string {
+  const raw = task.output?.trim() ? task.output : (task.error ?? "No result was produced.");
   // Subagent output can be very large, and injecting it verbatim would crowd out the parent
-  // conversation's context; use task_detail to read the full text.
+  // conversation's context. task_detail can show task metadata and the result, subject
+  // to the tool's own output limit.
   const output =
     raw.length > NOTIFICATION_OUTPUT_LIMIT
       ? `${raw.slice(0, NOTIFICATION_OUTPUT_LIMIT)}\n...[truncated ${raw.length - NOTIFICATION_OUTPUT_LIMIT} chars]`

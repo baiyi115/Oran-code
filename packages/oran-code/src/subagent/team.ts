@@ -1,5 +1,7 @@
+import { randomUUID } from "node:crypto";
 import type { Message, ModelConfig } from "../types.js";
 import type { SubagentRunner } from "./runner.js";
+import type { AgentMessageBus } from "./messages.js";
 import type { AgentStateStore, PersistedTeam, PersistedTeamMember } from "./state-store.js";
 import type { AgentDefinition, SubagentRunOptions, SubagentWorktreeLease, TeamSnapshot } from "./types.js";
 
@@ -11,6 +13,8 @@ interface TeamMember {
   conversation: readonly Message[];
   readonly mailbox: string[];
   currentPrompt?: string;
+  activeTaskId?: string;
+  readonly parentSessionId?: string;
   lock: Promise<void>;
   processing: boolean;
   currentAbort?: AbortController;
@@ -37,7 +41,7 @@ export class TeamManager {
   private readonly teams = new Map<string, Team>();
   private runtime: TeamRuntime | undefined;
 
-  constructor(private readonly stateStore?: AgentStateStore) {}
+  constructor(private readonly stateStore?: AgentStateStore, private readonly messages?: AgentMessageBus) {}
 
   async restore(): Promise<void> {
     if (!this.stateStore) return;
@@ -45,8 +49,10 @@ export class TeamManager {
     for (const persisted of state.teams) {
       const team: Team = { name: persisted.name, members: new Map() };
       for (const item of persisted.members) {
+        if (item.activeTaskId) await this.messages?.finishTask(item.activeTaskId);
+        const { activeTaskId: _activeTaskId, ...restored } = structuredClone(item);
         team.members.set(item.name, {
-          ...structuredClone(item),
+          ...restored,
           status: item.status === "running" ? "interrupted" : item.status,
           mailbox: [...item.mailbox],
           lock: Promise.resolve(),
@@ -80,7 +86,7 @@ export class TeamManager {
     teamName: string,
     description: string,
     prompt: string,
-    options: { readonly definition?: AgentDefinition; readonly model?: SubagentRunOptions["model"] } = {},
+    options: { readonly definition?: AgentDefinition; readonly model?: SubagentRunOptions["model"]; readonly parentSessionId?: string } = {},
   ): { ok: boolean; output: string; memberName?: string } {
     const team = this.teams.get(normalizeTeamName(teamName) ?? "");
     if (!team) return { ok: false, output: `Unknown team ${teamName}. Create it with team_create first.` };
@@ -99,6 +105,7 @@ export class TeamManager {
       lock: Promise.resolve(),
       processing: false,
       toolCount: 0,
+      ...(options.parentSessionId ? { parentSessionId: options.parentSessionId } : {}),
       ...(options.definition ? { definitionName: options.definition.name } : {}),
       ...(options.model ? { modelReference: modelReference(options.model) } : {}),
     };
@@ -140,6 +147,7 @@ export class TeamManager {
       members: [...team.members.values()].map((member) => ({
         name: member.name,
         status: member.status,
+        ...(member.activeTaskId ? { activeTaskId: member.activeTaskId } : {}),
         queuedMessages: member.mailbox.length,
         toolCount: member.toolCount,
         ...(member.lastOutput ? { lastOutput: member.lastOutput } : {}),
@@ -199,12 +207,15 @@ export class TeamManager {
           const next = member.mailbox.shift();
           if (!next) continue;
           member.currentPrompt = next;
+          const taskId = `team-${randomUUID()}`;
+          member.activeTaskId = taskId;
+          this.messages?.registerTask(taskId, member.parentSessionId);
           member.status = "running";
           const abortController = new AbortController();
           member.currentAbort = abortController;
-          await this.persist();
           const previousToolCount = countToolMessages(member.conversation);
           try {
+            await this.persist();
             const definition = member.definitionName
               ? this.runtime?.resolveDefinition(member.definitionName)
               : undefined;
@@ -214,6 +225,8 @@ export class TeamManager {
             const result = await this.runtime!.runner.run({
               description: `${team.name}/${member.name}`,
               prompt: next,
+              taskId,
+              ...(member.parentSessionId ? { parentSessionId: member.parentSessionId } : {}),
               origin: { kind: "teammate", teamName: team.name, name: member.name },
               conversation: member.conversation,
               abortController,
@@ -251,8 +264,13 @@ export class TeamManager {
               member.lastError = error instanceof Error ? error.message : String(error);
             }
           } finally {
-            delete member.currentAbort;
-            await this.persist();
+            try {
+              await this.messages?.finishTask(taskId);
+            } finally {
+              delete member.activeTaskId;
+              delete member.currentAbort;
+              await this.persist();
+            }
           }
         }
       })

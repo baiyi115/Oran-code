@@ -93,6 +93,7 @@ import type { SqliteTraceStore } from "./trace.js";
 import type { ToolRegistry } from "./tools.js";
 import type { InkTuiApp } from "./tui/ink-app.js";
 import type { BackgroundAgentTaskManager } from "./subagent/background.js";
+import type { AgentMessageBus } from "./subagent/messages.js";
 import type { AgentDefinitionLoader } from "./subagent/roles.js";
 import type { SubagentRunner } from "./subagent/runner.js";
 import type { TeamManager } from "./subagent/team.js";
@@ -111,6 +112,7 @@ const loadTools = () => import("./tools.js");
 const loadTrace = () => import("./trace.js");
 const loadProjectInstructionsMod = () => import("./project-instructions.js");
 const loadSubagentBackground = () => import("./subagent/background.js");
+const loadAgentMessages = () => import("./subagent/messages.js");
 const loadShellJobs = () => import("./tools/jobs.js");
 const loadSubagentAssembly = () => import("./subagent/assembly.js");
 const loadSubagentRoles = () => import("./subagent/roles.js");
@@ -122,6 +124,7 @@ interface AgentRuntimeServices {
   readonly agentDefinitionLoader: AgentDefinitionLoader;
   readonly agentStateStore: AgentStateStore;
   readonly backgroundAgents: BackgroundAgentTaskManager;
+  readonly messages: AgentMessageBus;
   readonly teams: TeamManager;
   readonly snapshotStore: SnapshotStore;
 }
@@ -194,6 +197,7 @@ export class TerminalSession {
   private readonly handlers: SessionCommandHandlers;
   private readonly workspaceFileIndex: WorkspaceFileIndex;
   private currentSession: StoredSession | undefined;
+  private sessionReady = false;
   private readonly followUps: FollowUpItem[] = [];
   /** Plan completed in plan mode and is waiting for an explicit user decision. */
   private pendingPlanExecute: { sessionId: string; plan: string; prompt: string } | undefined;
@@ -487,25 +491,30 @@ export class TerminalSession {
         { AgentDefinitionLoader },
         { AgentStateStore },
         { BackgroundAgentTaskManager },
+        { AgentMessageBus },
         { TeamManager },
         { SnapshotStore },
       ] = await Promise.all([
         loadSubagentRoles(),
         loadSubagentStateStore(),
         loadSubagentBackground(),
+        loadAgentMessages(),
         loadSubagentTeam(),
         loadSnapshot(),
       ]);
       const agentStateStore = new AgentStateStore(this.workspace);
+      const messages = new AgentMessageBus(agentStateStore, () => this.flushBackgroundNotifications());
       const runtime: AgentRuntimeServices = {
         agentDefinitionLoader: new AgentDefinitionLoader(this.workspace),
         agentStateStore,
+        messages,
         backgroundAgents: new BackgroundAgentTaskManager(
           agentStateStore,
           () => this.flushBackgroundNotifications(),
           () => this.refreshTui(),
+          { messageBus: messages },
         ),
-        teams: new TeamManager(agentStateStore),
+        teams: new TeamManager(agentStateStore, messages),
         snapshotStore: new SnapshotStore(this.workspace),
       };
       this.agentRuntime = runtime;
@@ -741,11 +750,12 @@ export class TerminalSession {
       throw error;
     }
     if (!isolated) await this.persistQueuedUserMessage(prompt);
-    await Promise.all([this.ensureMcpReady(), this.openTrace(), this.initializeCommandIntegrations()]);
+    await Promise.all([this.ensureMcpReady(), this.openTrace(), this.initializeCommandIntegrations(), this.ensureAgentStateRestored()]);
     const [
       agentRuntime,
       { assembleSubagentStack, joinStructuredForkSummaries, disposeStructuredScope },
       { backgroundTaskNotification },
+      { formatAgentMessage },
       { shellJobNotification, shellJobs },
       { TaskController },
       { ContextManager },
@@ -754,6 +764,7 @@ export class TerminalSession {
       this.ensureAgentRuntime(),
       loadSubagentAssembly(),
       loadSubagentBackground(),
+      loadAgentMessages(),
       loadShellJobs(),
       loadController(),
       loadContextManager(),
@@ -782,6 +793,7 @@ export class TerminalSession {
     const taskGeneration = this.taskGeneration;
     const derivedConversation = derivedSkill ? this.derivedSkillConversation(derivedSkill) : [];
     const parentToolFilter = (tool: ToolDefinition): boolean => {
+      if (tool.name === "report_to_parent") return true;
       if (this.mcp.isMcpTool(tool.name) && !this.mcp.isActivated(tool.name)) return false;
       return derivedSkill
         ? derivedSkill.allowedTools.length === 0 || derivedSkill.allowedTools.includes(tool.name)
@@ -791,6 +803,8 @@ export class TerminalSession {
       roles: agentRuntime.agentDefinitionLoader,
       background: agentRuntime.backgroundAgents,
       teams: agentRuntime.teams,
+      messages: agentRuntime.messages,
+      getParentSessionId: () => sessionId,
       registry,
       runnerDeps: {
         workspace: this.workspace,
@@ -864,17 +878,19 @@ export class TerminalSession {
           }
         : {}),
       stablePromptModules: this.stablePromptModules,
-      runtimeReminders: () => {
+      getTaskNotifications: async () => (await agentRuntime.messages.takeForParent(sessionId)).map(formatAgentMessage),
+      runtimeReminders: async () => {
         const reminders = derivedSkill
           ? [this.formatActiveSkillReminder(derivedSkill.name, renderSkillPrompt(derivedSkill))]
           : this.activeSkillReminders();
-        const notifications = agentRuntime.backgroundAgents.drainNotifications().map(backgroundTaskNotification);
-        consumedBackgroundNotifications.push(...notifications);
+        const notifications = agentRuntime.backgroundAgents.drainNotifications(sessionId).map(backgroundTaskNotification);
+        const forkNotifications = structuredScope?.drainNotifications().map(backgroundTaskNotification) ?? [];
+        consumedBackgroundNotifications.push(...notifications, ...forkNotifications);
         const jobNotifications = shellJobs().drainNotifications().map(shellJobNotification);
         consumedBackgroundNotifications.push(...jobNotifications);
-        return [...reminders, ...notifications, ...jobNotifications];
+        return [...reminders, ...notifications, ...forkNotifications, ...jobNotifications];
       },
-      toolFilter: parentToolFilter,
+      toolFilter: (tool) => tool.name !== "report_to_parent" && parentToolFilter(tool),
       ...(hookEngine ? { hookEngine } : {}),
       hookUserPrompt: prompt,
       previousToolCalls: this.previousToolHistory,
@@ -920,7 +936,9 @@ export class TerminalSession {
       if (this.controller === controller) this.controller = undefined;
       const conversationSnapshot = controller.conversationSnapshot();
       consumedBackgroundNotifications.push(
-        ...agentRuntime.backgroundAgents.drainNotifications().map(backgroundTaskNotification),
+        ...agentRuntime.backgroundAgents.drainNotifications(sessionId).map(backgroundTaskNotification),
+        ...(await agentRuntime.messages.takeForParent(sessionId)).map(formatAgentMessage),
+        ...(structuredScope?.drainNotifications().map(backgroundTaskNotification) ?? []),
       );
       consumedBackgroundNotifications.push(...shellJobs().drainNotifications().map(shellJobNotification));
       for (const notification of consumedBackgroundNotifications) {
@@ -978,6 +996,9 @@ export class TerminalSession {
       })
       .finally(async () => {
         this.taskPromise = undefined;
+        await this.flushBackgroundNotifications().catch((error) =>
+          this.writeDebugLog(`agent notification flush failed: ${String(error)}`),
+        );
         this.queuePaused = false;
         this.setPrompt();
         this.refreshTui();
@@ -1194,6 +1215,7 @@ export class TerminalSession {
   }
 
   private async restoreStoredSession(stored: StoredSession, restoreModel: boolean): Promise<void> {
+    this.sessionReady = false;
     this.sessionGeneration += 1;
     // Remounting a session clears the once set and discards notifications left over from the previous task.
     this.hookEngine?.resetOnce();
@@ -1232,6 +1254,8 @@ export class TerminalSession {
     await this.compactRestoredConversation(manager);
     if (this.currentSession) this.currentSession.conversation = structuredClone(this.conversation);
     if (this.model) await this.rememberModelPreference(this.model);
+    this.sessionReady = true;
+    if (this.agentRuntime) await this.flushBackgroundNotifications();
   }
 
   private async compactRestoredConversation(manager: ContextManager): Promise<void> {
@@ -1515,16 +1539,29 @@ export class TerminalSession {
   }
 
   private async flushBackgroundNotifications(): Promise<void> {
-    if (this.taskRunning()) return;
+    if (!this.sessionReady || this.taskRunning()) return;
     const runtime = this.agentRuntime;
-    if (!runtime) return;
+    const sessionId = this.currentSession?.id;
+    if (!runtime || !sessionId) return;
     const { backgroundTaskNotification } = await loadSubagentBackground();
+    const { formatAgentMessage } = await loadAgentMessages();
     const { shellJobNotification, shellJobs } = await loadShellJobs();
     const notifications = [
-      ...runtime.backgroundAgents.drainNotifications().map(backgroundTaskNotification),
+      ...runtime.backgroundAgents.drainNotifications(sessionId).map(backgroundTaskNotification),
+      ...(await runtime.messages.takeForParent(sessionId)).map(formatAgentMessage),
       ...shellJobs().drainNotifications().map(shellJobNotification),
     ];
     if (!notifications.length) return;
+    if (this.currentSession?.id !== sessionId) {
+      for (const notification of notifications) {
+        await this.sessionStore.appendMessage(sessionId, {
+          role: "system",
+          content: notification,
+          metadata: { promptBlock: "task-notification", contextManaged: true },
+        });
+      }
+      return;
+    }
     for (const notification of notifications) {
       this.conversation.push({
         role: "system",
@@ -2210,8 +2247,10 @@ export class TerminalSession {
   private async ensureAgentStateRestored(): Promise<void> {
     this.agentStateRestore ??= (async () => {
       const runtime = await this.ensureAgentRuntime();
+      await runtime.messages.restore();
       await Promise.all([runtime.backgroundAgents.restore(), runtime.teams.restore()]);
       await this.sweepOrphanWorktrees();
+      if (this.currentSession?.id) await this.flushBackgroundNotifications();
     })();
     await this.agentStateRestore;
   }

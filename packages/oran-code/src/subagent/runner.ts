@@ -19,6 +19,7 @@ import { createTask } from "../types.js";
 import type { ToolRegistry } from "../tools.js";
 import { cleanupWorktree, ensureWorktree, hasChanges, worktreePromptText } from "../worktree/lifecycle.js";
 import { createSubagentToolFilter } from "./filter.js";
+import { formatAgentMessage, type AgentMessageBus } from "./messages.js";
 import type {
   SubagentEvent,
   SubagentOrigin,
@@ -43,6 +44,8 @@ export const FORK_BOILERPLATE = [
 export interface SubagentRunnerDependencies {
   readonly workspace: string;
   readonly registry: ToolRegistry;
+  readonly messageBus?: AgentMessageBus;
+  readonly getParentSessionId?: () => string | undefined;
   readonly trace: TraceStore;
   readonly baseConfig: RuntimeConfig;
   readonly baseModel: ModelConfig;
@@ -71,6 +74,8 @@ export class SubagentRunner {
     const taskId = options.taskId ?? `subagent-${randomUUID()}`;
     const abortController = options.abortController ?? new AbortController();
     const origin = withTaskId(options.origin, taskId);
+    const messagingEnabled = Boolean(this.deps.messageBus && (options.background || origin.kind === "teammate"));
+    if (messagingEnabled) this.deps.messageBus?.registerTask(taskId, options.parentSessionId ?? this.deps.getParentSessionId?.());
     const name = options.description.trim() || originLabel(origin);
     const startedAt = new Date().toISOString();
     const usage: Record<string, number> = {};
@@ -124,6 +129,7 @@ export class SubagentRunner {
       const filter = createSubagentToolFilter({
         ...(options.definition ? { definition: options.definition } : {}),
         background: options.background === true,
+        messagingEnabled,
         customAgent: origin.kind === "definition" || origin.kind === "hook",
         ...(options.customDeniedTools ? { customDeniedTools: options.customDeniedTools } : {}),
         isMcpTool: this.deps.isMcpTool ?? (() => false),
@@ -136,6 +142,8 @@ export class SubagentRunner {
         provider: this.deps.providerFactory(model),
         registry: this.deps.registry,
         trace: this.deps.trace,
+        volatileProgress: true,
+        explorationTask: options.definition?.scope === "builtin" && options.definition.name === "explore",
         permission,
         ...(this.deps.permissionUserRequest !== undefined
           ? { permissionUserRequest: this.deps.permissionUserRequest }
@@ -143,6 +151,9 @@ export class SubagentRunner {
         conversation,
         contextManager,
         toolFilter: filter,
+        ...(messagingEnabled && this.deps.messageBus
+          ? { getDelegatedMessages: async () => (await this.deps.messageBus!.takeForChild(taskId)).map(formatAgentMessage) }
+          : {}),
         ...(customInstructions
           ? {
               stablePromptModules: { customInstructions },
@@ -185,6 +196,7 @@ export class SubagentRunner {
       if (abortController.signal.aborted || options.signal?.aborted) controller.cancel();
       const createdTask = createTask(executionWorkspace, options.prompt);
       createdTask.id = taskId;
+      if (messagingEnabled) createdTask.subagentTaskId = taskId;
       createdTask.rootWorkspace = this.deps.workspace;
       const task = await controller.execute(createdTask);
       const status = task.state === "cancelled" ? "cancelled" : task.state === "completed" ? "completed" : "failed";
@@ -240,6 +252,7 @@ export class SubagentRunner {
       await this.emitTerminal(result);
       return result;
     } finally {
+      if (messagingEnabled) await this.deps.messageBus?.finishTask(taskId).catch(() => undefined);
       abortController.signal.removeEventListener("abort", abort);
       options.signal?.removeEventListener("abort", abort);
       this.deps.approvalCancellationCallback?.(origin);
@@ -247,6 +260,12 @@ export class SubagentRunner {
   }
 
   private async emitTerminal(result: SubagentRunResult): Promise<void> {
+    if (result.origin.kind === "teammate" && this.deps.messageBus) {
+      const kind = result.status === "completed" ? "result" : "blocked";
+      await this.deps.messageBus
+        .sendToParent(result.taskId, kind, result.output.slice(0, 4_000))
+        .catch(() => undefined);
+    }
     await this.emitEvent({
       taskId: result.taskId,
       name: result.name,

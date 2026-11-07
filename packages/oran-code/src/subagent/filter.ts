@@ -6,6 +6,7 @@ export const GLOBAL_SUBAGENT_DENIED_TOOLS = new Set([
   "task_stop",
   "task_cancel",
   "task_send",
+  "task_messages",
   "task_retry",
   "ask_user",
   "request_user_input",
@@ -32,7 +33,9 @@ export const BACKGROUND_SUBAGENT_ALLOWED_TOOLS = new Set([
   "apply_patch",
   "glob_files",
   "search_code",
+  "code_impact",
   "run_command",
+  "report_to_parent",
   "activate_skill",
   "search_tools",
   "enter_worktree",
@@ -42,6 +45,7 @@ export const BACKGROUND_SUBAGENT_ALLOWED_TOOLS = new Set([
 export interface SubagentToolFilterOptions {
   readonly definition?: AgentDefinition;
   readonly background: boolean;
+  readonly messagingEnabled?: boolean;
   readonly customAgent: boolean;
   readonly customDeniedTools?: readonly string[];
   readonly isMcpTool: (name: string) => boolean;
@@ -60,6 +64,7 @@ export function createSubagentToolFilter(options: SubagentToolFilterOptions): (t
     if (customDenied.has(name)) return false;
     if (options.background && !BACKGROUND_SUBAGENT_ALLOWED_TOOLS.has(name)) return false;
     if (roleDenied.has(name)) return false;
+    if (name === "report_to_parent") return options.messagingEnabled === true && (options.parentFilter?.(tool) ?? true);
     if (roleAllowed.size > 0 && !wildcardOnly && !roleAllowed.has(name)) return false;
     return options.parentFilter?.(tool) ?? true;
   };

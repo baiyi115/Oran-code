@@ -69,6 +69,8 @@ export interface SubagentRunOptions {
   readonly continueAfterParentExit?: boolean;
   readonly signal?: AbortSignal;
   readonly taskId?: string;
+  /** Session that owns this task's message stream; captured when assigned. */
+  readonly parentSessionId?: string;
   readonly abortController?: AbortController;
   /** Reuse a retained worktree instead of creating a new one. */
   readonly worktreeLease?: SubagentWorktreeLease;
@@ -129,6 +131,7 @@ export interface BackgroundAgentTask {
   usage: Readonly<Record<string, number>>;
   notified: boolean;
   readonly prompt: string;
+  readonly parentSessionId?: string;
   readonly definitionName?: string;
   readonly modelReference?: string;
   worktreeLease?: SubagentWorktreeLease;
@@ -137,9 +140,16 @@ export interface BackgroundAgentTask {
   readonly promise?: Promise<SubagentRunResult>;
 }
 
+export interface DelegatedTaskContract {
+  readonly objective: string;
+  readonly boundaries: string;
+  readonly done_when: string;
+}
+
 export interface AgentToolArguments {
   readonly description: string;
   readonly prompt: string;
+  readonly task_contract?: DelegatedTaskContract;
   readonly subagent_type?: string;
   readonly model?: string;
   readonly run_in_background?: boolean;
@@ -155,6 +165,7 @@ export interface UnsupportedSubagentOperation {
 export interface TeamMemberSnapshot {
   readonly name: string;
   readonly status: "idle" | "running" | "stopped" | "failed" | "interrupted";
+  readonly activeTaskId?: string;
   readonly queuedMessages: number;
   readonly toolCount: number;
   readonly lastOutput?: string;

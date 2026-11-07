@@ -5,7 +5,8 @@ import { createRuntimeConfig } from "./runtime.js";
 import { createTask } from "./types.js";
 import { InMemoryTraceStore } from "./trace.js";
 import { TaskController } from "./controller.js";
-import { BackgroundAgentTaskManager } from "./subagent/background.js";
+import { BackgroundAgentTaskManager, backgroundTaskNotification } from "./subagent/background.js";
+import { AgentMessageBus, formatAgentMessage } from "./subagent/messages.js";
 import { AgentDefinitionLoader } from "./subagent/roles.js";
 import { TeamManager } from "./subagent/team.js";
 import { assembleSubagentStack, disposeStructuredScope, joinStructuredForkSummaries } from "./subagent/assembly.js";
@@ -33,14 +34,16 @@ async function executeWithController(options: AgentOptions, registry: ToolRegist
   const trace = new InMemoryTraceStore();
   const roles = new AgentDefinitionLoader(options.workspace);
   await roles.scan();
-  const background = new BackgroundAgentTaskManager();
-  const teams = new TeamManager();
+  const messages = new AgentMessageBus();
+  const background = new BackgroundAgentTaskManager(undefined, undefined, undefined, { messageBus: messages });
+  const teams = new TeamManager(undefined, messages);
   let conversation: Message[] = [];
   const resolveModel = (reference: string): ModelConfig => resolveNonInteractiveModel(reference, options.model);
   const { scope } = assembleSubagentStack({
     roles,
     background,
     teams,
+    messages,
     registry,
     runnerDeps: {
       workspace: options.workspace,
@@ -78,6 +81,9 @@ async function executeWithController(options: AgentOptions, registry: ToolRegist
     registry,
     trace,
     conversation,
+    getTaskNotifications: async () => (await messages.takeForParent()).map(formatAgentMessage),
+    runtimeReminders: async () => scope?.drainNotifications().map(backgroundTaskNotification) ?? [],
+    toolFilter: (tool) => tool.name !== "report_to_parent",
     conversationCallback: (messages) => {
       conversation = structuredClone([...messages]);
     },
@@ -90,6 +96,8 @@ async function executeWithController(options: AgentOptions, registry: ToolRegist
   try {
     const task = await controller.execute(createTask(options.workspace, options.prompt));
     if (scope) await joinStructuredForkSummaries(scope, task, config.subagent.forkWaitTimeoutMs);
+    const pendingReports = (await messages.takeForParent()).map(formatAgentMessage);
+    if (pendingReports.length) task.result = [task.result, ...pendingReports].filter(Boolean).join("\n\n");
     return task;
   } finally {
     if (scope) await disposeStructuredScope(scope);

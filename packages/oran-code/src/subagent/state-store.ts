@@ -2,6 +2,7 @@ import { mkdir, readFile, rename, writeFile } from "node:fs/promises";
 import { dirname, resolve } from "node:path";
 import { projectStateRoot } from "../paths.js";
 import type { Message } from "../types.js";
+import type { AgentMessage } from "./messages.js";
 import type { PersistedSubagentStatus, SubagentOrigin, SubagentWorktreeLease } from "./types.js";
 
 export interface PersistedBackgroundTask {
@@ -9,6 +10,7 @@ export interface PersistedBackgroundTask {
   readonly name: string;
   readonly origin: SubagentOrigin;
   readonly prompt: string;
+  readonly parentSessionId?: string;
   readonly definitionName?: string;
   readonly modelReference?: string;
   readonly startedAt: string;
@@ -28,6 +30,8 @@ export interface PersistedTeamMember {
   readonly conversation: readonly Message[];
   readonly mailbox: readonly string[];
   readonly currentPrompt?: string;
+  readonly activeTaskId?: string;
+  readonly parentSessionId?: string;
   readonly toolCount: number;
   readonly lastOutput?: string;
   readonly lastError?: string;
@@ -46,6 +50,7 @@ interface PersistedAgentState {
   readonly updatedAt: string;
   readonly background: readonly PersistedBackgroundTask[];
   readonly teams: readonly PersistedTeam[];
+  readonly messages: readonly AgentMessage[];
 }
 
 const EMPTY_STATE: PersistedAgentState = {
@@ -53,6 +58,7 @@ const EMPTY_STATE: PersistedAgentState = {
   updatedAt: "",
   background: [],
   teams: [],
+  messages: [],
 };
 
 const PERSIST_DEBOUNCE_MS = 500;
@@ -71,6 +77,21 @@ export class AgentStateStore {
     this.loadPromise ??= this.readState();
     this.state = await this.loadPromise;
     return structuredClone(this.state);
+  }
+
+  async loadMessages(): Promise<readonly AgentMessage[]> {
+    return (await this.load()).messages;
+  }
+
+  async saveMessages(messages: readonly AgentMessage[]): Promise<void> {
+    await this.mutate(
+      (state) => ({
+        ...state,
+        updatedAt: new Date().toISOString(),
+        messages: structuredClone(messages),
+      }),
+      { persistNow: true },
+    );
   }
 
   async saveBackground(tasks: readonly PersistedBackgroundTask[]): Promise<void> {
@@ -145,6 +166,7 @@ export class AgentStateStore {
         updatedAt: typeof parsed.updatedAt === "string" ? parsed.updatedAt : "",
         background: Array.isArray(parsed.background) ? parsed.background : [],
         teams: Array.isArray(parsed.teams) ? parsed.teams : [],
+        messages: Array.isArray(parsed.messages) ? parsed.messages : [],
       };
     } catch {
       return { ...EMPTY_STATE };

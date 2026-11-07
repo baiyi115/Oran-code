@@ -120,7 +120,7 @@ export interface TaskControllerOptions {
   conversation?: Message[];
   contextManager?: ContextManager;
   stablePromptModules?: OptionalSystemPromptModules;
-  runtimeReminders?: () => readonly string[];
+  runtimeReminders?: () => readonly string[] | Promise<readonly string[]>;
   toolFilter?: (tool: ToolDefinition) => boolean;
   /** Hook engine port. No Hook events are enabled when it is absent. */
   hookEngine?: HookEnginePort;
@@ -137,12 +137,20 @@ export interface TaskControllerOptions {
   snapshotSessionId?: string;
   /** Callback to poll steering messages queued by the user while the agent is running. */
   getSteeringMessages?: () => Promise<string[]> | string[];
+  /** Guidance from the delegating agent, never treated as user consent. */
+  getDelegatedMessages?: () => Promise<readonly string[]> | readonly string[];
+  /** Authenticated child reports to retain in the parent's conversation. */
+  getTaskNotifications?: () => Promise<readonly string[]> | readonly string[];
   /**
    * Goal identity to adopt instead of hashing the prompt. /resume passes the
    * paused run's fingerprint so the task continues that run's state instead of
    * starting over (see resumedRunState).
    */
   resumedGoalFingerprint?: string;
+  /** Isolate one-shot subagent progress in memory; the main task retains disk-backed /resume state. */
+  volatileProgress?: boolean;
+  /** Explicit exploration role intent; bypasses delivery-task novelty and rehearsal gates. */
+  explorationTask?: boolean;
   /** Handler for ask_user_question tool */
   askUserCallback?: (
     questions: Array<{
@@ -167,7 +175,7 @@ export class TaskController {
   private readonly debugLogger: RuntimeLogger;
   private readonly contextManager: ContextManager;
   private readonly stablePromptModules: OptionalSystemPromptModules;
-  private readonly runtimeReminders: () => readonly string[];
+  private readonly runtimeReminders: () => readonly string[] | Promise<readonly string[]>;
   private readonly toolFilter: (tool: ToolDefinition) => boolean;
   private readonly hookEngine: HookEnginePort | undefined;
   private hookUserPrompt: string;
@@ -176,7 +184,11 @@ export class TaskController {
   private readonly snapshotStore: SnapshotStorePort | undefined;
   private readonly snapshotSessionId: string | undefined;
   private readonly getSteeringMessages: (() => Promise<string[]> | string[]) | undefined;
+  private readonly getDelegatedMessages: (() => Promise<readonly string[]> | readonly string[]) | undefined;
+  private readonly getTaskNotifications: (() => Promise<readonly string[]> | readonly string[]) | undefined;
   private readonly resumedGoalFingerprint: string | undefined;
+  private readonly volatileProgress: boolean;
+  private readonly explorationTask: boolean;
   /** Level-type warnings already injected; a rising edge is judged by "the condition still held in
    *  the previous turn". */
   private activeLevelSignals = new Set<string>();
@@ -242,7 +254,11 @@ export class TaskController {
     this.snapshotStore = options.snapshotStore;
     this.snapshotSessionId = options.snapshotSessionId;
     this.getSteeringMessages = options.getSteeringMessages;
+    this.getDelegatedMessages = options.getDelegatedMessages;
+    this.getTaskNotifications = options.getTaskNotifications;
     this.resumedGoalFingerprint = options.resumedGoalFingerprint;
+    this.volatileProgress = options.volatileProgress === true;
+    this.explorationTask = options.explorationTask === true;
     if (options.previousReadonlyResults) {
       for (const [key, value] of options.previousReadonlyResults) this.readonlyCache.set(key, value);
     }
@@ -449,12 +465,26 @@ export class TaskController {
         }
         this.syncConversation(messages);
       }
+      const delegatedMessages = this.getDelegatedMessages ? await this.getDelegatedMessages() : [];
+      if (delegatedMessages.length) {
+        for (const guidance of delegatedMessages) {
+          messages.push({ role: "user", content: guidance });
+        }
+        this.syncConversation(messages);
+      }
+      const taskNotifications = this.getTaskNotifications ? await this.getTaskNotifications() : [];
+      if (taskNotifications.length) {
+        for (const notification of taskNotifications) {
+          messages.push({ role: "system", content: notification, metadata: { promptBlock: "task-notification", contextManaged: true } });
+        }
+        this.syncConversation(messages);
+      }
 
       const hookNotices = this.hookEngine ? this.hookEngine.drainNotices() : [];
       const noProgressWarning = loop.noProgressWarning();
       const reminders: string[] = [
         taskModeReminder(planMode, loop.turns),
-        ...this.runtimeReminders(),
+        ...(await this.runtimeReminders()),
         ...this.pendingProgressNotices.splice(0),
         ...hookNotices.map((notice) => `[hook:${notice.event}] ${notice.text}`),
       ].filter((item): item is string => Boolean(item && item.trim()));
@@ -636,6 +666,11 @@ export class TaskController {
           await this.pauseForNoProgress(task, rehearsalOutcome);
           return task;
         }
+        if (rehearsalOutcome === "consumed") {
+          // An internal status reply is not the user's final answer, even in Plan mode.
+          this.truncatedTextChunks = [];
+          if (!response.toolCalls.length) continue;
+        }
         if (planMode && !response.toolCalls.length) {
           // Only hand off when the model explicitly marks the plan complete.
           // Ordinary conversation (e.g. "hi") must stay in plan mode and must
@@ -666,11 +701,6 @@ export class TaskController {
           await this.persist(task);
           this.throwIfCancelled();
           await this.emitCompleted(loop);
-        if (rehearsalOutcome === "consumed") {
-          // An internal status reply is not the user's final answer, even in Plan mode.
-          this.truncatedTextChunks = [];
-          if (!response.toolCalls.length) continue;
-        }
           return task;
         }
         if (response.toolCalls.length) {
@@ -895,7 +925,7 @@ export class TaskController {
   private progressStoreFor(workspace: string): ProgressStateStore {
     let store = this.progressStores.get(workspace);
     if (!store) {
-      store = new ProgressStateStore(workspace);
+      store = new ProgressStateStore(workspace, !this.volatileProgress);
       this.progressStores.set(workspace, store);
     }
     return store;
@@ -973,7 +1003,7 @@ export class TaskController {
         previousTrackedPaths: state.allowedPaths,
         previous: state.snapshots.at(-1),
       });
-      const explorationTask = isExplorationTask(task.prompt);
+      const explorationTask = this.explorationTask || isExplorationTask(task.prompt);
       // Mechanism B (both halves) is off for exploration-declared tasks, whose
       // criteria do not apply, and for a task the user resumed, which is the
       // point of resuming. Mechanism B1 used to run regardless, so a declared

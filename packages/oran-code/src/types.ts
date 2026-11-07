@@ -76,6 +76,8 @@ export interface Task {
   id: string;
   workspace: string;
   /** Root workspace that owns this task when execution happens in a worktree. */
+  /** Set only by SubagentRunner; tools use this trusted execution identity for parent reports. */
+  subagentTaskId?: string;
   rootWorkspace?: string;
   prompt: string;
   state: TaskState;
@@ -388,6 +390,8 @@ export interface ToolResult {
 export interface ToolExecutionContext {
   signal?: AbortSignal | undefined;
   workspace: string;
+  /** Trusted caller identity, set by the runner rather than by model-provided arguments. */
+  subagentTaskId?: string;
   bypassActivation?: boolean | undefined;
   askUser?:
     | ((

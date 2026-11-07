@@ -11,7 +11,9 @@ import type { RehearsalData } from "./rehearsal.js";
  * restart cannot drop it. Persistence mirrors subagent/state-store.ts:
  * terminal writes are immediate, intermediate writes debounce 500ms, snapshots
  * are written atomically (tmp + rename), and a missing or corrupt file heals
- * to the empty state without erroring.
+ * to the empty state without erroring. One-shot subagents use a volatile store
+ * instead, retaining progress diagnostics without overwriting the main task's
+ * resumable state or leaving per-child files in the project.
  */
 
 export const PROGRESS_STATE_VERSION = 1;
@@ -142,9 +144,13 @@ export class ProgressStateStore {
   private dirty = false;
   private persistTimer: NodeJS.Timeout | undefined;
 
-  constructor(private readonly workspace: string) {}
+  constructor(
+    private readonly workspace: string,
+    private readonly persistent = true,
+  ) {}
 
   async load(): Promise<PersistedProgressState> {
+    if (!this.persistent) return structuredClone(this.state ?? EMPTY_PROGRESS_STATE);
     if (this.state) return structuredClone(this.state);
     this.loadPromise ??= this.readState();
     this.state = await this.loadPromise;
@@ -161,6 +167,7 @@ export class ProgressStateStore {
   }
 
   async flush(): Promise<void> {
+    if (!this.persistent) return;
     await this.writeTail;
     if (this.persistTimer) {
       clearTimeout(this.persistTimer);
@@ -177,6 +184,10 @@ export class ProgressStateStore {
   }
 
   private async write(state: PersistedProgressState, now: boolean): Promise<void> {
+    if (!this.persistent) {
+      this.state = structuredClone(state);
+      return;
+    }
     const job = this.writeTail.then(async () => {
       this.state = structuredClone(state);
       this.dirty = true;

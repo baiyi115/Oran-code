@@ -1,17 +1,20 @@
 import type { Message, ModelConfig, ToolCall, ToolDefinition, ToolResult } from "../types.js";
 import type { ToolRegistry } from "../tools.js";
 import { BackgroundAgentTaskManager } from "./background.js";
+import type { AgentMessageBus } from "./messages.js";
 import { containsForkMarker, forkPrompt, SubagentRunner } from "./runner.js";
 import type { AgentDefinitionLoader } from "./roles.js";
 import type { StructuredSubagentScope } from "./scope.js";
 import { TeamManager } from "./team.js";
-import type { AgentToolArguments, SubagentOrigin } from "./types.js";
+import type { AgentToolArguments, DelegatedTaskContract, SubagentOrigin } from "./types.js";
 
 export interface SubagentCoordinatorOptions {
   readonly roles: AgentDefinitionLoader;
   readonly runner: SubagentRunner;
   readonly background: BackgroundAgentTaskManager;
   readonly teams: TeamManager;
+  readonly messages?: AgentMessageBus;
+  readonly getParentSessionId?: () => string | undefined;
   readonly parentConversation?: () => readonly Message[];
   readonly scope?: StructuredSubagentScope;
   readonly resolveModel: (reference: string) => ModelConfig;
@@ -36,6 +39,9 @@ export class SubagentCoordinator {
     registry.register(this.teamResumeTool());
     registry.register(this.taskListTool());
     registry.register(this.taskDetailTool());
+    registry.register(this.taskSendTool());
+    registry.register(this.taskMessagesTool());
+    registry.register(this.reportToParentTool());
     registry.register(this.taskStopTool());
     registry.register(this.taskRetryTool());
   }
@@ -45,13 +51,24 @@ export class SubagentCoordinator {
     return {
       name: "agent",
       description:
-        "Delegate a bounded task to a predefined subagent, a context Fork, or a persistent teammate. Multiple agent calls in the same tool batch run concurrently; set run_in_background for long tasks whose results may arrive later as notifications.",
+        "Delegate a bounded task to a predefined subagent, a context Fork, or a persistent teammate. Multiple synchronous agent calls in the same tool batch run concurrently; set run_in_background to receive a later task notification (or a joined result in headless runs).",
       parameters: {
         type: "object",
         additionalProperties: false,
         properties: {
           description: { type: "string", description: "Short task label shown in the UI." },
           prompt: { type: "string", description: "Complete task instructions for the subagent." },
+          task_contract: {
+            type: "object",
+            description: "Optional explicit assignment: objective, scope boundaries and completion criteria.",
+            additionalProperties: false,
+            properties: {
+              objective: { type: "string" },
+              boundaries: { type: "string" },
+              done_when: { type: "string" },
+            },
+            required: ["objective", "boundaries", "done_when"],
+          },
           subagent_type: {
             type: "string",
             description: `Predefined role name. Omit to create a Fork. Available roles: ${roleNames.join(", ") || "none"}.`,
@@ -65,6 +82,7 @@ export class SubagentCoordinator {
       },
       permissionLevel: 0,
       kind: "readonly",
+      cacheable: false,
       maxOutputChars: 16_000,
       invoke: (call, context) => this.invokeAgent(call, context?.signal),
     };
@@ -72,7 +90,9 @@ export class SubagentCoordinator {
 
   private async invokeAgent(call: ToolCall, signal?: AbortSignal): Promise<ToolResult> {
     const args = parseAgentArguments(call.arguments);
-    if (!args) return failed("invalid agent arguments: description and prompt are required strings");
+    if (!args) return failed("invalid agent arguments: description, prompt or task_contract");
+    const parentSessionId = this.options.getParentSessionId?.();
+    const assignment = assignedPrompt(args);
     let model: ModelConfig | undefined;
     try {
       model = args.model ? this.options.resolveModel(args.model) : undefined;
@@ -82,9 +102,10 @@ export class SubagentCoordinator {
     if (args.team_name) {
       const definition = args.subagent_type ? this.options.roles.get(args.subagent_type) : undefined;
       if (args.subagent_type && !definition) return this.unknownRole(args.subagent_type);
-      const spawned = this.options.teams.spawn(args.team_name, args.description, args.prompt, {
+      const spawned = this.options.teams.spawn(args.team_name, args.description, assignment, {
         ...(definition ? { definition } : {}),
         ...(model ? { model } : {}),
+        ...(parentSessionId ? { parentSessionId } : {}),
       });
       return spawned.ok ? success(spawned.output) : failed(spawned.output);
     }
@@ -93,13 +114,21 @@ export class SubagentCoordinator {
       if (!definition) return this.unknownRole(args.subagent_type);
       const runOptions = {
         description: args.description,
-        prompt: args.prompt,
+        prompt: assignment,
         origin: { kind: "definition", name: definition.name } as const,
         definition,
+        ...(parentSessionId ? { parentSessionId } : {}),
         ...(model ? { model } : {}),
         background: args.run_in_background === true || definition.forceBackground === true,
       };
       if (runOptions.background) {
+        if (this.options.scope) {
+          const task = this.options.scope.start(runOptions);
+          if ("code" in task) return failed(JSON.stringify(task));
+          return success(
+            `Started background subagent ${task.id} (name="${task.name}"). It will be joined before the parent run returns.`,
+          );
+        }
         const task = this.options.background.start(this.options.runner, runOptions);
         return success(
           `Started background subagent ${task.id} (name="${task.name}"). The result will arrive as a task notification.`,
@@ -118,12 +147,20 @@ export class SubagentCoordinator {
     }
     const runOptions = {
       description: args.description,
-      prompt: forkPrompt(args.prompt),
+      prompt: forkPrompt(assignment),
       origin: { kind: "fork", name: args.description } as const,
       parentConversation: parent,
+      ...(parentSessionId ? { parentSessionId } : {}),
       ...(model ? { model } : {}),
-      background: true,
+      background: args.run_in_background === true,
     };
+    if (!runOptions.background) {
+      const result = await this.options.runner.run({
+        ...runOptions,
+        ...(signal ? { signal } : {}),
+      });
+      return result.status === "completed" ? success(result.output) : failed(result.error ?? result.output);
+    }
     if (this.options.scope) {
       const task = this.options.scope.start(runOptions);
       if ("code" in task) return failed(JSON.stringify(task));
@@ -169,6 +206,7 @@ export class SubagentCoordinator {
         } catch (error) {
           return failed(error instanceof Error ? error.message : String(error));
         }
+        const parentSessionId = this.options.getParentSessionId?.();
         const result = this.options.teams.spawn(
           stringArg(args.team_name),
           stringArg(args.description),
@@ -176,6 +214,7 @@ export class SubagentCoordinator {
           {
             ...(definition ? { definition } : {}),
             ...(model ? { model } : {}),
+            ...(parentSessionId ? { parentSessionId } : {}),
           },
         );
         return result.ok ? success(result.output) : failed(result.output);
@@ -247,15 +286,15 @@ export class SubagentCoordinator {
   private taskListTool(): ToolDefinition {
     return simpleTool(
       "task_list",
-      "List one-shot background subagent tasks.",
+      "List one-shot subagent tasks, including children joined in headless runs.",
       {},
       [],
       async () =>
         success(
           JSON.stringify(
-            this.options.background
-              .list()
-              .map(({ promise: _promise, abortController: _abortController, ...task }) => task),
+            [...this.options.background.list(), ...(this.options.scope?.list() ?? [])].map(
+              ({ promise: _promise, abortController: _abortController, ...task }) => task,
+            ),
             null,
             2,
           ),
@@ -267,12 +306,14 @@ export class SubagentCoordinator {
   private taskDetailTool(): ToolDefinition {
     return simpleTool(
       "task_detail",
-      "Show one background subagent task.",
+      "Show one subagent task.",
       { task_id: { type: "string" } },
       ["task_id"],
       async (args) => {
-        const task = this.options.background.get(stringArg(args.task_id));
-        if (!task) return failed(`Unknown background task ${stringArg(args.task_id)}.`);
+        const taskId = stringArg(args.task_id);
+        const task =
+          this.options.background.get(taskId) ?? this.options.scope?.list().find((item) => item.id === taskId);
+        if (!task) return failed(`Unknown background task ${taskId}.`);
         const { promise: _promise, abortController: _abortController, ...snapshot } = task;
         return success(JSON.stringify(snapshot, null, 2));
       },
@@ -280,15 +321,102 @@ export class SubagentCoordinator {
     );
   }
 
+  private taskSendTool(): ToolDefinition {
+    return {
+      name: "task_send",
+      description: "Send guidance to a running or queued subagent task. Delivery occurs before its next model turn; this is not user authorization. Check task_messages for delivery status.",
+      parameters: {
+        type: "object",
+        additionalProperties: false,
+        properties: { task_id: { type: "string" }, message: { type: "string" } },
+        required: ["task_id", "message"],
+      },
+      permissionLevel: 0,
+      system: true,
+      kind: "readonly",
+      cacheable: false,
+      maxOutputChars: 16_000,
+      invoke: async (call, context) => {
+        if (context?.subagentTaskId) return failed("Only the parent agent can send task guidance.");
+        if (!this.options.messages) return failed("Task messaging is unavailable.");
+        const result = await this.options.messages.sendToChild(
+          stringArg(call.arguments.task_id),
+          stringArg(call.arguments.message),
+          this.options.getParentSessionId?.(),
+        );
+        return result.ok ? success(result.output) : failed(result.output);
+      },
+    };
+  }
+
+  private taskMessagesTool(): ToolDefinition {
+    return {
+      name: "task_messages",
+      description: "Inspect recent task messages and their queued, delivered or undeliverable status.",
+      parameters: {
+        type: "object",
+        additionalProperties: false,
+        properties: { task_id: { type: "string" } },
+        required: ["task_id"],
+      },
+      permissionLevel: 0,
+      system: true,
+      kind: "readonly",
+      cacheable: false,
+      maxOutputChars: 16_000,
+      invoke: async (call, context) => {
+        if (context?.subagentTaskId) return failed("Only the parent agent can inspect task messages.");
+        if (!this.options.messages) return failed("Task messaging is unavailable.");
+        return success(JSON.stringify(
+          await this.options.messages.history(stringArg(call.arguments.task_id), this.options.getParentSessionId?.()),
+          null,
+          2,
+        ));
+      },
+    };
+  }
+
+  private reportToParentTool(): ToolDefinition {
+    return {
+      name: "report_to_parent",
+      description: "Report progress, a blocker, a question or a result to the delegating agent while you work. Reports do not authorize new actions.",
+      parameters: {
+        type: "object",
+        additionalProperties: false,
+        properties: {
+          kind: { type: "string", enum: ["progress", "blocked", "question", "result"] },
+          message: { type: "string" },
+        },
+        required: ["kind", "message"],
+      },
+      permissionLevel: 0,
+      system: true,
+      kind: "readonly",
+      cacheable: false,
+      maxOutputChars: 16_000,
+      invoke: async (call, context) => {
+        const taskId = context?.subagentTaskId;
+        if (!taskId) return failed("Only a running subagent can report to its parent.");
+        if (!this.options.messages) return failed("Task messaging is unavailable.");
+        const kind = call.arguments.kind;
+        if (kind !== "progress" && kind !== "blocked" && kind !== "question" && kind !== "result") {
+          return failed("Invalid report kind.");
+        }
+        const result = await this.options.messages.sendToParent(taskId, kind, stringArg(call.arguments.message));
+        return result.ok ? success(result.output) : failed(result.output);
+      },
+    };
+  }
+
   private taskStopTool(): ToolDefinition {
     return simpleTool(
       "task_stop",
-      "Cancel a running background subagent task.",
+      "Cancel a running or queued subagent task.",
       { task_id: { type: "string" } },
       ["task_id"],
       async (args) => {
         const taskId = stringArg(args.task_id);
-        return this.options.background.cancel(taskId)
+        return this.options.background.cancel(taskId) || this.options.scope?.cancel(taskId)
           ? success(`Cancellation requested for ${taskId}.`)
           : failed(`Task ${taskId} is unknown or already finished.`);
       },
@@ -298,7 +426,7 @@ export class SubagentCoordinator {
   private taskRetryTool(): ToolDefinition {
     return simpleTool(
       "task_retry",
-      "Retry a finished or interrupted background task as a new task.",
+      "Retry a finished or interrupted predefined background subagent. Forks require a new agent call.",
       {
         task_id: { type: "string" },
       },
@@ -306,7 +434,14 @@ export class SubagentCoordinator {
       async (args) => {
         const taskId = stringArg(args.task_id);
         const previous = this.options.background.get(taskId);
-        if (!previous) return failed(`Unknown background task ${taskId}.`);
+        if (!previous)
+          return failed(
+            this.options.scope?.list().some((task) => task.id === taskId)
+              ? `Scoped task ${taskId} cannot be retried; start a new agent call.`
+              : `Unknown background task ${taskId}.`,
+          );
+        if (previous.origin.kind === "fork")
+          return failed(`Fork ${taskId} cannot be retried without its original parent context; start a new agent call.`);
         const definition = previous.definitionName ? this.options.roles.get(previous.definitionName) : undefined;
         if (previous.definitionName && !definition)
           return failed(`Agent definition is not available: ${previous.definitionName}.`);
@@ -344,7 +479,7 @@ function simpleTool(
   properties: Record<string, unknown>,
   required: readonly string[],
   invoke: (args: Record<string, unknown>) => Promise<ToolResult>,
-  options: { cacheable?: boolean } = {},
+  options: { cacheable?: boolean } = { cacheable: false },
 ): ToolDefinition {
   return {
     name,
@@ -365,15 +500,42 @@ function parseAgentArguments(value: Record<string, unknown>): AgentToolArguments
   const subagentType = optionalStringArg(value.subagent_type);
   const model = optionalStringArg(value.model);
   const teamName = optionalStringArg(value.team_name);
+  const taskContract = value.task_contract === undefined ? undefined : parseTaskContract(value.task_contract);
+  if (value.task_contract !== undefined && !taskContract) return undefined;
   if (value.run_in_background !== undefined && typeof value.run_in_background !== "boolean") return undefined;
   return {
     description,
     prompt,
+    ...(taskContract ? { task_contract: taskContract } : {}),
     ...(subagentType ? { subagent_type: subagentType } : {}),
     ...(model ? { model } : {}),
     ...(value.run_in_background === true ? { run_in_background: true } : {}),
     ...(teamName ? { team_name: teamName } : {}),
   };
+}
+
+function parseTaskContract(value: unknown): DelegatedTaskContract | undefined {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return undefined;
+  const contract = value as Record<string, unknown>;
+  const objective = optionalStringArg(contract.objective);
+  const boundaries = optionalStringArg(contract.boundaries);
+  const doneWhen = optionalStringArg(contract.done_when);
+  if (!objective || !boundaries || !doneWhen ||
+    Object.keys(contract).some((key) => !["objective", "boundaries", "done_when"].includes(key))) return undefined;
+  return { objective, boundaries, done_when: doneWhen };
+}
+
+function assignedPrompt(args: AgentToolArguments): string {
+  const contract = args.task_contract;
+  if (!contract) return args.prompt;
+  return [
+    args.prompt,
+    "",
+    "Delegated task contract:",
+    `Objective: ${contract.objective}`,
+    `Boundaries: ${contract.boundaries}`,
+    `Completion criteria: ${contract.done_when}`,
+  ].join("\n");
 }
 
 function optionalStringArg(value: unknown): string | undefined {

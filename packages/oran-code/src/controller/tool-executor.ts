@@ -117,6 +117,7 @@ export class ToolBatchExecutor {
     const signal = this.ports.getAbortSignal();
     return {
       workspace: task.workspace,
+      ...(task.subagentTaskId ? { subagentTaskId: task.subagentTaskId } : {}),
       ...(signal ? { signal } : {}),
       ...(this.ports.askUser !== undefined ? { askUser: this.ports.askUser } : {}),
       onProgress: (note: string): void => {
@@ -138,7 +139,7 @@ export class ToolBatchExecutor {
       calls.every((call) => {
         if (!this.ports.registry.has(call.name)) return false;
         const tool = this.ports.registry.get(call.name);
-        return (tool.kind ?? inferToolKind(call.name)) === "readonly";
+        return (tool.kind ?? inferToolKind(call.name)) === "readonly" && !isMutatingToolName(call.name);
       });
     const concurrency = Math.max(1, this.ports.config.loop.readonlyConcurrency || 1);
     const deferredRecords: DeferredToolRecord[] = [];
@@ -668,7 +669,7 @@ export class ToolBatchExecutor {
 
   isPotentiallyMutating(call: ToolCall): boolean {
     const tool = this.ports.registry.has(call.name) ? this.ports.registry.get(call.name) : undefined;
-    return tool ? (tool.kind ?? inferToolKind(call.name)) !== "readonly" : isMutatingToolName(call.name);
+    return isMutatingToolName(call.name) || (tool ? (tool.kind ?? inferToolKind(call.name)) !== "readonly" : false);
   }
 
   private async authorizeTool(

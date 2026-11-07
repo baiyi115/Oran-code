@@ -24,7 +24,7 @@ export const BUILTIN_AGENT_DEFINITIONS: readonly AgentDefinition[] = Object.free
     prompt:
       "You are a planning subagent. Inspect the codebase, identify constraints, and return an actionable implementation plan without modifying files.",
     allowedTools: Object.freeze([]),
-    deniedTools: Object.freeze(["write_file", "apply_patch", "run_command"]),
+    deniedTools: Object.freeze(["write_file", "edit_file", "apply_patch", "run_command"]),
     permissionMode: "plan" as const,
     workMode: "plan" as const,
     scope: "builtin" as const,
@@ -35,7 +35,7 @@ export const BUILTIN_AGENT_DEFINITIONS: readonly AgentDefinition[] = Object.free
     prompt:
       "You are an exploration subagent. Search and read the codebase efficiently, do not modify files, and report concrete findings with paths.",
     allowedTools: Object.freeze([]),
-    deniedTools: Object.freeze(["write_file", "apply_patch", "run_command"]),
+    deniedTools: Object.freeze(["write_file", "edit_file", "apply_patch", "run_command"]),
     permissionMode: "plan" as const,
     workMode: "plan" as const,
     scope: "builtin" as const,
