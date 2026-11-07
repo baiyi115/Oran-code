@@ -75,7 +75,8 @@ export class SubagentRunner {
     const abortController = options.abortController ?? new AbortController();
     const origin = withTaskId(options.origin, taskId);
     const messagingEnabled = Boolean(this.deps.messageBus && (options.background || origin.kind === "teammate"));
-    if (messagingEnabled) this.deps.messageBus?.registerTask(taskId, options.parentSessionId ?? this.deps.getParentSessionId?.());
+    if (messagingEnabled)
+      this.deps.messageBus?.registerTask(taskId, options.parentSessionId ?? this.deps.getParentSessionId?.());
     const name = options.description.trim() || originLabel(origin);
     const startedAt = new Date().toISOString();
     const usage: Record<string, number> = {};
@@ -152,7 +153,10 @@ export class SubagentRunner {
         contextManager,
         toolFilter: filter,
         ...(messagingEnabled && this.deps.messageBus
-          ? { getDelegatedMessages: async () => (await this.deps.messageBus!.takeForChild(taskId)).map(formatAgentMessage) }
+          ? {
+              getDelegatedMessages: async () =>
+                (await this.deps.messageBus!.takeForChild(taskId)).map(formatAgentMessage),
+            }
           : {}),
         ...(customInstructions
           ? {

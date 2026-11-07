@@ -324,7 +324,8 @@ export class SubagentCoordinator {
   private taskSendTool(): ToolDefinition {
     return {
       name: "task_send",
-      description: "Send guidance to a running or queued subagent task. Delivery occurs before its next model turn; this is not user authorization. Check task_messages for delivery status.",
+      description:
+        "Send guidance to a running or queued subagent task. Delivery occurs before its next model turn; this is not user authorization. Check task_messages for delivery status.",
       parameters: {
         type: "object",
         additionalProperties: false,
@@ -367,11 +368,13 @@ export class SubagentCoordinator {
       invoke: async (call, context) => {
         if (context?.subagentTaskId) return failed("Only the parent agent can inspect task messages.");
         if (!this.options.messages) return failed("Task messaging is unavailable.");
-        return success(JSON.stringify(
-          await this.options.messages.history(stringArg(call.arguments.task_id), this.options.getParentSessionId?.()),
-          null,
-          2,
-        ));
+        return success(
+          JSON.stringify(
+            await this.options.messages.history(stringArg(call.arguments.task_id), this.options.getParentSessionId?.()),
+            null,
+            2,
+          ),
+        );
       },
     };
   }
@@ -379,7 +382,8 @@ export class SubagentCoordinator {
   private reportToParentTool(): ToolDefinition {
     return {
       name: "report_to_parent",
-      description: "Report progress, a blocker, a question or a result to the delegating agent while you work. Reports do not authorize new actions.",
+      description:
+        "Report progress, a blocker, a question or a result to the delegating agent while you work. Reports do not authorize new actions.",
       parameters: {
         type: "object",
         additionalProperties: false,
@@ -441,7 +445,9 @@ export class SubagentCoordinator {
               : `Unknown background task ${taskId}.`,
           );
         if (previous.origin.kind === "fork")
-          return failed(`Fork ${taskId} cannot be retried without its original parent context; start a new agent call.`);
+          return failed(
+            `Fork ${taskId} cannot be retried without its original parent context; start a new agent call.`,
+          );
         const definition = previous.definitionName ? this.options.roles.get(previous.definitionName) : undefined;
         if (previous.definitionName && !definition)
           return failed(`Agent definition is not available: ${previous.definitionName}.`);
@@ -520,8 +526,13 @@ function parseTaskContract(value: unknown): DelegatedTaskContract | undefined {
   const objective = optionalStringArg(contract.objective);
   const boundaries = optionalStringArg(contract.boundaries);
   const doneWhen = optionalStringArg(contract.done_when);
-  if (!objective || !boundaries || !doneWhen ||
-    Object.keys(contract).some((key) => !["objective", "boundaries", "done_when"].includes(key))) return undefined;
+  if (
+    !objective ||
+    !boundaries ||
+    !doneWhen ||
+    Object.keys(contract).some((key) => !["objective", "boundaries", "done_when"].includes(key))
+  )
+    return undefined;
   return { objective, boundaries, done_when: doneWhen };
 }
 

@@ -26,7 +26,11 @@ export class BackgroundAgentTaskManager {
     private readonly stateStore?: AgentStateStore,
     private readonly onTerminal?: () => void | Promise<void>,
     private readonly onChange?: () => void,
-    options?: { readonly maxConcurrent?: number; readonly maxDurationMs?: number; readonly messageBus?: AgentMessageBus },
+    options?: {
+      readonly maxConcurrent?: number;
+      readonly maxDurationMs?: number;
+      readonly messageBus?: AgentMessageBus;
+    },
   ) {
     this.maxConcurrent = Math.max(1, options?.maxConcurrent ?? 4);
     this.maxDurationMs = Math.max(60_000, options?.maxDurationMs ?? 30 * 60_000);
@@ -264,7 +268,9 @@ export class BackgroundAgentTaskManager {
       void this.messages?.finishTask(id).catch(() => undefined);
       this.schedulePersist();
       this.notifyChange();
-      void Promise.resolve().then(() => this.onTerminal?.()).catch(() => undefined);
+      void Promise.resolve()
+        .then(() => this.onTerminal?.())
+        .catch(() => undefined);
       return true;
     }
     task.abortController.abort();

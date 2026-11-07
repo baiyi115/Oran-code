@@ -750,7 +750,12 @@ export class TerminalSession {
       throw error;
     }
     if (!isolated) await this.persistQueuedUserMessage(prompt);
-    await Promise.all([this.ensureMcpReady(), this.openTrace(), this.initializeCommandIntegrations(), this.ensureAgentStateRestored()]);
+    await Promise.all([
+      this.ensureMcpReady(),
+      this.openTrace(),
+      this.initializeCommandIntegrations(),
+      this.ensureAgentStateRestored(),
+    ]);
     const [
       agentRuntime,
       { assembleSubagentStack, joinStructuredForkSummaries, disposeStructuredScope },
@@ -883,7 +888,9 @@ export class TerminalSession {
         const reminders = derivedSkill
           ? [this.formatActiveSkillReminder(derivedSkill.name, renderSkillPrompt(derivedSkill))]
           : this.activeSkillReminders();
-        const notifications = agentRuntime.backgroundAgents.drainNotifications(sessionId).map(backgroundTaskNotification);
+        const notifications = agentRuntime.backgroundAgents
+          .drainNotifications(sessionId)
+          .map(backgroundTaskNotification);
         const forkNotifications = structuredScope?.drainNotifications().map(backgroundTaskNotification) ?? [];
         consumedBackgroundNotifications.push(...notifications, ...forkNotifications);
         const jobNotifications = shellJobs().drainNotifications().map(shellJobNotification);

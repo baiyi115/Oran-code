@@ -41,7 +41,10 @@ export class TeamManager {
   private readonly teams = new Map<string, Team>();
   private runtime: TeamRuntime | undefined;
 
-  constructor(private readonly stateStore?: AgentStateStore, private readonly messages?: AgentMessageBus) {}
+  constructor(
+    private readonly stateStore?: AgentStateStore,
+    private readonly messages?: AgentMessageBus,
+  ) {}
 
   async restore(): Promise<void> {
     if (!this.stateStore) return;
@@ -86,7 +89,11 @@ export class TeamManager {
     teamName: string,
     description: string,
     prompt: string,
-    options: { readonly definition?: AgentDefinition; readonly model?: SubagentRunOptions["model"]; readonly parentSessionId?: string } = {},
+    options: {
+      readonly definition?: AgentDefinition;
+      readonly model?: SubagentRunOptions["model"];
+      readonly parentSessionId?: string;
+    } = {},
   ): { ok: boolean; output: string; memberName?: string } {
     const team = this.teams.get(normalizeTeamName(teamName) ?? "");
     if (!team) return { ok: false, output: `Unknown team ${teamName}. Create it with team_create first.` };

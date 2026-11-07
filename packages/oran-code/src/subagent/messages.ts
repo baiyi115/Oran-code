@@ -45,14 +45,15 @@ export class AgentMessageBus {
 
   restore(): Promise<void> {
     this.loading ??= (async () => {
-      this.messages = [...(await this.store?.loadMessages() ?? [])];
+      this.messages = [...((await this.store?.loadMessages()) ?? [])];
     })();
     return this.loading;
   }
 
   registerTask(taskId: string, sessionId?: string): void {
     const existing = this.active.get(taskId);
-    if (this.active.has(taskId) && existing !== sessionId) throw new Error(`Task ${taskId} has a different parent session.`);
+    if (this.active.has(taskId) && existing !== sessionId)
+      throw new Error(`Task ${taskId} has a different parent session.`);
     this.active.set(taskId, sessionId);
   }
 
@@ -124,7 +125,8 @@ export class AgentMessageBus {
     sessionId?: string,
   ): { value: AgentMessageResult; dirty: boolean } {
     const parentSessionId = this.active.get(taskId);
-    if (!this.active.has(taskId)) return { value: { ok: false, output: `Task ${taskId} is not active.` }, dirty: false };
+    if (!this.active.has(taskId))
+      return { value: { ok: false, output: `Task ${taskId} is not active.` }, dirty: false };
     if (direction === "to_child" && parentSessionId !== sessionId) {
       return { value: { ok: false, output: `Task ${taskId} belongs to a different parent session.` }, dirty: false };
     }
@@ -133,8 +135,11 @@ export class AgentMessageBus {
       return { value: { ok: false, output: `Message must contain 1-${MAX_TEXT_LENGTH} characters.` }, dirty: false };
     }
     const pending = this.messages.filter((message) => message.status === "queued");
-    if (pending.length >= MAX_PENDING_TOTAL ||
-      pending.filter((message) => message.taskId === taskId && message.direction === direction).length >= MAX_PENDING_PER_TASK) {
+    if (
+      pending.length >= MAX_PENDING_TOTAL ||
+      pending.filter((message) => message.taskId === taskId && message.direction === direction).length >=
+        MAX_PENDING_PER_TASK
+    ) {
       return { value: { ok: false, output: `Message queue for ${taskId} is full; wait for delivery.` }, dirty: false };
     }
     const message: AgentMessage = {
@@ -149,7 +154,10 @@ export class AgentMessageBus {
     };
     this.messages.push(message);
     this.trimHistory();
-    return { value: { ok: true, output: `Queued ${kind} ${message.id} for ${taskId}.`, message: { ...message } }, dirty: true };
+    return {
+      value: { ok: true, output: `Queued ${kind} ${message.id} for ${taskId}.`, message: { ...message } },
+      dirty: true,
+    };
   }
 
   private deliver(matches: (message: AgentMessage) => boolean): { value: readonly AgentMessage[]; dirty: boolean } {
@@ -186,12 +194,17 @@ export class AgentMessageBus {
       }
       return value;
     });
-    this.tail = current.then(() => undefined, () => undefined);
+    this.tail = current.then(
+      () => undefined,
+      () => undefined,
+    );
     return current;
   }
 
   private notifyParent(): void {
-    void Promise.resolve().then(() => this.onParentMessage?.()).catch(() => undefined);
+    void Promise.resolve()
+      .then(() => this.onParentMessage?.())
+      .catch(() => undefined);
   }
 }
 

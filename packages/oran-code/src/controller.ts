@@ -475,7 +475,11 @@ export class TaskController {
       const taskNotifications = this.getTaskNotifications ? await this.getTaskNotifications() : [];
       if (taskNotifications.length) {
         for (const notification of taskNotifications) {
-          messages.push({ role: "system", content: notification, metadata: { promptBlock: "task-notification", contextManaged: true } });
+          messages.push({
+            role: "system",
+            content: notification,
+            metadata: { promptBlock: "task-notification", contextManaged: true },
+          });
         }
         this.syncConversation(messages);
       }
