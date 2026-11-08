@@ -76,6 +76,11 @@ Exit codes: `0` completed, `1` failed or runtime error, `2` invalid usage, `3` t
 `4` cancelled otherwise. If an outer harness kills the process, the JSONL `run_end` record is
 authoritative.
 
+`run_end.tokens` combines the main task and delegated subagents (`total` = input + output).
+`run_end.mainTokens` and `run_end.subagentTokens` break the same counters down, so cost can be
+attributed without replaying `runtime_event` lines. `steps`, `toolCalls` and `tools` describe the
+main task only.
+
 ## Permission modes
 
 Choose a mode with `/permission MODE`, `--permission-mode MODE`, or the user-level `agent.permissionMode` setting. In the input area, **Shift+Tab** cycles **Auto → Accept edit → Plan → Bypass permission → Auto**, including when command or file completion is open. **Tab** only accepts a completion and does nothing when no completion is open. The footer shows the active permission mode first.
@@ -226,15 +231,18 @@ model was removed, the first selected model becomes active.
 
 ### 提示缓存
 
-Oran 的请求前缀保持只增不改，便于服务端复用缓存：
+Oran 的请求前缀保持只增不改，便于服务端复用缓存。每个任务的工作区状态保存在
+该任务的用户消息中：保留历史状态会占用少量上下文 token，但删除早期状态会破坏其后
+对话的缓存前缀。
 
 - OpenAI 兼容端点默认依赖服务端自动前缀缓存。可选的 `options.prompt_cache_key`
   会作为 `prompt_cache_key` 随请求发送，供支持该参数的服务端（如 OpenAI 的提示缓存
   与部分兼容网关）稳定命中；默认不发送，避免严格端点拒绝未知参数。DeepSeek 返回的
   `prompt_cache_hit_tokens` 也会计入缓存读取统计。
-- Anthropic 端点会在 tools 尾部、system 尾部与最近对话上设置 `cache_control` 断点，
-  合计不超过 4 个。可选的 `options.anthropicCacheTtl: "1h"` 将缓存有效期从默认的
-  5 分钟延长到 1 小时，适合间隔较长的多轮任务。
+- Anthropic 端点会在工具列表尾部、最后一个可缓存的 system 块和最近对话上设置
+  `cache_control` 断点，合计不超过 4 个。可选的 `options.anthropicCacheTtl: "1h"`
+  将长期前缀断点（工具和 system）的缓存有效期从默认 5 分钟延长到 1 小时，适合间隔
+  较长的多轮任务；逐轮对话断点仍使用默认有效期。
 
 ### Task token usage
 
