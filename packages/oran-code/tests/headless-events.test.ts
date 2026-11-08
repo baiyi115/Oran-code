@@ -73,6 +73,20 @@ describe("JsonlEventLog token totals", () => {
         cacheWrite: 0,
         total: 1_550,
       });
+      expect(records.find((record) => record.kind === "run_end")?.mainTokens).toEqual({
+        input: 900,
+        output: 100,
+        cacheRead: 700,
+        cacheWrite: 0,
+        total: 1_000,
+      });
+      expect(records.find((record) => record.kind === "run_end")?.subagentTokens).toEqual({
+        input: 500,
+        output: 50,
+        cacheRead: 400,
+        cacheWrite: 0,
+        total: 550,
+      });
     } finally {
       await rm(workspace, { recursive: true, force: true });
     }

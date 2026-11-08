@@ -105,10 +105,15 @@ export class JsonlEventLog {
       outcome: input.outcome,
       exitCode: input.exitCode,
       durationMs: input.durationMs || Date.now() - this.startedAt,
+      // steps/toolCalls/tools describe the main task only; delegated work is surfaced separately.
       steps: this.reportedSteps ?? this.assistantSteps,
       toolCalls: this.toolCallCount,
       tools: [...this.toolsCalled].sort(),
-      tokens: { ...totals, total: totals.input + totals.output },
+      // `tokens` stays the combined total for existing consumers; the split fields make it
+      // possible to attribute cost without re-parsing runtime events.
+      tokens: withTotal(totals),
+      mainTokens: withTotal(this.tokens),
+      subagentTokens: withTotal(this.subagentTokens),
       finalText,
       finalTextChars: input.finalText.length,
       finalTextTruncated: finalText.length < input.finalText.length,
@@ -267,6 +272,10 @@ function addTokenTotals(
     cacheRead: previous.cacheRead + (usage.cacheReadTokens ?? 0),
     cacheWrite: previous.cacheWrite + (usage.cacheWriteTokens ?? 0),
   };
+}
+
+function withTotal(totals: TokenTotals): TokenTotals & { total: number } {
+  return { ...totals, total: totals.input + totals.output };
 }
 
 function sumTokenTotals(left: TokenTotals, right: TokenTotals): TokenTotals {
