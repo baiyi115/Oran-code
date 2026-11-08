@@ -3,7 +3,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { Readable, Writable } from "node:stream";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
-import { supportsTui, TerminalSession } from "../src/session.js";
+import { needsParentContinuation, supportsTui, TerminalSession } from "../src/session.js";
 import { parseSessionJsonl } from "../src/session-store.js";
 import { userSessionsRoot } from "../src/paths.js";
 import type { Message, ModelConfig, ModelProvider, ModelStreamChunk } from "../src/types.js";
@@ -78,6 +78,18 @@ describe("TerminalSession", { timeout: SESSION_TEST_TIMEOUT_MS }, () => {
     expect(supportsTui(ttyInput, ttyOutput as NodeJS.WriteStream)).toBe(true);
     expect(supportsTui(nonTtyInput, ttyOutput as NodeJS.WriteStream)).toBe(false);
     expect(supportsTui(ttyInput, nonTtyOutput as NodeJS.WriteStream)).toBe(false);
+  });
+
+  it("continues the parent only for actionable child events", () => {
+    expect(needsParentContinuation([{ status: "completed" }], [])).toBe(true);
+    expect(needsParentContinuation([{ status: "failed" }], [])).toBe(true);
+    expect(needsParentContinuation([{ status: "timed_out" }], [])).toBe(true);
+    expect(needsParentContinuation([{ status: "cancelled" }], [])).toBe(false);
+    expect(needsParentContinuation([], [{ kind: "question" }])).toBe(true);
+    expect(needsParentContinuation([], [{ kind: "blocked" }])).toBe(true);
+    expect(needsParentContinuation([], [{ kind: "result" }])).toBe(true);
+    expect(needsParentContinuation([], [{ kind: "progress" }])).toBe(false);
+    expect(needsParentContinuation([], [{ kind: "delivery_failed" }])).toBe(false);
   });
 
   it("rejects a task until the user explicitly selects a model", async () => {

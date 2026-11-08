@@ -91,7 +91,7 @@ export const DEFAULT_COMMANDS: readonly SlashCommand[] = [
   {
     name: "/tasks",
     aliases: ["/subagents"],
-    description: "list background subagent tasks",
+    description: "list background subagent and teammate tasks",
     kind: "ui",
     action: "tasks",
   },

@@ -33,7 +33,15 @@ export function taskListLines(
 
 function taskListLabel(task: TuiBackgroundTask, width: number, now: number): string {
   const icon =
-    task.status === "completed" ? "✓" : task.status === "running" ? "●" : task.status === "queued" ? "…" : "✗";
+    task.status === "completed"
+      ? "✓"
+      : task.status === "running"
+        ? "●"
+        : task.status === "queued"
+          ? "…"
+          : task.status === "idle"
+            ? "○"
+            : "✗";
   const role = task.definitionName ?? (task.kind === "job" ? "job" : "");
   const startedAt = Date.parse(task.startedAt);
   const endedAt = task.endedAt ? Date.parse(task.endedAt) : now;
@@ -57,7 +65,7 @@ export function taskDetailLines(task: TuiBackgroundTask): string[] {
       ? formatDuration(Math.max(0, ended - started))
       : undefined;
   const header = [
-    `${task.id} · ${task.kind === "job" ? "shell job" : "subagent"}`,
+    `${task.id} · ${task.kind === "job" ? "shell job" : task.origin?.kind === "teammate" ? "teammate" : "subagent"}`,
     [task.status, duration].filter(Boolean).join(" · "),
   ];
   if (task.definitionName) header.push(`role: ${task.definitionName}`);

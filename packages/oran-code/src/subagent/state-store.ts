@@ -32,6 +32,8 @@ export interface PersistedTeamMember {
   readonly currentPrompt?: string;
   readonly activeTaskId?: string;
   readonly parentSessionId?: string;
+  readonly startedAt?: string;
+  readonly endedAt?: string;
   readonly toolCount: number;
   readonly lastOutput?: string;
   readonly lastError?: string;

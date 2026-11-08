@@ -14,6 +14,8 @@ interface TeamMember {
   readonly mailbox: string[];
   currentPrompt?: string;
   activeTaskId?: string;
+  startedAt?: string;
+  endedAt?: string;
   readonly parentSessionId?: string;
   lock: Promise<void>;
   processing: boolean;
@@ -156,6 +158,9 @@ export class TeamManager {
         name: member.name,
         status: member.status,
         ...(member.activeTaskId ? { activeTaskId: member.activeTaskId } : {}),
+        ...(member.definitionName ? { definitionName: member.definitionName } : {}),
+        ...(member.startedAt ? { startedAt: member.startedAt } : {}),
+        ...(member.endedAt ? { endedAt: member.endedAt } : {}),
         queuedMessages: member.mailbox.length,
         toolCount: member.toolCount,
         ...(member.lastOutput ? { lastOutput: member.lastOutput } : {}),
@@ -222,6 +227,8 @@ export class TeamManager {
           const parentSessionId = member.parentSessionId ?? this.runtime?.getParentSessionId?.();
           this.messages?.registerTask(taskId, parentSessionId);
           member.status = "running";
+          member.startedAt = new Date().toISOString();
+          delete member.endedAt;
           const abortController = new AbortController();
           member.currentAbort = abortController;
           const previousToolCount = countToolMessages(member.conversation);
@@ -280,6 +287,7 @@ export class TeamManager {
             } finally {
               delete member.activeTaskId;
               delete member.currentAbort;
+              member.endedAt = new Date().toISOString();
               await this.persist();
             }
           }

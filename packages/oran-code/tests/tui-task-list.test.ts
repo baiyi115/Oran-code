@@ -35,6 +35,25 @@ describe("task list rendering", () => {
     expect(lines.some((line) => line.selected === true)).toBe(true);
   });
 
+  it("labels idle teammates distinctly from failed tasks", () => {
+    const idle: TuiBackgroundTask = {
+      id: "team:squad/dev",
+      name: "squad/dev",
+      origin: { kind: "teammate", teamName: "squad", name: "dev" },
+      status: "idle",
+      startedAt: "2026-10-29T10:00:00.000Z",
+      endedAt: "2026-10-29T10:00:10.000Z",
+      output: "waiting for the next message",
+    };
+    const text = taskListLines([idle], 0, 100, now)
+      .map((line) => line.text)
+      .join("\n");
+    expect(text).toContain("○");
+    expect(text).toContain("squad/dev");
+    expect(text).toContain("idle · 10s");
+    expect(taskDetailLines(idle).join("\n")).toContain("team:squad/dev · teammate");
+  });
+
   it("says so when there is nothing to list", () => {
     const lines = taskListLines([], 0, 80, now);
     expect(lines.map((line) => line.text).join("\n")).toContain("(no background tasks)");

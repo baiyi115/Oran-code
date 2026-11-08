@@ -94,7 +94,7 @@ export function subagentTaskLines(
   if (ordered.length === 0) {
     // Nothing running and nothing recent: the finished tasks have left the panel, but they are
     // still in the task list. Keep one row so the history stays reachable instead of just vanishing.
-    const failed = subagents.filter((task) => task.status !== "completed").length;
+    const failed = subagents.filter((task) => task.status === "failed" || task.status === "timed_out").length;
     const detail = failed > 0 ? `${subagents.length - failed} done · ${failed} failed` : `${subagents.length} finished`;
     return [{ text: `${failed > 0 ? "✗" : "✓"} ${detail} · /tasks to review`, tone: failed > 0 ? "failed" : "done" }];
   }

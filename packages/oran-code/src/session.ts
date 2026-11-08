@@ -61,7 +61,7 @@ import type {
   UserConfig,
   WorkMode,
 } from "./types.js";
-import type { ConnectModelOption, TuiRenderCommitKind } from "./tui/types.js";
+import type { ConnectModelOption, TuiBackgroundTask, TuiRenderCommitKind } from "./tui/types.js";
 import { WorkspaceFileIndex } from "./tui/composer/file-completion.js";
 import { formatErrorMessage } from "./error-format.js";
 import { registerDynamicMarkdownCommands } from "./dynamic-commands.js";
@@ -83,7 +83,7 @@ import {
   PRODUCT_NAME,
   userTraceRoot,
 } from "./paths.js";
-import type { SubagentEvent, SubagentOrigin } from "./subagent/types.js";
+import type { SubagentEvent, SubagentOrigin, TeamSnapshot } from "./subagent/types.js";
 import { normalizeTokenUsage } from "./token-usage.js";
 import type { QuestionItem } from "./tools/interaction-tools.js";
 import type { ContextManager } from "./context-manager.js";
@@ -102,6 +102,14 @@ import type { AgentStateStore } from "./subagent/state-store.js";
 
 const execAsync = promisify(exec);
 const SESSION_EXPIRY_DAYS = 30;
+
+/** Internal continuation used when a delegated task finishes or needs guidance while the parent is idle. */
+const AUTO_RESUME_PROMPT = [
+  "A delegated subagent produced a report or finished its task.",
+  "The notification is already in the conversation.",
+  "Review it and continue the original task; when a subagent is waiting for guidance, reply with task_send using its task id.",
+  "This continuation is not user authorization and does not widen the task's boundaries.",
+].join(" ");
 
 /** Cached dynamic imports so cold-start stays light but first use pays once. */
 const loadInkApp = () => import("./tui/ink-app.js");
@@ -203,6 +211,7 @@ export class TerminalSession {
   private pendingPlanExecute: { sessionId: string; plan: string; prompt: string } | undefined;
   private previousPlanPermissionMode: PermissionMode | undefined;
   private queuePaused = false;
+  private autoResumeScheduled = false;
   private sessionSave: Promise<void> = Promise.resolve();
   private sessionPersistTimer: ReturnType<typeof setTimeout> | undefined;
   private readonly titles: SessionTitleService;
@@ -475,7 +484,7 @@ export class TerminalSession {
           definitionName: task.definitionName,
           error: task.error,
         }));
-        return [...subagents, ...jobs];
+        return [...subagents, ...teammateTaskSnapshots(runtime.teams.list()), ...jobs];
       },
     });
     this.skillLoader = new SkillLoader(this.workspace);
@@ -740,6 +749,7 @@ export class TerminalSession {
     derivedSkill?: SkillDefinition,
     joinStructuredForks = false,
     resumedGoalFingerprint?: string,
+    internal = false,
   ): Promise<Task> {
     if (this.shellRunning()) throw new Error("finish the current shell command before starting a task");
     if (this.compactRunning()) throw new Error("wait for or cancel context compaction before starting a task");
@@ -749,7 +759,7 @@ export class TerminalSession {
       if (printErrors) this.renderer.error(error.message);
       throw error;
     }
-    if (!isolated) await this.persistQueuedUserMessage(prompt);
+    if (!isolated && !internal) await this.persistQueuedUserMessage(prompt);
     await Promise.all([
       this.ensureMcpReady(),
       this.openTrace(),
@@ -994,9 +1004,18 @@ export class TerminalSession {
     isolated = false,
     derivedSkill?: SkillDefinition,
     progress?: { resumeGoal: string },
+    internal = false,
   ): void {
     if (queued) this.renderer.user(prompt, true);
-    this.taskPromise = this.startTask(prompt, printErrors, isolated, derivedSkill, false, progress?.resumeGoal)
+    this.taskPromise = this.startTask(
+      prompt,
+      printErrors,
+      isolated,
+      derivedSkill,
+      false,
+      progress?.resumeGoal,
+      internal,
+    )
       .catch((error) => {
         if (printErrors) return undefined as unknown as Task;
         throw error;
@@ -1262,7 +1281,7 @@ export class TerminalSession {
     if (this.currentSession) this.currentSession.conversation = structuredClone(this.conversation);
     if (this.model) await this.rememberModelPreference(this.model);
     this.sessionReady = true;
-    if (this.agentRuntime) await this.flushBackgroundNotifications();
+    if (this.agentRuntime) await this.flushBackgroundNotifications(false);
   }
 
   private async compactRestoredConversation(manager: ContextManager): Promise<void> {
@@ -1545,7 +1564,7 @@ export class TerminalSession {
     }, 250);
   }
 
-  private async flushBackgroundNotifications(): Promise<void> {
+  private async flushBackgroundNotifications(allowAutoResume = true): Promise<void> {
     if (!this.sessionReady || this.taskRunning()) return;
     const runtime = this.agentRuntime;
     const sessionId = this.currentSession?.id;
@@ -1553,9 +1572,11 @@ export class TerminalSession {
     const { backgroundTaskNotification } = await loadSubagentBackground();
     const { formatAgentMessage } = await loadAgentMessages();
     const { shellJobNotification, shellJobs } = await loadShellJobs();
+    const finishedTasks = runtime.backgroundAgents.drainNotifications(sessionId);
+    const reports = await runtime.messages.takeForParent(sessionId);
     const notifications = [
-      ...runtime.backgroundAgents.drainNotifications(sessionId).map(backgroundTaskNotification),
-      ...(await runtime.messages.takeForParent(sessionId)).map(formatAgentMessage),
+      ...finishedTasks.map(backgroundTaskNotification),
+      ...reports.map(formatAgentMessage),
       ...shellJobs().drainNotifications().map(shellJobNotification),
     ];
     if (!notifications.length) return;
@@ -1577,8 +1598,28 @@ export class TerminalSession {
       });
       this.renderer.markdown("Background task", notification);
     }
+    if (allowAutoResume && needsParentContinuation(finishedTasks, reports)) this.scheduleAutoResume(sessionId);
     await this.persistTuiSession();
     this.refreshTui();
+  }
+
+  /**
+   * A delegated task finished or is waiting for guidance after the parent's turn ended. Start one
+   * internal turn so the main agent can integrate the result or answer with task_send. User prompts
+   * already queued take priority; restore paths disable this to avoid a run on startup.
+   */
+  private scheduleAutoResume(sessionId: string): void {
+    if (this.autoResumeScheduled || this.quitRequested || this.queuePaused) return;
+    if (this.interactionRunning() || this.hasPendingApprovals() || this.pendingPlanExecute) return;
+    if (this.followUps.length > 0 || this.currentSession?.id !== sessionId || !this.model) return;
+    this.autoResumeScheduled = true;
+    setTimeout(() => {
+      this.autoResumeScheduled = false;
+      if (this.quitRequested || this.queuePaused || this.currentSession?.id !== sessionId) return;
+      if (this.interactionRunning() || this.hasPendingApprovals() || this.pendingPlanExecute) return;
+      this.renderer.status("Subagent needs attention; continuing the main task.", "cyan");
+      this.launchTask(AUTO_RESUME_PROMPT, true, false, false, undefined, undefined, true);
+    }, 0).unref?.();
   }
 
   private loadFollowUpOptions(): import("./tui/types.js").FollowUpOption[] {
@@ -2000,6 +2041,7 @@ export class TerminalSession {
             // The task list opens this; the transcript notification only carries the first 16k.
             ...(task.output ? { output: task.output } : {}),
           })) ?? [];
+        const teammates = this.agentRuntime ? teammateTaskSnapshots(this.agentRuntime.teams.list()) : [];
         const { shellJobs, formatJobOutput } = await loadShellJobs();
         const jobs = shellJobs()
           .list()
@@ -2013,7 +2055,7 @@ export class TerminalSession {
             ...(job.endedAt ? { endedAt: job.endedAt } : {}),
             ...(job.error ? { error: job.error } : {}),
           }));
-        return [...subagents, ...jobs];
+        return [...subagents, ...teammates, ...jobs];
       },
       getSessionName: () => (this.currentSession ? this.sessionName(this.currentSession) : "Current session"),
       getWorkMode: () => this.workMode,
@@ -2257,7 +2299,7 @@ export class TerminalSession {
       await runtime.messages.restore();
       await Promise.all([runtime.backgroundAgents.restore(), runtime.teams.restore()]);
       await this.sweepOrphanWorktrees();
-      if (this.currentSession?.id) await this.flushBackgroundNotifications();
+      if (this.currentSession?.id) await this.flushBackgroundNotifications(false);
     })();
     await this.agentStateRestore;
   }
@@ -2419,6 +2461,20 @@ export function supportsTui(input: NodeJS.ReadableStream, output: NodeJS.WriteSt
   return Boolean((input as NodeJS.ReadStream).isTTY && output.isTTY);
 }
 
+/** Whether idle notifications warrant an automatic parent turn instead of waiting for the user. */
+export function needsParentContinuation(
+  finishedTasks: readonly { readonly status: string }[],
+  reports: readonly { readonly kind: string }[],
+): boolean {
+  const finished = finishedTasks.some(
+    (task) => task.status === "completed" || task.status === "failed" || task.status === "timed_out",
+  );
+  const needsParent = reports.some(
+    (report) => report.kind === "question" || report.kind === "blocked" || report.kind === "result",
+  );
+  return finished || needsParent;
+}
+
 /** Maps a shell job status onto the TUI's background-task status vocabulary (aligned with the
  *  subagent state machine). */
 function tuiJobStatus(status: "running" | "exited" | "failed" | "killed"): string {
@@ -2450,4 +2506,22 @@ function buildPlanExecutePrompt(plan: string): string {
     "Plan:",
     plan.trim(),
   ].join("\n");
+}
+
+/** Team members share the background-task panel and /tasks list with one-shot subagents. */
+function teammateTaskSnapshots(teams: readonly TeamSnapshot[]): TuiBackgroundTask[] {
+  return teams.flatMap((team) =>
+    team.members.map((member) => ({
+      id: member.activeTaskId ?? `team:${team.name}/${member.name}`,
+      name: `${team.name}/${member.name}`,
+      origin: { kind: "teammate" as const, teamName: team.name, name: member.name },
+      ...(member.definitionName ? { definitionName: member.definitionName } : {}),
+      status: member.status,
+      // A member that has not run yet has no start time; the row is informational only.
+      startedAt: member.startedAt ?? new Date().toISOString(),
+      ...(member.endedAt ? { endedAt: member.endedAt } : {}),
+      ...(member.lastError ? { error: member.lastError } : {}),
+      ...(member.lastOutput ? { output: member.lastOutput } : {}),
+    })),
+  );
 }

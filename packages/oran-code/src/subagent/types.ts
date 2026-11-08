@@ -166,6 +166,9 @@ export interface TeamMemberSnapshot {
   readonly name: string;
   readonly status: "idle" | "running" | "stopped" | "failed" | "interrupted";
   readonly activeTaskId?: string;
+  readonly definitionName?: string;
+  readonly startedAt?: string;
+  readonly endedAt?: string;
   readonly queuedMessages: number;
   readonly toolCount: number;
   readonly lastOutput?: string;
