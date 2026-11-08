@@ -264,6 +264,63 @@ export function fingerprintRequest(messages: readonly Message[]): string {
     .slice(0, 16);
 }
 
+export interface RequestPrefixComparison {
+  /** Messages in the previous request after dropping transient runtime reminders. */
+  readonly previousMessages: number;
+  /** Leading messages identical in both requests. */
+  readonly commonPrefixMessages: number;
+  /** Set when the previous request was not preserved as a prefix (a rewrite or a shorter history). */
+  readonly firstDivergentIndex?: number;
+}
+
+/**
+ * Measures how much of the previous request the current one preserves. The provider cache can only
+ * reuse the leading run of identical messages, so this is the cache-visible prefix. Runtime
+ * reminders are filtered out first: they are transient per-turn instructions that the provider
+ * adapters move to the tail, so they must not be mistaken for a history rewrite.
+ */
+export function compareRequestPrefix(
+  previous: readonly Message[],
+  current: readonly Message[],
+): RequestPrefixComparison {
+  const before = comparableRequestMessages(previous);
+  const after = comparableRequestMessages(current);
+  const limit = Math.min(before.length, after.length);
+  let commonPrefixMessages = 0;
+  while (
+    commonPrefixMessages < limit &&
+    sameRequestMessage(before[commonPrefixMessages]!, after[commonPrefixMessages]!)
+  ) {
+    commonPrefixMessages += 1;
+  }
+  const rewritten = commonPrefixMessages < limit || after.length < before.length;
+  return {
+    previousMessages: before.length,
+    commonPrefixMessages,
+    ...(rewritten ? { firstDivergentIndex: commonPrefixMessages } : {}),
+  };
+}
+
+function comparableRequestMessages(messages: readonly Message[]): readonly Message[] {
+  return messages.filter((message) => message.metadata?.promptBlock !== "runtime-reminder");
+}
+
+function sameRequestMessage(left: Message, right: Message): boolean {
+  if (left.role !== right.role || left.name !== right.name || left.toolCallId !== right.toolCallId) return false;
+  if ((left.content ?? "") !== (right.content ?? "")) return false;
+  const leftCalls = left.toolCalls ?? [];
+  const rightCalls = right.toolCalls ?? [];
+  if (leftCalls.length !== rightCalls.length) return false;
+  return leftCalls.every((call, index) => {
+    const other = rightCalls[index]!;
+    return (
+      call.id === other.id &&
+      call.name === other.name &&
+      JSON.stringify(call.arguments) === JSON.stringify(other.arguments)
+    );
+  });
+}
+
 export function fingerprintResponse(response: ModelResponse): string {
   return createHash("sha256")
     .update(

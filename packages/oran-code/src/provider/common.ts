@@ -27,22 +27,12 @@ export function completeRequestSignal(
 }
 
 /**
- * Runtime reminders are merged onto the trailing user message so that per-turn reminder text
- * does not rewrite history in place and break the stable prefix cache. When there is no user
- * message, one is appended.
+ * Appends runtime reminders as their own trailing user turn. Merging them into the previous user
+ * message would rewrite that persisted message in every request, so the next turn could not reuse
+ * the cached prefix up to it. Both the OpenAI-compatible and Anthropic APIs accept consecutive
+ * user turns (Anthropic combines them server-side).
  */
 export function appendTailReminder(conversation: Array<Record<string, unknown>>, reminderText: string): void {
   if (!reminderText) return;
-  const last = conversation[conversation.length - 1];
-  if (last && last.role === "user") {
-    if (typeof last.content === "string") {
-      last.content = `${last.content}\n\n${reminderText}`;
-    } else if (Array.isArray(last.content)) {
-      last.content.push({ type: "text", text: reminderText });
-    } else {
-      conversation.push({ role: "user", content: reminderText });
-    }
-    return;
-  }
   conversation.push({ role: "user", content: reminderText });
 }

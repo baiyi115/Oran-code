@@ -308,7 +308,7 @@ describe("TaskController", () => {
         textResponse("done"),
       ]);
       const events: RuntimeEvent[] = [];
-      const { controller } = createController(workspace, provider, registry, events);
+      const { controller, trace } = createController(workspace, provider, registry, events);
 
       const task = await controller.execute(createTask(workspace, "read a big file"));
 
@@ -322,6 +322,15 @@ describe("TaskController", () => {
       expect(bigResult(1)).toBe(bigContent);
       expect(bigResult(2)).toBe(bigContent);
       expect(events.some((event) => event.type === "context_compaction" && event.phase === "offloaded")).toBe(false);
+      const requests = trace.exportTrace(task.id).steps.filter((step) => step.kind === "model_request");
+      const third = JSON.parse(String(requests[2]?.payload)) as {
+        previousRequestMessages?: number;
+        commonPrefixMessages?: number;
+        firstDivergentIndex?: number;
+      };
+      expect(third.previousRequestMessages).toBe(5);
+      expect(third.commonPrefixMessages).toBe(5);
+      expect(third.firstDivergentIndex).toBeUndefined();
     } finally {
       await rm(workspace, { recursive: true, force: true });
     }

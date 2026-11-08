@@ -192,11 +192,13 @@ export class AnthropicProvider implements ModelProvider {
     delete options.providerType;
     delete options.anthropicVersion;
     delete options["anthropic-version"];
-    const { system, conversation } = toAnthropicMessages(messages);
+    delete options.anthropicCacheTtl;
+    const stableCacheControl = cacheControlFor(this.config.options);
+    const { system, conversation } = toAnthropicMessages(messages, stableCacheControl);
     const anthropicTools = tools?.length ? tools.map(toAnthropicTool).filter(Boolean) : undefined;
     if (anthropicTools?.length) {
       const last = anthropicTools.length - 1;
-      anthropicTools[last] = { ...anthropicTools[last], cache_control: { type: "ephemeral" } };
+      anthropicTools[last] = { ...anthropicTools[last], cache_control: stableCacheControl };
     }
     return {
       ...options,
@@ -209,6 +211,15 @@ export class AnthropicProvider implements ModelProvider {
       ...(anthropicTools?.length ? { tools: anthropicTools, tool_choice: { type: "auto" } } : {}),
     };
   }
+}
+
+/**
+ * Long-lived prefix breakpoints may opt into the 1h TTL (`options.anthropicCacheTtl: "1h"`) so a
+ * long tool run or subagent wait does not let the cache expire. Per-turn breakpoints stay on the
+ * default 5m TTL, since rewriting them at the long-TTL price would be wasteful.
+ */
+function cacheControlFor(options: Record<string, unknown> | undefined): Record<string, unknown> {
+  return options?.anthropicCacheTtl === "1h" ? { type: "ephemeral", ttl: "1h" } : { type: "ephemeral" };
 }
 
 function toAnthropicTool(tool: Record<string, unknown>): Record<string, unknown> | undefined {
@@ -239,7 +250,10 @@ function toAnthropicTool(tool: Record<string, unknown>): Record<string, unknown>
   return undefined;
 }
 
-function toAnthropicMessages(messages: Message[]): {
+function toAnthropicMessages(
+  messages: Message[],
+  stableCacheControl: Record<string, unknown>,
+): {
   system: Record<string, unknown>[];
   conversation: Record<string, unknown>[];
 } {
@@ -248,6 +262,13 @@ function toAnthropicMessages(messages: Message[]): {
   const tailReminders: string[] = [];
   const userMessageIndices: number[] = [];
   let pendingToolResults: Record<string, unknown>[] = [];
+  /**
+   * Only the last cacheable system block gets a breakpoint: a breakpoint caches everything up to
+   * and including its block, so marking both the stable prompt and the environment block would
+   * spend two of the four allowed breakpoints on the same prefix and leave no room for the
+   * per-conversation anchor.
+   */
+  let lastCacheableSystemBlock: Record<string, unknown> | undefined;
 
   const flushToolResults = (): void => {
     if (!pendingToolResults.length) return;
@@ -273,11 +294,9 @@ function toAnthropicMessages(messages: Message[]): {
         continue;
       }
       if (message.content?.trim()) {
-        system.push({
-          type: "text",
-          text: message.content.trim(),
-          ...(message.metadata?.cacheControl === "ephemeral" ? { cache_control: { type: "ephemeral" } } : {}),
-        });
+        const block: Record<string, unknown> = { type: "text", text: message.content.trim() };
+        system.push(block);
+        if (message.metadata?.cacheControl === "ephemeral") lastCacheableSystemBlock = block;
       }
       continue;
     }
@@ -325,6 +344,7 @@ function toAnthropicMessages(messages: Message[]): {
     }
   }
   flushToolResults();
+  if (lastCacheableSystemBlock) lastCacheableSystemBlock.cache_control = stableCacheControl;
   if (tailReminders.length) appendTailReminder(conversation, tailReminders.join("\n\n"));
   // For long conversations, place a stable breakpoint on the second-to-last user message: the
   // trailing breakpoint is invalidated every turn, whereas this one keeps the prefix before the

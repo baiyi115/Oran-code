@@ -238,6 +238,7 @@ export class TerminalSession {
   private readonly subagentUsageBySession = new Map<string, ReturnType<typeof normalizeTokenUsage>>();
   /** A run can report more than once; its usage is counted on the first terminal event only. */
   private readonly countedSubagentTasks = new Set<string>();
+  private subagentUsageEventSequence = 0;
   private readonly debugLogSink: DebugLogSink;
   private readonly debugTracker: StreamDebugTracker;
   private readonly runtimeEventSink: ((event: RuntimeEvent) => void) | undefined;
@@ -1128,6 +1129,20 @@ export class TerminalSession {
       totalTokens: current.totalTokens + delta.totalTokens,
       cacheReadTokens: current.cacheReadTokens + delta.cacheReadTokens,
       cacheWriteTokens: current.cacheWriteTokens + delta.cacheWriteTokens,
+    });
+    // The footer sees the aggregated map directly, but headless runs only consume runtime events.
+    // Forward this terminal accounting event so their run_end totals include delegated work.
+    this.runtimeEventSink?.({
+      version: 1,
+      type: "subagent_usage",
+      taskId: event.taskId,
+      sequence: ++this.subagentUsageEventSequence,
+      timestamp: event.timestamp,
+      name: event.name,
+      inputTokens: delta.inputTokens,
+      outputTokens: delta.outputTokens,
+      cacheReadTokens: delta.cacheReadTokens,
+      cacheWriteTokens: delta.cacheWriteTokens,
     });
     this.tui?.refreshContext();
   }

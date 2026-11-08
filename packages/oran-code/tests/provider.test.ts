@@ -335,6 +335,45 @@ describe("OpenAICompatibleProvider", () => {
       "OpenAI-compatible stream ended without a finish_reason",
     );
   });
+
+  it("forwards an opt-in prompt_cache_key without leaking it as a generic option", async () => {
+    const fetchMock = vi.spyOn(globalThis, "fetch").mockResolvedValue(
+      new Response(JSON.stringify({ choices: [{ message: { content: "ok" }, finish_reason: "stop" }] }), {
+        status: 200,
+        headers: { "content-type": "application/json" },
+      }),
+    );
+    const provider = new OpenAICompatibleProvider(model({ options: { prompt_cache_key: "workspace-prefix" } }));
+
+    await provider.complete(messages);
+
+    const body = JSON.parse(String(fetchMock.mock.calls[0]?.[1]?.body)) as Record<string, unknown>;
+    expect(body.prompt_cache_key).toBe("workspace-prefix");
+    expect(body).not.toHaveProperty("promptCacheKey");
+  });
+
+  it("appends runtime reminders as their own message instead of rewriting the last user turn", async () => {
+    const fetchMock = vi.spyOn(globalThis, "fetch").mockResolvedValue(
+      new Response(JSON.stringify({ choices: [{ message: { content: "ok" }, finish_reason: "stop" }] }), {
+        status: 200,
+        headers: { "content-type": "application/json" },
+      }),
+    );
+    const history: Message[] = [
+      { role: "user", content: "original request" },
+      { role: "system", content: "per-turn reminder", metadata: { promptBlock: "runtime-reminder" } },
+    ];
+
+    await new OpenAICompatibleProvider(model()).complete(history);
+
+    const body = JSON.parse(String(fetchMock.mock.calls[0]?.[1]?.body)) as {
+      messages?: Array<{ role: string; content: string }>;
+    };
+    expect(body.messages).toEqual([
+      { role: "user", content: "original request" },
+      { role: "user", content: "per-turn reminder" },
+    ]);
+  });
 });
 
 describe("AnthropicProvider", () => {
@@ -401,6 +440,68 @@ describe("AnthropicProvider", () => {
     expect((body.messages ?? []).some((message) => JSON.stringify(message.content).includes("Subagent report"))).toBe(
       true,
     );
+  });
+
+  it("spends one system breakpoint so the stable conversation anchor fits", async () => {
+    const fetchMock = vi.spyOn(globalThis, "fetch").mockResolvedValue(
+      new Response(JSON.stringify({ content: [{ type: "text", text: "ok" }], stop_reason: "end_turn" }), {
+        status: 200,
+        headers: { "content-type": "application/json" },
+      }),
+    );
+    const history: Message[] = [
+      { role: "system", content: "stable prompt", metadata: { promptBlock: "stable", cacheControl: "ephemeral" } },
+      { role: "system", content: "environment", metadata: { promptBlock: "environment", cacheControl: "ephemeral" } },
+      { role: "user", content: "task" },
+    ];
+    for (let index = 0; index < 6; index += 1) {
+      history.push({ role: "assistant", content: `answer ${index}` }, { role: "user", content: `message ${index}` });
+    }
+    history.push({ role: "assistant", content: "final" });
+    const tools = [
+      {
+        type: "function",
+        function: {
+          name: "lookup",
+          description: "Look something up.",
+          parameters: { type: "object", properties: {} },
+        },
+      },
+    ];
+
+    await new AnthropicProvider(model({ provider: "anthropic", options: { anthropicCacheTtl: "1h" } })).complete(
+      history,
+      tools,
+    );
+
+    const body = JSON.parse(String(fetchMock.mock.calls[0]?.[1]?.body)) as {
+      system?: Array<{ text?: string; cache_control?: { type?: string; ttl?: string } }>;
+      tools?: Array<{ cache_control?: { type?: string; ttl?: string } }>;
+      messages?: Array<{ content?: unknown }>;
+    };
+    expect(body).not.toHaveProperty("anthropicCacheTtl");
+    // A breakpoint caches everything before it, so both system blocks share one breakpoint.
+    const systemBreakpoints = (body.system ?? []).filter((block) => block.cache_control);
+    expect(systemBreakpoints).toHaveLength(1);
+    expect(systemBreakpoints[0]).toMatchObject({
+      text: "environment",
+      cache_control: { type: "ephemeral", ttl: "1h" },
+    });
+    expect(body.tools?.at(-1)?.cache_control).toMatchObject({ type: "ephemeral", ttl: "1h" });
+
+    const messageBreakpoints = (body.messages ?? []).flatMap((message) =>
+      Array.isArray(message.content)
+        ? message.content.filter(
+            (block): block is { text?: string; cache_control?: { ttl?: string } } =>
+              typeof block === "object" && block !== null && "cache_control" in block,
+          )
+        : [],
+    );
+    // Stable anchor on the second-to-last user turn plus the trailing breakpoint.
+    expect(messageBreakpoints).toHaveLength(2);
+    expect(messageBreakpoints.some((block) => block.text === "message 4")).toBe(true);
+    // Per-turn breakpoints keep the default 5m TTL instead of paying the long-TTL write price.
+    expect(messageBreakpoints.every((block) => block.cache_control?.ttl === undefined)).toBe(true);
   });
 
   it("rejects an Anthropic stream that ends without message_stop", async () => {

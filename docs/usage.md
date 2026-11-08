@@ -224,6 +224,18 @@ model was removed, the first selected model becomes active.
   agent is normally started inside the repository it is asked about; enable it only for
   workspaces you control.
 
+### 提示缓存
+
+Oran 的请求前缀保持只增不改，便于服务端复用缓存：
+
+- OpenAI 兼容端点默认依赖服务端自动前缀缓存。可选的 `options.prompt_cache_key`
+  会作为 `prompt_cache_key` 随请求发送，供支持该参数的服务端（如 OpenAI 的提示缓存
+  与部分兼容网关）稳定命中；默认不发送，避免严格端点拒绝未知参数。DeepSeek 返回的
+  `prompt_cache_hit_tokens` 也会计入缓存读取统计。
+- Anthropic 端点会在 tools 尾部、system 尾部与最近对话上设置 `cache_control` 断点，
+  合计不超过 4 个。可选的 `options.anthropicCacheTtl: "1h"` 将缓存有效期从默认的
+  5 分钟延长到 1 小时，适合间隔较长的多轮任务。
+
 ### Task token usage
 
 Oran records cumulative task and session usage for statistics; **cumulative token

@@ -6,12 +6,57 @@ import { promisify } from "node:util";
 import { describe, expect, it } from "vitest";
 import {
   classifyModelRetry,
+  compareRequestPrefix,
   EmptyModelResponseError,
   parseCompletedToolCall,
   workspaceSnapshot,
   ToolCallParseError,
 } from "../src/controller-utils.js";
 import { ModelRequestError, SseIdleTimeoutError } from "../src/provider.js";
+import type { Message } from "../src/types.js";
+
+describe("compareRequestPrefix", () => {
+  const previous: Message[] = [
+    { role: "user", content: "task" },
+    { role: "assistant", content: "working" },
+  ];
+
+  it("reports a fully preserved prefix when the request only grows", () => {
+    const current: Message[] = [...previous, { role: "tool", toolCallId: "call_1", content: "result" }];
+    expect(compareRequestPrefix(previous, current)).toEqual({
+      previousMessages: 2,
+      commonPrefixMessages: 2,
+    });
+  });
+
+  it("reports where a rewritten history first diverges", () => {
+    const current: Message[] = [previous[0]!, { role: "assistant", content: "rewritten" }];
+    expect(compareRequestPrefix(previous, current)).toEqual({
+      previousMessages: 2,
+      commonPrefixMessages: 1,
+      firstDivergentIndex: 1,
+    });
+  });
+
+  it("flags a shorter current request as a rewrite", () => {
+    expect(compareRequestPrefix(previous, [previous[0]!])).toEqual({
+      previousMessages: 2,
+      commonPrefixMessages: 1,
+      firstDivergentIndex: 1,
+    });
+  });
+
+  it("ignores transient runtime reminders", () => {
+    const before: Message[] = [
+      previous[0]!,
+      { role: "system", content: "reminder", metadata: { promptBlock: "runtime-reminder" } },
+    ];
+    expect(compareRequestPrefix(before, [...previous, { role: "assistant", content: "next" }])).toEqual({
+      previousMessages: 1,
+      commonPrefixMessages: 1,
+    });
+  });
+});
 
 describe("classifyModelRetry", () => {
   it("classifies provider status codes by retry semantics", () => {

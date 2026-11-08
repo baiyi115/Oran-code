@@ -11,7 +11,13 @@ import { isTruncatedFinishReason } from "../types.js";
 import { CLIENT_ID, CLIENT_USER_AGENT, PRODUCT_VERSION } from "../paths.js";
 import { ModelRequestError, boundedError, retryAfterMsFromResponse, streamErrorToModelRequestError } from "./errors.js";
 import { parseSseJson, readSseEvents } from "./sse.js";
-import { createStreamingRequest, modelResponseChunks, numericUsage, requestOptions } from "./transport.js";
+import {
+  createStreamingRequest,
+  modelResponseChunks,
+  numericUsage,
+  requestOptions,
+  stringOption,
+} from "./transport.js";
 import { appendTailReminder, completeRequestSignal } from "./common.js";
 
 /**
@@ -192,6 +198,9 @@ export class OpenAICompatibleProvider implements ModelProvider {
     maxTokens?: number,
   ): Record<string, unknown> {
     const options = requestOptions(this.config.options);
+    // Opt-in only: strict OpenAI-compatible endpoints may reject unknown parameters, so the cache
+    // routing hint is sent only when the model profile explicitly configures one.
+    const promptCacheKey = stringOption(this.config.options, "prompt_cache_key");
     if (this.sendsReasoningEffort()) options.reasoning_effort = this.config.reasoningEffort;
     if (stream) {
       const configured = options.stream_options;
@@ -205,6 +214,7 @@ export class OpenAICompatibleProvider implements ModelProvider {
     return {
       ...options,
       model: this.config.model,
+      ...(promptCacheKey ? { prompt_cache_key: promptCacheKey } : {}),
       messages: toOpenAiMessages(messages, this.echoesReasoning()),
       temperature: this.config.temperature,
       max_tokens: maxTokens ?? this.config.maxTokens,

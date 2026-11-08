@@ -16,6 +16,7 @@ import { isAbortError } from "../utils/abort-error.js";
 import type { AgentLoop } from "../loop.js";
 import {
   classifyModelRetry,
+  compareRequestPrefix,
   EmptyModelResponseError,
   extractPlanText,
   fingerprintRequest,
@@ -83,6 +84,9 @@ export class TurnRequester {
   private turnSequence = 0;
   private modelResponseStepId: number | undefined;
   private outputTokenLimit: number;
+  /** Previous model request, used to measure whether the cacheable prefix survived this turn. */
+  private previousRequest: readonly Message[] | undefined;
+  private previousRequestFingerprint: string | undefined;
 
   constructor(private readonly ports: TurnRequesterPorts) {
     this.outputTokenLimit = ports.config.model.maxTokens;
@@ -381,6 +385,20 @@ export class TurnRequester {
     try {
       const requestFingerprint = fingerprintRequest(messages);
       const estimatedRequestTokens = this.ports.contextManager.estimateTokens(messages, tools);
+      // Compare against the previous request so cache regressions show up in the trace as a
+      // rewritten prefix and the exact message where the two requests diverged.
+      const prefix = this.previousRequest ? compareRequestPrefix(this.previousRequest, messages) : undefined;
+      const previousRequestFingerprint = this.previousRequestFingerprint;
+      this.previousRequest = messages;
+      this.previousRequestFingerprint = requestFingerprint;
+      const prefixDiagnostics = prefix
+        ? {
+            previousRequestFingerprint,
+            previousRequestMessages: prefix.previousMessages,
+            commonPrefixMessages: prefix.commonPrefixMessages,
+            ...(prefix.firstDivergentIndex !== undefined ? { firstDivergentIndex: prefix.firstDivergentIndex } : {}),
+          }
+        : {};
       this.ports.appendDiagnosticStep("model_request", {
         turnId,
         step,
@@ -391,6 +409,7 @@ export class TurnRequester {
         taskTokensUsed: loop.tokensUsed,
         messageCount: messages.length,
         toolResultCount: messages.filter((message) => message.role === "tool").length,
+        ...prefixDiagnostics,
       });
       this.ports.debugLogger(
         JSON.stringify({
@@ -405,6 +424,7 @@ export class TurnRequester {
           taskTokensUsed: loop.tokensUsed,
           messageCount: messages.length,
           toolResultCount: messages.filter((message) => message.role === "tool").length,
+          ...prefixDiagnostics,
           tail: summarizeMessageTail(messages),
         }),
       );

@@ -542,6 +542,18 @@ export interface RuntimeEventPayloads {
     modelElapsedMs: number;
     outputTokensPerSecond?: number;
   };
+  /**
+   * Terminal usage reported by a delegated subagent. It is accounted separately from the main
+   * task's turns (which are cumulative maxima) so headless totals can add it without double
+   * counting.
+   */
+  subagent_usage: {
+    name: string;
+    inputTokens: number;
+    outputTokens: number;
+    cacheReadTokens: number;
+    cacheWriteTokens: number;
+  };
   cancelled: { message: string };
 }
 

@@ -15,7 +15,15 @@ export function normalizeTokenUsage(usage: Record<string, number>): TokenUsage {
   const reportedInput = numberFrom(usage, "input_tokens", "prompt_tokens", "inputTokens");
   const outputTokens = numberFrom(usage, "output_tokens", "completion_tokens", "outputTokens") ?? 0;
   const reportedTotal = numberFrom(usage, "total_tokens", "totalTokens");
-  const cacheReadTokens = cacheNumberFrom(usage, "cache_read_input_tokens", "cache_read_tokens", "cached_tokens");
+  const cacheReadTokens = cacheNumberFrom(
+    usage,
+    // Anthropic / OpenAI-compatible shapes, then DeepSeek's native prompt-cache counters. Some
+    // proxies return only the native fields, so ignoring them reported a 0% cache hit rate.
+    "cache_read_input_tokens",
+    "cache_read_tokens",
+    "cached_tokens",
+    "prompt_cache_hit_tokens",
+  );
   const cacheWriteTokens = cacheNumberFrom(usage, "cache_creation_input_tokens", "cache_write_tokens");
   const inputTokens = reportedInput ?? (reportedTotal === undefined ? 0 : Math.max(0, reportedTotal - outputTokens));
   // With no explicit total, include cache reads and writes in cumulative usage. For OpenAI-style

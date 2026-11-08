@@ -54,6 +54,8 @@ export class JsonlEventLog {
   private assistantSteps = 0;
   private reportedSteps: number | undefined;
   private tokens: TokenTotals = { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 };
+  /** Subagent usage is additive: one terminal event per delegated task, no cumulative maxima. */
+  private subagentTokens: TokenTotals = { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 };
   private finished = false;
 
   private constructor(private readonly path: string) {
@@ -97,6 +99,7 @@ export class JsonlEventLog {
     if (this.finished) return;
     this.finished = true;
     const finalText = truncate(input.finalText, FINAL_TEXT_CHARS);
+    const totals = sumTokenTotals(this.tokens, this.subagentTokens);
     this.write({
       kind: "run_end",
       outcome: input.outcome,
@@ -105,7 +108,7 @@ export class JsonlEventLog {
       steps: this.reportedSteps ?? this.assistantSteps,
       toolCalls: this.toolCallCount,
       tools: [...this.toolsCalled].sort(),
-      tokens: { ...this.tokens, total: this.tokens.input + this.tokens.output },
+      tokens: { ...totals, total: totals.input + totals.output },
       finalText,
       finalTextChars: input.finalText.length,
       finalTextTruncated: finalText.length < input.finalText.length,
@@ -134,6 +137,9 @@ export class JsonlEventLog {
       case "completed":
         this.reportedSteps = event.steps;
         this.tokens = tokenTotals(event, this.tokens);
+        return;
+      case "subagent_usage":
+        this.subagentTokens = addTokenTotals(event, this.subagentTokens);
         return;
       default:
         return;
@@ -218,6 +224,14 @@ function payloadFor(event: RuntimeEvent): Record<string, unknown> | undefined {
         inputTokens: event.inputTokens,
         outputTokens: event.outputTokens,
       };
+    case "subagent_usage":
+      return {
+        name: event.name,
+        inputTokens: event.inputTokens,
+        outputTokens: event.outputTokens,
+        cacheReadTokens: event.cacheReadTokens,
+        cacheWriteTokens: event.cacheWriteTokens,
+      };
     default:
       return undefined;
   }
@@ -236,6 +250,31 @@ function tokenTotals(
     output: Math.max(previous.output, output),
     cacheRead: Math.max(previous.cacheRead, usage.cacheReadTokens ?? 0),
     cacheWrite: Math.max(previous.cacheWrite, usage.cacheWriteTokens ?? 0),
+  };
+}
+
+/**
+ * Adds per-task usage to a running total. Subagent terminal events arrive once per task, so unlike
+ * the main task's rounds these are sums rather than maxima.
+ */
+function addTokenTotals(
+  usage: { inputTokens?: number; outputTokens?: number; cacheReadTokens?: number; cacheWriteTokens?: number },
+  previous: TokenTotals,
+): TokenTotals {
+  return {
+    input: previous.input + (usage.inputTokens ?? 0),
+    output: previous.output + (usage.outputTokens ?? 0),
+    cacheRead: previous.cacheRead + (usage.cacheReadTokens ?? 0),
+    cacheWrite: previous.cacheWrite + (usage.cacheWriteTokens ?? 0),
+  };
+}
+
+function sumTokenTotals(left: TokenTotals, right: TokenTotals): TokenTotals {
+  return {
+    input: left.input + right.input,
+    output: left.output + right.output,
+    cacheRead: left.cacheRead + right.cacheRead,
+    cacheWrite: left.cacheWrite + right.cacheWrite,
   };
 }
 

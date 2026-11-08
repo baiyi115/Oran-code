@@ -1,5 +1,32 @@
 import { describe, expect, it } from "vitest";
 import { usageTotal } from "../src/context/estimator.js";
+import { normalizeTokenUsage } from "../src/token-usage.js";
+
+describe("normalizeTokenUsage", () => {
+  it("reads DeepSeek's native prompt-cache counters", () => {
+    // Some OpenAI-compatible endpoints return only the native hit/miss fields; ignoring them
+    // reported a 0% cache hit rate even though the provider cached most of the prompt.
+    const usage = normalizeTokenUsage({
+      prompt_tokens: 1_000,
+      completion_tokens: 50,
+      prompt_cache_hit_tokens: 800,
+      prompt_cache_miss_tokens: 200,
+    });
+    expect(usage.cacheReadTokens).toBe(800);
+    expect(usage.inputTokens).toBe(1_000);
+    expect(usage.totalTokens).toBe(1_050);
+  });
+
+  it("prefers explicit cache fields over the DeepSeek alias", () => {
+    const usage = normalizeTokenUsage({
+      prompt_tokens: 1_000,
+      completion_tokens: 50,
+      cache_read_input_tokens: 600,
+      prompt_cache_hit_tokens: 800,
+    });
+    expect(usage.cacheReadTokens).toBe(600);
+  });
+});
 
 describe("usage totals", () => {
   it("adds the cache fields only when the provider reports them separately", () => {
