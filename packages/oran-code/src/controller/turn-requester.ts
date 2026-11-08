@@ -200,28 +200,34 @@ export class TurnRequester {
     tools: Record<string, unknown>[],
   ): Promise<Message[]> {
     let managedMessages = messages;
-    const beforeOffload = this.ports.contextManager.estimateTokens(
-      withRuntimeReminders(managedMessages, reminders),
-      tools,
-    );
-    const offload = await this.ports.contextManager.offloadAndSnip(managedMessages);
-    managedMessages = this.ports.contextManager.refreshRecoveryMessage(offload.messages, tools);
-    if (offload.replacementCount > 0 || offload.failedCount > 0) {
-      const afterOffload = this.ports.contextManager.estimateTokens(
+    // Rewriting historical tool results invalidates the provider's cached prefix. New results are
+    // already offloaded before they join the conversation, so history stays append-only here and is
+    // only rewritten when the context budget requires compaction. Offloading remains a fallback for
+    // sessions where automatic compaction has repeatedly failed and can no longer run.
+    if (this.ports.contextManager.autoCompactionDisabled) {
+      const beforeOffload = this.ports.contextManager.estimateTokens(
         withRuntimeReminders(managedMessages, reminders),
         tools,
       );
-      await this.ports.emit("context_compaction", {
-        phase: "offloaded",
-        reason: "auto",
-        beforeTokens: beforeOffload,
-        afterTokens: afterOffload,
-        replacementCount: offload.replacementCount,
-        ...(offload.failedCount > 0
-          ? { message: `${offload.failedCount} tool result(s) could not be persisted and were kept in context.` }
-          : {}),
-      });
-      this.ports.syncConversation(managedMessages);
+      const offload = await this.ports.contextManager.offloadAndSnip(managedMessages);
+      managedMessages = offload.messages;
+      if (offload.replacementCount > 0 || offload.failedCount > 0) {
+        const afterOffload = this.ports.contextManager.estimateTokens(
+          withRuntimeReminders(managedMessages, reminders),
+          tools,
+        );
+        await this.ports.emit("context_compaction", {
+          phase: "offloaded",
+          reason: "auto",
+          beforeTokens: beforeOffload,
+          afterTokens: afterOffload,
+          replacementCount: offload.replacementCount,
+          ...(offload.failedCount > 0
+            ? { message: `${offload.failedCount} tool result(s) could not be persisted and were kept in context.` }
+            : {}),
+        });
+        this.ports.syncConversation(managedMessages);
+      }
     }
 
     const requestMessages = withRuntimeReminders(managedMessages, reminders);

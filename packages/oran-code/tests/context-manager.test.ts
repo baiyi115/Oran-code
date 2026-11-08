@@ -133,7 +133,7 @@ describe("ContextManager tool-result offloading", () => {
 });
 
 describe("ContextManager compaction", () => {
-  it("preserves the stable prefix and emits summary and recovery context with recent files and tools", async () => {
+  it("preserves the stable prefix and emits summary and recovery context with recent files", async () => {
     await withWorkspace(async (workspace) => {
       const manager = new ContextManager({ workspace });
       manager.trackSuccessfulFileRead(
@@ -186,7 +186,9 @@ describe("ContextManager compaction", () => {
       expect(recovery?.content).toContain("<context-recovery>");
       expect(recovery?.content).toContain("Path: src/example.ts");
       expect(recovery?.content).toContain("export const recoveredValue = 42;");
-      expect(recovery?.content).toContain('"name": "read_file"');
+      // Tool schemas already travel in the request's tools parameter; repeating them inside the
+      // recovery block only bloats the cached prefix.
+      expect(recovery?.content).not.toContain("<available-tools>");
       expect(provider.requests).toHaveLength(1);
       expect(provider.requests[0]?.some((message) => message.content === stable.content)).toBe(false);
     });

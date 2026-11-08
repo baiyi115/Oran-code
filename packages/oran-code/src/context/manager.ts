@@ -1,7 +1,6 @@
 import { createHash, randomBytes } from "node:crypto";
 import { appendFile, mkdir } from "node:fs/promises";
 import { dirname, relative, resolve } from "node:path";
-import { cloneMessages } from "../message-utils.js";
 import { projectStateRoot } from "../paths.js";
 import type { Message, ModelConfig } from "../types.js";
 import {
@@ -16,10 +15,8 @@ import {
 import { estimatedRequestTokens, resolveContextWindow, usageTotal, type UsageAnchor } from "./estimator.js";
 import { automaticCompactionThreshold, CONTEXT_LIMITS } from "./limits.js";
 import {
-  isStableRequestPrefix,
   offloadCandidates,
   offloadConversation,
-  promptBlock,
   type ContextOffloadResult,
   type PrunerLedger,
   type ToolResultOffloadCandidate,
@@ -77,7 +74,7 @@ export class ContextManager {
       estimateTokens: (messages, tools) => this.estimateTokens(messages, tools),
       archiveConversation: (messages) => this.archiveConversation(messages),
       offloadForEmergency: (messages) => this.offloadAndSnip(messages),
-      buildRecoveryMessage: (tools, coverage) => this.buildRecoveryMessage(tools, coverage),
+      buildRecoveryMessage: (coverage) => this.buildRecoveryMessage(coverage),
       resetUsageAnchor: () => this.resetUsageAnchor(),
       onAutomaticCompactionFailure: () => {
         this.automaticFailures += 1;
@@ -191,23 +188,6 @@ export class ContextManager {
     return Math.max(0, Math.ceil(this.usageAnchor.tokens + delta));
   }
 
-  refreshRecoveryMessage(messages: readonly Message[], tools: readonly Record<string, unknown>[]): Message[] {
-    const hasRecovery = messages.some((message) => promptBlock(message) === "context-recovery");
-    if (!hasRecovery) return cloneMessages(messages);
-    const refreshed = cloneMessages(messages).filter((message) => promptBlock(message) !== "context-recovery");
-    let insertionIndex = 0;
-    for (const [index, message] of refreshed.entries()) {
-      const block = promptBlock(message);
-      if (isStableRequestPrefix(message) || block === "context-summary") insertionIndex = index + 1;
-    }
-    refreshed.splice(insertionIndex, 0, {
-      role: "system",
-      content: this.buildRecoveryMessage(tools),
-      metadata: { promptBlock: "context-recovery", contextManaged: true },
-    });
-    return refreshed;
-  }
-
   shouldAutoCompact(
     messages: readonly Message[],
     contextWindow: number,
@@ -244,10 +224,9 @@ export class ContextManager {
     };
   }
 
-  private buildRecoveryMessage(tools: readonly Record<string, unknown>[], coverage?: RecoveryCoverage): string {
+  private buildRecoveryMessage(coverage?: RecoveryCoverage): string {
     return composeRecoveryMessage({
       recentFiles: this.recentFiles.values(),
-      tools,
       manifestPath: this.userMessageManifestPath(),
       ...(coverage ? { coverage } : {}),
     });

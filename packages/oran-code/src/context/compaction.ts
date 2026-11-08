@@ -71,7 +71,7 @@ export interface CompactionHost {
   estimateTokens(messages: readonly Message[], tools: readonly Record<string, unknown>[]): number;
   archiveConversation(messages: readonly Message[]): Promise<void>;
   offloadForEmergency(messages: readonly Message[]): Promise<ContextOffloadResult>;
-  buildRecoveryMessage(tools: readonly Record<string, unknown>[], coverage?: RecoveryCoverage): string;
+  buildRecoveryMessage(coverage?: RecoveryCoverage): string;
   resetUsageAnchor(): void;
   onAutomaticCompactionFailure(): void;
   resetAutomaticFailures(): void;
@@ -118,7 +118,7 @@ export async function compactConversation(
     };
     const recoveryMessage: Message = {
       role: "system",
-      content: host.buildRecoveryMessage(options.tools, {
+      content: host.buildRecoveryMessage({
         coveredMessages: totalCovered,
         totalMessages,
         droppedGroups: totalDroppedGroups,
@@ -184,7 +184,6 @@ export async function compactConversation(
 
 export function buildRecoveryMessage(input: {
   recentFiles: Iterable<RecentFile>;
-  tools: readonly Record<string, unknown>[];
   manifestPath: string;
   coverage?: RecoveryCoverage;
 }): string {
@@ -193,7 +192,6 @@ export function buildRecoveryMessage(input: {
     .slice(0, CONTEXT_LIMITS.recentFileCount)
     .map(formatRecentFile)
     .join("\n\n");
-  const toolSchema = input.tools.length ? JSON.stringify(input.tools, null, 2) : "[]";
   const coverageBlock = input.coverage
     ? [
         "<summary-coverage>",
@@ -211,9 +209,6 @@ export function buildRecoveryMessage(input: {
     "<recent-files>",
     snapshots || "(no successful file reads recorded)",
     "</recent-files>",
-    "<available-tools>",
-    toolSchema,
-    "</available-tools>",
     "<context-boundary>",
     "When exact file content, error output, or user wording is needed, use read_file on the referenced source or offloaded-result path.",
     "Do not infer exact code or diagnostics from the summary. If no readable source path exists, ask the user instead of guessing.",

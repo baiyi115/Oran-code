@@ -9,6 +9,7 @@ import { createTask } from "../src/types.js";
 import { ToolRegistry } from "../src/tools.js";
 import { goalFingerprint } from "../src/progress/capture.js";
 import { EMPTY_PROGRESS_STATE, ProgressStateStore } from "../src/progress/store.js";
+import { CONTEXT_LIMITS } from "../src/context/limits.js";
 import type {
   HookEnginePort,
   Message,
@@ -259,6 +260,68 @@ describe("TaskController", () => {
       expect(system).not.toContain("<workspace-state>");
       expect(user).toContain("<workspace-state>");
       expect(user).toContain("Current date:");
+    } finally {
+      await rm(workspace, { recursive: true, force: true });
+    }
+  });
+
+  it("keeps historical tool results byte-identical instead of rewriting the cached prefix", async () => {
+    const workspace = await mkdtemp(join(tmpdir(), "liteagent-controller-"));
+    try {
+      // Larger than the historical tool-result limit: the old per-turn pruner would replace it
+      // once a newer tool result made its round historical.
+      const bigContent = "x".repeat(CONTEXT_LIMITS.historicalToolResultBytes + 2_000);
+      await writeFile(join(workspace, "big.txt"), bigContent, "utf8");
+      const registry = new ToolRegistry();
+      registry.register({
+        name: "read_file",
+        description: "Read a workspace file.",
+        parameters: { type: "object", properties: { path: { type: "string" } }, required: ["path"] },
+        permissionLevel: 0,
+        kind: "readonly",
+        cacheable: false,
+        maxOutputChars: bigContent.length + 1,
+        invoke: async () => ({ ok: true, output: bigContent }),
+      });
+      registry.register({
+        name: "small_probe",
+        description: "Return a small marker.",
+        parameters: { type: "object", properties: {} },
+        permissionLevel: 0,
+        kind: "readonly",
+        maxOutputChars: 100,
+        invoke: async () => ({ ok: true, output: "probe" }),
+      });
+      const provider = new FakeProvider([
+        toolResponse({
+          id: "call_big",
+          name: "read_file",
+          arguments: { path: "big.txt" },
+          createdAt: new Date().toISOString(),
+        }),
+        toolResponse({
+          id: "call_small",
+          name: "small_probe",
+          arguments: {},
+          createdAt: new Date().toISOString(),
+        }),
+        textResponse("done"),
+      ]);
+      const events: RuntimeEvent[] = [];
+      const { controller } = createController(workspace, provider, registry, events);
+
+      const task = await controller.execute(createTask(workspace, "read a big file"));
+
+      expect(task.state).toBe("completed");
+      expect(provider.requests).toHaveLength(3);
+      const bigResult = (requestIndex: number): string | undefined =>
+        provider.requests[requestIndex]?.find((message) => message.role === "tool" && message.toolCallId === "call_big")
+          ?.content;
+      // The second request adds the result; the third adds another round. The original bytes must
+      // survive both so the provider can reuse the cached prefix.
+      expect(bigResult(1)).toBe(bigContent);
+      expect(bigResult(2)).toBe(bigContent);
+      expect(events.some((event) => event.type === "context_compaction" && event.phase === "offloaded")).toBe(false);
     } finally {
       await rm(workspace, { recursive: true, force: true });
     }
