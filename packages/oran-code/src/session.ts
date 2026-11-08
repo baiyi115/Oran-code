@@ -1628,7 +1628,10 @@ export class TerminalSession {
       });
       this.renderer.markdown("Background task", notification);
     }
-    if (allowAutoResume && needsParentContinuation(finishedTasks, continuationReports(reports, this.autoResumedReportTasks))) {
+    if (
+      allowAutoResume &&
+      needsParentContinuation(finishedTasks, continuationReports(reports, this.autoResumedReportTasks))
+    ) {
       this.scheduleAutoResume(sessionId, resultReportTaskIds(reports, this.autoResumedReportTasks));
     }
     await this.persistTuiSession();

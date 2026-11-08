@@ -268,9 +268,7 @@ describe("TaskController", () => {
       const prefix = compareRequestPrefix(firstRequest, secondRequest);
       expect(prefix.commonPrefixMessages).toBe(prefix.previousMessages);
       expect(prefix.firstDivergentIndex).toBeUndefined();
-      expect(
-        secondRequest.some((message) => message.content?.includes("Check the repository again.")),
-      ).toBe(true);
+      expect(secondRequest.some((message) => message.content?.includes("Check the repository again."))).toBe(true);
       expect(
         controller.conversationSnapshot().filter((message) => message.content?.includes("<workspace-state>")),
       ).toHaveLength(2);
