@@ -376,6 +376,33 @@ describe("AnthropicProvider", () => {
     });
   });
 
+  it("keeps task notifications inline so they do not rewrite the cached system prefix", async () => {
+    const fetchMock = vi.spyOn(globalThis, "fetch").mockResolvedValue(
+      new Response(JSON.stringify({ content: [{ type: "text", text: "ok" }], stop_reason: "end_turn" }), {
+        status: 200,
+        headers: { "content-type": "application/json" },
+      }),
+    );
+    const history: Message[] = [
+      { role: "system", content: "stable prompt", metadata: { promptBlock: "stable", cacheControl: "ephemeral" } },
+      { role: "system", content: "environment", metadata: { promptBlock: "environment", cacheControl: "ephemeral" } },
+      { role: "user", content: "User message:\nwork" },
+      { role: "system", content: "[Subagent report] done", metadata: { promptBlock: "task-notification" } },
+      { role: "user", content: "continue" },
+    ];
+
+    await new AnthropicProvider(model({ provider: "anthropic" })).complete(history);
+
+    const body = JSON.parse(String(fetchMock.mock.calls[0]?.[1]?.body)) as {
+      system?: Array<{ text?: string }>;
+      messages?: Array<{ content?: unknown }>;
+    };
+    expect((body.system ?? []).some((block) => block.text?.includes("Subagent report"))).toBe(false);
+    expect((body.messages ?? []).some((message) => JSON.stringify(message.content).includes("Subagent report"))).toBe(
+      true,
+    );
+  });
+
   it("rejects an Anthropic stream that ends without message_stop", async () => {
     vi.spyOn(globalThis, "fetch").mockResolvedValue(
       sseResponse(

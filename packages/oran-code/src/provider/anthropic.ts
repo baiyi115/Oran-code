@@ -264,6 +264,14 @@ function toAnthropicMessages(messages: Message[]): {
         if (reminderText) tailReminders.push(reminderText);
         continue;
       }
+      if (message.metadata?.promptBlock === "task-notification") {
+        // Keep notifications at their chronological position. Hoisting them into the top-level
+        // system array would rewrite the cached system prefix every time a subagent reports.
+        flushToolResults();
+        const notificationText = message.content?.trim();
+        if (notificationText) conversation.push({ role: "user", content: [{ type: "text", text: notificationText }] });
+        continue;
+      }
       if (message.content?.trim()) {
         system.push({
           type: "text",

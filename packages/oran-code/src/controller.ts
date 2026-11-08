@@ -65,8 +65,9 @@ function signalKey(signal: ProgressSignal): string {
   return `${signal.kind}:${signal.sinceTurn}`;
 }
 import {
-  buildEnvironmentPrompt,
   assembleStableSystemPrompt,
+  buildStableEnvironmentPrompt,
+  buildVolatileEnvironmentPrompt,
   environmentSystemMessage,
   stableSystemMessage,
   taskPlanReminder,
@@ -411,17 +412,6 @@ export class TaskController {
     transitionTask(task, planMode ? "planning" : "executing");
     task.model = this.config.model.model;
     await this.persist(task);
-    const userContent =
-      this.conversation.length > 0
-        ? `[Previous task completed. New user task begins below.]\nUser message:\n${task.prompt}`
-        : `User message:\n${task.prompt}`;
-    const turnConversation: Message[] = [
-      ...cloneMessages(this.conversation),
-      // taskId aligns the conversation turn with the file snapshot manifest, so /rewind --files can
-      // roll back precisely to before this turn.
-      { role: "user", content: userContent, metadata: { taskId: task.id } },
-    ];
-    this.syncConversation(turnConversation);
     const snapshot = casualConversation
       ? {
           root: resolve(task.workspace),
@@ -432,17 +422,31 @@ export class TaskController {
           summary: "",
         }
       : await discoverWorkspace(task.workspace);
+    const environmentOptions = {
+      workspace: task.workspace,
+      model: this.config.model,
+      snapshot,
+      appVersion: PRODUCT_VERSION,
+    };
+    // Volatile workspace state rides in the current user turn so it cannot invalidate the cached
+    // system prefix or the cached conversation prefix left by a previous task.
+    const userContent = [
+      this.conversation.length > 0
+        ? `[Previous task completed. New user task begins below.]\nUser message:\n${task.prompt}`
+        : `User message:\n${task.prompt}`,
+      buildVolatileEnvironmentPrompt(environmentOptions),
+    ].join("\n\n");
+    const turnConversation: Message[] = [
+      ...cloneMessages(this.conversation),
+      // taskId aligns the conversation turn with the file snapshot manifest, so /rewind --files can
+      // roll back precisely to before this turn.
+      { role: "user", content: userContent, metadata: { taskId: task.id } },
+    ];
+    this.syncConversation(turnConversation);
     this.trace.appendStep(task.id, "context", { summary: snapshot.summary });
     let messages: Message[] = [
       stableSystemMessage(assembleStableSystemPrompt(this.stablePromptModules)),
-      environmentSystemMessage(
-        buildEnvironmentPrompt({
-          workspace: task.workspace,
-          model: this.config.model,
-          snapshot,
-          appVersion: PRODUCT_VERSION,
-        }),
-      ),
+      environmentSystemMessage(buildStableEnvironmentPrompt(environmentOptions)),
       ...turnConversation,
     ];
     this.syncConversation(messages);

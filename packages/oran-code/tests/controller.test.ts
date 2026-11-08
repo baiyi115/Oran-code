@@ -236,6 +236,34 @@ describe("TaskController", () => {
     }
   });
 
+  it("keeps volatile workspace state out of the cached system prefix", async () => {
+    const workspace = await mkdtemp(join(tmpdir(), "liteagent-controller-"));
+    try {
+      const provider = new FakeProvider([textResponse("done")]);
+      const registry = new ToolRegistry();
+      const events: RuntimeEvent[] = [];
+      const { controller } = createController(workspace, provider, registry, events);
+
+      await controller.execute(createTask(workspace, "hi"));
+
+      const request = provider.requests[0] ?? [];
+      const system = request
+        .filter((message) => message.role === "system")
+        .map((message) => message.content ?? "")
+        .join("\n");
+      const user = request
+        .filter((message) => message.role === "user")
+        .map((message) => message.content ?? "")
+        .join("\n");
+      expect(system).toContain("<environment>");
+      expect(system).not.toContain("<workspace-state>");
+      expect(user).toContain("<workspace-state>");
+      expect(user).toContain("Current date:");
+    } finally {
+      await rm(workspace, { recursive: true, force: true });
+    }
+  });
+
   describe("readonly tool caching", () => {
     it("invokes a cacheable:false readonly tool for repeated identical calls", async () => {
       const workspace = await mkdtemp(join(tmpdir(), "liteagent-controller-"));

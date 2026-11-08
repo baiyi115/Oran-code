@@ -126,17 +126,32 @@ export function assembleStableSystemPrompt(optional: OptionalSystemPromptModules
 }
 
 export function buildEnvironmentPrompt(options: EnvironmentPromptOptions): string {
-  const now = options.now ?? new Date();
+  return [buildStableEnvironmentPrompt(options), buildVolatileEnvironmentPrompt(options)].join("\n\n");
+}
+
+/**
+ * Stable environment facts belong in the cached system prefix: they stay identical across tasks
+ * in one workspace and model. Volatile workspace state lives in the current user turn instead, so
+ * another task changing the git state or file summary cannot invalidate the cached conversation.
+ */
+export function buildStableEnvironmentPrompt(options: EnvironmentPromptOptions): string {
   const currentPlatform = options.platform ?? platform();
   const lines = [
     "<environment>",
     `Working directory: ${options.workspace}`,
     `Platform: ${currentPlatform}`,
     ...commandEnvironmentLines(currentPlatform),
-    `Current date: ${now.toISOString().slice(0, 10)}`,
     `Git repository: ${options.snapshot.isGitRepo ? "yes" : "no"}`,
     `Model: ${options.model.provider}/${options.model.model}`,
   ];
+  if (options.appVersion) lines.push(`Oran code version: ${options.appVersion}`);
+  lines.push("</environment>");
+  return lines.join("\n");
+}
+
+export function buildVolatileEnvironmentPrompt(options: EnvironmentPromptOptions): string {
+  const now = options.now ?? new Date();
+  const lines = ["<workspace-state>", `Current date: ${now.toISOString().slice(0, 10)}`];
   if (options.snapshot.gitBranch) lines.push(`Git branch: ${options.snapshot.gitBranch}`);
   if (options.snapshot.gitDirty !== undefined) {
     lines.push(`Git working tree: ${options.snapshot.gitDirty ? "dirty" : "clean"}`);
@@ -144,9 +159,8 @@ export function buildEnvironmentPrompt(options: EnvironmentPromptOptions): strin
   if (options.snapshot.scanTruncated) {
     lines.push("Workspace scan: truncated after reaching its time or entry limit");
   }
-  if (options.appVersion) lines.push(`Oran code version: ${options.appVersion}`);
   if (options.snapshot.summary.trim()) lines.push(`Workspace summary:\n${options.snapshot.summary.trim()}`);
-  lines.push("</environment>");
+  lines.push("</workspace-state>");
   return lines.join("\n");
 }
 
