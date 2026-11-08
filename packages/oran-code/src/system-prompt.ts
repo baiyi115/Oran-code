@@ -71,6 +71,7 @@ const FIXED_MODULES: readonly SystemPromptModule[] = [
       "For bounded subtasks or isolated explorations, consider delegating to subagents via the agent tool or isolating experimental changes using enter_worktree.",
       "Delegate to the agent tool when a subtask is bounded, independently verifiable, and would require extensive exploration; handle tasks answerable within a few tool calls directly.",
       "For non-trivial delegation, pass task_contract with the objective, boundaries, and done_when so the subagent knows when the work is complete.",
+      "Make done_when a bounded deliverable (e.g. at most a few file:line facts) instead of an open summary; a subagent's report is on the critical path and must not restate code you can read yourself.",
       "When facing several independent investigations (e.g. exploring unrelated modules), spawn multiple explore subagents in the same tool batch so they run concurrently.",
       "Use run_in_background for long-running subagents whose results are not needed immediately; their results arrive as task notifications.",
       "Use task_send to steer a running background subagent or teammate with answers, new constraints, or corrections, and task_messages to check delivery; their reports and questions arrive as task notifications.",
