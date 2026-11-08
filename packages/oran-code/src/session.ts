@@ -218,6 +218,8 @@ export class TerminalSession {
   private pendingPlanExecute: { sessionId: string; plan: string; prompt: string } | undefined;
   private previousPlanPermissionMode: PermissionMode | undefined;
   private queuePaused = false;
+  /** A scripted run owns its entire lifecycle; background reports must not start a second task. */
+  private scriptedRunActive = false;
   private autoResumeScheduled = false;
   private autoResumeBudget = AUTO_RESUME_LIMIT;
   /** A `result` report triggers at most one automatic continuation per delegated task. */
@@ -606,18 +608,23 @@ export class TerminalSession {
 
   async runOnce(prompt: string): Promise<Task> {
     if (!existsSync(this.workspace)) throw new Error(`workspace does not exist: ${this.workspace}`);
-    await ensureProjectStateRoot(this.workspace);
-    await Promise.all([
-      this.ensureAgentStateRestored(),
-      this.initializeCommandIntegrations(),
-      this.openTrace(),
-      this.openSessionStore(),
-    ]);
-    this.startMcpConnections();
+    this.scriptedRunActive = true;
     try {
+      await ensureProjectStateRoot(this.workspace);
+      await Promise.all([
+        this.ensureAgentStateRestored(),
+        this.initializeCommandIntegrations(),
+        this.openTrace(),
+        this.openSessionStore(),
+      ]);
+      this.startMcpConnections();
       return await this.startTask(prompt, false, false, undefined, true);
     } finally {
-      await this.shutdown();
+      try {
+        await this.shutdown();
+      } finally {
+        this.scriptedRunActive = false;
+      }
     }
   }
 
@@ -1644,7 +1651,7 @@ export class TerminalSession {
    * already queued take priority; restore paths disable this to avoid a run on startup.
    */
   private scheduleAutoResume(sessionId: string, resultTaskIds: readonly string[] = []): void {
-    if (this.autoResumeScheduled || this.quitRequested || this.queuePaused) return;
+    if (this.scriptedRunActive || this.autoResumeScheduled || this.quitRequested || this.queuePaused) return;
     if (this.interactionRunning() || this.hasPendingApprovals() || this.pendingPlanExecute) return;
     if (this.followUps.length > 0 || this.currentSession?.id !== sessionId || !this.model) return;
     if (this.autoResumeBudget <= 0) {
@@ -1657,7 +1664,8 @@ export class TerminalSession {
     this.autoResumeScheduled = true;
     setTimeout(() => {
       this.autoResumeScheduled = false;
-      if (this.quitRequested || this.queuePaused || this.currentSession?.id !== sessionId) return;
+      if (this.scriptedRunActive || this.quitRequested || this.queuePaused || this.currentSession?.id !== sessionId)
+        return;
       if (this.interactionRunning() || this.hasPendingApprovals() || this.pendingPlanExecute) return;
       if (this.autoResumeBudget <= 0) return;
       this.autoResumeBudget -= 1;
@@ -2227,7 +2235,7 @@ export class TerminalSession {
   }
 
   private taskRunning(): boolean {
-    return this.taskPromise !== undefined;
+    return this.taskPromise !== undefined || this.controller !== undefined;
   }
 
   private shellRunning(): boolean {

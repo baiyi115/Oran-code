@@ -224,6 +224,53 @@ describe("TerminalSession", { timeout: SESSION_TEST_TIMEOUT_MS }, () => {
     }
   });
 
+  it("keeps scripted runs single-task when a child completion would schedule a continuation", async () => {
+    const workspace = await mkdtemp(join(tmpdir(), "oran-session-headless-continuation-"));
+    const provider = new FakeProvider();
+    const eventTypes: string[] = [];
+    let activeAtCompletion = false;
+    let continuationScheduled = false;
+    let session: TerminalSession | undefined;
+    try {
+      session = new TerminalSession(
+        {
+          workspace,
+          model,
+          config: { providers: {} },
+          approveAll: true,
+          providerFactory: () => provider,
+          runtimeEventSink: (event) => {
+            eventTypes.push(event.type);
+            if (event.type !== "completed") return;
+            const internal = session as unknown as {
+              currentSession?: { id: string };
+              taskRunning(): boolean;
+              scheduleAutoResume(sessionId: string): void;
+              autoResumeScheduled: boolean;
+            };
+            activeAtCompletion = internal.taskRunning();
+            internal.scheduleAutoResume(internal.currentSession!.id);
+            continuationScheduled = internal.autoResumeScheduled;
+          },
+        },
+        process.stdin,
+        process.stdout,
+      );
+
+      const task = await session.runOnce("do work");
+      expect(task.state).toBe("completed");
+      expect(activeAtCompletion).toBe(true);
+      expect(continuationScheduled).toBe(false);
+      expect(provider.requests).toHaveLength(1);
+      expect(eventTypes).toContain("completed");
+      expect(eventTypes).not.toContain("assistant_abort");
+      expect(eventTypes).not.toContain("cancelled");
+    } finally {
+      await (session as any)?.shutdown?.().catch(() => undefined);
+      await rm(workspace, { recursive: true, force: true });
+    }
+  });
+
   it("appends the user message before the model request can complete", async () => {
     const workspace = await mkdtemp(join(tmpdir(), "liteagent-session-durable-user-"));
     let markStarted: (() => void) | undefined;
