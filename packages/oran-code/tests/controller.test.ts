@@ -6,6 +6,7 @@ import { TaskController } from "../src/controller.js";
 import { createRuntimeConfig } from "../src/runtime.js";
 import { InMemoryTraceStore } from "../src/trace.js";
 import { createTask } from "../src/types.js";
+import { compareRequestPrefix } from "../src/controller-utils.js";
 import { ToolRegistry } from "../src/tools.js";
 import { goalFingerprint } from "../src/progress/capture.js";
 import { EMPTY_PROGRESS_STATE, ProgressStateStore } from "../src/progress/store.js";
@@ -237,29 +238,42 @@ describe("TaskController", () => {
     }
   });
 
-  it("keeps volatile workspace state out of the cached system prefix", async () => {
+  it("keeps each task's workspace state with its user turn and preserves the cached prefix", async () => {
     const workspace = await mkdtemp(join(tmpdir(), "liteagent-controller-"));
     try {
-      const provider = new FakeProvider([textResponse("done")]);
+      const provider = new FakeProvider([textResponse("first done"), textResponse("second done")]);
       const registry = new ToolRegistry();
       const events: RuntimeEvent[] = [];
       const { controller } = createController(workspace, provider, registry, events);
+      const firstTask = createTask(workspace, "Inspect the repository.");
 
-      await controller.execute(createTask(workspace, "hi"));
+      await controller.execute(firstTask);
+      const persisted = controller.conversationSnapshot();
+      const firstUser = persisted.find((message) => message.metadata?.taskId === firstTask.id);
+      expect(firstUser?.content).toContain("User message:\nInspect the repository.");
+      expect(firstUser?.content).toContain("<workspace-state>");
+      expect(firstUser?.content).toContain("Current date:");
 
-      const request = provider.requests[0] ?? [];
-      const system = request
+      await writeFile(join(workspace, "added.txt"), "new file\n", "utf8");
+      await controller.execute(createTask(workspace, "Check the repository again."));
+
+      const firstRequest = provider.requests[0] ?? [];
+      const secondRequest = provider.requests[1] ?? [];
+      const system = firstRequest
         .filter((message) => message.role === "system")
-        .map((message) => message.content ?? "")
-        .join("\n");
-      const user = request
-        .filter((message) => message.role === "user")
         .map((message) => message.content ?? "")
         .join("\n");
       expect(system).toContain("<environment>");
       expect(system).not.toContain("<workspace-state>");
-      expect(user).toContain("<workspace-state>");
-      expect(user).toContain("Current date:");
+      const prefix = compareRequestPrefix(firstRequest, secondRequest);
+      expect(prefix.commonPrefixMessages).toBe(prefix.previousMessages);
+      expect(prefix.firstDivergentIndex).toBeUndefined();
+      expect(
+        secondRequest.some((message) => message.content?.includes("Check the repository again.")),
+      ).toBe(true);
+      expect(
+        controller.conversationSnapshot().filter((message) => message.content?.includes("<workspace-state>")),
+      ).toHaveLength(2);
     } finally {
       await rm(workspace, { recursive: true, force: true });
     }
@@ -328,6 +342,7 @@ describe("TaskController", () => {
         commonPrefixMessages?: number;
         firstDivergentIndex?: number;
       };
+      // The workspace state stays in the user message, so the earlier request remains a prefix.
       expect(third.previousRequestMessages).toBe(5);
       expect(third.commonPrefixMessages).toBe(5);
       expect(third.firstDivergentIndex).toBeUndefined();

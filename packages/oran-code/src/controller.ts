@@ -428,8 +428,8 @@ export class TaskController {
       snapshot,
       appVersion: PRODUCT_VERSION,
     };
-    // Volatile workspace state rides in the current user turn so it cannot invalidate the cached
-    // system prefix or the cached conversation prefix left by a previous task.
+    // Volatile workspace state belongs to this task's user turn. Preserve it with the turn so
+    // future tasks can replay the same cached prefix instead of dropping a historical message.
     const userContent = [
       this.conversation.length > 0
         ? `[Previous task completed. New user task begins below.]\nUser message:\n${task.prompt}`

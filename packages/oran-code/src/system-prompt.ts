@@ -125,14 +125,10 @@ export function assembleStableSystemPrompt(optional: OptionalSystemPromptModules
     .join("\n\n");
 }
 
-export function buildEnvironmentPrompt(options: EnvironmentPromptOptions): string {
-  return [buildStableEnvironmentPrompt(options), buildVolatileEnvironmentPrompt(options)].join("\n\n");
-}
-
 /**
  * Stable environment facts belong in the cached system prefix: they stay identical across tasks
- * in one workspace and model. Volatile workspace state lives in the current user turn instead, so
- * another task changing the git state or file summary cannot invalidate the cached conversation.
+ * in one workspace and model. Volatile workspace state lives in each task's user turn so later
+ * tasks can replay the same cached conversation prefix even when the git state changes.
  */
 export function buildStableEnvironmentPrompt(options: EnvironmentPromptOptions): string {
   const currentPlatform = options.platform ?? platform();
