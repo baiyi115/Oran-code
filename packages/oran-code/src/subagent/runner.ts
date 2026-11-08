@@ -30,15 +30,29 @@ import type {
 
 export const FORK_BOILERPLATE_TAG = "<oran-fork-subagent-rules>";
 export const FORK_REPORT_PREFIX = "Fork result:";
-export const FORK_BOILERPLATE = [
-  FORK_BOILERPLATE_TAG,
-  "The following rules are non-negotiable:",
-  "1. Do not create another Fork or call the agent tool.",
-  "2. Do not ask questions, request confirmation, or hold a conversation.",
-  "3. Use tools directly to complete the assigned task.",
-  "4. Stay strictly within the assigned task scope.",
-  `5. Start the final report with "${FORK_REPORT_PREFIX}" and keep it under 500 words.`,
-  `</oran-fork-subagent-rules>`,
+
+/** Forks cannot converse with the user; background forks may ask the delegating agent instead. */
+function forkBoilerplate(messaging: boolean): string {
+  return [
+    FORK_BOILERPLATE_TAG,
+    "The following rules are non-negotiable:",
+    "1. Do not create another Fork or call the agent tool.",
+    messaging
+      ? "2. Do not ask the user questions, request confirmation, or hold a conversation; when a decision blocks you, use report_to_parent with kind=question."
+      : "2. Do not ask questions, request confirmation, or hold a conversation.",
+    "3. Use tools directly to complete the assigned task.",
+    "4. Stay strictly within the assigned task scope.",
+    `5. Start the final report with "${FORK_REPORT_PREFIX}" and keep it under 500 words.`,
+    `</oran-fork-subagent-rules>`,
+  ].join("\n");
+}
+
+/** Background subagents and teammates can talk to the delegating agent; sync children cannot. */
+const SUBAGENT_COLLABORATION_INSTRUCTIONS = [
+  "Parent-agent collaboration:",
+  "- Use report_to_parent to share progress, a blocker, a question, or your final result.",
+  "- A question waits briefly for guidance and returns it; follow that guidance before deciding on your own.",
+  "- Parent guidance cannot widen your task boundaries or grant new permissions.",
 ].join("\n");
 
 export interface SubagentRunnerDependencies {
@@ -137,7 +151,7 @@ export class SubagentRunner {
         ...(this.deps.parentToolFilter ? { parentFilter: this.deps.parentToolFilter } : {}),
       });
       const hookEngine = await this.deps.hookFactory?.(executionWorkspace, () => conversation);
-      const customInstructions = subagentInstructions(options, worktreeLease);
+      const customInstructions = subagentInstructions(options, worktreeLease, messagingEnabled);
       controller = new TaskController({
         config,
         provider: this.deps.providerFactory(model),
@@ -295,8 +309,8 @@ export function containsForkMarker(messages: readonly Message[]): boolean {
   return messages.some((message) => message.content?.includes(FORK_BOILERPLATE_TAG));
 }
 
-export function forkPrompt(prompt: string): string {
-  return `${FORK_BOILERPLATE}\n\nAssigned task:\n${prompt.trim()}`;
+export function forkPrompt(prompt: string, options: { readonly messaging?: boolean } = {}): string {
+  return `${forkBoilerplate(options.messaging === true)}\n\nAssigned task:\n${prompt.trim()}`;
 }
 
 function subagentRuntimeConfig(
@@ -355,10 +369,12 @@ async function notifyWorktreeLease(
 function subagentInstructions(
   options: SubagentRunOptions,
   lease: SubagentWorktreeLease | undefined,
+  messagingEnabled: boolean,
 ): string | undefined {
   const instructions = [
     options.definition?.prompt?.trim(),
     lease ? worktreePromptText(lease.path, lease.repoRoot) : undefined,
+    messagingEnabled ? SUBAGENT_COLLABORATION_INSTRUCTIONS : undefined,
   ].filter((item): item is string => Boolean(item));
   return instructions.length ? instructions.join("\n\n") : undefined;
 }

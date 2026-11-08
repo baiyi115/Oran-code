@@ -35,6 +35,7 @@ interface TeamRuntime {
   readonly runner: SubagentRunner;
   readonly resolveDefinition: (name: string) => AgentDefinition | undefined;
   readonly resolveModel: (reference: string) => ModelConfig;
+  readonly getParentSessionId?: () => string | undefined;
 }
 
 export class TeamManager {
@@ -216,7 +217,10 @@ export class TeamManager {
           member.currentPrompt = next;
           const taskId = `team-${randomUUID()}`;
           member.activeTaskId = taskId;
-          this.messages?.registerTask(taskId, member.parentSessionId);
+          // A member restored from older state may not carry a parent session; bind it to the
+          // session that resumes it so the runner's later registration cannot conflict.
+          const parentSessionId = member.parentSessionId ?? this.runtime?.getParentSessionId?.();
+          this.messages?.registerTask(taskId, parentSessionId);
           member.status = "running";
           const abortController = new AbortController();
           member.currentAbort = abortController;
@@ -233,7 +237,7 @@ export class TeamManager {
               description: `${team.name}/${member.name}`,
               prompt: next,
               taskId,
-              ...(member.parentSessionId ? { parentSessionId: member.parentSessionId } : {}),
+              ...(parentSessionId ? { parentSessionId } : {}),
               origin: { kind: "teammate", teamName: team.name, name: member.name },
               conversation: member.conversation,
               abortController,

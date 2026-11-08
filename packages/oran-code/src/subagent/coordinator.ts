@@ -1,12 +1,15 @@
 import type { Message, ModelConfig, ToolCall, ToolDefinition, ToolResult } from "../types.js";
 import type { ToolRegistry } from "../tools.js";
 import { BackgroundAgentTaskManager } from "./background.js";
-import type { AgentMessageBus } from "./messages.js";
+import { formatAgentMessage, type AgentMessageBus } from "./messages.js";
 import { containsForkMarker, forkPrompt, SubagentRunner } from "./runner.js";
 import type { AgentDefinitionLoader } from "./roles.js";
 import type { StructuredSubagentScope } from "./scope.js";
 import { TeamManager } from "./team.js";
 import type { AgentToolArguments, DelegatedTaskContract, SubagentOrigin } from "./types.js";
+
+const DEFAULT_GUIDANCE_WAIT_SECONDS = 60;
+const MAX_GUIDANCE_WAIT_SECONDS = 300;
 
 export interface SubagentCoordinatorOptions {
   readonly roles: AgentDefinitionLoader;
@@ -29,6 +32,7 @@ export class SubagentCoordinator {
       runner: this.options.runner,
       resolveDefinition: (name) => this.options.roles.get(name),
       resolveModel: this.options.resolveModel,
+      ...(this.options.getParentSessionId ? { getParentSessionId: this.options.getParentSessionId } : {}),
     });
     registry.register(this.agentTool());
     registry.register(this.teamCreateTool());
@@ -145,14 +149,15 @@ export class SubagentCoordinator {
     if (this.options.callerOrigin?.kind === "fork" || containsForkMarker(parent)) {
       return failed("Cannot create a Fork from a Fork-derived subagent.");
     }
+    const background = args.run_in_background === true;
     const runOptions = {
       description: args.description,
-      prompt: forkPrompt(assignment),
+      prompt: forkPrompt(assignment, { messaging: background && Boolean(this.options.messages) }),
       origin: { kind: "fork", name: args.description } as const,
       parentConversation: parent,
       ...(parentSessionId ? { parentSessionId } : {}),
       ...(model ? { model } : {}),
-      background: args.run_in_background === true,
+      background,
     };
     if (!runOptions.background) {
       const result = await this.options.runner.run({
@@ -383,13 +388,19 @@ export class SubagentCoordinator {
     return {
       name: "report_to_parent",
       description:
-        "Report progress, a blocker, a question or a result to the delegating agent while you work. Reports do not authorize new actions.",
+        "Report progress, a blocker, a question or a result to the delegating agent while you work. A question waits up to wait_seconds (default 60, max 300) for guidance and returns it. Reports do not authorize new actions.",
       parameters: {
         type: "object",
         additionalProperties: false,
         properties: {
           kind: { type: "string", enum: ["progress", "blocked", "question", "result"] },
           message: { type: "string" },
+          wait_seconds: {
+            type: "number",
+            minimum: 0,
+            maximum: MAX_GUIDANCE_WAIT_SECONDS,
+            description: "Kind=question only: how long to wait for parent guidance. Defaults to 60.",
+          },
         },
         required: ["kind", "message"],
       },
@@ -406,8 +417,20 @@ export class SubagentCoordinator {
         if (kind !== "progress" && kind !== "blocked" && kind !== "question" && kind !== "result") {
           return failed("Invalid report kind.");
         }
+        const waitSeconds = guidanceWaitSeconds(kind, call.arguments.wait_seconds);
+        if (waitSeconds === undefined) {
+          return failed(`wait_seconds must be a number between 0 and ${MAX_GUIDANCE_WAIT_SECONDS}.`);
+        }
         const result = await this.options.messages.sendToParent(taskId, kind, stringArg(call.arguments.message));
-        return result.ok ? success(result.output) : failed(result.output);
+        if (!result.ok || waitSeconds === 0) return result.ok ? success(result.output) : failed(result.output);
+        const guidance = await this.options.messages.waitForChild(taskId, waitSeconds * 1000, context?.signal);
+        if (context?.signal?.aborted) return success(`${result.output}\nGuidance wait was cancelled.`);
+        if (!guidance.length) {
+          return success(
+            `${result.output}\nNo guidance arrived within ${waitSeconds}s; continue with your best judgment or report again.`,
+          );
+        }
+        return success(`${result.output}\n\n${guidance.map(formatAgentMessage).join("\n\n")}`);
       },
     };
   }
@@ -551,6 +574,13 @@ function assignedPrompt(args: AgentToolArguments): string {
 
 function optionalStringArg(value: unknown): string | undefined {
   return typeof value === "string" && value.trim() ? value.trim() : undefined;
+}
+
+/** Questions wait by default; other report kinds return immediately unless explicitly told to wait. */
+function guidanceWaitSeconds(kind: string, value: unknown): number | undefined {
+  if (value === undefined) return kind === "question" ? DEFAULT_GUIDANCE_WAIT_SECONDS : 0;
+  if (typeof value !== "number" || !Number.isFinite(value)) return undefined;
+  return Math.min(MAX_GUIDANCE_WAIT_SECONDS, Math.max(0, Math.floor(value)));
 }
 
 function stringArg(value: unknown): string {

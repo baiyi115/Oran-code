@@ -275,3 +275,20 @@ You are a code review subagent. Inspect recent changes and report concrete findi
 Supported frontmatter keys: `name`, `description`, `allowedTools`, `deniedTools`, `model`
 (provider/model override), `permissionMode`, `forceBackground`, and `isolation`
 (`shared-workspace` or `worktree` for a disposable Git worktree).
+
+### Subagent collaboration
+
+The main agent delegates with `agent` and can attach an explicit `task_contract`
+(`objective`, `boundaries`, `done_when`). Synchronous calls return their result directly.
+Background calls and team members stay reachable while they run:
+
+- `task_send` sends guidance to a running or queued task. Guidance is delivered before the
+  child's next model turn and is never treated as user authorization.
+- `task_messages` shows each message's `queued`, `delivered`, or `undeliverable` status.
+- `report_to_parent` lets a background subagent or teammate report `progress`, `blocked`,
+  `question`, or `result`. A `question` waits for guidance by default (60 seconds,
+  configurable with `wait_seconds` up to 300) and returns the guidance in the same call.
+
+Messages are capped at 4,000 characters, with at most 16 pending per task and direction.
+Guidance that never reaches a task before it ends is marked `undeliverable` and reported
+to the parent; reports are injected into the parent's next model request.

@@ -135,6 +135,8 @@ function emptyTruncatedResponse(): ModelStreamChunk[] {
 interface ControllerTestOptions {
   approvalCallback?: (call: ToolCall, level: number, description: string, requestId: string) => boolean;
   hookEngine?: HookEnginePort;
+  getDelegatedMessages?: () => readonly string[];
+  getTaskNotifications?: () => readonly string[];
 }
 
 function createController(
@@ -152,6 +154,8 @@ function createController(
     trace,
     ...(options.approvalCallback ? { approvalCallback: options.approvalCallback } : {}),
     ...(options.hookEngine ? { hookEngine: options.hookEngine } : {}),
+    ...(options.getDelegatedMessages ? { getDelegatedMessages: options.getDelegatedMessages } : {}),
+    ...(options.getTaskNotifications ? { getTaskNotifications: options.getTaskNotifications } : {}),
     eventCallback: (event) => {
       events.push(event);
     },
@@ -186,6 +190,47 @@ describe("TaskController", () => {
         "model_request",
         "model_response",
       ]);
+    } finally {
+      await rm(workspace, { recursive: true, force: true });
+    }
+  });
+
+  it("injects parent guidance and child reports into the next request", async () => {
+    const workspace = await mkdtemp(join(tmpdir(), "liteagent-controller-"));
+    try {
+      const provider = new FakeProvider([textResponse("done")]);
+      const registry = new ToolRegistry();
+      const events: RuntimeEvent[] = [];
+      let guidanceReads = 0;
+      let notificationReads = 0;
+      const { controller } = createController(workspace, provider, registry, events, {
+        getDelegatedMessages: () => {
+          guidanceReads += 1;
+          return ["PARENT_GUIDANCE"];
+        },
+        getTaskNotifications: () => {
+          notificationReads += 1;
+          return ["CHILD_REPORT"];
+        },
+      });
+
+      const task = await controller.execute(createTask(workspace, "hi"));
+
+      expect(task.state).toBe("completed");
+      expect(guidanceReads).toBe(1);
+      expect(notificationReads).toBe(1);
+      const request = provider.requests[0] ?? [];
+      expect(request.some((message) => message.role === "user" && message.content?.includes("PARENT_GUIDANCE"))).toBe(
+        true,
+      );
+      expect(
+        request.some(
+          (message) =>
+            message.role === "system" &&
+            message.metadata?.promptBlock === "task-notification" &&
+            message.content?.includes("CHILD_REPORT"),
+        ),
+      ).toBe(true);
     } finally {
       await rm(workspace, { recursive: true, force: true });
     }

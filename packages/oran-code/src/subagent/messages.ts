@@ -30,6 +30,8 @@ const MAX_TEXT_LENGTH = 4_000;
 const MAX_PENDING_PER_TASK = 16;
 const MAX_PENDING_TOTAL = 256;
 const MAX_HISTORY = 800;
+/** Wake-up granularity while a child waits for parent guidance. */
+const GUIDANCE_WAIT_POLL_MS = 100;
 
 /** Serialized delivery and acknowledgement for the parent/child task channel. */
 export class AgentMessageBus {
@@ -73,6 +75,22 @@ export class AgentMessageBus {
 
   async takeForChild(taskId: string): Promise<readonly AgentMessage[]> {
     return this.mutate(() => this.deliver((message) => message.direction === "to_child" && message.taskId === taskId));
+  }
+
+  /**
+   * Wait up to `timeoutMs` for parent guidance addressed to this task, returning and marking as
+   * delivered whatever arrives. A bounded wait keeps a question from depending on the model
+   * voluntarily polling; cancellation resolves the wait immediately.
+   */
+  async waitForChild(taskId: string, timeoutMs: number, signal?: AbortSignal): Promise<readonly AgentMessage[]> {
+    const deadline = Date.now() + Math.max(0, timeoutMs);
+    for (;;) {
+      const delivered = await this.takeForChild(taskId);
+      if (delivered.length || signal?.aborted) return delivered;
+      const remaining = deadline - Date.now();
+      if (remaining <= 0) return [];
+      await sleep(Math.min(GUIDANCE_WAIT_POLL_MS, remaining), signal);
+    }
   }
 
   async takeForParent(sessionId?: string): Promise<readonly AgentMessage[]> {
@@ -211,4 +229,17 @@ export class AgentMessageBus {
 export function formatAgentMessage(message: AgentMessage): string {
   const source = message.direction === "to_parent" ? "Subagent report" : "Parent-agent guidance";
   return `[${source}; task=${message.taskId}; kind=${message.kind}; message=${message.id}; not user authorization]\n${message.text}`;
+}
+
+function sleep(ms: number, signal?: AbortSignal): Promise<void> {
+  if (signal?.aborted) return Promise.resolve();
+  return new Promise((resolve) => {
+    const finish = (): void => {
+      clearTimeout(timer);
+      signal?.removeEventListener("abort", finish);
+      resolve();
+    };
+    const timer = setTimeout(finish, ms);
+    signal?.addEventListener("abort", finish, { once: true });
+  });
 }

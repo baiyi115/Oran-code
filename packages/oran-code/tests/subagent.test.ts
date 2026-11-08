@@ -16,7 +16,8 @@ import {
 import { AgentDefinitionLoader } from "../src/subagent/roles.js";
 import { StructuredSubagentScope } from "../src/subagent/scope.js";
 import { subagentOriginLabel } from "../src/subagent/types.js";
-import type { SubagentRunner } from "../src/subagent/runner.js";
+import { forkPrompt, type SubagentRunner } from "../src/subagent/runner.js";
+import { AgentMessageBus } from "../src/subagent/messages.js";
 import type { AgentDefinition, SubagentRunOptions, SubagentRunResult } from "../src/subagent/types.js";
 import type { ToolDefinition } from "../src/types.js";
 
@@ -453,6 +454,76 @@ describe("SubagentCoordinator", () => {
     expect((await invoke("task_list", {})).output).toContain(task.id);
     expect((await invoke("task_detail", { task_id: task.id })).output).toContain("async done");
     expect((await invoke("task_retry", { task_id: task.id })).error).toContain("cannot be retried");
+  });
+});
+
+describe("subagent messaging tools", () => {
+  async function makeCoordinator(messages: AgentMessageBus): Promise<{ registry: ToolRegistry; workspace: string }> {
+    const workspace = await makeWorkspace();
+    const roles = new AgentDefinitionLoader(workspace, {
+      user: join(workspace, "user-agents"),
+      project: join(workspace, ".oran", "agents"),
+    });
+    await roles.scan();
+    const runner = fakeRunner(async (options) => runResult(options));
+    const registry = new ToolRegistry();
+    new SubagentCoordinator({
+      roles,
+      runner,
+      background: new BackgroundAgentTaskManager(),
+      teams: new TeamManager(),
+      messages,
+      getParentSessionId: () => "session-1",
+      parentConversation: () => [{ role: "user", content: "inspect the code" }],
+      resolveModel: () => {
+        throw new Error("unused");
+      },
+    }).registerTools(registry);
+    return { registry, workspace };
+  }
+
+  it("returns parent guidance after a question waits", async () => {
+    const messages = new AgentMessageBus();
+    messages.registerTask("task-1", "session-1");
+    const { registry, workspace } = await makeCoordinator(messages);
+
+    const pending = registry.invoke(
+      {
+        name: "report_to_parent",
+        arguments: { kind: "question", message: "which branch?", wait_seconds: 2 },
+        createdAt: new Date().toISOString(),
+      },
+      { workspace, subagentTaskId: "task-1" },
+    );
+    setTimeout(() => void messages.sendToChild("task-1", "use main", "session-1"), 20);
+
+    const result = await pending;
+    expect(result.ok).toBe(true);
+    expect(result.output).toContain("Parent-agent guidance");
+    expect(result.output).toContain("use main");
+    expect(await messages.takeForChild("task-1")).toEqual([]);
+  });
+
+  it("rejects parent-only messaging tools when called from a subagent", async () => {
+    const messages = new AgentMessageBus();
+    messages.registerTask("task-1", "session-1");
+    const { registry, workspace } = await makeCoordinator(messages);
+
+    const result = await registry.invoke(
+      {
+        name: "task_send",
+        arguments: { task_id: "task-1", message: "do something else" },
+        createdAt: new Date().toISOString(),
+      },
+      { workspace, subagentTaskId: "task-1" },
+    );
+    expect(result.ok).toBe(false);
+    expect(result.error).toContain("Only the parent agent");
+  });
+
+  it("offers report_to_parent only to messaging-enabled forks", () => {
+    expect(forkPrompt("inspect", { messaging: true })).toContain("report_to_parent");
+    expect(forkPrompt("inspect")).not.toContain("report_to_parent");
   });
 });
 
