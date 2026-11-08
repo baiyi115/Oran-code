@@ -298,6 +298,8 @@ export interface McpServerConfig {
 
 export interface SubagentSettings {
   forkWaitTimeoutMs?: number;
+  /** Upper bound applied to a subagent's per-request output budget, never above its model's own. */
+  maxTokens?: number;
 }
 
 export interface UserConfig {
@@ -373,6 +375,7 @@ export interface RuntimeConfig {
   permissions: PermissionConfig;
   subagent: {
     forkWaitTimeoutMs: number;
+    maxTokens?: number;
   };
   approveAll: boolean;
   traceDb?: string;

@@ -315,6 +315,11 @@ export function forkPrompt(prompt: string, options: { readonly messaging?: boole
   return `${forkBoilerplate(options.messaging === true)}\n\nAssigned task:\n${prompt.trim()}`;
 }
 
+/** A configured subagent cap only lowers a model's own output budget; it never raises it. */
+function subagentMaxTokens(modelLimit: number, cap: number | undefined): number {
+  return cap === undefined ? modelLimit : Math.min(modelLimit, cap);
+}
+
 function subagentRuntimeConfig(
   base: RuntimeConfig,
   model: ModelConfig,
@@ -332,7 +337,7 @@ function subagentRuntimeConfig(
   return {
     ...base,
     workspace,
-    model: { ...model },
+    model: { ...model, maxTokens: subagentMaxTokens(model.maxTokens, base.subagent.maxTokens) },
     permissionMode,
     workMode,
     loop: { ...base.loop },

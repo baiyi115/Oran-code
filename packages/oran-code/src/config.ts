@@ -171,7 +171,14 @@ function normalizeSubagentSettings(value: unknown): SubagentSettings | undefined
   ) {
     throw new Error("subagent.forkWaitTimeoutMs must be a finite non-negative number");
   }
-  return forkWaitTimeoutMs === undefined ? {} : { forkWaitTimeoutMs };
+  const maxTokens = (value as Record<string, unknown>).maxTokens;
+  if (maxTokens !== undefined && (typeof maxTokens !== "number" || !Number.isInteger(maxTokens) || maxTokens < 1)) {
+    throw new Error("subagent.maxTokens must be a positive integer");
+  }
+  return {
+    ...(forkWaitTimeoutMs === undefined ? {} : { forkWaitTimeoutMs }),
+    ...(maxTokens === undefined ? {} : { maxTokens }),
+  };
 }
 
 /** Web tool settings: only the shape is validated here; endpoint validity is judged at

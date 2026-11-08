@@ -47,6 +47,9 @@ export function createRuntimeConfig(
     permissions,
     subagent: {
       forkWaitTimeoutMs: normalizeForkWaitTimeout(config.subagent?.forkWaitTimeoutMs),
+      ...(config.subagent?.maxTokens === undefined
+        ? {}
+        : { maxTokens: normalizeSubagentMaxTokens(config.subagent.maxTokens) }),
     },
     approveAll,
     traceDb,
@@ -57,6 +60,13 @@ function normalizeForkWaitTimeout(value: number | undefined): number {
   if (value === undefined) return DEFAULT_FORK_WAIT_TIMEOUT_MS;
   if (!Number.isFinite(value) || value < 0) {
     throw new Error("subagent.forkWaitTimeoutMs must be a finite non-negative number");
+  }
+  return value;
+}
+
+function normalizeSubagentMaxTokens(value: number): number {
+  if (!Number.isInteger(value) || value < 1) {
+    throw new Error("subagent.maxTokens must be a positive integer");
   }
   return value;
 }
