@@ -46,6 +46,8 @@ export function requestOptions(options: Record<string, unknown> | undefined): Re
     "reasoningEffort",
     "reasoning_effort",
     "cache_control",
+    // Anthropic-only cache tuning; the Anthropic provider consumes it before the request body.
+    "anthropicCacheTtl",
     "prompt_cache_options",
     "prompt_cache_key",
     "prompt_cache_retention",

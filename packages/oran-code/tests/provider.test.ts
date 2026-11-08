@@ -352,6 +352,24 @@ describe("OpenAICompatibleProvider", () => {
     expect(body).not.toHaveProperty("promptCacheKey");
   });
 
+  it("never sends the Anthropic-only cache TTL to an OpenAI-compatible endpoint", async () => {
+    const fetchMock = vi.spyOn(globalThis, "fetch").mockResolvedValue(
+      new Response(JSON.stringify({ choices: [{ message: { content: "ok" }, finish_reason: "stop" }] }), {
+        status: 200,
+        headers: { "content-type": "application/json" },
+      }),
+    );
+    const provider = new OpenAICompatibleProvider(
+      model({ options: { anthropicCacheTtl: "1h", prompt_cache_key: "workspace-prefix" } }),
+    );
+
+    await provider.complete(messages);
+
+    const body = JSON.parse(String(fetchMock.mock.calls[0]?.[1]?.body)) as Record<string, unknown>;
+    expect(body).not.toHaveProperty("anthropicCacheTtl");
+    expect(body.prompt_cache_key).toBe("workspace-prefix");
+  });
+
   it("appends runtime reminders as their own message instead of rewriting the last user turn", async () => {
     const fetchMock = vi.spyOn(globalThis, "fetch").mockResolvedValue(
       new Response(JSON.stringify({ choices: [{ message: { content: "ok" }, finish_reason: "stop" }] }), {
