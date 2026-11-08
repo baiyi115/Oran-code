@@ -84,6 +84,7 @@ import {
   userTraceRoot,
 } from "./paths.js";
 import type { SubagentEvent, SubagentOrigin, TeamSnapshot } from "./subagent/types.js";
+import type { AgentMessage } from "./subagent/messages.js";
 import { normalizeTokenUsage } from "./token-usage.js";
 import type { QuestionItem } from "./tools/interaction-tools.js";
 import type { ContextManager } from "./context-manager.js";
@@ -110,6 +111,12 @@ const AUTO_RESUME_PROMPT = [
   "Review it and continue the original task; when a subagent is waiting for guidance, reply with task_send using its task id.",
   "This continuation is not user authorization and does not widen the task's boundaries.",
 ].join(" ");
+
+/**
+ * Automatic continuations are bounded per user prompt. A storm of child reports must not keep
+ * starting turns long after the user stopped interacting.
+ */
+const AUTO_RESUME_LIMIT = 5;
 
 /** Cached dynamic imports so cold-start stays light but first use pays once. */
 const loadInkApp = () => import("./tui/ink-app.js");
@@ -212,6 +219,9 @@ export class TerminalSession {
   private previousPlanPermissionMode: PermissionMode | undefined;
   private queuePaused = false;
   private autoResumeScheduled = false;
+  private autoResumeBudget = AUTO_RESUME_LIMIT;
+  /** A `result` report triggers at most one automatic continuation per delegated task. */
+  private readonly autoResumedReportTasks = new Set<string>();
   private sessionSave: Promise<void> = Promise.resolve();
   private sessionPersistTimer: ReturnType<typeof setTimeout> | undefined;
   private readonly titles: SessionTitleService;
@@ -754,6 +764,11 @@ export class TerminalSession {
   ): Promise<Task> {
     if (this.shellRunning()) throw new Error("finish the current shell command before starting a task");
     if (this.compactRunning()) throw new Error("wait for or cancel context compaction before starting a task");
+    if (!internal) {
+      // A real user prompt restores the continuation budget and lets each task report again.
+      this.autoResumeBudget = AUTO_RESUME_LIMIT;
+      this.autoResumedReportTasks.clear();
+    }
     this.taskGeneration += 1;
     if (!this.model) {
       const error = new Error("no model selected; use /model PROVIDER/MODEL first");
@@ -1613,7 +1628,9 @@ export class TerminalSession {
       });
       this.renderer.markdown("Background task", notification);
     }
-    if (allowAutoResume && needsParentContinuation(finishedTasks, reports)) this.scheduleAutoResume(sessionId);
+    if (allowAutoResume && needsParentContinuation(finishedTasks, continuationReports(reports, this.autoResumedReportTasks))) {
+      this.scheduleAutoResume(sessionId, resultReportTaskIds(reports, this.autoResumedReportTasks));
+    }
     await this.persistTuiSession();
     this.refreshTui();
   }
@@ -1623,15 +1640,27 @@ export class TerminalSession {
    * internal turn so the main agent can integrate the result or answer with task_send. User prompts
    * already queued take priority; restore paths disable this to avoid a run on startup.
    */
-  private scheduleAutoResume(sessionId: string): void {
+  private scheduleAutoResume(sessionId: string, resultTaskIds: readonly string[] = []): void {
     if (this.autoResumeScheduled || this.quitRequested || this.queuePaused) return;
     if (this.interactionRunning() || this.hasPendingApprovals() || this.pendingPlanExecute) return;
     if (this.followUps.length > 0 || this.currentSession?.id !== sessionId || !this.model) return;
+    if (this.autoResumeBudget <= 0) {
+      this.renderer.status(
+        "Paused automatic subagent continuations: this prompt's continuation budget is exhausted.",
+        "yellow",
+      );
+      return;
+    }
     this.autoResumeScheduled = true;
     setTimeout(() => {
       this.autoResumeScheduled = false;
       if (this.quitRequested || this.queuePaused || this.currentSession?.id !== sessionId) return;
       if (this.interactionRunning() || this.hasPendingApprovals() || this.pendingPlanExecute) return;
+      if (this.autoResumeBudget <= 0) return;
+      this.autoResumeBudget -= 1;
+      // Consume the report only when a continuation actually starts, so a skipped attempt stays
+      // eligible for the next flush.
+      for (const taskId of resultTaskIds) this.autoResumedReportTasks.add(taskId);
       this.renderer.status("Subagent needs attention; continuing the main task.", "cyan");
       this.launchTask(AUTO_RESUME_PROMPT, true, false, false, undefined, undefined, true);
     }, 0).unref?.();
@@ -2474,6 +2503,25 @@ async function saveHistoryEntries(history: readonly string[]): Promise<void> {
 
 export function supportsTui(input: NodeJS.ReadableStream, output: NodeJS.WriteStream): boolean {
   return Boolean((input as NodeJS.ReadStream).isTTY && output.isTTY);
+}
+
+/** Drops `result` reports whose task already triggered one automatic continuation. */
+function continuationReports(
+  reports: readonly AgentMessage[],
+  alreadyResumed: ReadonlySet<string>,
+): readonly AgentMessage[] {
+  return reports.filter((report) => report.kind !== "result" || !alreadyResumed.has(report.taskId));
+}
+
+/** Task ids whose `result` report should be consumed if the continuation starts. */
+function resultReportTaskIds(reports: readonly AgentMessage[], alreadyResumed: ReadonlySet<string>): string[] {
+  return [
+    ...new Set(
+      continuationReports(reports, alreadyResumed)
+        .filter((report) => report.kind === "result")
+        .map((report) => report.taskId),
+    ),
+  ];
 }
 
 /** Whether idle notifications warrant an automatic parent turn instead of waiting for the user. */
