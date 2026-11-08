@@ -4,6 +4,7 @@ import { join } from "node:path";
 import { Readable, Writable } from "node:stream";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { needsParentContinuation, supportsTui, TerminalSession } from "../src/session.js";
+import { JsonlEventLog } from "../src/headless-events.js";
 import { parseSessionJsonl } from "../src/session-store.js";
 import { userSessionsRoot } from "../src/paths.js";
 import type { Message, ModelConfig, ModelProvider, ModelStreamChunk } from "../src/types.js";
@@ -266,6 +267,100 @@ describe("TerminalSession", { timeout: SESSION_TEST_TIMEOUT_MS }, () => {
       expect(eventTypes).not.toContain("assistant_abort");
       expect(eventTypes).not.toContain("cancelled");
     } finally {
+      await (session as any)?.shutdown?.().catch(() => undefined);
+      await rm(workspace, { recursive: true, force: true });
+    }
+  });
+
+  it("keeps headless terminal events and token buckets consistent across a tool turn", async () => {
+    const workspace = await mkdtemp(join(tmpdir(), "oran-session-headless-log-"));
+    const path = join(workspace, "events.jsonl");
+    let log: JsonlEventLog | undefined;
+    let session: TerminalSession | undefined;
+    let modelCalls = 0;
+    const provider: ModelProvider = {
+      async complete() {
+        throw new Error("not used");
+      },
+      async *streamResponse(): AsyncGenerator<ModelStreamChunk> {
+        modelCalls += 1;
+        if (modelCalls === 1) {
+          yield {
+            type: "tool_call_complete",
+            toolCall: { index: 0, id: "call-1", name: "list_files", argumentsJson: '{"path":"."}' },
+            streamed: true,
+          };
+          yield {
+            type: "usage",
+            usage: { prompt_tokens: 120, completion_tokens: 10, prompt_cache_hit_tokens: 80 },
+            streamed: true,
+          };
+          yield { type: "response_complete", streamed: true, finishReason: "tool_calls" };
+          return;
+        }
+        if (modelCalls !== 2) throw new Error("unexpected additional model request");
+        yield { type: "text_delta", text: "done", streamed: true };
+        yield {
+          type: "usage",
+          usage: { prompt_tokens: 150, completion_tokens: 20, prompt_cache_hit_tokens: 120 },
+          streamed: true,
+        };
+        yield { type: "response_complete", streamed: true, finishReason: "stop" };
+      },
+    };
+
+    try {
+      log = JsonlEventLog.open(path, { model: "test/test-model", workspace, prompt: "do work", productVersion: "0" });
+      session = new TerminalSession(
+        {
+          workspace,
+          model,
+          config: { providers: {} },
+          approveAll: true,
+          providerFactory: () => provider,
+          runtimeEventSink: (event) => log?.record(event),
+        },
+        process.stdin,
+        process.stdout,
+      );
+      const task = await session.runOnce("do work");
+      expect(task.state).toBe("completed");
+      expect(modelCalls).toBe(2);
+
+      // Simulate the delegated task's terminal event without running a second model.
+      log.record({
+        version: 1,
+        type: "subagent_usage",
+        taskId: "subagent-fixture",
+        sequence: 1,
+        timestamp: new Date().toISOString(),
+        name: "fixture",
+        inputTokens: 60,
+        outputTokens: 5,
+        cacheReadTokens: 30,
+        cacheWriteTokens: 0,
+      });
+      await log.finish({ outcome: "completed", exitCode: 0, durationMs: 1, finalText: task.result ?? "" });
+
+      const records = (await readFile(path, "utf8"))
+        .split("\n")
+        .filter(Boolean)
+        .map((line) => JSON.parse(line) as Record<string, unknown>);
+      const runtimeEvents = records.filter((record) => record.kind === "runtime_event");
+      expect(runtimeEvents.filter((event) => event.type === "completed")).toHaveLength(1);
+      expect(runtimeEvents.some((event) => event.type === "assistant_abort" || event.type === "cancelled")).toBe(false);
+      expect(records.at(-1)).toMatchObject({
+        kind: "run_end",
+        outcome: "completed",
+        steps: 2,
+        toolCalls: 1,
+        tools: ["list_files"],
+        mainTokens: { input: 270, output: 30, cacheRead: 200, cacheWrite: 0, total: 300 },
+        subagentTokens: { input: 60, output: 5, cacheRead: 30, cacheWrite: 0, total: 65 },
+        tokens: { input: 330, output: 35, cacheRead: 230, cacheWrite: 0, total: 365 },
+      });
+    } finally {
+      await log?.finish({ outcome: "failed", exitCode: 1, durationMs: 1, finalText: "" }).catch(() => undefined);
       await (session as any)?.shutdown?.().catch(() => undefined);
       await rm(workspace, { recursive: true, force: true });
     }
