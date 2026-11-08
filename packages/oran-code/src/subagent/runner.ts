@@ -293,6 +293,8 @@ export class SubagentRunner {
       output: result.output,
       ...(result.error ? { error: result.error } : {}),
       usage: result.usage,
+      startedAt: result.startedAt,
+      endedAt: result.endedAt,
     });
   }
 

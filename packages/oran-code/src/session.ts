@@ -1154,6 +1154,10 @@ export class TerminalSession {
     });
     // The footer sees the aggregated map directly, but headless runs only consume runtime events.
     // Forward this terminal accounting event so their run_end totals include delegated work.
+    const startedMs = event.startedAt ? Date.parse(event.startedAt) : Number.NaN;
+    const endedMs = Date.parse(event.endedAt ?? event.timestamp);
+    const durationMs =
+      Number.isFinite(startedMs) && Number.isFinite(endedMs) ? Math.max(0, endedMs - startedMs) : undefined;
     this.runtimeEventSink?.({
       version: 1,
       type: "subagent_usage",
@@ -1165,6 +1169,9 @@ export class TerminalSession {
       outputTokens: delta.outputTokens,
       cacheReadTokens: delta.cacheReadTokens,
       cacheWriteTokens: delta.cacheWriteTokens,
+      ...(event.startedAt === undefined ? {} : { startedAt: event.startedAt }),
+      ...(event.endedAt === undefined ? {} : { endedAt: event.endedAt }),
+      ...(durationMs === undefined ? {} : { durationMs }),
     });
     this.tui?.refreshContext();
   }

@@ -236,6 +236,9 @@ function payloadFor(event: RuntimeEvent): Record<string, unknown> | undefined {
         outputTokens: event.outputTokens,
         cacheReadTokens: event.cacheReadTokens,
         cacheWriteTokens: event.cacheWriteTokens,
+        ...(event.startedAt === undefined ? {} : { startedAt: event.startedAt }),
+        ...(event.endedAt === undefined ? {} : { endedAt: event.endedAt }),
+        ...(event.durationMs === undefined ? {} : { durationMs: event.durationMs }),
       };
     default:
       return undefined;

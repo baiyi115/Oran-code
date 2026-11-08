@@ -553,6 +553,10 @@ export interface RuntimeEventPayloads {
     outputTokens: number;
     cacheReadTokens: number;
     cacheWriteTokens: number;
+    /** Wall-clock span of the delegated task; absent for older producers. */
+    startedAt?: string;
+    endedAt?: string;
+    durationMs?: number;
   };
   cancelled: { message: string };
 }
