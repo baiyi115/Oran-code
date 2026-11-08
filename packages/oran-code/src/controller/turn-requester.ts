@@ -34,10 +34,10 @@ import {
 } from "../controller-utils.js";
 
 /**
- * Ceiling for the escalating output budget. A reasoning-only truncation raises the per-request
- * max_tokens (4096 -> 8192 -> 16384); going higher risks endpoints rejecting a value above what
- * the model actually supports, and the truncation recovery stops after MAX_TRUNCATION_RECOVERIES
- * attempts anyway.
+ * Ceiling for the escalating output budget. A reasoning-only truncation doubles the per-request
+ * max_tokens until it reaches this value; going higher risks endpoints rejecting a value above
+ * what the model actually supports, and the truncation recovery stops after
+ * MAX_TRUNCATION_RECOVERIES attempts anyway.
  */
 const MAX_OUTPUT_TOKEN_LIMIT = 16_384;
 

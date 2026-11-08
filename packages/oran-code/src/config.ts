@@ -640,7 +640,9 @@ export function resolveModelConfig(config: UserConfig, requested: string | undef
     stringOrUndefined(modelOptions.apiKey) ??
     stringOrUndefined(providerOptions.apiKey);
   const temperature = numberOrUndefined(modelOptions.temperature) ?? 0.2;
-  const maxTokens = numberOrUndefined(modelOptions.maxTokens) ?? 4096;
+  // A 4096 default truncates ordinary multi-file turns, and each truncation costs a full
+  // re-request. The retry ladder still escalates to 16384 if one response really needs it.
+  const maxTokens = numberOrUndefined(modelOptions.maxTokens) ?? 8192;
   const contextWindow =
     numberOrUndefined(modelOptions.contextWindow) ??
     numberOrUndefined(providerOptions.contextWindow) ??
