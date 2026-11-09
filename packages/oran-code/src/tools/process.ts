@@ -1,4 +1,5 @@
 import { exec, execFile, spawn } from "node:child_process";
+import type { SandboxPolicy } from "../types.js";
 import { resolvePhysicalPath, isWithinPath } from "../utils/path-containment.js";
 import { resolveWorkspacePath } from "./fs-helpers.js";
 
@@ -96,6 +97,105 @@ class OutputCollector {
 }
 
 /**
+ * Build the environment a sandboxed command runs with, or `undefined` to inherit the host's.
+ *
+ * Scrubbing is name-based: a variable is dropped when its name contains one of the credential
+ * words below and it is not in `envAllow` or the always-kept list. This is deliberately a
+ * heuristic — it cannot see a credential embedded in a variable with an innocuous name — but it
+ * removes the common leak (`OPENAI_API_KEY`, `AWS_SECRET_ACCESS_KEY`, CI tokens) from child
+ * processes at no cost to ordinary tools.
+ *
+ * Network blocking is best-effort: it points the proxy variables at a closed loopback port, which
+ * makes proxy-aware clients fail to connect. Clients that ignore proxy variables (node's fetch,
+ * raw sockets) are unaffected.
+ */
+export function buildSandboxEnv(sandbox: SandboxPolicy | undefined): NodeJS.ProcessEnv | undefined {
+  if (!sandbox || (sandbox.env === "inherit" && sandbox.network === "inherit")) return undefined;
+  const env: NodeJS.ProcessEnv = {};
+  if (sandbox.env === "scrubbed") {
+    const allow = new Set(sandbox.envAllow.map((name) => name.toUpperCase()));
+    for (const [name, value] of Object.entries(process.env)) {
+      if (value === undefined) continue;
+      if (ALWAYS_KEPT_ENV.has(name.toUpperCase())) {
+        env[name] = value;
+        continue;
+      }
+      if (allow.has(name.toUpperCase())) {
+        env[name] = value;
+        continue;
+      }
+      if (CREDENTIAL_ENV_NAME.test(name)) continue;
+      env[name] = value;
+    }
+  } else {
+    Object.assign(env, process.env);
+  }
+  if (sandbox.network === "blocked") {
+    for (const name of PROXY_ENV_NAMES) env[name] = BLOCKED_PROXY_URL;
+    for (const name of ["NO_PROXY", "no_proxy"]) env[name] = "";
+  }
+  return env;
+}
+
+/** Credential-looking variable names, matched anywhere in the name (case-insensitive). */
+const CREDENTIAL_ENV_NAME = /(KEY|SECRET|TOKEN|PASSWD|PASSWORD|CREDENTIAL|AUTH|COOKIE)/i;
+
+/** Closed loopback port: a proxy-aware client gets ECONNREFUSED instead of egress. */
+const BLOCKED_PROXY_URL = "http://127.0.0.1:1";
+
+const PROXY_ENV_NAMES = [
+  "HTTP_PROXY",
+  "HTTPS_PROXY",
+  "ALL_PROXY",
+  "http_proxy",
+  "https_proxy",
+  "all_proxy",
+  "npm_config_proxy",
+  "npm_config_https_proxy",
+] as const;
+
+/** Variables kept under scrubbing because conventional build/test tools need them to start. */
+const ALWAYS_KEPT_ENV = new Set([
+  "PATH",
+  "PATHEXT",
+  "HOME",
+  "USERPROFILE",
+  "HOMEDRIVE",
+  "HOMEPATH",
+  "TEMP",
+  "TMP",
+  "TMPDIR",
+  "APPDATA",
+  "LOCALAPPDATA",
+  "PROGRAMDATA",
+  "PROGRAMFILES",
+  "PROGRAMFILES(X86)",
+  "COMMONPROGRAMFILES",
+  "SYSTEMROOT",
+  "SYSTEMDRIVE",
+  "WINDIR",
+  "COMSPEC",
+  "OS",
+  "USERNAME",
+  "USER",
+  "LOGNAME",
+  "SHELL",
+  "TERM",
+  "LANG",
+  "LC_ALL",
+  "LC_CTYPE",
+  "NUMBER_OF_PROCESSORS",
+  "PROCESSOR_ARCHITECTURE",
+  "PROCESSOR_IDENTIFIER",
+  "COMPUTERNAME",
+  "HOSTNAME",
+  "PWD",
+  "XDG_CONFIG_HOME",
+  "XDG_DATA_HOME",
+  "XDG_CACHE_HOME",
+]);
+
+/**
  * Start a command and keep accumulating its output.
  * On POSIX an independent process group (detached) is used so that `killProcessTree`'s `-pid`
  * can really kill the whole tree; on Windows `taskkill /T` handles tree cleanup, so detached is
@@ -103,14 +203,16 @@ class OutputCollector {
  */
 export function startCommand(
   command: string,
-  options: { cwd: string; signal?: AbortSignal | undefined },
+  options: { cwd: string; signal?: AbortSignal | undefined; sandbox?: SandboxPolicy | undefined },
 ): RunningCommand {
+  const env = buildSandboxEnv(options.sandbox);
   const child = spawn(command, {
     cwd: options.cwd,
     shell: true,
     windowsHide: true,
     detached: process.platform !== "win32",
     stdio: ["ignore", "pipe", "pipe"],
+    ...(env ? { env } : {}),
   });
   const stdout = new OutputCollector();
   const stderr = new OutputCollector();

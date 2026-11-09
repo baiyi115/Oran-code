@@ -57,9 +57,9 @@ export interface SessionCommandContext {
   currentSessionId(): string | undefined;
   undoLatestChanges(): Promise<{ ok: boolean; output: string }>;
   rewindConversation(argument: string): Promise<{ ok: boolean; output: string }>;
-  /** /resume: resumes a task paused by the progress gate (that turn reuses the task identity from
-   *  the paused run). */
-  resumeProgressTask(): Promise<{ ok: boolean; output: string }>;
+  /** /resume: continues a task the progress gate paused, or one a process exit interrupted
+   *  (the argument may carry --force for the interrupted case). */
+  resumeProgressTask(argument: string): Promise<{ ok: boolean; output: string }>;
   requestExit(): void;
   /** Shared view for /status and /mcp; the caller is responsible for ensuring MCP is ready first. */
   mcpStatus(): Promise<McpStatusSnapshot>;
@@ -224,7 +224,7 @@ export class SessionCommandRouter {
           this.ctx.renderer().status("finish or cancel the current task before resuming", "yellow");
           return;
         }
-        const result = await this.ctx.resumeProgressTask();
+        const result = await this.ctx.resumeProgressTask(argument);
         if (result.ok) this.ctx.renderer().status(result.output, "cyan");
         else this.ctx.renderer().error(result.output);
         return;

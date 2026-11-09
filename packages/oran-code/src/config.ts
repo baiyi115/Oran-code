@@ -20,6 +20,7 @@ import type {
   ProviderOptions,
   ProviderProfile,
   ReasoningEffort,
+  SandboxSettings,
   SessionTitleSettings,
   SubagentSettings,
   UserConfig,
@@ -97,6 +98,7 @@ async function readConfig(path: string): Promise<UserConfig> {
       providers: normalizeProviders(value.providers),
       ...(value.agent ? { agent: value.agent } : {}),
       ...(value.subagent ? { subagent: value.subagent } : {}),
+      ...(value.sandbox ? { sandbox: value.sandbox } : {}),
       ...(value.sessionTitles ? { sessionTitles: value.sessionTitles } : {}),
       ...(value.mcpServers ? { mcpServers: value.mcpServers } : {}),
       ...(value.web ? { web: value.web } : {}),
@@ -119,6 +121,8 @@ function normalizeConfig(value: unknown): UserConfig {
   if (agent) result.agent = agent;
   const subagent = normalizeSubagentSettings(item.subagent);
   if (subagent) result.subagent = subagent;
+  const sandbox = normalizeSandboxSettings(item.sandbox);
+  if (sandbox) result.sandbox = sandbox;
   const sessionTitles = normalizeSessionTitleSettings(item.sessionTitles);
   if (sessionTitles) result.sessionTitles = sessionTitles;
   const mcpServers = normalizeMcpServers(item.mcpServers);
@@ -178,6 +182,39 @@ function normalizeSubagentSettings(value: unknown): SubagentSettings | undefined
   return {
     ...(forkWaitTimeoutMs === undefined ? {} : { forkWaitTimeoutMs }),
     ...(maxTokens === undefined ? {} : { maxTokens }),
+  };
+}
+
+/** Sandbox settings: shape and allowed values only. Resolution (defaults) happens in runtime.ts,
+ * so an unconfigured sandbox stays visible as "unset" in the config document. */
+function normalizeSandboxSettings(value: unknown): SandboxSettings | undefined {
+  if (value === undefined) return undefined;
+  if (!value || typeof value !== "object" || Array.isArray(value)) {
+    throw new Error("sandbox must be an object");
+  }
+  const item = value as Record<string, unknown>;
+  const env = item.env;
+  if (env !== undefined && env !== "scrubbed" && env !== "inherit") {
+    throw new Error("invalid sandbox.env; use scrubbed or inherit");
+  }
+  const network = item.network;
+  if (network !== undefined && network !== "blocked" && network !== "inherit") {
+    throw new Error("invalid sandbox.network; use blocked or inherit");
+  }
+  if (item.envAllow !== undefined) {
+    if (!Array.isArray(item.envAllow) || !item.envAllow.every((name) => typeof name === "string")) {
+      throw new Error("sandbox.envAllow must be an array of environment variable names");
+    }
+  }
+  const maxTimeout = item.maxCommandTimeoutSeconds;
+  if (maxTimeout !== undefined && (typeof maxTimeout !== "number" || !Number.isFinite(maxTimeout) || maxTimeout <= 0)) {
+    throw new Error("sandbox.maxCommandTimeoutSeconds must be a finite positive number");
+  }
+  return {
+    ...(env === "scrubbed" || env === "inherit" ? { env } : {}),
+    ...(item.envAllow !== undefined ? { envAllow: [...(item.envAllow as string[])] } : {}),
+    ...(network === "blocked" || network === "inherit" ? { network } : {}),
+    ...(maxTimeout !== undefined ? { maxCommandTimeoutSeconds: maxTimeout as number } : {}),
   };
 }
 
@@ -442,6 +479,7 @@ function merge(base: UserConfig, override: UserConfig): UserConfig {
     providers,
     ...(base.agent || override.agent ? { agent: { ...base.agent, ...override.agent } } : {}),
     ...(base.subagent || override.subagent ? { subagent: { ...base.subagent, ...override.subagent } } : {}),
+    ...(base.sandbox || override.sandbox ? { sandbox: { ...base.sandbox, ...override.sandbox } } : {}),
     ...(base.sessionTitles || override.sessionTitles
       ? { sessionTitles: { ...base.sessionTitles, ...override.sessionTitles } }
       : {}),
@@ -462,7 +500,7 @@ function merge(base: UserConfig, override: UserConfig): UserConfig {
  * from the same place. A privilege the user granted is not the workspace's to
  * widen.
  */
-const WORKSPACE_BLOCKED_KEYS = ["mcpServers", "hooks", "trustWorkspace"] as const;
+const WORKSPACE_BLOCKED_KEYS = ["mcpServers", "hooks", "trustWorkspace", "sandbox"] as const;
 const WORKSPACE_BLOCKED_AGENT_KEYS = ["approveAll", "permissionMode", "noProgressLimit"] as const;
 
 export interface WorkspaceConfigSanitization {

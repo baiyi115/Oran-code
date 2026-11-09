@@ -159,7 +159,7 @@ terminals send for `Enter`.
 | `/plan`                 | Switch to read-only Plan mode for safe workspace exploration               |
 | `/undo`                 | Immediately revert the most recent batch of file changes                   |
 | `/rewind [N] [--files]` | Roll the conversation back to before an earlier user message               |
-| `/resume`               | Continue the task a progress gate paused (gate off for it)                 |
+| `/resume`               | Continue a task a progress gate paused, or one a crash interrupted         |
 | `/graph`                | Build the code dependency graph and print its summary                      |
 | `/session [id]`         | Switch between active sessions or resume past sessions                     |
 | `/new`                  | Start a clean conversation session                                         |
@@ -224,10 +224,27 @@ model was removed, the first selected model becomes active.
 - `trustWorkspace` (default `false`) lets the **workspace's** `.oran/config.json` and
   `.oran/hooks.local.yaml` set things that raise permissions or run commands:
   `agent.approveAll`, `agent.permissionMode`, `agent.noProgressLimit`, `mcpServers`, `hooks`,
-  and `web.allowPrivateHosts`. These keys are ignored from a workspace file unless this is
+  `sandbox`, and `web.allowPrivateHosts`. These keys are ignored from a workspace file unless this is
   `true` (the values it does not drop, such as `web.searchProvider`, still apply), and the agent says which keys it ignored. It is off by default because the
   agent is normally started inside the repository it is asked about; enable it only for
   workspaces you control.
+- `sandbox` constrains every shell command the agent starts (`run_command`, its background jobs,
+  and commands promoted to a job after a timeout). It is a process-level guardrail, not an
+  isolation boundary: the child runs on this machine under the same account. Every field defaults
+  to the host behavior, so leaving the block out changes nothing.
+  - `sandbox.env`: `"inherit"` (default) or `"scrubbed"`, which drops environment variables whose
+    names look like credentials (`*_KEY`, `*_TOKEN`, `*SECRET*`, `*PASSWORD*`, `*AUTH*`, …) before
+    the child starts.
+  - `sandbox.envAllow`: names to keep under `"scrubbed"` (for example `["GITHUB_TOKEN"]` for `gh`).
+  - `sandbox.network`: `"inherit"` (default) or `"blocked"`, which points the proxy variables at a
+    closed loopback port so proxy-aware clients cannot connect. Clients that ignore proxy variables
+    are unaffected, so this is best-effort.
+  - `sandbox.maxCommandTimeoutSeconds`: ceiling for one foreground `run_command` (600 by default);
+    a command that reaches it is promoted to a background job, not killed.
+
+  ```json
+  { "sandbox": { "env": "scrubbed", "envAllow": ["GITHUB_TOKEN"], "network": "blocked" } }
+  ```
 
 ### 提示缓存
 
@@ -268,6 +285,8 @@ context and output limits still apply.
   injected into the agent's system prompt.
 - `.oran/snapshots/`: local workspace snapshots for `/undo` rollback support.
 - `.oran/sessions/`: persisted session history and logs.
+- `.oran/checkpoints/`: one in-flight task record per session, used to detect a crashed run and
+  resume it with `/resume`.
 - `~/.oran/memory/<workspace-hash>/`: Markdown notes curated by the agent for long-term
   project knowledge (stored next to sessions and traces, outside the workspace).
 - `.oran/skills/`: project-local custom skills (`SKILL.md`).

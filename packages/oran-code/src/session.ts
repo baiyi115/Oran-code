@@ -21,7 +21,7 @@ import {
   type SlashCommand,
 } from "./commands.js";
 import { createModelProvider, OpenAICompatibleProvider, resolveProviderProtocolFor } from "./provider.js";
-import { createRuntimeConfig } from "./runtime.js";
+import { createRuntimeConfig, resolveSandboxPolicy } from "./runtime.js";
 import { ApprovalQueue, isApprovalAnswer } from "./approval-queue.js";
 import { SessionTitleService } from "./session-title.js";
 import { MemoryExtractionScheduler } from "./memory-extraction.js";
@@ -38,6 +38,15 @@ import {
 import { SessionCrudService } from "./session-crud.js";
 import { workspaceFingerprint } from "./controller-utils.js";
 import { ProgressStateStore } from "./progress/store.js";
+import {
+  CHECKPOINT_VERSION,
+  TaskCheckpointStore,
+  checkpointToolCall,
+  unknownOutcomeCalls,
+  type CheckpointStopReason,
+  type CheckpointToolCall,
+  type TaskCheckpoint,
+} from "./checkpoint.js";
 import { TerminalRenderer, createPromptHooks, type SessionRenderer } from "./renderer.js";
 import { createTask } from "./types.js";
 import { SessionStore, type StoredSession } from "./session-store.js";
@@ -263,6 +272,13 @@ export class TerminalSession {
   private agentRuntime: AgentRuntimeServices | undefined;
   private agentRuntimePromise: Promise<AgentRuntimeServices> | undefined;
   private agentStateRestore: Promise<void> | undefined;
+  private readonly checkpointStore: TaskCheckpointStore;
+  /** The run this process is executing, mirrored to disk so a crash stays visible. */
+  private activeCheckpoint: TaskCheckpoint | undefined;
+  /** Runs whose owning process died, found when the session store opened. */
+  private interruptedCheckpoints: TaskCheckpoint[] = [];
+  /** Registry of the running task, used to classify in-flight calls as readonly/write/command. */
+  private activeToolRegistry: ToolRegistry | undefined;
 
   constructor(
     options: SessionOptions,
@@ -280,6 +296,7 @@ export class TerminalSession {
     this.workMode = workModeForPermission(this.permissionMode);
     this.reasoningEffort = this.model?.reasoningEffort ?? "medium";
     this.sessionStore = new SessionStore(this.workspace);
+    this.checkpointStore = new TaskCheckpointStore(this.workspace);
     this.crud = new SessionCrudService({
       persistTuiSession: (includeTuiSnapshot) => this.persistTuiSession(includeTuiSnapshot),
       sessionStore: this.sessionStore,
@@ -440,7 +457,7 @@ export class TerminalSession {
         return runtime.snapshotStore.undoLatest(sessionId);
       },
       rewindConversation: (argument) => this.rewindConversation(argument),
-      resumeProgressTask: () => this.resumeProgressTask(),
+      resumeProgressTask: (argument) => this.resumeProgressTask(argument),
       requestExit: () => {
         this.quitRequested = true;
         if (this.tui) this.tui.destroy();
@@ -589,6 +606,7 @@ export class TerminalSession {
     this.setPrompt();
     this.renderer.status(`${PRODUCT_NAME} ${this.modelLabel()} | ${this.workspace}`, "boldCyan");
     this.renderer.status("Type / for commands or !command for a shell command.");
+    this.reportInterruptedRun();
     this.startMcpConnections();
     this.prompt();
 
@@ -940,13 +958,26 @@ export class TerminalSession {
       ...(sessionId ? { snapshotStore: agentRuntime.snapshotStore, snapshotSessionId: sessionId } : {}),
     });
     this.controller = controller;
+    if (!isolated) this.activeToolRegistry = registry;
     let completed = false;
+    let checkpointReason: CheckpointStopReason = "failed";
     try {
       const initialTask = createTask(this.workspace, prompt);
       if (this.currentSession?.planState) {
         initialTask.planState = structuredClone(this.currentSession.planState);
       }
+      // Only the main run is tracked: an isolated task shares the session but runs beside it, and
+      // its terminal record would erase the main run's in-flight state.
+      if (!isolated) this.beginCheckpoint(sessionId, initialTask.id, prompt);
       const task = await controller.execute(initialTask);
+      checkpointReason =
+        task.state === "completed"
+          ? "completed"
+          : task.state === "cancelled"
+            ? "cancelled"
+            : task.state === "paused"
+              ? "paused"
+              : "failed";
       if (task.planState && this.currentSession) {
         this.currentSession.planState = structuredClone(task.planState);
       }
@@ -972,6 +1003,9 @@ export class TerminalSession {
       if (printErrors && !this.tui) this.renderer.error(formatErrorMessage(error));
       throw error;
     } finally {
+      if (!isolated && this.activeToolRegistry === registry) this.activeToolRegistry = undefined;
+      // The terminal record is what separates a finished run from one a crash left behind.
+      if (!isolated) await this.finishCheckpoint(checkpointReason);
       if (structuredScope) await disposeStructuredScope(structuredScope);
       if (this.controller === controller) this.controller = undefined;
       const conversationSnapshot = controller.conversationSnapshot();
@@ -1282,6 +1316,31 @@ export class TerminalSession {
         })) ?? (await this.sessionStore.create("Current session", defaults)))
       : await this.sessionStore.create("Current session", defaults);
     await this.restoreStoredSession(stored, !this.explicitModel);
+    await this.detectInterruptedRuns();
+  }
+
+  /** A run whose owning process is gone is reported once, and becomes the target of /resume. */
+  private async detectInterruptedRuns(): Promise<void> {
+    this.interruptedCheckpoints = await this.checkpointStore.interrupted().catch(() => []);
+  }
+
+  private reportInterruptedRun(): void {
+    const checkpoint = this.interruptedCheckpoints[0];
+    if (!checkpoint) return;
+    const unknown = unknownOutcomeCalls(checkpoint);
+    const firstLine = checkpoint.prompt.trim().split(/\r?\n/, 1)[0] ?? "";
+    const summary = firstLine.length > 120 ? `${firstLine.slice(0, 120)}…` : firstLine;
+    const lines = [
+      `A task did not finish: the process exited during it (${checkpoint.turn} completed step(s)).`,
+      summary ? `Task: ${summary}` : undefined,
+      unknown.length
+        ? `${unknown.length} call(s) had started without a recorded result; their effect is unknown.`
+        : undefined,
+      this.currentSession?.id === checkpoint.sessionId
+        ? "Run /resume to continue from the last completed tool batch."
+        : `Run /resume to open that session (${checkpoint.sessionId}) and continue from its last completed tool batch.`,
+    ].filter((line): line is string => line !== undefined);
+    this.renderer.markdown("Interrupted task", lines.join("\n"));
   }
 
   private async restoreStoredSession(stored: StoredSession, restoreModel: boolean): Promise<void> {
@@ -1591,10 +1650,94 @@ export class TerminalSession {
         this.currentSession.planState = structuredClone(event.planState);
       }
     }
+    // Checkpoint updates, like the progress gate, describe the main run only: a delegated
+    // subagent's calls carry its own taskId and must not rewrite the parent's in-flight record.
+    if (this.activeCheckpoint && event.taskId === this.activeCheckpoint.taskId) {
+      if (event.type === "tool_start") this.noteToolStart(event.call);
+      else if (event.type === "tool_result") this.noteToolResult(event.call);
+      else if (event.type === "assistant_end") this.noteCheckpointStep(event.step);
+    }
     this.renderer.render(event);
     await this.tui?.flushPendingRender(renderCommitKind(event));
     // Streaming deltas do not trigger persistence; wait for a boundary event to write to disk.
     if (event.type !== "assistant_delta" && event.type !== "thought_delta") this.scheduleTuiSessionPersist();
+  }
+
+  /**
+   * Start the on-disk record for a run. It overwrites the session's previous checkpoint: only the
+   * run in progress can be interrupted by a crash.
+   */
+  private beginCheckpoint(sessionId: string | undefined, taskId: string, prompt: string): void {
+    if (!sessionId) return;
+    const now = new Date().toISOString();
+    const checkpoint: TaskCheckpoint = {
+      version: CHECKPOINT_VERSION,
+      sessionId,
+      taskId,
+      prompt,
+      state: "running",
+      pid: process.pid,
+      startedAt: now,
+      updatedAt: now,
+      turn: 0,
+      pending: [],
+    };
+    this.activeCheckpoint = checkpoint;
+    void this.checkpointStore.write(checkpoint);
+  }
+
+  private persistCheckpoint(): void {
+    const checkpoint = this.activeCheckpoint;
+    if (!checkpoint) return;
+    checkpoint.updatedAt = new Date().toISOString();
+    void this.checkpointStore.write(checkpoint);
+  }
+
+  private noteToolStart(call: ToolCall): void {
+    const checkpoint = this.activeCheckpoint;
+    if (!checkpoint || !call.id) return;
+    if (checkpoint.pending.some((pending) => pending.id === call.id)) return;
+    checkpoint.pending.push(
+      checkpointToolCall({ id: call.id, name: call.name, arguments: call.arguments }, this.toolKind(call.name)),
+    );
+    this.persistCheckpoint();
+  }
+
+  private noteToolResult(call: ToolCall): void {
+    const checkpoint = this.activeCheckpoint;
+    if (!checkpoint || !call.id) return;
+    const remaining = checkpoint.pending.filter((pending) => pending.id !== call.id);
+    if (remaining.length === checkpoint.pending.length) return;
+    checkpoint.pending = remaining;
+    this.persistCheckpoint();
+  }
+
+  private noteCheckpointStep(step: number): void {
+    const checkpoint = this.activeCheckpoint;
+    if (!checkpoint || !Number.isFinite(step)) return;
+    checkpoint.turn = Math.max(checkpoint.turn, step);
+    this.persistCheckpoint();
+  }
+
+  /** The tool's declared safety class, used to tell a command's unknown effect from a read. */
+  private toolKind(name: string): ToolDefinition["kind"] {
+    try {
+      return this.activeToolRegistry?.get(name).kind;
+    } catch {
+      return undefined;
+    }
+  }
+
+  /** Terminal record for a run; without it the next start would report this run as crashed. */
+  private async finishCheckpoint(reason: CheckpointStopReason): Promise<void> {
+    const checkpoint = this.activeCheckpoint;
+    if (!checkpoint) return;
+    this.activeCheckpoint = undefined;
+    checkpoint.state = "finished";
+    checkpoint.stopReason = reason;
+    checkpoint.pending = [];
+    checkpoint.updatedAt = new Date().toISOString();
+    await this.checkpointStore.write(checkpoint);
   }
 
   private scheduleTuiSessionPersist(): void {
@@ -1860,7 +2003,7 @@ export class TerminalSession {
   ): Promise<ToolRegistry> {
     const { ToolRegistry, registerBuiltinTools } = await loadTools();
     const registry = new ToolRegistry();
-    registerBuiltinTools(registry, this.workspace);
+    registerBuiltinTools(registry, this.workspace, { sandbox: resolveSandboxPolicy(this.config.sandbox) });
     const mcp = options.mcp ?? "always";
     if (mcp === "always" || (mcp === "if-started" && this.mcp.started)) {
       if (mcp === "if-started") await this.ensureMcpReady();
@@ -1914,18 +2057,27 @@ export class TerminalSession {
    *   into a summary, and the original text is no longer in the active history.
    */
   /**
-   * /resume: continues a task paused by the progress gate. It hands the goal fingerprint from the
-   * paused state to the new task, so the new task keeps that run's window, phase and already-written
-   * files (see resumedRunState) while the gate is turned off -- exactly what the pause notice promised.
+   * /resume, two cases:
+   *
+   * - A run a crash interrupted. The session restore already dropped the batch whose results were
+   *   never recorded (rebuildConversation), so the next turn starts from the last completed batch.
+   *   Calls that had started are listed as unknown outcomes, and a command among them needs
+   *   confirmation (`/resume --force` in a non-interactive terminal) before anything is repeated.
+   * - A task paused by the progress gate. It hands the goal fingerprint from the paused state to
+   *   the new task, so the new task keeps that run's window, phase and already-written files (see
+   *   resumedRunState) while the gate is turned off -- exactly what the pause notice promised.
    */
-  private async resumeProgressTask(): Promise<{ ok: boolean; output: string }> {
+  private async resumeProgressTask(argument: string): Promise<{ ok: boolean; output: string }> {
     if (!this.model) return { ok: false, output: "no model selected; use /model PROVIDER/MODEL first" };
+    const force = argument.trim().split(/\s+/).includes("--force");
+    const interrupted = await this.findInterruptedRun();
+    if (interrupted) return this.resumeInterruptedRun(interrupted, force);
     const state = await new ProgressStateStore(this.workspace).load().catch(() => undefined);
     const stop = state?.stop;
     if (!state || stop?.kind !== "blocked") {
       return {
         ok: false,
-        output: "No paused task to resume: use /resume after a progress gate pauses one.",
+        output: "No paused or interrupted task to resume: use /resume after a progress gate pauses one.",
       };
     }
     const prompt =
@@ -1934,6 +2086,77 @@ export class TerminalSession {
     this.setPrompt();
     this.launchTask(prompt, true, false, false, undefined, { resumeGoal: state.goalFingerprint });
     return { ok: true, output: "Resuming the paused task; the progress gate is off for this run." };
+  }
+
+  /** Refreshes the interrupted-run list and prefers the current session's own run. */
+  private async findInterruptedRun(): Promise<TaskCheckpoint | undefined> {
+    const interrupted = await this.checkpointStore.interrupted().catch(() => this.interruptedCheckpoints);
+    this.interruptedCheckpoints = interrupted;
+    const sessionId = this.currentSession?.id;
+    return interrupted.find((item) => item.sessionId === sessionId) ?? interrupted[0];
+  }
+
+  private async resumeInterruptedRun(
+    checkpoint: TaskCheckpoint,
+    force: boolean,
+  ): Promise<{ ok: boolean; output: string }> {
+    const unknown = unknownOutcomeCalls(checkpoint);
+    if (unknown.length > 0 && !force && !(await this.confirmInterruptedResume(unknown))) {
+      return {
+        ok: false,
+        output: [
+          "Resume cancelled; nothing was changed.",
+          this.describeUnknownOutcomes(unknown),
+          "Run /resume --force once the unknown result is acceptable.",
+        ].join("\n"),
+      };
+    }
+    if (this.currentSession?.id !== checkpoint.sessionId) {
+      const stored = await this.sessionStore.ensureConversation(checkpoint.sessionId);
+      if (!stored) {
+        return { ok: false, output: `The interrupted session ${checkpoint.sessionId} is no longer available.` };
+      }
+      await this.restoreStoredSession(stored, false);
+      this.refreshTui();
+    }
+    const prompt = buildInterruptedResumePrompt(checkpoint, unknown);
+    this.renderer.user(prompt);
+    this.setPrompt();
+    this.launchTask(prompt, true);
+    return {
+      ok: true,
+      output: [
+        "Resuming the interrupted run from its last completed tool batch.",
+        this.describeUnknownOutcomes(unknown),
+      ].join("\n"),
+    };
+  }
+
+  private async confirmInterruptedResume(unknown: readonly CheckpointToolCall[]): Promise<boolean> {
+    if (!this.renderer.question) return false;
+    const question =
+      `This task was interrupted with ${unknown.length} tool call(s) whose result was never recorded. ` +
+      "Continue from the last completed batch?";
+    const answers = await this.renderer.question([
+      {
+        header: "Resume",
+        question,
+        options: [
+          { label: "Resume", description: "Continue; the workspace is re-checked before a step is repeated." },
+          { label: "Cancel", description: "Leave the task interrupted." },
+        ],
+      },
+    ]);
+    if (!answers) return false;
+    return answers[question]?.trim().toLowerCase() === "resume";
+  }
+
+  private describeUnknownOutcomes(calls: readonly CheckpointToolCall[]): string {
+    if (!calls.length) return "No command was in flight when the process exited.";
+    return [
+      "These calls had started without a recorded result (effect unknown):",
+      ...calls.map((call) => `- ${call.name}${call.command ? `: ${call.command}` : ""}`),
+    ].join("\n");
   }
 
   private async rewindConversation(argument: string): Promise<{ ok: boolean; output: string }> {
@@ -2147,6 +2370,8 @@ export class TerminalSession {
     this.tui = tui;
     this.renderer = tui.renderer;
     this.startMcpConnections();
+    // State written before the first paint shows up in it; the notice must not wait for a turn.
+    this.reportInterruptedRun();
     try {
       await tui.run();
     } finally {
@@ -2587,6 +2812,38 @@ function buildPlanExecutePrompt(plan: string): string {
     "Plan:",
     plan.trim(),
   ].join("\n");
+}
+
+/**
+ * Continuation prompt for a run a crash interrupted. The conversation was rolled back to the last
+ * completed tool batch on restore, so the model must re-establish what already happened from the
+ * workspace rather than from the transcript.
+ */
+function buildInterruptedResumePrompt(
+  checkpoint: TaskCheckpoint,
+  unknown: readonly CheckpointToolCall[],
+): string {
+  const summary =
+    checkpoint.turn > 0
+      ? `after ${checkpoint.turn} completed step(s)`
+      : "before its first completed step";
+  const lines = [
+    `Continue the task below, which the previous run left unfinished ${summary}.`,
+    "The process exited mid-run; the task did not stop because it was done.",
+    "",
+    "Original task:",
+    checkpoint.prompt.trim() || "(the original prompt was not recorded)",
+    "",
+    "Before repeating any step, inspect the current workspace state (git status, and the files or outputs the task touched) and skip steps that already took effect.",
+  ];
+  if (unknown.length) {
+    lines.push(
+      "",
+      "These tool calls had started when the process exited and never recorded a result. Their effect is unknown: do not assume success or failure, verify before retrying.",
+      ...unknown.map((call) => `- ${call.name}${call.command ? `: ${call.command}` : ""}`),
+    );
+  }
+  return lines.join("\n");
 }
 
 /** Team members share the background-task panel and /tasks list with one-shot subagents. */

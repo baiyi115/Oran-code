@@ -1,6 +1,15 @@
 import { tmpdir } from "node:os";
 import { resolve } from "node:path";
-import type { ModelConfig, PermissionConfig, PermissionMode, RuntimeConfig, UserConfig, WorkMode } from "./types.js";
+import type {
+  ModelConfig,
+  PermissionConfig,
+  PermissionMode,
+  RuntimeConfig,
+  SandboxPolicy,
+  SandboxSettings,
+  UserConfig,
+  WorkMode,
+} from "./types.js";
 import { compatibleUserDataPath, projectStateRoot } from "./paths.js";
 
 export const DEFAULT_MAX_RETRIES = 5;
@@ -9,6 +18,28 @@ export const DEFAULT_NO_PROGRESS_LIMIT = 8;
 export const DEFAULT_UNKNOWN_TOOL_LIMIT = 3;
 export const DEFAULT_READONLY_CONCURRENCY = 4;
 export const DEFAULT_FORK_WAIT_TIMEOUT_MS = 600_000;
+export const DEFAULT_MAX_COMMAND_TIMEOUT_SECONDS = 600;
+
+/**
+ * Resolve the user's sandbox settings into the form the command tools consume.
+ * Every default keeps the host behavior, so a missing `sandbox` block changes nothing.
+ */
+export function resolveSandboxPolicy(settings: SandboxSettings | undefined): SandboxPolicy {
+  return {
+    env: settings?.env ?? "inherit",
+    envAllow: [...(settings?.envAllow ?? [])],
+    network: settings?.network ?? "inherit",
+    maxCommandTimeoutSeconds: normalizeMaxCommandTimeout(settings?.maxCommandTimeoutSeconds),
+  };
+}
+
+function normalizeMaxCommandTimeout(value: number | undefined): number {
+  if (value === undefined) return DEFAULT_MAX_COMMAND_TIMEOUT_SECONDS;
+  if (!Number.isFinite(value) || value <= 0) {
+    throw new Error("sandbox.maxCommandTimeoutSeconds must be a finite positive number");
+  }
+  return value;
+}
 
 export function createRuntimeConfig(
   workspace: string,

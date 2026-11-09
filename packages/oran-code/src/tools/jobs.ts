@@ -1,4 +1,5 @@
 import { randomUUID } from "node:crypto";
+import type { SandboxPolicy } from "../types.js";
 import { formatPreservingTail, startCommand, type CommandOutcome, type RunningCommand } from "./process.js";
 
 export type ShellJobStatus = "running" | "exited" | "failed" | "killed";
@@ -116,10 +117,16 @@ export class ShellJobManager {
   private readonly jobs = new Map<string, ShellJob>();
   private nextId = 1;
 
-  start(options: { command: string; cwd: string; signal?: AbortSignal | undefined }): ShellJobSnapshot {
+  start(options: {
+    command: string;
+    cwd: string;
+    signal?: AbortSignal | undefined;
+    sandbox?: SandboxPolicy | undefined;
+  }): ShellJobSnapshot {
     const running = startCommand(options.command, {
       cwd: options.cwd,
       ...(options.signal ? { signal: options.signal } : {}),
+      ...(options.sandbox ? { sandbox: options.sandbox } : {}),
     });
     return this.track({ command: options.command, cwd: options.cwd, running });
   }

@@ -59,7 +59,9 @@ export const DEFAULT_COMMANDS: readonly SlashCommand[] = [
   { name: "/rename", description: "rename current session", argumentHint: "NAME", kind: "ui", action: "rename" },
   {
     name: "/resume",
-    description: "continue the task a progress gate paused (gate disarmed for that run)",
+    description: "continue a task a progress gate paused or a crash interrupted (--force skips the unknown-result confirmation)",
+    usage: "/resume [--force]",
+    argumentHint: "--force",
     kind: "ui",
     action: "resume-progress",
   },

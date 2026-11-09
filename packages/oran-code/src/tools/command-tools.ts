@@ -1,4 +1,4 @@
-import type { ToolDefinition, ToolResult } from "../types.js";
+import type { SandboxPolicy, ToolDefinition, ToolResult } from "../types.js";
 import type { ToolFactoryContext } from "./registry.js";
 import { errorMessage, numberArg } from "./fs-helpers.js";
 import { formatJobOutput, shellJobs, type ShellJobManager, type ShellJobSnapshot } from "./jobs.js";
@@ -15,6 +15,8 @@ import {
 export interface CommandToolOptions {
   /** Job-table injection point: tests use an isolated instance, runtime defaults to the process-level singleton. */
   readonly jobs?: ShellJobManager;
+  /** Process-level constraints for every command this registry starts; undefined keeps the host behavior. */
+  readonly sandbox?: SandboxPolicy;
 }
 
 export function registerCommandTools(
@@ -24,6 +26,7 @@ export function registerCommandTools(
 ): void {
   const { activeRoot } = ctx;
   const jobs = options.jobs ?? shellJobs();
+  const sandbox = options.sandbox;
 
   registry.register({
     name: "run_command",
@@ -56,7 +59,10 @@ export function registerCommandTools(
     maxOutputChars: 32_000,
     postprocess: compactShellOutput,
     invoke: async (call, context) => {
-      const timeoutSeconds = Math.max(1, numberArg(call.arguments.timeout, 60));
+      const requestedTimeout = Math.max(1, numberArg(call.arguments.timeout, 60));
+      const timeoutSeconds = sandbox
+        ? Math.min(requestedTimeout, sandbox.maxCommandTimeoutSeconds)
+        : requestedTimeout;
       const command = String(call.arguments.command);
       let cwd: string;
       try {
@@ -66,7 +72,7 @@ export function registerCommandTools(
       }
 
       if (call.arguments.run_in_background === true) {
-        const job = jobs.start({ command, cwd });
+        const job = jobs.start({ command, cwd, ...(sandbox ? { sandbox } : {}) });
         return {
           ok: true,
           output: formatJobStart(job),
@@ -75,7 +81,11 @@ export function registerCommandTools(
         };
       }
 
-      const running = startCommand(command, { cwd, ...(context?.signal ? { signal: context.signal } : {}) });
+      const running = startCommand(command, {
+        cwd,
+        ...(context?.signal ? { signal: context.signal } : {}),
+        ...(sandbox ? { sandbox } : {}),
+      });
       const race = await waitForExitOrTimeout(running, timeoutSeconds);
       if (context?.signal?.aborted) {
         running.kill();

@@ -302,10 +302,39 @@ export interface SubagentSettings {
   maxTokens?: number;
 }
 
+/**
+ * Process-level constraints applied to every shell command the agent starts
+ * (run_command, its background jobs, and timeout promotions).
+ *
+ * The child process still runs on this machine under the same user account, so this is a
+ * guardrail against accidents (credential leakage, unexpected egress), not an isolation
+ * boundary. Every field defaults to the host behavior, so an unconfigured sandbox changes
+ * nothing. The working directory is always confined to the workspace by `resolveCommandCwd`.
+ */
+export interface SandboxSettings {
+  /** "scrubbed" drops environment variables whose names look like credentials; "inherit" (default) passes the host environment through. */
+  env?: "scrubbed" | "inherit";
+  /** Variable names passed through even when `env` is "scrubbed" (for example GITHUB_TOKEN for gh). */
+  envAllow?: string[];
+  /** "blocked" points the proxy variables at a closed loopback port so proxy-aware clients fail to connect; "inherit" (default) leaves egress alone. */
+  network?: "inherit" | "blocked";
+  /** Ceiling in seconds for one foreground run_command, 600 by default; a command that exceeds it is promoted to a background job, not killed. */
+  maxCommandTimeoutSeconds?: number;
+}
+
+/** Resolved form of SandboxSettings: every field filled in. */
+export interface SandboxPolicy {
+  env: "scrubbed" | "inherit";
+  envAllow: string[];
+  network: "inherit" | "blocked";
+  maxCommandTimeoutSeconds: number;
+}
+
 export interface UserConfig {
   providers: Record<string, ProviderProfile>;
   agent?: AgentSettings;
   subagent?: SubagentSettings;
+  sandbox?: SandboxSettings;
   sessionTitles?: SessionTitleSettings;
   mcpServers?: Record<string, McpServerConfig>;
   hooks?: HookRule[];
