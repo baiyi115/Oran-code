@@ -330,8 +330,10 @@ Background calls and team members stay reachable while they run:
 
 While a delegated task runs, the TUI's task panel under the composer shows one row per task —
 foreground and background alike — with the call it is running (`Reading src/session.ts`,
-`Running ./gradlew test`), how long it has been running, and the output tokens it has spent.
-Finished rows linger for a minute; `/tasks` keeps the longer history and opens each task's output.
+`Running ./gradlew test`), how long it has been running, and the output tokens it has spent. The
+transcript's own `agent(...)` row waits for the call to return, so the same subagent is never listed
+twice; it appears with the result. Finished rows linger for a minute; `/tasks` keeps the longer
+history and opens each task's output.
 
 Messages are capped at 4,000 characters, with at most 16 pending per task and direction.
 Guidance that never reaches a task before it ends is marked `undeliverable` and reported

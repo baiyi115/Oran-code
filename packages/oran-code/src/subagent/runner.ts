@@ -93,6 +93,9 @@ export class SubagentRunner {
       this.deps.messageBus?.registerTask(taskId, options.parentSessionId ?? this.deps.getParentSessionId?.());
     const name = options.description.trim() || originLabel(origin);
     const startedAt = new Date().toISOString();
+    // Announce the run before its first model call: the parent has already delegated, and the task
+    // panel row should name the subagent from that moment, not wait for its first tool call.
+    await this.emitEvent({ taskId, name, origin, status: "running", timestamp: startedAt, startedAt });
     const usage: Record<string, number> = {};
     const assistantText: string[] = [];
     // Diagnostics for a run that ends without an answer: the caller needs to know what actually

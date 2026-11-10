@@ -88,7 +88,7 @@ export interface SubagentEvent {
   readonly output?: string;
   readonly error?: string;
   readonly usage?: Readonly<Record<string, number>>;
-  /** Wall-clock span of the delegated task; present on terminal events. */
+  /** When the run started; present from the first running event and on terminal events. */
   readonly startedAt?: string;
   readonly endedAt?: string;
 }

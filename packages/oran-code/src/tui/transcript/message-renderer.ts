@@ -15,7 +15,8 @@ export interface MessageRenderContext {
 
 export function renderMessage(message: TranscriptMessage, width: number, context: MessageRenderContext = {}): string[] {
   if (message.kind === "user") return withMessageSpacing(renderUser(message, width));
-  if (message.kind === "tool") return withMessageSpacing(renderToolMessage(message, width, context.liveTick));
+  if (message.kind === "tool")
+    return hidesWhileDelegated(message) ? [] : withMessageSpacing(renderToolMessage(message, width, context.liveTick));
   if (message.kind === "verification") return withMessageSpacing(renderVerification(message, width));
   if (message.kind === "thought")
     return withMessageSpacing(renderThought(message, width, context.liveTick, context.forceExpandThoughts === true));
@@ -67,6 +68,16 @@ function renderUser(message: Extract<TranscriptMessage, { kind: "user" }>, width
     const padding = " ".repeat(Math.max(0, width - visibleWidth(row)));
     return `${ANSI.userBackground}${index === 0 ? ANSI.bold : ""}${row}${padding}${ANSI.reset}`;
   });
+}
+
+/**
+ * A running `agent` call is already on screen: the task panel below the composer shows that
+ * subagent's description, current call, elapsed time and output tokens. Drawing the transcript row
+ * as well puts the same subagent in two places, so the row stays hidden until the call returns —
+ * then it carries the result.
+ */
+function hidesWhileDelegated(message: Extract<TranscriptMessage, { kind: "tool" }>): boolean {
+  return message.name === "agent" && message.status === "running";
 }
 
 function withMessageSpacing(lines: string[]): string[] {
