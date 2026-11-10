@@ -123,6 +123,9 @@ export class ToolBatchExecutor {
       onProgress: (note: string): void => {
         void this.ports.emit("tool_progress", { call, note }).catch(() => undefined);
       },
+      onOutput: (chunk: string): void => {
+        void this.ports.emit("tool_output", { call, chunk }).catch(() => undefined);
+      },
     };
   }
 

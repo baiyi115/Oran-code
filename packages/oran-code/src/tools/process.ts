@@ -203,7 +203,13 @@ const ALWAYS_KEPT_ENV = new Set([
  */
 export function startCommand(
   command: string,
-  options: { cwd: string; signal?: AbortSignal | undefined; sandbox?: SandboxPolicy | undefined },
+  options: {
+    cwd: string;
+    signal?: AbortSignal | undefined;
+    sandbox?: SandboxPolicy | undefined;
+    /** Called with every raw output chunk as it arrives, before it joins the accumulator. */
+    onData?: ((chunk: string) => void) | undefined;
+  },
 ): RunningCommand {
   const env = buildSandboxEnv(options.sandbox);
   const child = spawn(command, {
@@ -220,9 +226,15 @@ export function startCommand(
   let onAbort: (() => void) | undefined;
 
   child.stdout?.setEncoding("utf8");
-  child.stdout?.on("data", (chunk: string) => stdout.append(chunk));
+  child.stdout?.on("data", (chunk: string) => {
+    stdout.append(chunk);
+    options.onData?.(chunk);
+  });
   child.stderr?.setEncoding("utf8");
-  child.stderr?.on("data", (chunk: string) => stderr.append(chunk));
+  child.stderr?.on("data", (chunk: string) => {
+    stderr.append(chunk);
+    options.onData?.(chunk);
+  });
 
   const pid = child.pid;
   const kill = (): void => killProcessTree(pid);

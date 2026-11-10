@@ -231,6 +231,12 @@ export interface ToolMessage {
   expanded: boolean;
   /** Latest progress note while the tool runs; cleared once it produces a result. */
   progress?: string;
+  /** Tail of a running command's output; cleared once the result arrives with the full output. */
+  liveOutput?: string;
+  /** Bytes streamed while running, including any part dropped from `liveOutput`. */
+  liveOutputBytes?: number;
+  /** Newlines streamed while running, so the row can report the approximate line count. */
+  liveOutputNewlines?: number;
   /** Semantic badges derived from the result metadata (cached/denied/hook/repaired/unavailable). */
   badges?: string[];
   /**

@@ -1663,7 +1663,9 @@ export class TerminalSession {
   }
 
   private async onEvent(event: RuntimeEvent): Promise<void> {
-    this.runtimeEventSink?.(event);
+    // Live command output is UI-only and arrives many times a second; the headless event log
+    // keeps the result instead of every slice.
+    if (event.type !== "tool_output") this.runtimeEventSink?.(event);
     if (event.type === "assistant_end") this.latestUsage = { ...event.usage };
     this.debugTracker.track(event);
     if (event.type === "context_compaction") {
@@ -1709,8 +1711,10 @@ export class TerminalSession {
     }
     this.renderer.render(event);
     await this.tui?.flushPendingRender(renderCommitKind(event));
-    // Streaming deltas do not trigger persistence; wait for a boundary event to write to disk.
-    if (event.type !== "assistant_delta" && event.type !== "thought_delta") this.scheduleTuiSessionPersist();
+    // Streaming deltas and live command output do not trigger persistence; wait for a boundary
+    // event to write to disk.
+    if (event.type !== "assistant_delta" && event.type !== "thought_delta" && event.type !== "tool_output")
+      this.scheduleTuiSessionPersist();
   }
 
   /**

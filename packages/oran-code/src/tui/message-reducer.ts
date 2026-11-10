@@ -226,6 +226,12 @@ export function reduceRuntimeEvent(state: TuiState, event: RuntimeEvent): void {
       if (tool?.kind === "tool") tool.progress = event.note;
       break;
     }
+    case "tool_output": {
+      // An output slice arriving after the result is stale: the row already shows the final text.
+      const tool = getToolMessage(state, toolCallKey(event.call), event.taskId);
+      if (tool?.kind === "tool" && tool.status === "running") appendLiveOutput(tool, event.chunk);
+      break;
+    }
     case "retry": {
       // Keep the notice to a single short line; a later successful response clears it.
       const reason = truncateVisible(redactSecretText(event.message).trim() || "request failed", 60);
@@ -400,8 +406,11 @@ function updateToolResult(state: TuiState, call: ToolCall, result: ToolResult, t
   }
   const target = getToolMessage(state, callId, taskId);
   if (!target) return;
-  // A result ends the run those notes were describing.
+  // A result ends the run those notes were describing; the full output replaces the live tail.
   delete target.progress;
+  delete target.liveOutput;
+  delete target.liveOutputBytes;
+  delete target.liveOutputNewlines;
   // When the row was already force-finished (e.g. cancelled by a new task), a late real success
   // result may still upgrade cancelled to success; no other terminal state moves backwards.
   if (target.status !== "running" && !(target.status === "cancelled" && result.ok)) return;
@@ -696,4 +705,19 @@ function findLast<T>(items: readonly T[], predicate: (item: T) => boolean): T | 
     if (predicate(item)) return item;
   }
   return undefined;
+}
+
+/** Live tail kept for one running command; a long build streams far more than a row can show. */
+const LIVE_OUTPUT_TAIL_CHARS = 8_000;
+
+/**
+ * Append streamed command output to its row. The counters keep counting everything that arrived
+ * so the row can say how much there is, while the stored text keeps only the newest part.
+ */
+function appendLiveOutput(tool: Extract<TuiState["transcript"][number], { kind: "tool" }>, chunk: string): void {
+  if (!chunk) return;
+  tool.liveOutputBytes = (tool.liveOutputBytes ?? 0) + Buffer.byteLength(chunk, "utf8");
+  tool.liveOutputNewlines = (tool.liveOutputNewlines ?? 0) + (chunk.match(/\n/g)?.length ?? 0);
+  const combined = (tool.liveOutput ?? "") + chunk;
+  tool.liveOutput = combined.length > LIVE_OUTPUT_TAIL_CHARS ? combined.slice(-LIVE_OUTPUT_TAIL_CHARS) : combined;
 }

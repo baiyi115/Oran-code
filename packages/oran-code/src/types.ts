@@ -440,6 +440,11 @@ export interface ToolExecutionContext {
    * advisory and may be dropped; a tool must not depend on them being delivered.
    */
   onProgress?: ((note: string) => void) | undefined;
+  /**
+   * Stream a slice of a running command's output to the UI. High-frequency and advisory: the
+   * caller throttles, and the final result remains the authority for what the command produced.
+   */
+  onOutput?: ((chunk: string) => void) | undefined;
 }
 
 export interface ToolDefinition {
@@ -544,6 +549,11 @@ export interface RuntimeEventPayloads {
    * consumers may ignore it.
    */
   tool_progress: { call: ToolCall; note: string };
+  /**
+   * A slice of a running command's output, for the live transcript row. Advisory like
+   * `tool_progress`: consumers may throttle, drop or ignore it, and it is never persisted.
+   */
+  tool_output: { call: ToolCall; chunk: string };
   retry: {
     step: number;
     source: string;

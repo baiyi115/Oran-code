@@ -21,6 +21,7 @@ export function renderToolMessage(message: ToolMessage, width: number, liveTick 
     message.durationMs ??
     (message.status === "running" && message.startedAt ? Math.max(0, now - Date.parse(message.startedAt)) : undefined);
   const duration = elapsed !== undefined ? ` · ${formatDuration(elapsed)}` : "";
+  const liveTail = message.status === "running" ? message.liveOutput : undefined;
   const status = message.status === "running" || message.status === "success" ? "" : ` · ${message.status}`;
   const badges = message.badges?.length ? ` [${message.badges.join(", ")}]` : "";
   const lines = wrapDisplayText(call, Math.max(1, width - 2)).map((line, index) =>
@@ -33,7 +34,9 @@ export function renderToolMessage(message: ToolMessage, width: number, liveTick 
     });
   };
   if (status || badges || message.status === "running") {
-    appendDetail(`${message.status === "running" ? "Running" : message.status}${duration}${badges}`);
+    appendDetail(
+      `${message.status === "running" ? "Running" : message.status}${duration}${liveOutputLabel(message)}${badges}`,
+    );
   }
   const changeDiff = writeToolDiff(message);
   const detail = message.summary || message.error || message.progress || "";
@@ -65,6 +68,48 @@ export function renderToolMessage(message: ToolMessage, width: number, liveTick 
       appendDetail(`Completed${duration}`);
     }
   }
+  // The tail of a running command goes last, newest line at the bottom: that is what tells the
+  // user whether a long build is still making progress.
+  if (liveTail?.trim()) lines.push(...renderLiveOutputTail(message, bodyWidth, message.expanded));
+  return lines;
+}
+
+/** Output size and approximate line count streamed so far, shown on the running row. */
+function liveOutputLabel(message: ToolMessage): string {
+  const bytes = message.liveOutputBytes ?? 0;
+  if (message.status !== "running" || bytes === 0) return "";
+  return ` · ~${liveOutputLineCount(message)} lines · ${formatOutputBytes(bytes)}`;
+}
+
+function liveOutputLineCount(message: ToolMessage): number {
+  // A stream that has not ended on a newline has one more, partial line; "~" marks the estimate.
+  const partial = message.liveOutput !== undefined && !message.liveOutput.endsWith("\n") ? 1 : 0;
+  return Math.max(1, (message.liveOutputNewlines ?? 0) + partial);
+}
+
+function formatOutputBytes(bytes: number): string {
+  if (bytes < 1024) return `${bytes}B`;
+  if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)}KB`;
+  return `${(bytes / (1024 * 1024)).toFixed(1)}MB`;
+}
+
+/**
+ * Newest lines of a running command's output. Each line stays one row: a build log is scanned,
+ * not read, and wrapping would push the useful tail off the screen.
+ */
+function renderLiveOutputTail(message: ToolMessage, width: number, expanded: boolean): string[] {
+  const source = stripTerminalMarkup(message.liveOutput ?? "")
+    .replace(/\r\n?/g, "\n")
+    .split("\n");
+  // A stream that ends on a newline has a trailing empty row that is not a line of output.
+  const rows = source.at(-1) === "" ? source.slice(0, -1) : source;
+  const limit = expanded ? 40 : 3;
+  const shown = rows.slice(Math.max(0, rows.length - limit));
+  // The retained tail is capped, so count against the whole stream, not just the kept rows.
+  const hidden = Math.max(0, liveOutputLineCount(message) - shown.length);
+  const lines: string[] = [];
+  if (hidden > 0) lines.push(`    ${ANSI.gray}… ${hidden} earlier lines${ANSI.reset}`);
+  for (const row of shown) lines.push(`    ${ANSI.gray}${truncateVisible(row, width)}${ANSI.reset}`);
   return lines;
 }
 

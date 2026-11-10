@@ -60,9 +60,7 @@ export function registerCommandTools(
     postprocess: compactShellOutput,
     invoke: async (call, context) => {
       const requestedTimeout = Math.max(1, numberArg(call.arguments.timeout, 60));
-      const timeoutSeconds = sandbox
-        ? Math.min(requestedTimeout, sandbox.maxCommandTimeoutSeconds)
-        : requestedTimeout;
+      const timeoutSeconds = sandbox ? Math.min(requestedTimeout, sandbox.maxCommandTimeoutSeconds) : requestedTimeout;
       const command = String(call.arguments.command);
       let cwd: string;
       try {
@@ -81,12 +79,17 @@ export function registerCommandTools(
         };
       }
 
+      const stream = context?.onOutput ? outputStream(context.onOutput) : undefined;
       const running = startCommand(command, {
         cwd,
         ...(context?.signal ? { signal: context.signal } : {}),
         ...(sandbox ? { sandbox } : {}),
+        ...(stream ? { onData: stream.push } : {}),
       });
       const race = await waitForExitOrTimeout(running, timeoutSeconds);
+      // Stop before returning: a chunk that arrives after the result would attach to a row that
+      // already shows the final output.
+      stream?.stop();
       if (context?.signal?.aborted) {
         running.kill();
         return {
@@ -181,6 +184,36 @@ export function registerCommandTools(
       return { ok: true, output: formatJobOutput(job, 4_000), summary: `job ${job.id} ${job.status}` };
     },
   });
+}
+
+/** How often buffered command output is handed to the UI; one event per raw chunk would flood it. */
+const OUTPUT_STREAM_INTERVAL_MS = 250;
+
+/** Coalesce a command's output into UI-sized slices, flushing on a fixed cadence and on stop. */
+function outputStream(emit: (text: string) => void): {
+  readonly push: (text: string) => void;
+  readonly stop: () => void;
+} {
+  let pending = "";
+  let timer: NodeJS.Timeout | undefined;
+  const flush = (): void => {
+    timer = undefined;
+    if (!pending) return;
+    const text = pending;
+    pending = "";
+    emit(text);
+  };
+  return {
+    push: (text: string): void => {
+      pending += text;
+      timer ??= setTimeout(flush, OUTPUT_STREAM_INTERVAL_MS);
+      timer.unref?.();
+    },
+    stop: (): void => {
+      if (timer !== undefined) clearTimeout(timer);
+      flush();
+    },
+  };
 }
 
 type ExitRace = { kind: "exited"; outcome: CommandOutcome } | { kind: "timeout" };
