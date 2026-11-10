@@ -1,7 +1,7 @@
 import { randomUUID } from "node:crypto";
 import { mkdir, readFile, rename, writeFile } from "node:fs/promises";
-import { dirname, resolve } from "node:path";
-import { projectStateRoot } from "../paths.js";
+import { dirname } from "node:path";
+import { workspaceDataPath } from "../paths.js";
 import {
   buildGraph,
   fingerprintSources,
@@ -19,8 +19,9 @@ import type { GraphIndex } from "./languages/registry.js";
  * No watcher, no staleness window. Modifications rebuild only the changed
  * files' edges on top of the previous index; additions/removals, build-config
  * edits, and package-index languages fall back to a full rebuild. The cache is
- * derived data under the gitignored state directory; a failed write never fails
- * the query, and a missing or corrupt cache file simply triggers a rebuild.
+ * derived data under the user's workspace state directory (~/.oran/workspaces/<hash>),
+ * so it never lands in the worktree; a failed write never fails the query, and a
+ * missing or corrupt cache file simply triggers a rebuild.
  */
 
 /**
@@ -172,7 +173,7 @@ async function writePersisted(root: string, graph: PersistedGraph): Promise<void
 }
 
 export function graphIndexPath(root: string): string {
-  return resolve(projectStateRoot(root), "graph", "index.json");
+  return workspaceDataPath(root, "graph", "index.json");
 }
 
 /** Read the cached index without ever building (used by progress novelty). */

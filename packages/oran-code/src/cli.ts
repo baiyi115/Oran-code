@@ -20,11 +20,11 @@ import type { JsonlEventLog } from "./headless-events.js";
 import { formatErrorDetail } from "./error-format.js";
 import {
   CLI_NAME,
-  ensureProjectStateRoot,
   PRODUCT_NAME,
   PROJECT_STATE_DIRECTORY,
-  projectStateRoot,
+  prepareWorkspaceState,
   USER_DATA_DIRECTORY,
+  userTraceRoot,
 } from "./paths.js";
 
 const VERSION = "0.1.0";
@@ -55,7 +55,7 @@ export async function main(argv = process.argv.slice(2)): Promise<void> {
 
   const workspace = await resolveWorkspace(valueAfter(argv, "--workspace", "-w"));
   if (!existsSync(workspace)) throw new Error(`workspace does not exist: ${workspace}`);
-  await ensureProjectStateRoot(workspace);
+  await prepareWorkspaceState(workspace);
 
   const command = argv[0];
   if (command === "inspect") {
@@ -343,7 +343,7 @@ async function inspectWorkspace(workspace: string): Promise<void> {
 }
 
 async function listTasks(workspace: string, limit: number): Promise<void> {
-  const path = resolve(projectStateRoot(workspace), "trace.db");
+  const path = resolve(userTraceRoot(workspace), "trace.db");
   if (!existsSync(path)) {
     console.log(`No task trace at ${path}`);
     return;
@@ -361,7 +361,7 @@ async function listTasks(workspace: string, limit: number): Promise<void> {
 }
 
 async function showTask(workspace: string, taskId: string): Promise<void> {
-  const path = resolve(projectStateRoot(workspace), "trace.db");
+  const path = resolve(userTraceRoot(workspace), "trace.db");
   if (!existsSync(path)) throw new Error(`no task trace at ${path}`);
   const { SqliteTraceStore } = await import("./trace.js");
   const trace = new SqliteTraceStore(path, workspace);

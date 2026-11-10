@@ -3,6 +3,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { AgentStateStore, type PersistedBackgroundTask } from "../src/subagent/state-store.js";
+import { workspaceDataPath } from "../src/paths.js";
 import { BackgroundAgentTaskManager } from "../src/subagent/background.js";
 import { SubagentCoordinator } from "../src/subagent/coordinator.js";
 import { TeamManager } from "../src/subagent/team.js";
@@ -594,7 +595,7 @@ describe("AgentStateStore", () => {
     expect((await store.load()).background[0]?.status).toBe("running");
 
     await store.saveBackground([backgroundTask("t-1", "completed")]);
-    const persisted = JSON.parse(await readFile(join(workspace, ".oran", "agents", "state.json"), "utf8"));
+    const persisted = JSON.parse(await readFile(workspaceDataPath(workspace, "agents", "state.json"), "utf8"));
     expect(persisted.version).toBe(1);
     expect(persisted.background[0]).toMatchObject({ id: "t-1", status: "completed" });
   });
@@ -604,16 +605,16 @@ describe("AgentStateStore", () => {
     const store = new AgentStateStore(workspace);
     store.scheduleSaveBackground([backgroundTask("t-1", "running")]);
     await store.flush();
-    const persisted = JSON.parse(await readFile(join(workspace, ".oran", "agents", "state.json"), "utf8"));
+    const persisted = JSON.parse(await readFile(workspaceDataPath(workspace, "agents", "state.json"), "utf8"));
     expect(persisted.background.map((entry: { id: string }) => entry.id)).toEqual(["t-1"]);
     await store.flush();
   });
 
   it("ignores state files with an unknown version", async () => {
     const workspace = await makeWorkspace();
-    await mkdir(join(workspace, ".oran", "agents"), { recursive: true });
+    await mkdir(workspaceDataPath(workspace, "agents"), { recursive: true });
     await writeFile(
-      join(workspace, ".oran", "agents", "state.json"),
+      workspaceDataPath(workspace, "agents", "state.json"),
       JSON.stringify({ version: 99, background: [1] }),
       "utf8",
     );
@@ -623,8 +624,8 @@ describe("AgentStateStore", () => {
 
   it("treats unreadable state files as empty", async () => {
     const workspace = await makeWorkspace();
-    await mkdir(join(workspace, ".oran", "agents"), { recursive: true });
-    await writeFile(join(workspace, ".oran", "agents", "state.json"), "{not json", "utf8");
+    await mkdir(workspaceDataPath(workspace, "agents"), { recursive: true });
+    await writeFile(workspaceDataPath(workspace, "agents", "state.json"), "{not json", "utf8");
     const store = new AgentStateStore(workspace);
     expect(await store.load()).toMatchObject({ version: 1, background: [], teams: [] });
   });

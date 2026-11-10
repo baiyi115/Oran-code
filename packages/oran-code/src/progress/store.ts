@@ -1,6 +1,6 @@
 import { mkdir, readFile, rename, writeFile } from "node:fs/promises";
-import { dirname, resolve } from "node:path";
-import { projectStateRoot } from "../paths.js";
+import { dirname } from "node:path";
+import { workspaceDataPath } from "../paths.js";
 import type { TurnSnapshot } from "./capture.js";
 import type { NoveltyState } from "./novelty.js";
 import type { RehearsalData } from "./rehearsal.js";
@@ -259,6 +259,6 @@ export class ProgressStateStore {
   }
 
   private path(): string {
-    return resolve(projectStateRoot(this.workspace), "progress", "state.json");
+    return workspaceDataPath(this.workspace, "progress", "state.json");
   }
 }

@@ -1,6 +1,6 @@
 import { mkdir, readFile, rename, writeFile } from "node:fs/promises";
-import { dirname, resolve } from "node:path";
-import { projectStateRoot } from "../paths.js";
+import { dirname } from "node:path";
+import { workspaceDataPath } from "../paths.js";
 import type { Message } from "../types.js";
 import type { AgentMessage } from "./messages.js";
 import type { PersistedSubagentStatus, SubagentOrigin, SubagentWorktreeLease } from "./types.js";
@@ -220,6 +220,6 @@ export class AgentStateStore {
   }
 
   private path(): string {
-    return resolve(projectStateRoot(this.workspace), "agents", "state.json");
+    return workspaceDataPath(this.workspace, "agents", "state.json");
   }
 }

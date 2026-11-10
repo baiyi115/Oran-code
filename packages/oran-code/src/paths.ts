@@ -25,7 +25,12 @@ export const PROJECT_STATE_DIR_NAMES: readonly string[] = [
   LEGACY_PROJECT_CONFIG_DIRECTORY,
 ];
 
-/** Oran always writes project state to .oran. */
+/**
+ * Where a workspace keeps the configuration a human authors: config.json, hooks, saved permission
+ * rules, custom subagents, skills, commands and plans. Runtime state (checkpoints, sessions,
+ * snapshots, caches, debug logs) lives under userWorkspaceRoot instead, so running Oran in a
+ * repository does not add an untracked directory to it.
+ */
 export function projectStateRoot(workspace: string): string {
   return resolve(workspace, PROJECT_STATE_DIRECTORY);
 }
@@ -35,7 +40,7 @@ export function projectStateRoot(workspace: string): string {
  * Existing .oran files win; conflicting legacy files are retained under
  * .oran/legacy-litecode instead of being overwritten or discarded.
  */
-export async function ensureProjectStateRoot(workspace: string): Promise<string> {
+export async function migrateLegacyProjectState(workspace: string): Promise<string> {
   const preferred = projectStateRoot(workspace);
   const legacy = resolve(workspace, LEGACY_PROJECT_STATE_DIRECTORY);
   if (!existsSync(legacy)) return preferred;
@@ -97,12 +102,33 @@ export function userMemoryRoot(workspace: string): string {
   return resolve(userDataRoot(), "memory", projectHash(workspace));
 }
 
+/** User-scoped runtime state root for a workspace (~/.oran/workspaces/<hash>/). */
+export function userWorkspaceRoot(workspace: string): string {
+  return resolve(userDataRoot(), "workspaces", projectHash(workspace));
+}
+
+/** Absolute path to one runtime state entry of a workspace, e.g. workspaceDataPath(ws, "graph"). */
+export function workspaceDataPath(workspace: string, ...segments: string[]): string {
+  return resolve(userWorkspaceRoot(workspace), ...segments);
+}
+
 /**
- * Move the project-scoped sessions/trace.db/memory from <workspace>/.oran into
- * ~/.oran once, so user data stops polluting the worktree. Conflicts are
+ * One-time migrations a workspace needs before any state store opens: legacy `.litecode`, then
+ * moving everything Oran generates out of the worktree. Both steps are idempotent and safe to run
+ * concurrently, so every entry point calls this instead of each store guessing.
+ */
+export async function prepareWorkspaceState(workspace: string): Promise<void> {
+  await migrateLegacyProjectState(workspace);
+  await migrateStateOutOfWorkspace(workspace);
+}
+
+/**
+ * Move the project-local state Oran generates (sessions, traces, checkpoints, progress, snapshots,
+ * graph cache, debug logs, subagent state, command usage) into ~/.oran once, so a plain run leaves
+ * nothing behind in the worktree. Project-authored configuration stays in .oran. Conflicts are
  * archived under the destination rather than overwritten.
  */
-export async function migrateUserDataOutOfWorkspace(workspace: string): Promise<void> {
+export async function migrateStateOutOfWorkspace(workspace: string): Promise<void> {
   // When the workspace is the user home directory (or an ancestor of it), ~/.oran lies
   // inside workspace/.oran, so the migration would become a rename of a directory into
   // itself (EINVAL); the two are the same place, so skip it.
@@ -114,6 +140,15 @@ export async function migrateUserDataOutOfWorkspace(workspace: string): Promise<
     [resolve(projectRoot, "sessions"), userSessionsRoot(workspace)],
     [resolve(projectRoot, "trace.db"), resolve(userTraceRoot(workspace), "trace.db")],
     [resolve(projectRoot, "memory"), userMemoryRoot(workspace)],
+    [resolve(projectRoot, "sessions.json"), workspaceDataPath(workspace, "sessions.json")],
+    [resolve(projectRoot, "checkpoints"), workspaceDataPath(workspace, "checkpoints")],
+    [resolve(projectRoot, "progress"), workspaceDataPath(workspace, "progress")],
+    [resolve(projectRoot, "snapshots"), workspaceDataPath(workspace, "snapshots")],
+    [resolve(projectRoot, "graph"), workspaceDataPath(workspace, "graph")],
+    [resolve(projectRoot, "debug"), workspaceDataPath(workspace, "debug")],
+    [resolve(projectRoot, "command-usage.json"), workspaceDataPath(workspace, "command-usage.json")],
+    // Subagent definitions (agents/*.md) stay with the project; only their runtime state leaves.
+    [resolve(projectRoot, "agents", "state.json"), workspaceDataPath(workspace, "agents", "state.json")],
   ];
   for (const [source, destination] of moves) {
     if (!existsSync(source)) continue;
@@ -141,6 +176,19 @@ export async function migrateUserDataOutOfWorkspace(workspace: string): Promise<
         if (!existsSync(destination)) throw error;
       }
     }
+  }
+  // .oran should not outlive its own content: once the runtime state has moved, an empty agents/
+  // and an empty .oran disappear, leaving the worktree as the user left it.
+  await removeDirectoryIfEmpty(resolve(projectRoot, "agents"));
+  await removeDirectoryIfEmpty(projectRoot);
+}
+
+/** Removes a directory only when nothing is left in it; a populated or missing one is left alone. */
+async function removeDirectoryIfEmpty(path: string): Promise<void> {
+  try {
+    await rmdir(path);
+  } catch {
+    // ENOENT: already gone. ENOTEMPTY: still holds configuration a human wrote. Neither is an error.
   }
 }
 

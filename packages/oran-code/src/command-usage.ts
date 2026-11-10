@@ -1,6 +1,6 @@
 import { mkdir, readFile, writeFile } from "node:fs/promises";
 import { dirname, resolve } from "node:path";
-import { projectStateRoot } from "./paths.js";
+import { workspaceDataPath } from "./paths.js";
 import { isRecord } from "./types.js";
 
 const MILLISECONDS_PER_DAY = 24 * 60 * 60 * 1_000;
@@ -32,9 +32,7 @@ export class CommandUsageTracker {
   private dirty = false;
 
   private constructor(workspace: string, options: CommandUsageTrackerOptions) {
-    this.path = options.path
-      ? resolve(workspace, options.path)
-      : resolve(projectStateRoot(workspace), "command-usage.json");
+    this.path = options.path ? resolve(workspace, options.path) : workspaceDataPath(workspace, "command-usage.json");
     this.halfLifeDays = positiveNumber(options.halfLifeDays, 14);
     this.minimumWeight = boundedNumber(options.minimumWeight, 0.05, 0, 1);
     this.now = options.now ?? Date.now;

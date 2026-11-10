@@ -25,7 +25,7 @@ export function registerGraphTools(registry: ToolRegistry, factory: ToolFactoryC
       "Returns the files that (directly or transitively) import the given file, optionally limited to test files. " +
       `Covers ${covered}. Use it before modifying a widely-referenced file instead of ` +
       "grepping for the name or reading candidate files one by one. Returns structure only, not source code. " +
-      "The index is built lazily on first use and stored under .oran/graph/.",
+      "The index is built lazily on first use and stored in the user's Oran data directory.",
     parameters: {
       type: "object",
       properties: {

@@ -85,13 +85,7 @@ import {
 import { MemoryManager } from "./memory-manager.js";
 import { sweepOrphanWorktrees } from "./worktree/lifecycle.js";
 import type { HookEngine, HookSubAgentExecutor } from "./hook/index.js";
-import {
-  CLI_NAME,
-  ensureProjectStateRoot,
-  migrateUserDataOutOfWorkspace,
-  PRODUCT_NAME,
-  userTraceRoot,
-} from "./paths.js";
+import { CLI_NAME, prepareWorkspaceState, PRODUCT_NAME, userTraceRoot } from "./paths.js";
 import type { SubagentEvent, SubagentOrigin, TeamSnapshot } from "./subagent/types.js";
 import { LiveSubagentTasks } from "./subagent/live.js";
 import type { AgentMessage } from "./subagent/messages.js";
@@ -575,7 +569,7 @@ export class TerminalSession {
     // overlapping with the IO of state-directory migration and history restore to shorten time to first frame.
     const inkReady = isTty ? loadInkApp() : undefined;
     if (inkReady) void inkReady.catch(() => undefined);
-    await ensureProjectStateRoot(this.workspace);
+    await prepareWorkspaceState(this.workspace);
     // First paint only needs history + a blank session. Heavy integrations load in the background.
     const [history] = await Promise.all([loadHistory(), this.openSessionStore()]);
     void this.ensureAgentStateRestored().catch((error) =>
@@ -634,7 +628,7 @@ export class TerminalSession {
     if (!existsSync(this.workspace)) throw new Error(`workspace does not exist: ${this.workspace}`);
     this.scriptedRunActive = true;
     try {
-      await ensureProjectStateRoot(this.workspace);
+      await prepareWorkspaceState(this.workspace);
       await Promise.all([
         this.ensureAgentStateRestored(),
         this.initializeCommandIntegrations(),
@@ -2624,7 +2618,7 @@ export class TerminalSession {
     this.traceOpen ??= (async () => {
       const { SqliteTraceStore } = await loadTrace();
       if (this.trace) return;
-      await migrateUserDataOutOfWorkspace(this.workspace);
+      await prepareWorkspaceState(this.workspace);
       const traceRoot = userTraceRoot(this.workspace);
       await mkdir(traceRoot, { recursive: true });
       this.trace = await SqliteTraceStore.open(resolve(traceRoot, "trace.db"), this.workspace);
@@ -2875,14 +2869,9 @@ function buildPlanExecutePrompt(plan: string): string {
  * completed tool batch on restore, so the model must re-establish what already happened from the
  * workspace rather than from the transcript.
  */
-function buildInterruptedResumePrompt(
-  checkpoint: TaskCheckpoint,
-  unknown: readonly CheckpointToolCall[],
-): string {
+function buildInterruptedResumePrompt(checkpoint: TaskCheckpoint, unknown: readonly CheckpointToolCall[]): string {
   const summary =
-    checkpoint.turn > 0
-      ? `after ${checkpoint.turn} completed step(s)`
-      : "before its first completed step";
+    checkpoint.turn > 0 ? `after ${checkpoint.turn} completed step(s)` : "before its first completed step";
   const lines = [
     `Continue the task below, which the previous run left unfinished ${summary}.`,
     "The process exited mid-run; the task did not stop because it was done.",

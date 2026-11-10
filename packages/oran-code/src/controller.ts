@@ -211,7 +211,7 @@ export class TaskController {
   private conversation: Message[];
   private readonly toolExecutor: ToolBatchExecutor;
   private readonly turnRequester: TurnRequester;
-  /** Out-of-band progress store, reused per workspace; lives in .oran/progress/. */
+  /** Out-of-band progress store, reused per workspace; lives in the user Oran data directory. */
   private readonly progressStores = new Map<string, ProgressStateStore>();
   /** Progress reminders queued this turn; drained into next turn's reminders. */
   private readonly pendingProgressNotices: string[] = [];

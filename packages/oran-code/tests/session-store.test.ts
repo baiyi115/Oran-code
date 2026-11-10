@@ -11,6 +11,7 @@ import {
   type StoredSession,
 } from "../src/session-store.js";
 import type { Message } from "../src/types.js";
+import { workspaceDataPath } from "../src/paths.js";
 
 describe("SessionStore JSONL archives", () => {
   let originalUserDataDir: string | undefined;
@@ -276,7 +277,7 @@ describe("SessionStore JSONL archives", () => {
       const store = new SessionStore(root);
       await store.open();
       expect((await store.ensureConversation(legacy.id))?.conversation).toEqual(legacy.conversation);
-      expect(await stat(`${legacyPath}.migrated`)).toBeDefined();
+      expect(await stat(`${workspaceDataPath(root, "sessions.json")}.migrated`)).toBeDefined();
 
       const reopened = new SessionStore(root);
       await reopened.open();

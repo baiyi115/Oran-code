@@ -171,7 +171,9 @@ terminals send for `Enter`.
 
 ## Configuration
 
-Oran stores global settings in `~/.oran/` and workspace-specific state in `.oran/`.
+Oran stores global settings and runtime state (sessions, traces, checkpoints, snapshots, caches) in
+`~/.oran/`. The workspace's `.oran/` holds only configuration you author: `config.json`,
+hooks, saved permission rules, `agents/*.md`, `skills/`, `commands/` and `plans/`.
 
 Use `/connect` inside the interactive CLI to list, add, edit, or remove providers; use
 `/connect PROVIDER` to open an existing provider directly. Enter the base URL and protocol,
@@ -283,10 +285,14 @@ context and output limits still apply.
 
 - `AGENTS.md`: project-specific engineering standards, rules, and constraints automatically
   injected into the agent's system prompt.
-- `.oran/snapshots/`: local workspace snapshots for `/undo` rollback support.
-- `.oran/sessions/`: persisted session history and logs.
-- `.oran/checkpoints/`: one in-flight task record per session, used to detect a crashed run and
-  resume it with `/resume`.
+- `.oran/`: project configuration you author — `config.json`, hooks, permission rules,
+  `agents/*.md`, `skills/`, `commands/` and `plans/`. Oran creates the directory only when you
+  customize one of these; a plain run leaves the worktree untouched.
+- `~/.oran/sessions/<workspace-hash>/`: persisted session history and logs.
+- `~/.oran/trace/<workspace-hash>/`: task traces, read by `oran tasks` and `oran show`.
+- `~/.oran/workspaces/<workspace-hash>/`: runtime state — checkpoints (one in-flight task record
+  per session, used to detect a crashed run and resume it with `/resume`), workspace snapshots for
+  `/undo`, the code-graph cache, subagent state and debug logs.
 - `~/.oran/memory/<workspace-hash>/`: Markdown notes curated by the agent for long-term
   project knowledge (stored next to sessions and traces, outside the workspace).
 - `.oran/skills/`: project-local custom skills (`SKILL.md`).

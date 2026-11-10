@@ -10,7 +10,7 @@ import type {
   UserConfig,
   WorkMode,
 } from "./types.js";
-import { compatibleUserDataPath, projectStateRoot } from "./paths.js";
+import { compatibleUserDataPath, projectStateRoot, userTraceRoot } from "./paths.js";
 
 export const DEFAULT_MAX_RETRIES = 5;
 export const DEFAULT_COMMAND_TIMEOUT = 60_000;
@@ -62,7 +62,7 @@ export function createRuntimeConfig(
     planDirectory: resolve(stateRoot, "plans"),
     allowedRoots: [resolve(workspace), resolve(tmpdir())],
   };
-  const traceDb = resolve(stateRoot, "trace.db");
+  const traceDb = resolve(userTraceRoot(workspace), "trace.db");
   return {
     workspace,
     model,

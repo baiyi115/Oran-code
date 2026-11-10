@@ -18,7 +18,7 @@ import {
   type ReasoningEffort,
   type WorkMode,
 } from "./types.js";
-import { ensureProjectStateRoot, migrateUserDataOutOfWorkspace, projectStateRoot, userSessionsRoot } from "./paths.js";
+import { prepareWorkspaceState, userSessionsRoot, workspaceDataPath } from "./paths.js";
 
 export type SessionTitleSource = "local" | "model" | "manual";
 export interface StoredSession {
@@ -144,13 +144,12 @@ export class SessionStore {
     options?: SessionStoreOptions,
   ) {
     this.sessionsRoot = resolve(options?.sessionsRoot ?? userSessionsRoot(workspace));
-    this.path = resolve(projectStateRoot(workspace), "sessions.json");
+    this.path = workspaceDataPath(workspace, "sessions.json");
     this.directory = this.sessionsRoot;
   }
 
   async open(): Promise<void> {
-    await ensureProjectStateRoot(this.workspace);
-    await migrateUserDataOutOfWorkspace(this.workspace);
+    await prepareWorkspaceState(this.workspace);
     await this.migrateLegacyStore();
     let names: string[];
     try {

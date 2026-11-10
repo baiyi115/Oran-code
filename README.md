@@ -84,8 +84,9 @@ On first launch, run `/connect` to add a provider and API key, then give it a ta
 > Find why the pagination test fails, fix it, and run the test suite.
 ```
 
-Oran reads files, proposes edits, asks before risky commands, and stores the session under
-`.oran/`. Use `/undo` to revert the last batch, or `/tasks` to inspect background subagents.
+Oran reads files, proposes edits, asks before risky commands, and keeps the session under
+`~/.oran/`, so the worktree only ever gets the edits you asked for. Use `/undo` to revert the last
+batch, or `/tasks` to inspect background subagents.
 
 ## How it works
 
@@ -98,7 +99,8 @@ prompt
 
 Each turn is a loop, not a fixed workflow: the model chooses the next tool, the permission
 gate decides whether it may run, and the context manager decides what the next request keeps.
-Sessions and traces live under `.oran/`; memory notes live under `~/.oran/memory/`.
+Sessions, traces and checkpoints live under `~/.oran/`; memory notes live under
+`~/.oran/memory/`. The workspace's `.oran/` holds only configuration you author.
 
 ## Evaluation
 

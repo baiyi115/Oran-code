@@ -4,7 +4,7 @@ import { tmpdir } from "node:os";
 import { dirname, isAbsolute, relative, resolve, sep } from "node:path";
 import { promisify } from "node:util";
 import type { Task } from "./types.js";
-import { projectStateRoot, PROJECT_STATE_DIR_NAMES } from "./paths.js";
+import { PROJECT_STATE_DIR_NAMES, workspaceDataPath } from "./paths.js";
 
 const execFileAsync = promisify(execFile);
 
@@ -74,7 +74,7 @@ export class SnapshotStore implements SnapshotStorePort {
   }
 
   async finalize(task: Task): Promise<void> {
-    const files = await readdir(resolve(projectStateRoot(this.rootWorkspace), "snapshots"), {
+    const files = await readdir(workspaceDataPath(this.rootWorkspace, "snapshots"), {
       withFileTypes: true,
     }).catch(() => []);
     const manifestPath =
@@ -109,7 +109,7 @@ export class SnapshotStore implements SnapshotStorePort {
   }
 
   async list(sessionId?: string): Promise<readonly SnapshotManifest[]> {
-    const snapshotRoot = resolve(projectStateRoot(this.rootWorkspace), "snapshots");
+    const snapshotRoot = workspaceDataPath(this.rootWorkspace, "snapshots");
     const sessions = await readdir(snapshotRoot, { withFileTypes: true }).catch(() => []);
     const result: SnapshotManifest[] = [];
     for (const session of sessions) {
@@ -292,7 +292,7 @@ export class SnapshotStore implements SnapshotStorePort {
   }
 
   private manifestPath(sessionId: string, taskId: string): string {
-    return resolve(projectStateRoot(this.rootWorkspace), "snapshots", safePart(sessionId), `${safePart(taskId)}.json`);
+    return workspaceDataPath(this.rootWorkspace, "snapshots", safePart(sessionId), `${safePart(taskId)}.json`);
   }
 
   private async findManifestPath(taskId: string, sessionNames: readonly string[]): Promise<string | undefined> {

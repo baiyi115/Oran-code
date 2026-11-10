@@ -1,6 +1,6 @@
 import { mkdir, readdir, readFile, rename, writeFile } from "node:fs/promises";
-import { dirname, resolve } from "node:path";
-import { projectStateRoot } from "./paths.js";
+import { dirname } from "node:path";
+import { workspaceDataPath } from "./paths.js";
 import type { ToolKind } from "./types.js";
 
 /**
@@ -76,7 +76,7 @@ export class TaskCheckpointStore {
   ) {}
 
   path(sessionId: string): string {
-    return resolve(projectStateRoot(this.workspace), "checkpoints", `${sessionId}.json`);
+    return workspaceDataPath(this.workspace, "checkpoints", `${sessionId}.json`);
   }
 
   async read(sessionId: string): Promise<TaskCheckpoint | undefined> {
@@ -103,7 +103,7 @@ export class TaskCheckpointStore {
    */
   async interrupted(): Promise<TaskCheckpoint[]> {
     if (!this.persistent) return [];
-    const directory = resolve(projectStateRoot(this.workspace), "checkpoints");
+    const directory = workspaceDataPath(this.workspace, "checkpoints");
     let entries: string[];
     try {
       entries = await readdir(directory);

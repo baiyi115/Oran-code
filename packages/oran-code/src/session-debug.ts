@@ -4,19 +4,19 @@
  * writeDebugLog/debugRuntimeStream), behavior unchanged.
  */
 import { appendFile, mkdir } from "node:fs/promises";
-import { dirname, resolve } from "node:path";
-import { projectStateRoot } from "./paths.js";
+import { dirname } from "node:path";
+import { workspaceDataPath } from "./paths.js";
 import type { RuntimeEvent } from "./types.js";
 
 export type DebugLogSink = (message: string) => void;
 
-/** Debug log written serially to .oran/debug/agent.jsonl; a no-op unless ORAN_DEBUG is enabled. */
+/** Debug log written serially to ~/.oran/workspaces/<hash>/debug/agent.jsonl; a no-op unless ORAN_DEBUG is enabled. */
 export function createDebugLogSink(workspace: string): DebugLogSink {
   let tail: Promise<void> = Promise.resolve();
   return (message: string): void => {
     const enabled = /^(1|true|yes)$/i.test(process.env.ORAN_DEBUG ?? "");
     if (!enabled) return;
-    const path = resolve(projectStateRoot(workspace), "debug", "agent.jsonl");
+    const path = workspaceDataPath(workspace, "debug", "agent.jsonl");
     tail = tail
       .then(async () => {
         await mkdir(dirname(path), { recursive: true });

@@ -15,6 +15,7 @@ import { INITIAL_NOVELTY_STATE, updateNovelty } from "../src/progress/novelty.js
 import { judgeConvergence, parseRehearsal, type RehearsalData } from "../src/progress/rehearsal.js";
 import { isExplorationTask } from "../src/progress/phase.js";
 import { EMPTY_PROGRESS_STATE, ProgressStateStore, selectRunState } from "../src/progress/store.js";
+import { workspaceDataPath } from "../src/paths.js";
 import type { ProgressSignal } from "../src/progress/signals.js";
 import type { ToolCall, ToolResult } from "../src/types.js";
 
@@ -438,7 +439,7 @@ describe("ProgressStateStore", () => {
   it("round-trips state and self-heals from corruption and deletion", async () => {
     const dir = await mkdtemp(join(tmpdir(), "oran-progress-"));
     try {
-      const path = join(dir, ".oran", "progress", "state.json");
+      const path = workspaceDataPath(dir, "progress", "state.json");
       const state = { ...EMPTY_PROGRESS_STATE, goalFingerprint: "fp-1", allowedPaths: ["src/a.ts"] };
       await new ProgressStateStore(dir).save(state);
       expect(await new ProgressStateStore(dir).load()).toMatchObject({
