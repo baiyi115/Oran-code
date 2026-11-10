@@ -59,7 +59,8 @@ export const DEFAULT_COMMANDS: readonly SlashCommand[] = [
   { name: "/rename", description: "rename current session", argumentHint: "NAME", kind: "ui", action: "rename" },
   {
     name: "/resume",
-    description: "continue a task a progress gate paused or a crash interrupted (--force skips the unknown-result confirmation)",
+    description:
+      "continue a task a progress gate paused or a crash interrupted (--force skips the unknown-result confirmation)",
     usage: "/resume [--force]",
     argumentHint: "--force",
     kind: "ui",
@@ -93,7 +94,7 @@ export const DEFAULT_COMMANDS: readonly SlashCommand[] = [
   {
     name: "/tasks",
     aliases: ["/subagents"],
-    description: "list background subagent and teammate tasks",
+    description: "list subagent, teammate, and shell-job tasks",
     kind: "ui",
     action: "tasks",
   },

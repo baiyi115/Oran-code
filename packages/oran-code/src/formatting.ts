@@ -58,3 +58,11 @@ export function formatRate(value: number): string {
   if (value < 1000) return String(Math.round(value));
   return `${(value / 1000).toFixed(1)}k`;
 }
+
+/** Compact magnitude for counts that grow large: 842, 4.2k, 42k, 1.2m. */
+export function compactNumber(value: number): string {
+  if (value < 1000) return String(value);
+  if (value < 10_000) return `${(value / 1000).toFixed(1)}k`;
+  if (value < 1_000_000) return `${Math.round(value / 1000)}k`;
+  return `${(value / 1_000_000).toFixed(1)}m`;
+}

@@ -48,7 +48,9 @@ function taskListLabel(task: TuiBackgroundTask, width: number, now: number): str
   const duration = Number.isFinite(startedAt) ? formatDuration(Math.max(0, endedAt - startedAt)) : "";
   const metadata = [task.id, task.status, duration].filter(Boolean).join(" · ");
   const prefix = `${icon} `;
-  const label = role ? `${task.name} · ${role}` : task.name;
+  // A running task is identified by what it is doing; history rows keep their description.
+  const detail = (task.status === "running" ? task.activity : undefined) || task.name;
+  const label = role ? `${detail} · ${role}` : detail;
   const budget = Math.max(8, width - prefix.length - metadata.length - 2);
   return `${prefix}${truncateVisible(label.replace(/\s+/g, " ").trim(), budget)}  ${metadata}`;
 }

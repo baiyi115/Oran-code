@@ -164,7 +164,7 @@ terminals send for `Enter`.
 | `/session [id]`         | Switch between active sessions or resume past sessions                     |
 | `/new`                  | Start a clean conversation session                                         |
 | `/status`               | View token usage, active permissions, and MCP connections                  |
-| `/tasks`                | List background subagent tasks (alias `/subagents`)                        |
+| `/tasks`                | List subagent, teammate, and shell-job tasks (alias `/subagents`)          |
 | `/compact`              | Trigger manual context compaction to save tokens                           |
 | `/clear`                | Clear terminal transcript output                                           |
 | `/exit`                 | Exit session                                                               |
@@ -327,6 +327,11 @@ Background calls and team members stay reachable while they run:
 - `report_to_parent` lets a background subagent or teammate report `progress`, `blocked`,
   `question`, or `result`. A `question` waits for guidance by default (60 seconds,
   configurable with `wait_seconds` up to 300) and returns the guidance in the same call.
+
+While a delegated task runs, the TUI's task panel under the composer shows one row per task —
+foreground and background alike — with the call it is running (`Reading src/session.ts`,
+`Running ./gradlew test`), how long it has been running, and the output tokens it has spent.
+Finished rows linger for a minute; `/tasks` keeps the longer history and opens each task's output.
 
 Messages are capped at 4,000 characters, with at most 16 pending per task and direction.
 Guidance that never reaches a task before it ends is marked `undeliverable` and reported

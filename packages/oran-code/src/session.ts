@@ -93,6 +93,7 @@ import {
   userTraceRoot,
 } from "./paths.js";
 import type { SubagentEvent, SubagentOrigin, TeamSnapshot } from "./subagent/types.js";
+import { LiveSubagentTasks } from "./subagent/live.js";
 import type { AgentMessage } from "./subagent/messages.js";
 import { normalizeTokenUsage } from "./token-usage.js";
 import type { QuestionItem } from "./tools/interaction-tools.js";
@@ -112,6 +113,8 @@ import type { AgentStateStore } from "./subagent/state-store.js";
 
 const execAsync = promisify(exec);
 const SESSION_EXPIRY_DAYS = 30;
+/** Repaint budget for live subagent activity: tool calls arrive far faster than a panel needs. */
+const SUBAGENT_PANEL_REFRESH_MS = 250;
 
 /** Internal continuation used when a delegated task finishes or needs guidance while the parent is idle. */
 const AUTO_RESUME_PROMPT = [
@@ -259,6 +262,9 @@ export class TerminalSession {
   private readonly subagentUsageBySession = new Map<string, ReturnType<typeof normalizeTokenUsage>>();
   /** A run can report more than once; its usage is counted on the first terminal event only. */
   private readonly countedSubagentTasks = new Set<string>();
+  /** Last activity and token count per delegated task, foreground and background. */
+  private readonly liveSubagents = new LiveSubagentTasks();
+  private subagentPanelTimer: NodeJS.Timeout | undefined;
   private subagentUsageEventSequence = 0;
   private readonly debugLogSink: DebugLogSink;
   private readonly debugTracker: StreamDebugTracker;
@@ -514,7 +520,7 @@ export class TerminalSession {
           definitionName: task.definitionName,
           error: task.error,
         }));
-        return [...subagents, ...teammateTaskSnapshots(runtime.teams.list()), ...jobs];
+        return [...this.withLiveSubagents([...subagents, ...teammateTaskSnapshots(runtime.teams.list())]), ...jobs];
       },
     });
     this.skillLoader = new SkillLoader(this.workspace);
@@ -875,7 +881,7 @@ export class TerminalSession {
         approvalCallback: (call, level, description, requestId, origin) =>
           this.requestApproval(call, level, description, origin, requestId),
         approvalCancellationCallback: (origin) => this.cancelApprovalsForOrigin(origin),
-        eventCallback: (event) => this.recordSubagentUsage(event),
+        eventCallback: (event) => this.observeSubagent(event),
         parentToolFilter,
         isMcpTool: (name) => this.mcp.isMcpTool(name),
         hookFactory: async (workspace, messages) => {
@@ -1167,47 +1173,97 @@ export class TerminalSession {
   }
 
   /**
-   * Counts a finished subagent's usage into the session it belongs to. Subagents spend real tokens
-   * against the same account, so the footer's session figure must include them; the completion
-   * summary stays the main task's own number.
+   * Every delegated task reports here, foreground and background. Running events feed the live
+   * task panel; the terminal event is counted into the session's usage, because subagents spend
+   * real tokens against the same account and the footer's session figure must include them
+   * (the completion summary stays the main task's own number).
    */
-  private recordSubagentUsage(event: SubagentEvent): void {
-    if (event.status === "queued" || event.status === "running") return;
-    if (!event.usage) return;
-    if (this.countedSubagentTasks.has(event.taskId)) return;
-    this.countedSubagentTasks.add(event.taskId);
-    const key = this.currentSession?.id ?? "current";
-    const current = this.subagentUsageBySession.get(key) ?? normalizeTokenUsage({});
-    const delta = normalizeTokenUsage({ ...event.usage });
-    this.subagentUsageBySession.set(key, {
-      inputTokens: current.inputTokens + delta.inputTokens,
-      outputTokens: current.outputTokens + delta.outputTokens,
-      totalTokens: current.totalTokens + delta.totalTokens,
-      cacheReadTokens: current.cacheReadTokens + delta.cacheReadTokens,
-      cacheWriteTokens: current.cacheWriteTokens + delta.cacheWriteTokens,
+  private observeSubagent(event: SubagentEvent): void {
+    const changed = this.liveSubagents.observe(event, this.currentSession?.id);
+    if (event.status === "queued" || event.status === "running") {
+      // Activity arrives per tool call; the panel only needs a few repaints a second.
+      if (changed) this.scheduleSubagentPanelRefresh();
+      return;
+    }
+    if (event.usage && !this.countedSubagentTasks.has(event.taskId)) {
+      this.countedSubagentTasks.add(event.taskId);
+      const key = this.currentSession?.id ?? "current";
+      const current = this.subagentUsageBySession.get(key) ?? normalizeTokenUsage({});
+      const delta = normalizeTokenUsage({ ...event.usage });
+      this.subagentUsageBySession.set(key, {
+        inputTokens: current.inputTokens + delta.inputTokens,
+        outputTokens: current.outputTokens + delta.outputTokens,
+        totalTokens: current.totalTokens + delta.totalTokens,
+        cacheReadTokens: current.cacheReadTokens + delta.cacheReadTokens,
+        cacheWriteTokens: current.cacheWriteTokens + delta.cacheWriteTokens,
+      });
+      // The footer sees the aggregated map directly, but headless runs only consume runtime events.
+      // Forward this terminal accounting event so their run_end totals include delegated work.
+      const startedMs = event.startedAt ? Date.parse(event.startedAt) : Number.NaN;
+      const endedMs = Date.parse(event.endedAt ?? event.timestamp);
+      const durationMs =
+        Number.isFinite(startedMs) && Number.isFinite(endedMs) ? Math.max(0, endedMs - startedMs) : undefined;
+      this.runtimeEventSink?.({
+        version: 1,
+        type: "subagent_usage",
+        taskId: event.taskId,
+        sequence: ++this.subagentUsageEventSequence,
+        timestamp: event.timestamp,
+        name: event.name,
+        inputTokens: delta.inputTokens,
+        outputTokens: delta.outputTokens,
+        cacheReadTokens: delta.cacheReadTokens,
+        cacheWriteTokens: delta.cacheWriteTokens,
+        ...(event.startedAt === undefined ? {} : { startedAt: event.startedAt }),
+        ...(event.endedAt === undefined ? {} : { endedAt: event.endedAt }),
+        ...(durationMs === undefined ? {} : { durationMs }),
+      });
+    }
+    if (changed) this.tui?.refreshContext();
+  }
+
+  private scheduleSubagentPanelRefresh(): void {
+    if (!this.tui || this.subagentPanelTimer) return;
+    this.subagentPanelTimer = setTimeout(() => {
+      this.subagentPanelTimer = undefined;
+      this.refreshTui();
+    }, SUBAGENT_PANEL_REFRESH_MS);
+    this.subagentPanelTimer.unref?.();
+  }
+
+  /**
+   * Adds the delegated tasks only the event stream knows about — a synchronous `agent` call is an
+   * `await` in the parent's tool loop and has no manager row — and attaches each task's live
+   * activity and token count to the rows a manager already provides.
+   */
+  private withLiveSubagents(tasks: readonly TuiBackgroundTask[]): TuiBackgroundTask[] {
+    const live = this.liveSubagents.list(this.currentSession?.id);
+    if (live.length === 0) return [...tasks];
+    const byId = new Map(live.map((task) => [task.id, task]));
+    const merged = tasks.map((task) => {
+      const entry = byId.get(task.id);
+      if (!entry) return task;
+      return {
+        ...task,
+        ...(entry.activity ? { activity: entry.activity } : {}),
+        ...(entry.tokens > 0 ? { tokens: entry.tokens } : {}),
+      };
     });
-    // The footer sees the aggregated map directly, but headless runs only consume runtime events.
-    // Forward this terminal accounting event so their run_end totals include delegated work.
-    const startedMs = event.startedAt ? Date.parse(event.startedAt) : Number.NaN;
-    const endedMs = Date.parse(event.endedAt ?? event.timestamp);
-    const durationMs =
-      Number.isFinite(startedMs) && Number.isFinite(endedMs) ? Math.max(0, endedMs - startedMs) : undefined;
-    this.runtimeEventSink?.({
-      version: 1,
-      type: "subagent_usage",
-      taskId: event.taskId,
-      sequence: ++this.subagentUsageEventSequence,
-      timestamp: event.timestamp,
-      name: event.name,
-      inputTokens: delta.inputTokens,
-      outputTokens: delta.outputTokens,
-      cacheReadTokens: delta.cacheReadTokens,
-      cacheWriteTokens: delta.cacheWriteTokens,
-      ...(event.startedAt === undefined ? {} : { startedAt: event.startedAt }),
-      ...(event.endedAt === undefined ? {} : { endedAt: event.endedAt }),
-      ...(durationMs === undefined ? {} : { durationMs }),
-    });
-    this.tui?.refreshContext();
+    const known = new Set(tasks.map((task) => task.id));
+    const extra: TuiBackgroundTask[] = live
+      .filter((task) => !known.has(task.id))
+      .map((task) => ({
+        id: task.id,
+        name: task.name,
+        origin: task.origin,
+        status: task.status,
+        startedAt: task.startedAt,
+        ...(task.endedAt === undefined ? {} : { endedAt: task.endedAt }),
+        ...(task.activity === undefined ? {} : { activity: task.activity }),
+        ...(task.tokens > 0 ? { tokens: task.tokens } : {}),
+        ...(task.error === undefined ? {} : { error: task.error }),
+      }));
+    return [...merged, ...extra];
   }
 
   private subagentUsageSnapshot(): ReturnType<typeof normalizeTokenUsage> | undefined {
@@ -2340,7 +2396,7 @@ export class TerminalSession {
             ...(job.endedAt ? { endedAt: job.endedAt } : {}),
             ...(job.error ? { error: job.error } : {}),
           }));
-        return [...subagents, ...teammates, ...jobs];
+        return [...this.withLiveSubagents([...subagents, ...teammates]), ...jobs];
       },
       getSessionName: () => (this.currentSession ? this.sessionName(this.currentSession) : "Current session"),
       getWorkMode: () => this.workMode,

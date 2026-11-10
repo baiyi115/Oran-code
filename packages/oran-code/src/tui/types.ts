@@ -151,6 +151,13 @@ export interface TuiBackgroundTask {
    * notification truncates it, so this is the only way to read a long subagent report in the TUI.
    */
   readonly output?: string | undefined;
+  /**
+   * What a running delegated task is doing right now ("Reading src/session.ts"). Present for
+   * subagents and teammates, absent for shell jobs, whose command is the whole story.
+   */
+  readonly activity?: string | undefined;
+  /** Output tokens the task has spent so far. */
+  readonly tokens?: number | undefined;
 }
 
 export interface TuiSessionState {

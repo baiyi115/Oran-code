@@ -1,7 +1,7 @@
 import type { TuiBackgroundTask, TuiState } from "./types.js";
-import { toolDisplayName } from "./tool-names.js";
+import { toolDisplayName } from "../tool-names.js";
 import { truncateVisible } from "./text-width.js";
-import { formatDuration } from "../formatting.js";
+import { compactNumber, formatDuration } from "../formatting.js";
 import { isLiveMessage } from "./transcript/live-message.js";
 
 /** Braille spinner frames, matching common CLI working indicators (pi/Ink loaders). */
@@ -113,7 +113,11 @@ export function subagentTaskLines(
 function buildTaskPanelRow(task: TuiBackgroundTask, tick: number, now: number, width: number): TaskPanelRow {
   const role =
     task.definitionName || (task.origin?.kind === "definition" ? task.origin.name : task.origin?.kind) || undefined;
-  const label = role && role !== task.name ? `${role} · ${task.name}` : task.name || "agent";
+  // A running task's current tool is what the row is for; the description only identifies it until
+  // the first call lands. A finished row goes back to the description, since its activity is past.
+  const active = task.status === "running" || task.status === "queued";
+  const detail = (active ? task.activity : undefined) || task.name;
+  const label = role && role !== detail ? `${role} · ${detail}` : detail || "agent";
   const startedAt = Date.parse(task.startedAt);
   const endedAt = task.endedAt ? Date.parse(task.endedAt) : Number.NaN;
 
@@ -139,11 +143,12 @@ function buildTaskPanelRow(task: TuiBackgroundTask, tick: number, now: number, w
   }
   // Keep the timing suffix alive: a long description only truncates the label part.
   // A failed subagent also says why, which is the part the user needs to decide what to do next.
+  const tokens = task.tokens !== undefined && task.tokens > 0 ? ` · ↓ ${compactNumber(task.tokens)}` : "";
   const reason =
     task.status === "failed" && task.error
       ? truncateVisible(task.error.split(/\r?\n/)[0]?.trim() ?? "", Math.max(8, Math.floor(width * 0.4)))
       : "";
-  const suffix = ` · ${timing}${reason ? ` · ${reason}` : ""}`;
+  const suffix = ` · ${timing}${tokens}${reason ? ` · ${reason}` : ""}`;
   const prefix = `${icon} `;
   const budget = Math.max(8, width - prefix.length - suffix.length);
   return { text: `${prefix}${truncateVisible(label.replace(/\s+/g, " ").trim(), budget)}${suffix}`, tone };

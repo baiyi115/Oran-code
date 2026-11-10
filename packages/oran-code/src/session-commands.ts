@@ -25,6 +25,8 @@ export interface BackgroundTaskSnapshot {
   readonly definitionName?: string | undefined;
   readonly error?: string | undefined;
   readonly output?: string | undefined;
+  /** What a running subagent is doing right now; absent for shell jobs and finished tasks. */
+  readonly activity?: string | undefined;
 }
 
 /**
@@ -252,7 +254,8 @@ export class SessionCommandRouter {
       const duration = Number.isFinite(start) ? ` (${((end - start) / 1000).toFixed(1)}s)` : "";
       const icon =
         task.status === "completed" ? "✓" : task.status === "running" ? "⠋" : task.status === "queued" ? "⏳" : "✗";
-      lines.push(`  ${icon} ${task.id}${role}: ${task.name} — ${task.status}${duration}`);
+      const label = (task.status === "running" ? task.activity : undefined) || task.name;
+      lines.push(`  ${icon} ${task.id}${role}: ${label} — ${task.status}${duration}`);
       if (task.error) {
         lines.push(`    Error: ${task.error.slice(0, 160)}`);
       } else if (task.output && (task.status === "completed" || task.status === "failed")) {

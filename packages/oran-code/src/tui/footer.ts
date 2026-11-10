@@ -2,7 +2,7 @@ import { PERMISSION_MODE_LABELS } from "../types.js";
 import type { TranscriptMessage, TuiState } from "./types.js";
 import { abbreviatePath, truncateVisible, visibleWidth } from "./text-width.js";
 import { hasActiveBackgroundTasks, isSessionBusy } from "./status-indicator.js";
-import { formatDuration, formatRate } from "../formatting.js";
+import { compactNumber, formatDuration, formatRate } from "../formatting.js";
 
 /**
  * Footer layout (bottom chrome): the mode line, then the workspace path with
@@ -149,13 +149,6 @@ function cacheReadLabel(cacheReadTokens: number, inputTokens: number): string {
   return ratio === undefined
     ? `cache ${compactNumber(cacheReadTokens)}`
     : `cache ${compactNumber(cacheReadTokens)} (${ratio}%)`;
-}
-
-function compactNumber(value: number): string {
-  if (value < 1000) return String(value);
-  if (value < 10_000) return `${(value / 1000).toFixed(1)}k`;
-  if (value < 1_000_000) return `${Math.round(value / 1000)}k`;
-  return `${(value / 1_000_000).toFixed(1)}m`;
 }
 
 /** Keep the active approval mode visible, including the default Auto mode. */

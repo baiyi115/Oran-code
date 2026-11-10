@@ -4,7 +4,7 @@ import { renderDiff } from "./diff-renderer.js";
 import { stripTerminalMarkup, truncateVisible, wrapDisplayText, wrapDisplayTextLimited } from "../text-width.js";
 import { ANSI } from "../theme.js";
 import { spinnerFrame } from "../status-indicator.js";
-import { toolDisplayName } from "../tool-names.js";
+import { toolDisplayName } from "../../tool-names.js";
 
 export function renderToolMessage(message: ToolMessage, width: number, liveTick = 0, now = Date.now()): string[] {
   const indicator = message.status === "running" ? spinnerFrame(liveTick) : message.status === "cancelled" ? "■" : "●";
