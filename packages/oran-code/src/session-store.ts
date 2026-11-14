@@ -12,6 +12,7 @@ import {
 import { comparablePath } from "./utils/path-containment.js";
 import type { Message, ModelReference, TaskPlanState } from "./types.js";
 import {
+  isAnthropicReplayBlock,
   normalizePermissionMode,
   isReasoningEffort,
   type PermissionMode,
@@ -842,7 +843,8 @@ function recordMessage(record: SessionJsonlRecord | undefined): Message | undefi
   )
     return undefined;
   const hasCalls = Array.isArray(record.toolCalls) && record.toolCalls.length > 0;
-  if (!(typeof record.content === "string" && record.content.trim()) && !hasCalls && record.role !== "tool")
+  const hasReplay = Array.isArray(record.anthropicContent) && record.anthropicContent.length > 0;
+  if (!(typeof record.content === "string" && record.content.trim()) && !hasCalls && !hasReplay && record.role !== "tool")
     return undefined;
   const { type: _type, timestamp: _timestamp, role, ...rest } = record;
   return { role, ...structuredClone(rest) };
@@ -1131,6 +1133,10 @@ function isPersistedMessage(value: unknown): value is Message {
   if (item.content !== undefined && typeof item.content !== "string") return false;
   if (item.name !== undefined && typeof item.name !== "string") return false;
   if (item.toolCallId !== undefined && typeof item.toolCallId !== "string") return false;
+  if (item.toolResultError !== undefined && typeof item.toolResultError !== "boolean") return false;
+  if (item.reasoning !== undefined && typeof item.reasoning !== "string") return false;
+  if (item.reasoningSignature !== undefined && typeof item.reasoningSignature !== "string") return false;
+  if (item.anthropicContent !== undefined && (!Array.isArray(item.anthropicContent) || !item.anthropicContent.every(isAnthropicReplayBlock))) return false;
   if (
     item.metadata !== undefined &&
     (!item.metadata || typeof item.metadata !== "object" || Array.isArray(item.metadata))

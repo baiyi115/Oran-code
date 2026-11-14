@@ -208,6 +208,7 @@ export function assistantMessage(response: ModelResponse): Message {
     toolCalls: response.toolCalls,
     ...(response.reasoning ? { reasoning: response.reasoning } : {}),
     ...(response.reasoningSignature ? { reasoningSignature: response.reasoningSignature } : {}),
+    ...(response.anthropicContent ? { anthropicContent: structuredClone(response.anthropicContent) } : {}),
   };
 }
 

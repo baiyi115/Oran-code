@@ -93,6 +93,8 @@ export function stringOption(options: Record<string, unknown> | undefined, key: 
 
 export function* modelResponseChunks(response: ModelResponse): Generator<ModelStreamChunk> {
   if (response.reasoning) yield { type: "reasoning_delta", text: response.reasoning, streamed: response.streamed };
+  if (response.reasoningSignature) yield { type: "reasoning_signature", signature: response.reasoningSignature, streamed: response.streamed };
+  if (response.anthropicContent) yield { type: "anthropic_content", content: response.anthropicContent, streamed: response.streamed };
   if (response.text) yield { type: "text_delta", text: response.text, streamed: response.streamed };
   for (const [index, call] of response.toolCalls.entries()) {
     yield {

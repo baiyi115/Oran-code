@@ -148,7 +148,10 @@ export class OpenAICompatibleProvider implements ModelProvider {
       if (state.finishReason === undefined) {
         throw new Error("OpenAI-compatible stream ended without a finish_reason");
       }
-      yield { type: "response_complete", streamed: true, finishReason: state.finishReason };
+      yield {
+        type: "response_complete", streamed: true, finishReason: state.finishReason,
+        ...(isTruncatedFinishReason(state.finishReason) && !state.emittedCalls && state.calls.size ? { droppedToolCalls: state.calls.size } : {}),
+      };
     } finally {
       request.dispose();
     }

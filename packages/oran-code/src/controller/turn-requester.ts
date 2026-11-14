@@ -371,11 +371,13 @@ export class TurnRequester {
     await this.ports.emit("assistant_start", { step, source, attempt, model: this.ports.config.model.model }, turnId);
     const textParts: string[] = [];
     const completedToolCalls = new Map<number, import("../types.js").ToolCall>();
+    const pendingToolCalls: import("../types.js").ToolCallComplete[] = [];
+    let anthropicContent: import("../types.js").AnthropicReplayBlock[] | undefined;
     let toolCallChunkCount = 0;
     const usage: Record<string, number> = {};
     const reasoningParts: string[] = [];
     /** Signature of an Anthropic thinking block, used only for replay on the next turn; produces no UI event. */
-    const reasoningSignatures: string[] = [];
+    let reasoningSignature: string | undefined;
     let streamed = false;
     let finishReason: string | undefined;
     let responseCompleted = false;
@@ -448,26 +450,20 @@ export class TurnRequester {
             await this.ports.emit("thought_delta", { step, source, attempt, text: chunk.text }, turnId);
             break;
           case "reasoning_signature":
-            reasoningSignatures.push(chunk.signature);
+            reasoningSignature = chunk.signature;
             break;
           case "text_delta":
             textParts.push(chunk.text);
             await this.ports.emit("assistant_delta", { step, source, attempt, text: chunk.text }, turnId);
             break;
-          case "tool_call_complete": {
-            const call = parseCompletedToolCall(chunk.toolCall);
-            const existing = completedToolCalls.get(chunk.toolCall.index);
-            if (existing && !sameToolCall(existing, call)) {
-              throw new ProviderContractError(
-                `provider emitted conflicting completed tool calls for index ${chunk.toolCall.index}`,
-              );
-            }
-            if (!existing) {
-              completedToolCalls.set(chunk.toolCall.index, call);
-              toolCallChunkCount += 1;
-            }
+          case "anthropic_content":
+            if (anthropicContent !== undefined) throw new ProviderContractError("provider emitted replay content more than once");
+            anthropicContent = structuredClone(chunk.content);
             break;
-          }
+          case "tool_call_complete":
+            // Arguments may be incomplete when a later terminal event reports truncation.
+            pendingToolCalls.push(chunk.toolCall);
+            break;
           case "usage":
             Object.assign(usage, chunk.usage);
             break;
@@ -489,9 +485,21 @@ export class TurnRequester {
       // is propagated up to controller to decide how to wrap up.
       const truncated = isTruncatedFinishReason(finishReason);
       let droppedTruncatedCalls = 0;
-      if (truncated && completedToolCalls.size) {
-        droppedTruncatedCalls = completedToolCalls.size;
-        completedToolCalls.clear();
+      if (truncated) {
+        anthropicContent = undefined;
+        droppedTruncatedCalls = new Set(pendingToolCalls.map((call) => call.index)).size;
+      } else {
+        for (const raw of pendingToolCalls) {
+          const call = parseCompletedToolCall(raw);
+          const existing = completedToolCalls.get(raw.index);
+          if (existing && !sameToolCall(existing, call)) {
+            throw new ProviderContractError(`provider emitted conflicting completed tool calls for index ${raw.index}`);
+          }
+          if (!existing) {
+            completedToolCalls.set(raw.index, call);
+            toolCallChunkCount += 1;
+          }
+        }
       }
       // Calls dropped by the parse layer also count toward the total: the caller uses that to tell a
       // pure-text truncation from a call truncation.
@@ -499,10 +507,22 @@ export class TurnRequester {
       const normalizedCalls = [...completedToolCalls.entries()]
         .sort(([left], [right]) => left - right)
         .map(([, call]) => normalizeCallId(call, this.ports.contextManager));
+      if (anthropicContent) {
+        const replayCalls = anthropicContent.filter((block) => block.type === "tool_use");
+        if (replayCalls.length !== normalizedCalls.length) throw new ProviderContractError("replay tool-call count does not match normalized calls");
+        for (const [index, block] of replayCalls.entries()) {
+          const call = normalizedCalls[index]!;
+          if (block.name !== call.name || JSON.stringify(block.input) !== JSON.stringify(call.arguments)) {
+            throw new ProviderContractError("replay tool-call content does not match normalized calls");
+          }
+          block.id = call.id!;
+        }
+      }
       const response: ModelResponse = {
         text: textParts.join(""),
+        ...(anthropicContent ? { anthropicContent } : {}),
         ...(reasoningParts.length ? { reasoning: reasoningParts.join("") } : {}),
-        ...(reasoningSignatures.length ? { reasoningSignature: reasoningSignatures.join("") } : {}),
+        ...(!truncated && !anthropicContent && reasoningSignature ? { reasoningSignature } : {}),
         toolCalls: normalizedCalls,
         raw: { usage, finishReason, toolCalls: normalizedCalls, ...(truncated ? { truncated: true } : {}) },
         usage,
@@ -614,13 +634,12 @@ export class TurnRequester {
           turnId,
         );
       }
-      if (aborted && (textParts.length || completedToolCalls.size || reasoningParts.length)) {
+      if (aborted && (textParts.length || pendingToolCalls.length || reasoningParts.length)) {
         // Preserve partial assistant output so conversation history stays usable after cancel.
         // Tool execution is only safe after the full provider response completed.
         return {
           text: textParts.join(""),
           ...(reasoningParts.length ? { reasoning: reasoningParts.join("") } : {}),
-          ...(reasoningSignatures.length ? { reasoningSignature: reasoningSignatures.join("") } : {}),
           toolCalls: [],
           raw: { usage, finishReason, toolCalls: [], aborted: true },
           usage,

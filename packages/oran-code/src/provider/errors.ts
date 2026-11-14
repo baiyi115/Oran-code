@@ -55,6 +55,9 @@ export function streamErrorToModelRequestError(value: unknown, fallback: string)
     else if (obj.type === "permission_error") status = 403;
     else if (obj.type === "not_found_error") status = 404;
     else if (obj.type === "rate_limit_error") status = 429;
+    else if (obj.type === "request_too_large") status = 413;
+    else if (obj.type === "api_error") status = 500;
+    else if (obj.type === "overloaded_error") status = 529;
   }
   if (status === undefined) {
     if (

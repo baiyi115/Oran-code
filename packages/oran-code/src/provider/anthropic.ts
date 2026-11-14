@@ -1,4 +1,5 @@
 import type {
+  AnthropicReplayBlock,
   Message,
   ModelConfig,
   ModelProvider,
@@ -7,7 +8,7 @@ import type {
   ProviderRequestOptions,
   ToolCall,
 } from "../types.js";
-import { isTruncatedFinishReason } from "../types.js";
+import { isAnthropicReplayBlock, isTruncatedFinishReason } from "../types.js";
 import { CLIENT_ID, CLIENT_USER_AGENT, PRODUCT_VERSION } from "../paths.js";
 import { ModelRequestError, boundedError, retryAfterMsFromResponse, streamErrorMessage } from "./errors.js";
 import { parseSseJson, readSseEvents } from "./sse.js";
@@ -73,6 +74,8 @@ export class AnthropicProvider implements ModelProvider {
       }
 
       const toolUses = new Map<number, { id?: string; name: string; arguments: string }>();
+      const contentBlocks = new Map<number, Record<string, unknown>>();
+      const closedBlocks = new Set<number>();
       let finishReason: string | undefined;
       let streamCompleted = false;
       let currentBlockIndex: number | undefined;
@@ -94,6 +97,15 @@ export class AnthropicProvider implements ModelProvider {
           currentBlockIndex = typeof parsed.index === "number" ? parsed.index : undefined;
           const block = (parsed.content_block ?? {}) as Record<string, unknown>;
           currentBlockType = typeof block.type === "string" ? block.type : undefined;
+          if (currentBlockIndex === undefined || !Number.isInteger(currentBlockIndex) || currentBlockIndex < 0 || contentBlocks.has(currentBlockIndex)) {
+            throw new Error("anthropic stream contains an invalid or duplicate content-block index");
+          }
+          contentBlocks.set(currentBlockIndex, structuredClone(block));
+          if (currentBlockType === "text" && typeof block.text === "string" && block.text) {
+            yield { type: "text_delta", text: block.text, streamed: true };
+          } else if (currentBlockType === "thinking" && typeof block.thinking === "string" && block.thinking) {
+            yield { type: "reasoning_delta", text: block.thinking, streamed: true };
+          }
           if (currentBlockType === "tool_use" && currentBlockIndex !== undefined) {
             toolUses.set(currentBlockIndex, {
               ...(typeof block.id === "string" ? { id: block.id } : {}),
@@ -107,35 +119,54 @@ export class AnthropicProvider implements ModelProvider {
           const index = typeof parsed.index === "number" ? parsed.index : currentBlockIndex;
           const delta = (parsed.delta ?? {}) as Record<string, unknown>;
           const deltaType = typeof delta.type === "string" ? delta.type : "";
+          const block = index === undefined ? undefined : contentBlocks.get(index);
+          if (!block || index === undefined || closedBlocks.has(index)) throw new Error("anthropic delta has no open content block");
           if (deltaType === "text_delta" || typeof delta.text === "string") {
-            const text = typeof delta.text === "string" ? delta.text : "";
+            if (block.type !== "text" || typeof delta.text !== "string") {
+              throw new Error("anthropic text delta does not match its content block");
+            }
+            const text = delta.text;
+            block.text = `${typeof block.text === "string" ? block.text : ""}${text}`;
             if (text) yield { type: "text_delta", text, streamed: true };
           } else if (deltaType === "thinking_delta" || typeof delta.thinking === "string") {
-            const reasoning = typeof delta.thinking === "string" ? delta.thinking : "";
+            if (block.type !== "thinking" || typeof delta.thinking !== "string") {
+              throw new Error("anthropic thinking delta does not match its content block");
+            }
+            const reasoning = delta.thinking;
+            block.thinking = `${typeof block.thinking === "string" ? block.thinking : ""}${reasoning}`;
             if (reasoning) yield { type: "reasoning_delta", text: reasoning, streamed: true };
           } else if (deltaType === "signature_delta" || typeof delta.signature === "string") {
-            // The signature is only used to replay thinking blocks; it is never displayed.
-            const signature = typeof delta.signature === "string" ? delta.signature : "";
+            if (block.type !== "thinking" || typeof delta.signature !== "string") {
+              throw new Error("anthropic signature delta does not match its content block");
+            }
+            // Signatures replace the block snapshot value; they are not text fragments.
+            const signature = delta.signature;
+            block.signature = signature;
             if (signature) yield { type: "reasoning_signature", signature, streamed: true };
           } else if (deltaType === "input_json_delta" || typeof delta.partial_json === "string") {
-            if (index === undefined) continue;
-            const current = toolUses.get(index) ?? { name: "", arguments: "" };
-            current.arguments += typeof delta.partial_json === "string" ? delta.partial_json : "";
-            toolUses.set(index, current);
+            const current = toolUses.get(index);
+            if (block.type !== "tool_use" || !current || typeof delta.partial_json !== "string") {
+              throw new Error("anthropic input delta does not match its tool-use block");
+            }
+            current.arguments += delta.partial_json;
           }
           continue;
         }
         if (type === "content_block_stop") {
           const index = typeof parsed.index === "number" ? parsed.index : currentBlockIndex;
-          const call = index === undefined ? undefined : toolUses.get(index);
-          if (currentBlockType === "tool_use" && index !== undefined && call) {
+          if (index === undefined || !contentBlocks.has(index) || closedBlocks.has(index)) {
+            throw new Error("anthropic stop has no open content block");
+          }
+          closedBlocks.add(index);
+          const call = toolUses.get(index);
+          if (contentBlocks.get(index)?.type === "tool_use" && call) {
             yield {
               type: "tool_call_complete",
               toolCall: {
                 index,
                 ...(call.id ? { id: call.id } : {}),
                 name: call.name,
-                argumentsJson: call.arguments || "{}",
+                argumentsJson: call.arguments || JSON.stringify(contentBlocks.get(index)?.input ?? {}),
               },
               streamed: true,
             };
@@ -156,13 +187,27 @@ export class AnthropicProvider implements ModelProvider {
           break;
         }
         if (type === "error") {
-          throw new Error(streamErrorMessage(parsed.error ?? parsed, "anthropic stream error"));
+          throw streamErrorToModelRequestError(parsed.error ?? parsed, "anthropic stream error");
         }
       }
       if (!streamCompleted) {
         throw new Error("anthropic stream ended without a message_stop event");
       }
-      yield { type: "response_complete", streamed: true, ...(finishReason !== undefined ? { finishReason } : {}) };
+      if (finishReason === undefined) throw new Error("anthropic stream ended without a stop_reason");
+      const truncated = isTruncatedFinishReason(finishReason);
+      if (!truncated && closedBlocks.size !== contentBlocks.size) throw new Error("anthropic stream ended with an open content block");
+      if (!truncated) {
+        const content = [...contentBlocks.entries()].sort(([left], [right]) => left - right).map(([index, block]) => {
+          if (block.type !== "tool_use") return block;
+          const call = toolUses.get(index)!;
+          return { ...block, input: JSON.parse(call.arguments || JSON.stringify(block.input ?? {})) as unknown };
+        });
+        yield { type: "anthropic_content", content: replayContent(content), streamed: true };
+      }
+      yield {
+        type: "response_complete", streamed: true, finishReason,
+        ...(truncated ? { droppedToolCalls: [...toolUses.keys()].filter((index) => !closedBlocks.has(index)).length } : {}),
+      };
     } finally {
       request.dispose();
     }
@@ -307,7 +352,7 @@ function toAnthropicMessages(
         // pair fails to match and the API returns 400.
         tool_use_id: message.toolCallId ?? `call_${message.name ?? "unknown"}`,
         content: message.content ?? "",
-        is_error: false,
+        is_error: message.toolResultError === true || message.metadata?.repaired === true,
       });
       continue;
     }
@@ -319,12 +364,18 @@ function toAnthropicMessages(
     }
     if (message.role === "assistant") {
       const content: Record<string, unknown>[] = [];
-      // Extended-thinking replay contract: a thinking block must carry its original signature
-      // and come first in the content.
-      // Reasoning text without a signature cannot be replayed (a thinking block with no
-      // signature is a hard 400).
-      // Note: redacted_thinking blocks removed by a safety policy (data only, no text) are
-      // not part of the replay.
+      if (message.anthropicContent !== undefined) {
+        const replay = replayContent(message.anthropicContent);
+        const replayCalls = replay.filter((block) => block.type === "tool_use");
+        const calls = message.toolCalls ?? [];
+        if (replayCalls.length !== calls.length || replayCalls.some((block, index) => {
+          const call = calls[index]!;
+          return block.id !== (call.id ?? `call_${call.name}`) || block.name !== call.name || JSON.stringify(block.input) !== JSON.stringify(call.arguments);
+        })) throw new Error("Anthropic replay content no longer matches tool calls");
+        if (replay.length) conversation.push({ role: "assistant", content: replay });
+        continue;
+      }
+      // Legacy sessions retain a single signed thinking block when no block snapshot exists.
       if (message.reasoning && message.reasoningSignature) {
         content.push({ type: "thinking", thinking: message.reasoning, signature: message.reasoningSignature });
       }
@@ -370,6 +421,14 @@ function toAnthropicMessages(
   return { system, conversation };
 }
 
+function replayContent(content: unknown[]): AnthropicReplayBlock[] {
+  return content.map((block) => {
+    if (!isAnthropicReplayBlock(block)) throw new Error("unsupported or incomplete Anthropic replay content block");
+    // Keep block-local signatures, opaque redactions, ordering and any provider metadata intact.
+    return structuredClone(block);
+  });
+}
+
 function parseAnthropicMessage(data: Record<string, unknown>, streamed: boolean): ModelResponse {
   const content = Array.isArray(data.content) ? data.content : [];
   const textParts: string[] = [];
@@ -404,7 +463,8 @@ function parseAnthropicMessage(data: Record<string, unknown>, streamed: boolean)
   return {
     text: textParts.join(""),
     ...(reasoningParts.length ? { reasoning: reasoningParts.join("") } : {}),
-    ...(reasoningSignature ? { reasoningSignature } : {}),
+    ...(!truncated && reasoningSignature ? { reasoningSignature } : {}),
+    ...(!truncated ? { anthropicContent: replayContent(content) } : {}),
     toolCalls: truncated ? [] : toolCalls,
     raw: data,
     usage,

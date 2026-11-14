@@ -45,6 +45,7 @@ export function cloneMessages(messages: readonly Message[]): Message[] {
           })),
         }
       : {}),
+    ...(message.anthropicContent ? { anthropicContent: structuredClone(message.anthropicContent) } : {}),
     ...(message.metadata ? { metadata: structuredClone(message.metadata) } : {}),
   }));
 }
@@ -109,6 +110,7 @@ export function repairToolMessagePairs(messages: readonly Message[]): Message[] 
     role: "tool",
     content: INTERRUPTED_TOOL_RESULT_CONTENT,
     toolCallId: id,
+    toolResultError: true,
     ...(name ? { name } : {}),
     metadata: { repaired: true },
   });

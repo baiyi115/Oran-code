@@ -39,12 +39,12 @@ export function isRecord(value: unknown): value is Record<string, unknown> {
 }
 
 /**
- * Truncation markers caused by an output limit (OpenAI-style length, Anthropic max_tokens).
+ * Truncation markers caused by output limits or exhaustion of the model context window.
  * Both the text and the tool calls of a truncated response may be incomplete, so callers
  * must treat it as an outright failure.
  */
 export function isTruncatedFinishReason(value: string | undefined): boolean {
-  return value === "length" || value === "max_tokens";
+  return value === "length" || value === "max_tokens" || value === "model_context_window_exceeded";
 }
 
 export function isReasoningEffort(value: unknown): value is ReasoningEffort {
@@ -127,12 +127,39 @@ export interface ToolCallComplete {
   argumentsJson: string;
 }
 
+/** Provider-specific replay data, kept separate from the display text and normalized calls. */
+export type AnthropicReplayBlock =
+  | { type: "thinking"; thinking: string; signature: string }
+  | { type: "redacted_thinking"; data: string }
+  | { type: "text"; text: string }
+  | { type: "tool_use"; id: string; name: string; input: Record<string, unknown> };
+
+export function isAnthropicReplayBlock(value: unknown): value is AnthropicReplayBlock {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return false;
+  const block = value as Record<string, unknown>;
+  switch (block.type) {
+    case "thinking":
+      return typeof block.thinking === "string" && typeof block.signature === "string" && block.signature.length > 0;
+    case "redacted_thinking":
+      return typeof block.data === "string";
+    case "text":
+      return typeof block.text === "string";
+    case "tool_use":
+      return typeof block.id === "string" && typeof block.name === "string" &&
+        Boolean(block.input) && typeof block.input === "object" && !Array.isArray(block.input);
+    default:
+      return false;
+  }
+}
+
 export interface Message {
   role: MessageRole;
   content?: string;
   name?: string;
   toolCalls?: ToolCall[];
   toolCallId?: string;
+  toolResultError?: boolean;
+  anthropicContent?: AnthropicReplayBlock[];
   metadata?: Record<string, unknown>;
   /**
    * Reasoning text from the previous model output. It is not sent back in the request body
@@ -147,6 +174,7 @@ export interface Message {
 
 export interface ModelResponse {
   text: string;
+  anthropicContent?: AnthropicReplayBlock[];
   reasoning?: string;
   reasoningSignature?: string;
   toolCalls: ToolCall[];
@@ -155,7 +183,7 @@ export interface ModelResponse {
   finishReason?: string;
   streamed: boolean;
   /**
-   * The output was cut off by the output limit (finishReason is length/max_tokens).
+   * The output was cut off by an output limit or model_context_window_exceeded.
    * A truncated response is incomplete: callers must not treat it as a final answer nor
    * execute its tool calls.
    */
@@ -180,6 +208,7 @@ export type ModelStreamChunk =
   | { type: "reasoning_delta"; text: string; streamed: boolean }
   /** Signature of an Anthropic thinking block: used for replay only, it emits no UI events. */
   | { type: "reasoning_signature"; signature: string; streamed: boolean }
+  | { type: "anthropic_content"; content: AnthropicReplayBlock[]; streamed: boolean }
   | { type: "tool_call_complete"; toolCall: ToolCallComplete; streamed: boolean }
   | { type: "usage"; usage: Record<string, number>; streamed: boolean }
   | {
