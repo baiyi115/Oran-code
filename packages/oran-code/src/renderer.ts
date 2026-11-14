@@ -250,6 +250,9 @@ export class TerminalRenderer implements SessionRenderer {
           "cyan",
         );
         break;
+      case "acceptance_report":
+        this.status(redactSecretText(event.report.message), event.report.status === "passed" ? "green" : "yellow");
+        break;
       case "tool_start":
         this.toolStart(event.call, event.permissionLevel);
         break;

@@ -1,4 +1,5 @@
 import { randomUUID } from "node:crypto";
+import type { CommandEvidenceHandle } from "../evidence/types.js";
 import type { SandboxPolicy } from "../types.js";
 import { formatPreservingTail, startCommand, type CommandOutcome, type RunningCommand } from "./process.js";
 
@@ -17,6 +18,8 @@ export interface ShellJobSnapshot {
   stdout: string;
   stderr: string;
   error?: string;
+  commandEvidence?: import("../evidence/types.js").EvidenceRecord;
+  outputTruncated?: boolean;
 }
 
 const NOTIFICATION_OUTPUT_LIMIT = 8_000;
@@ -44,6 +47,7 @@ export function describeJobStatus(job: ShellJobSnapshot): string {
   if (job.status === "running") return "running";
   if (job.status === "killed") return "killed";
   if (job.error) return `failed: ${job.error}`;
+  if (job.signal) return `terminated by ${job.signal}`;
   return `exited with code ${String(job.exitCode ?? "unknown")}`;
 }
 
@@ -59,22 +63,30 @@ class ShellJob {
   private lastOutcome: CommandOutcome | undefined;
   private failureReason: string | undefined;
   private readonly completion: Promise<void>;
+  private readonly evidence: CommandEvidenceHandle | undefined;
 
-  constructor(options: { id: string; command: string; cwd: string; running: RunningCommand; promoted?: boolean }) {
+  constructor(options: {
+    id: string;
+    command: string;
+    cwd: string;
+    running: RunningCommand;
+    promoted?: boolean;
+    evidence?: CommandEvidenceHandle;
+  }) {
     this.id = options.id;
     this.command = options.command;
     this.cwd = options.cwd;
     this.running = options.running;
-    this.completion = this.running.exited.then((outcome) => {
+    this.evidence = options.evidence;
+    this.completion = this.running.exited.then(async (outcome) => {
       this.lastOutcome = outcome;
       this.endedAt = new Date().toISOString();
-      if (this.status === "killed") return;
-      if (outcome.spawnError) {
-        this.status = "failed";
+      const cancelled = this.status === "killed" || outcome.cancelled === true;
+      if (this.status !== "killed") {
+        this.status = outcome.spawnError || outcome.exitCode !== 0 ? "failed" : "exited";
         this.failureReason = outcome.spawnError;
-        return;
       }
-      this.status = outcome.exitCode === 0 ? "exited" : "failed";
+      await this.evidence?.complete({ ...outcome, cancelled });
     });
   }
 
@@ -102,6 +114,8 @@ class ShellJob {
       stderr: this.running.snapshot().stderr,
       ...(this.endedAt ? { endedAt: this.endedAt } : {}),
       ...(this.failureReason ? { error: this.failureReason } : {}),
+      ...(this.evidence ? { commandEvidence: this.evidence.receipt() } : {}),
+      outputTruncated: this.running.snapshot().outputTruncated === true,
     };
   }
 }
@@ -122,24 +136,40 @@ export class ShellJobManager {
     cwd: string;
     signal?: AbortSignal | undefined;
     sandbox?: SandboxPolicy | undefined;
+    evidence?: CommandEvidenceHandle;
   }): ShellJobSnapshot {
     const running = startCommand(options.command, {
       cwd: options.cwd,
       ...(options.signal ? { signal: options.signal } : {}),
       ...(options.sandbox ? { sandbox: options.sandbox } : {}),
     });
-    return this.track({ command: options.command, cwd: options.cwd, running });
+    return this.track({
+      command: options.command,
+      cwd: options.cwd,
+      running,
+      ...(options.evidence ? { evidence: options.evidence } : {}),
+    });
   }
 
   /**
    * Timeout promotion: a foreground command is not killed at the deadline but adopted as a
    * background job (output and handle preserved as-is).
    */
-  adopt(options: { command: string; cwd: string; running: RunningCommand }): ShellJobSnapshot {
+  adopt(options: {
+    command: string;
+    cwd: string;
+    running: RunningCommand;
+    evidence?: CommandEvidenceHandle;
+  }): ShellJobSnapshot {
     return this.track(options);
   }
 
-  private track(options: { command: string; cwd: string; running: RunningCommand }): ShellJobSnapshot {
+  private track(options: {
+    command: string;
+    cwd: string;
+    running: RunningCommand;
+    evidence?: CommandEvidenceHandle;
+  }): ShellJobSnapshot {
     const id = `job-${this.nextId++}-${randomUUID().slice(0, 6)}`;
     const job = new ShellJob({ id, ...options });
     this.jobs.set(id, job);

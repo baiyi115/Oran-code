@@ -1,3 +1,4 @@
+import { resolve } from "node:path";
 import type { ContextManager } from "../context-manager.js";
 import { CONTEXT_LIMITS } from "../context-manager.js";
 import type { PermissionPolicy } from "../security.js";
@@ -95,6 +96,7 @@ export interface ToolExecutorPorts {
   getTurnSequence(): number;
   getModelResponseStepId(): number | undefined;
   readonly askUser?: ToolExecutionContext["askUser"];
+  getCommandEvidence?(): import("../evidence/types.js").CommandEvidencePort | undefined;
 }
 
 /**
@@ -115,8 +117,10 @@ export class ToolBatchExecutor {
    */
   private executionContextFor(task: Task, call: ToolCall): ToolExecutionContext {
     const signal = this.ports.getAbortSignal();
+    const commandEvidence = this.ports.getCommandEvidence?.();
     return {
       workspace: task.workspace,
+      ...(commandEvidence ? { commandEvidence } : {}),
       ...(task.subagentTaskId ? { subagentTaskId: task.subagentTaskId } : {}),
       ...(signal ? { signal } : {}),
       ...(this.ports.askUser !== undefined ? { askUser: this.ports.askUser } : {}),
@@ -861,6 +865,15 @@ export class ToolBatchExecutor {
     executed: boolean,
     options: { scriptStep?: boolean } = {},
   ): Promise<void> {
+    if (call.name === "run_command" && result.metadata?.permissionDenied === true) {
+      const rawCwd = call.arguments.cwd;
+      const cwd = typeof rawCwd === "string" ? resolve(task.workspace, rawCwd) : task.workspace;
+      try {
+        await this.ports.getCommandEvidence?.()?.blocked?.(String(call.arguments.command ?? ""), cwd, call.id);
+      } catch (error) {
+        this.ports.debugLogger(`blocked evidence unavailable: ${String(error)}`);
+      }
+    }
     const output = result.output || result.error || "";
     this.ports.getLoop()?.recordResult(call, result);
     if (call.name === "update_plan" && result.ok && result.output) {
@@ -916,6 +929,7 @@ export class ToolBatchExecutor {
         content: output || "(empty result)",
         toolCallId: call.id ?? `call_${call.name}`,
         name: call.name,
+        toolResultError: !result.ok,
       });
       this.ports.syncConversation(messages);
     }

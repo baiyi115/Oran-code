@@ -1,3 +1,5 @@
+import type { AcceptanceOptions } from "./acceptance/types.js";
+import { publishAcceptance } from "./acceptance/report.js";
 import { createInterface, type CompleterResult, type Interface } from "node:readline";
 import { exec } from "node:child_process";
 import { existsSync } from "node:fs";
@@ -164,6 +166,7 @@ export interface SessionOptions {
    * `--output` JSONL log; implementations must not throw.
    */
   runtimeEventSink?: (event: RuntimeEvent) => void;
+  acceptance?: AcceptanceOptions;
 }
 
 interface FollowUpItem {
@@ -263,6 +266,7 @@ export class TerminalSession {
   private readonly debugLogSink: DebugLogSink;
   private readonly debugTracker: StreamDebugTracker;
   private readonly runtimeEventSink: ((event: RuntimeEvent) => void) | undefined;
+  private readonly acceptanceOptions: AcceptanceOptions | undefined;
   private hookEngine: HookEngine | undefined;
   private hookWarningsShown = false;
   private readonly hookSubagentAbortControllers = new Set<AbortController>();
@@ -286,6 +290,7 @@ export class TerminalSession {
     output: NodeJS.WriteStream = process.stdout,
   ) {
     this.workspace = resolve(options.workspace);
+    this.acceptanceOptions = options.acceptance ? structuredClone(options.acceptance) : undefined;
     this.debugLogSink = createDebugLogSink(this.workspace);
     this.debugTracker = new StreamDebugTracker((message) => this.debugLogSink(message));
     this.explicitModel = options.model !== undefined;
@@ -934,6 +939,7 @@ export class TerminalSession {
           }
         : {}),
       stablePromptModules: this.stablePromptModules,
+      evidenceEnabled: !isolated && this.acceptanceOptions?.enabled === true,
       getTaskNotifications: async () => (await agentRuntime.messages.takeForParent(sessionId)).map(formatAgentMessage),
       runtimeReminders: async () => {
         const reminders = derivedSkill
@@ -946,7 +952,15 @@ export class TerminalSession {
         consumedBackgroundNotifications.push(...notifications, ...forkNotifications);
         const jobNotifications = shellJobs().drainNotifications().map(shellJobNotification);
         consumedBackgroundNotifications.push(...jobNotifications);
-        return [...reminders, ...notifications, ...forkNotifications, ...jobNotifications];
+        const selection = this.acceptanceOptions?.selection;
+        const acceptanceReminder = selection
+          ? [
+              "The user explicitly selected this acceptance checklist. It does not grant command permissions or allow modifying the checklist. " +
+                "Only main-task command evidence from this attempt can satisfy command items. Manual items require explicit review outside the model.\n" +
+                JSON.stringify(selection.items),
+            ]
+          : [];
+        return [...reminders, ...acceptanceReminder, ...notifications, ...forkNotifications, ...jobNotifications];
       },
       toolFilter: (tool) => tool.name !== "report_to_parent" && parentToolFilter(tool),
       ...(hookEngine ? { hookEngine } : {}),
@@ -960,9 +974,11 @@ export class TerminalSession {
     this.controller = controller;
     if (!isolated) this.activeToolRegistry = registry;
     let completed = false;
+    let executedTask: Task | undefined;
     let checkpointReason: CheckpointStopReason = "failed";
     try {
       const initialTask = createTask(this.workspace, prompt);
+      executedTask = initialTask;
       if (this.currentSession?.planState) {
         initialTask.planState = structuredClone(this.currentSession.planState);
       }
@@ -1005,8 +1021,20 @@ export class TerminalSession {
     } finally {
       if (!isolated && this.activeToolRegistry === registry) this.activeToolRegistry = undefined;
       // The terminal record is what separates a finished run from one a crash left behind.
-      if (!isolated) await this.finishCheckpoint(checkpointReason);
-      if (structuredScope) await disposeStructuredScope(structuredScope);
+      try {
+        if (!isolated) await this.finishCheckpoint(checkpointReason);
+        if (structuredScope) await disposeStructuredScope(structuredScope);
+      } finally {
+        if (!isolated && executedTask && controller.taskEvidence && this.acceptanceOptions) {
+          const report = await publishAcceptance(executedTask, controller.taskEvidence, this.acceptanceOptions);
+          executedTask.acceptance = report;
+          try {
+            await controller.reportAcceptance(report);
+          } catch (error) {
+            this.writeDebugLog(`acceptance report dispatch failed: ${String(error)}`);
+          }
+        }
+      }
       if (this.controller === controller) this.controller = undefined;
       const conversationSnapshot = controller.conversationSnapshot();
       consumedBackgroundNotifications.push(

@@ -81,6 +81,51 @@ authoritative.
 attributed without replaying `runtime_event` lines. `steps`, `toolCalls` and `tools` describe the
 main task only.
 
+## Command evidence and task acceptance
+
+These features are opt-in for interactive sessions and `run`:
+
+- `--evidence` records structured command facts and publishes an unverified report without a checklist.
+- `--acceptance FILE` explicitly selects a JSON checklist and enables evidence recording.
+- `--acceptance-review FILE` additionally selects manual review records bound to the checklist and source digests.
+
+Selecting a checklist does not execute its commands or grant permission. Commands must be requested through the existing tool loop and pass the same permission policy. Matching uses the exact command text and resolved working directory, within the current attempt only.
+
+A checklist has this shape; this is documentation, not an automatically loaded project configuration:
+
+```json
+{
+  "schemaVersion": 1,
+  "items": [
+    {
+      "id": "types",
+      "title": "Type checking",
+      "kind": "typecheck",
+      "command": "pnpm typecheck",
+      "cwd": ".",
+      "scope": "Workspace TypeScript sources and existing tests",
+      "required": true
+    },
+    {
+      "id": "review",
+      "title": "Manual delivery review",
+      "kind": "manual",
+      "required": true
+    }
+  ]
+}
+```
+
+Check kinds are `command`, `typecheck`, `build`, `test`, and `manual`. Required items default to true. Command items require an explicit scope; command names never imply full coverage. `requireContinuousSource: true` keeps the item unknown because the first version samples source contents rather than proving continuous immutability.
+
+A selected review file must live outside the agent-editable workspace so adding the file does not change the reviewed source and workspace tools cannot directly overwrite it. It contains `schemaVersion: 1`, `configDigest`, `sourceDigest`, and a `reviews` array. Each entry has `itemId`, `decision` (`passed` or `failed`), `reviewer`, `reviewerKind` (`human` or `ai-assisted`), and `reviewedAt` (an ISO timestamp). Human decisions are supplied explicitly by the user; no model question or plan can generate confirmation. AI-assisted review retains its attribution and does not satisfy a required human review. Changing the selected files during a task invalidates the selection. A later attempt may supply a review bound to the report's source/config digests, but must obtain fresh command evidence.
+
+Artifacts live under the workspace's user-data directory at `evidence/<taskId>/<attemptId>/`. The ledger retains process outcomes and bounded local logs; `report.json` and `report.md` contain summaries. `publication.json` is written last. Reports distinguish execution from acceptance (`passed`, `failed`, `pending_review`, `unverified`); CLI exit codes and `oran-event/1` remain unchanged. An additive `runtime_event` of type `acceptance_report` carries the summary. A report failure is surfaced as unavailable and does not retry the task.
+
+Source sampling reads tracked and nonignored files plus project-authored Oran configuration, with versioned artifact exclusions and explicit file/byte/time limits. Tracked files are retained even under ordinary build/cache directory names; tool runtime directories remain excluded. Unreadable files, unsupported symlinks/submodules, or exceeded limits prevent a current complete fingerprint. Start/end/final samples detect observed changes, including shell or external edits; changing and reverting between samples remains a documented limitation. External services and arbitrary inherited environment values are not fingerprinted. Evidence records and reports describe the workspace at sampling time, not its state forever after publication.
+
+Running background commands remain unknown. Later completion updates the same ledger record without replaying the command; a published report is an immutable terminal snapshot and is not silently promoted by late results. Only the main controller's command executions are collected in this version; child results cannot satisfy an unchecked parent item. The final report resamples after structured forks settle, so child source changes can invalidate parent evidence. Modification paths may include preexisting changes, and no historical diff is invented. Raw local logs can contain sensitive data; report redaction is best-effort and exports require preview before sharing.
+
 ## Permission modes
 
 Choose a mode with `/permission MODE`, `--permission-mode MODE`, or the user-level `agent.permissionMode` setting. In the input area, **Shift+Tab** cycles **Auto → Accept edit → Plan → Bypass permission → Auto**, including when command or file completion is open. **Tab** only accepts a completion and does nothing when no completion is open. The footer shows the active permission mode first.

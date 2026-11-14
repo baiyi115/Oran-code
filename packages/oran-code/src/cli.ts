@@ -1,4 +1,6 @@
 #!/usr/bin/env node
+import { loadAcceptance, loadReview } from "./acceptance/config.js";
+import type { AcceptanceOptions } from "./acceptance/types.js";
 import { existsSync } from "node:fs";
 import { readFile } from "node:fs/promises";
 import { resolve } from "node:path";
@@ -102,6 +104,25 @@ export async function main(argv = process.argv.slice(2)): Promise<void> {
   const outputPath = valueAfter(argv, "--output", "-o");
   const taskFile = valueAfter(argv, "--task");
   const timeoutSeconds = secondsOption(argv, "--timeout");
+  const acceptancePath = valueAfter(argv, "--acceptance");
+  const reviewPath = valueAfter(argv, "--acceptance-review");
+  for (const flag of ["--acceptance", "--acceptance-review"]) {
+    const value = valueAfter(argv, flag);
+    if (argv.includes(flag) && (!value || value.startsWith("--"))) throw new UsageError(`${flag} requires a file path`);
+  }
+  if (reviewPath && !acceptancePath) throw new UsageError("--acceptance-review requires --acceptance");
+  let acceptance: AcceptanceOptions | undefined;
+  if (acceptancePath || argv.includes("--evidence")) {
+    try {
+      acceptance = {
+        enabled: true,
+        ...(acceptancePath ? { selection: await loadAcceptance(acceptancePath, workspace) } : {}),
+        ...(reviewPath ? { review: await loadReview(reviewPath, workspace) } : {}),
+      };
+    } catch (error) {
+      throw new UsageError(`Invalid acceptance input: ${(error as Error).message}`);
+    }
+  }
   const prompt =
     command === "run" ? (taskFile ? await readTaskFile(taskFile) : firstPositional(argv.slice(1))) : undefined;
 
@@ -131,6 +152,7 @@ export async function main(argv = process.argv.slice(2)): Promise<void> {
       approveAll,
       ...(requestedPermissionMode ? { permissionMode: requestedPermissionMode } : {}),
       ...(eventLog ? { runtimeEventSink: (event) => eventLog.record(event) } : {}),
+      ...(acceptance ? { acceptance } : {}),
     });
     const startedAt = Date.now();
     const outcome = await runScripted(session, prompt, timeoutSeconds ? timeoutSeconds * 1000 : undefined);
@@ -163,6 +185,7 @@ export async function main(argv = process.argv.slice(2)): Promise<void> {
     config,
     approveAll,
     ...(requestedPermissionMode ? { permissionMode: requestedPermissionMode } : {}),
+    ...(acceptance ? { acceptance } : {}),
   });
   const removeSignalHandlers = installSignalHandlers(session);
   try {
@@ -300,11 +323,24 @@ function firstPositional(args: readonly string[]): string | undefined {
     const arg = args[index];
     if (arg === undefined) continue;
     if (
-      ["--model", "-m", "--workspace", "-w", "--output", "-o", "--task", "--timeout", "--permission-mode"].includes(arg)
+      [
+        "--model",
+        "-m",
+        "--workspace",
+        "-w",
+        "--output",
+        "-o",
+        "--task",
+        "--timeout",
+        "--permission-mode",
+        "--acceptance",
+        "--acceptance-review",
+      ].includes(arg)
     ) {
       index += 1;
       continue;
     }
+    if (arg === "--evidence") continue;
     if (arg === "--approve-all" || arg === "-y") continue;
     if (arg === "--accept-edits" || arg === "-a") continue;
     if (arg.startsWith("-")) continue;
@@ -513,6 +549,9 @@ Usage:
   oran --permission-mode MODE       auto | accept-edits | plan | bypass
   oran --accept-edits, -a           allow local file edits; ask for other operations
   oran --approve-all, -y            alias for --permission-mode bypass
+  oran --evidence                  record command evidence without an acceptance checklist
+  oran --acceptance FILE           explicitly select a versioned acceptance checklist
+  oran --acceptance-review FILE    select source/config-bound manual review records
 
 Scripted runs (oran run):
   --task FILE                       read the prompt from a file instead of argv

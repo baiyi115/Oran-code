@@ -1,3 +1,4 @@
+import { EvidenceCollector } from "./evidence/collector.js";
 import { readFile } from "node:fs/promises";
 import { resolve, relative, sep } from "node:path";
 import { AgentLoop, type NoProgressDiagnostic } from "./loop.js";
@@ -152,6 +153,7 @@ export interface TaskControllerOptions {
   volatileProgress?: boolean;
   /** Explicit exploration role intent; bypasses delivery-task novelty and rehearsal gates. */
   explorationTask?: boolean;
+  evidenceEnabled?: boolean;
   /** Handler for ask_user_question tool */
   askUserCallback?: (
     questions: Array<{
@@ -190,6 +192,15 @@ export class TaskController {
   private readonly resumedGoalFingerprint: string | undefined;
   private readonly volatileProgress: boolean;
   private readonly explorationTask: boolean;
+  private readonly evidenceEnabled: boolean;
+  private evidenceCollector: EvidenceCollector | undefined;
+  get taskEvidence(): EvidenceCollector | undefined {
+    return this.evidenceCollector;
+  }
+
+  async reportAcceptance(report: import("./acceptance/types.js").AcceptanceReportSummary): Promise<void> {
+    await this.emit("acceptance_report", { report }, undefined, report.taskId);
+  }
   /** Level-type warnings already injected; a rising edge is judged by "the condition still held in
    *  the previous turn". */
   private activeLevelSignals = new Set<string>();
@@ -260,6 +271,7 @@ export class TaskController {
     this.resumedGoalFingerprint = options.resumedGoalFingerprint;
     this.volatileProgress = options.volatileProgress === true;
     this.explorationTask = options.explorationTask === true;
+    this.evidenceEnabled = options.evidenceEnabled === true;
     if (options.previousReadonlyResults) {
       for (const [key, value] of options.previousReadonlyResults) this.readonlyCache.set(key, value);
     }
@@ -326,6 +338,7 @@ export class TaskController {
       getTurnSequence: () => this.turnRequester.currentTurnSequence,
       getModelResponseStepId: () => this.turnRequester.currentModelResponseStepId,
       askUser: options.askUserCallback,
+      getCommandEvidence: () => this.evidenceCollector,
     });
   }
 
@@ -358,6 +371,7 @@ export class TaskController {
   async execute(task: Task): Promise<Task> {
     if (this.activeTask) throw new Error("task controller is already executing");
     this.activeTask = task;
+    this.evidenceCollector = this.evidenceEnabled ? new EvidenceCollector(task.workspace, task.id) : undefined;
     this.abortController = new AbortController();
     this.sequence = 0;
     this.taskStartedAt = Date.now();
@@ -391,6 +405,11 @@ export class TaskController {
       await this.emit("error", { message: formatErrorMessage(error) });
       throw error;
     } finally {
+      try {
+        await this.evidenceCollector?.flush();
+      } catch (error) {
+        this.debugLogger(`evidence finalization failed: ${formatErrorMessage(error)}`);
+      }
       // Session end: make sure it also fires on exceptional paths
       await this.fireHook({ event: "session_end", workspace: task.workspace, model: this.config.model.model });
       try {
@@ -1208,8 +1227,8 @@ export class TaskController {
   }
 
   /**
-   * Completed tasks end "verified" when the last snapshot carried positive
-   * external evidence (tests/typecheck/build), "review_required" otherwise.
+   * Positive per-turn summaries retain the legacy heuristic label only.
+   * The independent acceptance report never treats this stop metadata as a verdict.
    */
   private async recordCompletionStop(task: Task): Promise<void> {
     try {
@@ -1217,10 +1236,12 @@ export class TaskController {
       const state = await store.load();
       const evidence = state.snapshots.at(-1)?.evidence;
       const verified =
-        (evidence?.testsPassed !== undefined && evidence.testsPassed > 0) ||
+        (evidence?.testsPassed !== undefined &&
+          evidence.testsPassed > 0 &&
+          !(evidence.testsFailed && evidence.testsFailed > 0)) ||
         evidence?.typecheckOk === true ||
         evidence?.buildOk === true;
-      await this.recordProgressStop(task, verified ? "verified" : "review_required");
+      await this.recordProgressStop(task, verified ? "legacy_evidence" : "review_required");
     } catch {
       await this.recordProgressStop(task, "review_required");
     }
@@ -1259,11 +1280,12 @@ export class TaskController {
     type: K,
     payload: RuntimeEventPayloads[K],
     turnId?: string,
+    taskId?: string,
   ): Promise<void> {
     const base = {
       version: 1 as const,
       type,
-      taskId: this.activeTask?.id ?? "unknown",
+      taskId: taskId ?? this.activeTask?.id ?? "unknown",
       sequence: ++this.sequence,
       timestamp: new Date().toISOString(),
       ...payload,

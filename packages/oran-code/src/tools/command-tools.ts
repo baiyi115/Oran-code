@@ -69,13 +69,30 @@ export function registerCommandTools(
         return { ok: false, output: "", error: errorMessage(error), summary: "invalid arguments" };
       }
 
+      let evidence: import("../evidence/types.js").CommandEvidenceHandle | undefined;
+      try {
+        evidence = await context?.commandEvidence?.begin(command, cwd, call.id);
+      } catch {
+        context?.onProgress?.("Command evidence unavailable; execution permissions are unchanged.");
+      }
+      // Sampling may take time; an abort received meanwhile must not start a new process.
+      if (context?.signal?.aborted) {
+        await evidence?.complete({ stdout: "", stderr: "", exitCode: null, signal: null, cancelled: true });
+        return {
+          ok: false,
+          output: "",
+          error: "command cancelled before execution",
+          summary: "cancelled",
+          metadata: { cancelled: true, ...(evidence ? { commandEvidence: evidence.receipt() } : {}) },
+        };
+      }
       if (call.arguments.run_in_background === true) {
-        const job = jobs.start({ command, cwd, ...(sandbox ? { sandbox } : {}) });
+        const job = jobs.start({ command, cwd, ...(evidence ? { evidence } : {}), ...(sandbox ? { sandbox } : {}) });
         return {
           ok: true,
           output: formatJobStart(job),
           summary: `background job ${job.id} started`,
-          metadata: { backgroundJobId: job.id },
+          metadata: { backgroundJobId: job.id, ...(evidence ? { commandEvidence: evidence.receipt() } : {}) },
         };
       }
 
@@ -92,19 +109,21 @@ export function registerCommandTools(
       stream?.stop();
       if (context?.signal?.aborted) {
         running.kill();
+        void running.exited.then((outcome) => evidence?.complete({ ...outcome, cancelled: true }));
         return {
           ok: false,
-          output: "",
+          output: formatPreservingTail(`${running.snapshot().stdout}${running.snapshot().stderr}`),
           error: "command cancelled",
           summary: "cancelled",
-          metadata: { cancelled: true },
+          metadata: { cancelled: true, ...(evidence ? { commandEvidence: evidence.receipt() } : {}) },
         };
       }
 
       if (race.kind === "timeout") {
         // A timeout does not kill the process: it is promoted to a background job, with output and
         // handle preserved as-is, for job_output/job_kill to keep reaping.
-        const job = jobs.adopt({ command, cwd, running });
+        await evidence?.markWaitTimedOut();
+        const job = jobs.adopt({ command, cwd, running, ...(evidence ? { evidence } : {}) });
         return {
           ok: false,
           output: formatJobOutput(job, 4_000),
@@ -112,11 +131,25 @@ export function registerCommandTools(
           error:
             `command exceeded its ${timeoutSeconds}s timeout and continues running in the background as ${job.id}. ` +
             `Do not re-run it. Use job_output to read its output and job_kill to stop it.`,
-          metadata: { backgroundJobId: job.id, timedOut: true },
+          metadata: {
+            backgroundJobId: job.id,
+            timedOut: true,
+            ...(evidence ? { commandEvidence: evidence.receipt() } : {}),
+          },
         };
       }
 
-      return exitResult(command, timeoutSeconds, race.outcome);
+      await evidence?.complete(race.outcome);
+      const result = exitResult(command, timeoutSeconds, race.outcome);
+      result.metadata = {
+        ...result.metadata,
+        exitCode: race.outcome.exitCode,
+        signal: race.outcome.signal,
+        cwd,
+        outputTruncated: race.outcome.outputTruncated === true,
+        ...(evidence ? { commandEvidence: evidence.receipt() } : {}),
+      };
+      return result;
     },
   });
 
@@ -155,7 +188,17 @@ export function registerCommandTools(
           summary: "unknown job",
         };
       }
-      return { ok: true, output: formatJobOutput(job), summary: `${job.id}: ${job.status}` };
+      return {
+        ok: true,
+        output: formatJobOutput(job),
+        summary: `${job.id}: ${job.status}`,
+        metadata: {
+          jobStatus: job.status,
+          exitCode: job.exitCode,
+          signal: job.signal,
+          ...(job.commandEvidence ? { commandEvidence: job.commandEvidence } : {}),
+        },
+      };
     },
   });
 
@@ -181,7 +224,17 @@ export function registerCommandTools(
           summary: "unknown job",
         };
       }
-      return { ok: true, output: formatJobOutput(job, 4_000), summary: `job ${job.id} ${job.status}` };
+      return {
+        ok: true,
+        output: formatJobOutput(job, 4_000),
+        summary: `job ${job.id} ${job.status}`,
+        metadata: {
+          jobStatus: job.status,
+          exitCode: job.exitCode,
+          signal: job.signal,
+          ...(job.commandEvidence ? { commandEvidence: job.commandEvidence } : {}),
+        },
+      };
     },
   });
 }

@@ -1,7 +1,8 @@
 import { createHash } from "node:crypto";
 import { readFile } from "node:fs/promises";
 import { relative, resolve } from "node:path";
-import { stripVTControlCharacters } from "node:util";
+import { parseTestSummary } from "../evidence/parsers.js";
+import type { EvidenceRecord } from "../evidence/types.js";
 import type { ToolCall, ToolResult } from "../types.js";
 import { errorSignature, toolCallSignature, toolResultSignature } from "../loop.js";
 
@@ -14,6 +15,7 @@ import { errorSignature, toolCallSignature, toolResultSignature } from "../loop.
 export interface ProgressEvidence {
   testsPassed?: number | undefined;
   testsTotal?: number | undefined;
+  testsFailed?: number | undefined;
   typecheckOk?: boolean | undefined;
   buildOk?: boolean | undefined;
   /**
@@ -56,6 +58,7 @@ export interface TurnSnapshot {
   cumulativeTokensIn: number;
   cumulativeTokensOut: number;
   evidence: ProgressEvidence | undefined;
+  evidenceRefs?: Array<{ taskId: string; attemptId: string; executionId: string }>;
 }
 
 export function goalFingerprint(prompt: string): string {
@@ -71,92 +74,39 @@ export function declaredWritePaths(call: ToolCall, workspace: string): string[] 
   return [rel || raw];
 }
 
-/**
- * The summary line that counts *tests*.
- *
- * vitest and jest print a "Test Files"/"Test Suites" line first, and reading its
- * numbers as test counts turned a file-count change (splitting or merging test
- * files — an ordinary refactor) into a test regression: two `hard` signals, and
- * the task paused while every test still passed. The label is part of the match,
- * and the same line supplies the total, so the two numbers always describe the
- * same set.
- *
- * Reporters without a label (pytest, mocha) fall back to the whole output.
- */
-const TESTS_SUMMARY_LINE = /^[ \t]*Tests:?[ \t]+(.*)$/im;
-const TESTS_FILE_SUMMARY_LINE = /^[ \t]*Test (?:Files|Suites)[ \t].*$/gim;
-const TESTS_TOTAL_PATTERN = /(\d+)\s+total\b/i;
-const NODE_SUMMARY_LINE = /^[ \t]*(?:ℹ|#)[ \t]+(tests|pass|fail)[ \t]+(\d+)[ \t]*\r?$/gm;
-
-function readTestCounts(output: string): { passed?: number; failed?: number; total?: number; source: string } {
-  output = stripVTControlCharacters(output);
-  // Node's spec and TAP reporters put the total, passes and failures on separate
-  // lines. Keep each summary together; skips, cancellations and todos are part
-  // of the reported total even though they are neither passes nor failures.
-  let nodeCounts: { passed?: number; failed?: number; total: number } | undefined;
-  for (const match of output.matchAll(NODE_SUMMARY_LINE)) {
-    const count = Number(match[2]);
-    if (match[1] === "tests") nodeCounts = { total: count };
-    else if (nodeCounts && match[1] === "pass") nodeCounts.passed = count;
-    else if (nodeCounts && match[1] === "fail") nodeCounts.failed = count;
-  }
-  if (
-    nodeCounts?.passed !== undefined &&
-    nodeCounts.failed !== undefined &&
-    nodeCounts.passed + nodeCounts.failed <= nodeCounts.total
-  ) {
-    return { ...nodeCounts, source: output };
-  }
-  const labelled = TESTS_SUMMARY_LINE.exec(output)?.[1];
-  // Reporters without a "Tests" line: drop the file/suite summary lines first, so
-  // their counts cannot be read as test counts either.
-  const source = labelled ?? output.replace(TESTS_FILE_SUMMARY_LINE, "");
-  const passed = /(\d+)\s+(?:passed|passing)/i.exec(source)?.[1];
-  const failed = /(\d+)\s+failed/i.exec(source)?.[1];
-  return {
-    ...(passed !== undefined ? { passed: Number(passed) } : {}),
-    ...(failed !== undefined ? { failed: Number(failed) } : {}),
-    source,
-  };
-}
-
 const TYPECHECK_FAILURE_PATTERN = /\berror\s+TS\d+/i;
 const TYPECHECK_COMMAND_PATTERN = /\b(tsc|vue-tsc|typecheck|tsgo)\b/i;
 const BUILD_COMMAND_PATTERN = /\b(build|compile)\b/i;
 
 /**
- * Extract verifiable external evidence from run_command output. When several
- * commands ran in one turn, the last non-empty value per field wins; returns
- * undefined when nothing recognizable appeared.
+ * Extract legacy diagnostic summaries; this is not the acceptance ledger.
+ * Per-field values remain intentionally lossy for existing progress consumers.
  */
 export function extractEvidence(
   calls: ReadonlyArray<{ call: ToolCall; result: ToolResult }>,
 ): ProgressEvidence | undefined {
   const evidence: ProgressEvidence = {};
   for (const { call, result } of calls) {
-    if (call.name !== "run_command") continue;
-    const command = typeof call.arguments.command === "string" ? call.arguments.command : "";
+    const receipt = result.metadata?.commandEvidence as EvidenceRecord | undefined;
+    if (call.name !== "run_command" && !receipt) continue;
+    const command = receipt?.command ?? (typeof call.arguments.command === "string" ? call.arguments.command : "");
+    if (receipt?.executionStatus === "running" || (result.metadata?.backgroundJobId && !receipt?.finishedAt)) continue;
     const output = `${result.output ?? ""}\n${result.error ?? ""}`;
-
-    if (TYPECHECK_COMMAND_PATTERN.test(command)) {
-      evidence.typecheckOk = result.ok && !TYPECHECK_FAILURE_PATTERN.test(output);
-      continue;
-    }
-    if (BUILD_COMMAND_PATTERN.test(command)) {
-      evidence.buildOk = result.ok;
-    }
-    const counts = readTestCounts(output);
-    if (counts.passed !== undefined && Number.isFinite(counts.passed)) {
+    const finished = receipt
+      ? receipt.executionStatus === "completed" && receipt.exitCode === 0
+      : result.ok && !result.metadata?.backgroundJobId && !result.metadata?.cancelled && !result.metadata?.timedOut;
+    if (TYPECHECK_COMMAND_PATTERN.test(command))
+      evidence.typecheckOk = finished && !TYPECHECK_FAILURE_PATTERN.test(output);
+    if (BUILD_COMMAND_PATTERN.test(command)) evidence.buildOk = finished;
+    const parsed = receipt ? { summary: receipt.summary } : parseTestSummary(output);
+    const counts = parsed.summary;
+    if (counts.passed !== undefined || counts.failed !== undefined || counts.total !== undefined) {
       evidence.testsPassed = counts.passed;
-      evidence.commandSig = toolCallSignature(call);
-      const total = counts.total ?? TESTS_TOTAL_PATTERN.exec(counts.source)?.[1];
-      // Prefer the reporter's total, which also includes skipped/cancelled tests.
+      evidence.testsFailed = counts.failed;
+      evidence.commandSig = receipt?.commandSig ?? toolCallSignature(call);
       evidence.testsTotal =
-        total !== undefined
-          ? Number(total)
-          : counts.failed !== undefined
-            ? counts.passed + counts.failed
-            : counts.passed;
+        counts.total ??
+        (counts.passed !== undefined && counts.failed !== undefined ? counts.passed + counts.failed : counts.passed);
     }
   }
   return Object.keys(evidence).length ? evidence : undefined;
@@ -230,5 +180,9 @@ export async function captureTurnSnapshot(input: CaptureTurnInput): Promise<Turn
     cumulativeTokensIn: input.cumulativeTokensIn,
     cumulativeTokensOut: input.cumulativeTokensOut,
     evidence: extractEvidence(input.executed),
+    evidenceRefs: input.executed.flatMap(({ result }) => {
+      const record = result.metadata?.commandEvidence as EvidenceRecord | undefined;
+      return record ? [{ taskId: record.taskId, attemptId: record.attemptId, executionId: record.executionId }] : [];
+    }),
   };
 }

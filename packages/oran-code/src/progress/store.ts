@@ -22,7 +22,7 @@ export const MAX_SNAPSHOTS = 20;
 const PERSIST_DEBOUNCE_MS = 500;
 
 /** How the task last ended, as seen by the progress layer. */
-export type ProgressStopKind = "verified" | "review_required" | "blocked";
+export type ProgressStopKind = "verified" | "legacy_evidence" | "review_required" | "blocked";
 
 export interface ProgressStop {
   kind: ProgressStopKind;
@@ -223,6 +223,7 @@ export class ProgressStateStore {
       const stop = parsed.stop && typeof parsed.stop === "object" ? (parsed.stop as ProgressStop) : undefined;
       // Older runs paused by the removed token limit remain resumable as ordinary paused tasks.
       if (stop && (stop.kind as string) === "stopped_by_budget") stop.kind = "blocked";
+      if (stop?.kind === "verified") stop.kind = "legacy_evidence";
       return {
         version: PROGRESS_STATE_VERSION,
         updatedAt: typeof parsed.updatedAt === "string" ? parsed.updatedAt : "",

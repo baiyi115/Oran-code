@@ -17,6 +17,13 @@ import {
 } from "../event-summary.js";
 
 export function reduceRuntimeEvent(state: TuiState, event: RuntimeEvent): void {
+  if (event.type === "acceptance_report") {
+    const key = `acceptance:${event.taskId}:${event.report.attemptId}:${event.report.revision}`;
+    if (state.processedSequences.has(key)) return;
+    state.processedSequences.add(key);
+    appendTranscriptMessage(state, { kind: "system", text: redactSecretText(event.report.message) });
+    return;
+  }
   if (event.type === "context_compaction") {
     const contextSequenceKey = `${event.taskId}:${event.sequence}`;
     if (state.processedSequences.has(contextSequenceKey)) return;

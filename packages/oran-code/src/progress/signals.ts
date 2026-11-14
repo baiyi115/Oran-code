@@ -74,7 +74,12 @@ export function computeSignals(input: SignalWindowInput): ProgressSignal[] {
     const previousEvidence = [...snapshots.slice(0, -1)]
       .reverse()
       .map((snapshot) => evidenceOf(snapshot))
-      .find((evidence) => evidence !== undefined);
+      .find(
+        (evidence) =>
+          evidence !== undefined &&
+          evidence.commandSig !== undefined &&
+          evidence.commandSig === currentEvidence.commandSig,
+      );
     if (previousEvidence) {
       // Counts are only comparable when both came from the same test command: a
       // subset run (one file, one test name) reports fewer passed tests than a

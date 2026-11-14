@@ -47,6 +47,8 @@ export interface CommandOutcome {
   signal: NodeJS.Signals | null;
   /** Error when the spawn phase fails (e.g. the working directory does not exist). */
   spawnError?: string;
+  outputTruncated?: boolean;
+  cancelled?: boolean;
 }
 
 /**
@@ -88,6 +90,10 @@ class OutputCollector {
     this.dropped += text.length;
     const combined = this.tail + text;
     this.tail = combined.length > COMMAND_OUTPUT_TAIL ? combined.slice(-COMMAND_OUTPUT_TAIL) : combined;
+  }
+
+  get truncated(): boolean {
+    return this.head !== undefined;
   }
 
   value(): string {
@@ -223,6 +229,7 @@ export function startCommand(
   const stdout = new OutputCollector();
   const stderr = new OutputCollector();
   let finished = false;
+  let cancelled = false;
   let onAbort: (() => void) | undefined;
 
   child.stdout?.setEncoding("utf8");
@@ -240,7 +247,14 @@ export function startCommand(
   const kill = (): void => killProcessTree(pid);
   let settledOutcome: CommandOutcome | undefined;
   const snapshot = (): CommandOutcome =>
-    settledOutcome ?? { stdout: stdout.value(), stderr: stderr.value(), exitCode: null, signal: null };
+    settledOutcome ?? {
+      stdout: stdout.value(),
+      stderr: stderr.value(),
+      exitCode: null,
+      signal: null,
+      outputTruncated: stdout.truncated || stderr.truncated,
+      cancelled,
+    };
 
   const exited = new Promise<CommandOutcome>((resolvePromise) => {
     let settled = false;
@@ -248,6 +262,8 @@ export function startCommand(
       if (settled) return;
       settled = true;
       finished = true;
+      outcome.outputTruncated = stdout.truncated || stderr.truncated;
+      outcome.cancelled = cancelled;
       settledOutcome = outcome;
       if (onAbort && options.signal) options.signal.removeEventListener("abort", onAbort);
       resolvePromise(outcome);
@@ -267,8 +283,11 @@ export function startCommand(
   });
 
   if (options.signal) {
-    onAbort = (): void => kill();
-    if (options.signal.aborted) kill();
+    onAbort = (): void => {
+      cancelled = true;
+      kill();
+    };
+    if (options.signal.aborted) onAbort();
     else options.signal.addEventListener("abort", onAbort, { once: true });
   }
 

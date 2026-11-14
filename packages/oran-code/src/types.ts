@@ -85,6 +85,7 @@ export interface Task {
   planState?: TaskPlanState;
   model?: string;
   result?: string;
+  acceptance?: import("./acceptance/types.js").AcceptanceReportSummary;
   createdAt: string;
   updatedAt: string;
 }
@@ -454,6 +455,8 @@ export interface ToolResult {
 export interface ToolExecutionContext {
   signal?: AbortSignal | undefined;
   workspace: string;
+  /** Host-provided evidence sink; never accepted from tool-call arguments. */
+  commandEvidence?: import("./evidence/types.js").CommandEvidencePort;
   /** Trusted caller identity, set by the runner rather than by model-provided arguments. */
   subagentTaskId?: string;
   bypassActivation?: boolean | undefined;
@@ -529,6 +532,7 @@ export interface WorkspaceSnapshot {
 }
 
 export interface RuntimeEventPayloads {
+  acceptance_report: { report: import("./acceptance/types.js").AcceptanceReportSummary };
   state: { state: TaskState };
   log: { message: string };
   assistant_start: { step: number; source: string; attempt: number; model: string };

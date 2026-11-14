@@ -85,6 +85,7 @@ export class JsonlEventLog {
   }
 
   record(event: RuntimeEvent): void {
+    if (this.finished) return;
     try {
       this.accumulate(event);
       const payload = payloadFor(event);
@@ -167,6 +168,8 @@ export class JsonlEventLog {
 
 function payloadFor(event: RuntimeEvent): Record<string, unknown> | undefined {
   switch (event.type) {
+    case "acceptance_report":
+      return { report: event.report };
     case "state":
       return { state: event.state };
     case "tool_start":
