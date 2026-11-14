@@ -281,6 +281,19 @@ settings in configuration and agent definitions are ignored. Repeated-call, repe
 and no-progress detection remain enabled, and tasks can be cancelled manually. Provider
 context and output limits still apply.
 
+Context estimates use the active adapter's message projection and remain local heuristics,
+not exact token counts. Requests reserve the current output limit plus safety headroom.
+A `model_context_window_exceeded` reply discards that reply's tools and gets one emergency
+compaction attempt; another exhaustion fails explicitly rather than raising the output cap.
+
+Compaction tags retained messages with their summary coverage so later summaries do not
+append the same retained user text again. Recent file snapshots share a bounded budget and
+must be re-read for current contents. If verbatim user history exceeds the summary budget,
+compaction refuses to replace the conversation rather than silently removing user constraints.
+New compaction boundaries persist full messages, including tool pairs and provider replay
+blocks; old text-only boundaries remain readable but cannot recover fields they never stored.
+Auxiliary summary calls are not included in the main task's cumulative usage counters.
+
 ### Workspace layout (`.oran/` and `AGENTS.md`)
 
 - `AGENTS.md`: project-specific engineering standards, rules, and constraints automatically

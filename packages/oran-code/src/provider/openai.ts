@@ -7,6 +7,7 @@ import type {
   ProviderRequestOptions,
   ToolCall,
 } from "../types.js";
+import { estimatedPayloadTokens } from "../context/estimator.js";
 import { isTruncatedFinishReason } from "../types.js";
 import { CLIENT_ID, CLIENT_USER_AGENT, PRODUCT_VERSION } from "../paths.js";
 import { ModelRequestError, boundedError, retryAfterMsFromResponse, streamErrorToModelRequestError } from "./errors.js";
@@ -192,6 +193,12 @@ export class OpenAICompatibleProvider implements ModelProvider {
       ...(this.config.apiKey ? { authorization: `Bearer ${this.config.apiKey}` } : {}),
       ...this.config.headers,
     };
+  }
+
+  get maxOutputTokens(): number { return this.config.maxTokens; }
+
+  estimateInputTokens(messages: readonly Message[], tools: readonly Record<string, unknown>[]): number {
+    return estimatedPayloadTokens({ messages: toOpenAiMessages(messages, this.echoesReasoning()), tools });
   }
 
   private payload(

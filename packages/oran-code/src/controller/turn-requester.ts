@@ -1,4 +1,5 @@
 import type { ContextManager } from "../context-manager.js";
+import { requestInputLimit } from "../context/limits.js";
 import { isTruncatedFinishReason } from "../types.js";
 import type {
   HookEventPortContext,
@@ -90,6 +91,7 @@ export class TurnRequester {
 
   constructor(private readonly ports: TurnRequesterPorts) {
     this.outputTokenLimit = ports.config.model.maxTokens;
+    ports.contextManager.useProvider(ports.provider);
   }
 
   resetForTask(): void {
@@ -141,6 +143,9 @@ export class TurnRequester {
     try {
       const response = await this.streamWithRetry(requestMessages, loop, step, source, tools);
       this.ports.contextManager.recordUsage(response.usage, usageAnchorMessages(requestMessages, response), tools);
+      if (response.finishReason === "model_context_window_exceeded") {
+        throw new ModelRequestError(413, "model context window exceeded during generation; response is incomplete");
+      }
       await this.ports.fireHook({
         event: "after_model_response",
         workspace: this.ports.config.workspace,
@@ -167,6 +172,7 @@ export class TurnRequester {
           provider: this.ports.provider,
           tools,
           contextWindow,
+          outputTokens: this.outputTokenLimit,
           reason: "emergency",
           ...(this.ports.getAbortSignal() ? { signal: this.ports.getAbortSignal()! } : {}),
         });
@@ -237,7 +243,7 @@ export class TurnRequester {
     const requestMessages = withRuntimeReminders(managedMessages, reminders);
     const contextWindow = this.ports.contextManager.resolveContextWindow(this.ports.config.model);
     const beforeTokens = this.ports.contextManager.estimateTokens(requestMessages, tools);
-    if (!this.ports.contextManager.shouldAutoCompact(requestMessages, contextWindow, tools)) return managedMessages;
+    if (!this.ports.contextManager.shouldAutoCompact(requestMessages, contextWindow, tools, this.outputTokenLimit)) return managedMessages;
 
     await this.ports.emit("context_compaction", {
       phase: "started",
@@ -251,6 +257,7 @@ export class TurnRequester {
         provider: this.ports.provider,
         tools,
         contextWindow,
+        outputTokens: this.outputTokenLimit,
         reason: "auto",
         ...(this.ports.getAbortSignal() ? { signal: this.ports.getAbortSignal()! } : {}),
       });
@@ -384,9 +391,19 @@ export class TurnRequester {
     /** Truncated calls already dropped by the parse layer (as reported by the provider), summed with
      *  the requester's own fallback drop count. */
     let providerDroppedToolCalls = 0;
+    let usageRecorded = false;
+    const recordUsageOnce = (): void => {
+      if (usageRecorded) return;
+      usageRecorded = true;
+      loop.recordUsage(usage);
+    };
     try {
       const requestFingerprint = fingerprintRequest(messages);
       const estimatedRequestTokens = this.ports.contextManager.estimateTokens(messages, tools);
+      const inputLimit = requestInputLimit(this.ports.contextManager.resolveContextWindow(this.ports.config.model), this.outputTokenLimit);
+      if (estimatedRequestTokens >= inputLimit) {
+        throw new ModelRequestError(413, `context window exceeded: ${estimatedRequestTokens} estimated input tokens; limit ${inputLimit}`);
+      }
       // Compare against the previous request so cache regressions show up in the trace as a
       // rewritten prefix and the exact message where the two requests diverged.
       const prefix = this.previousRequest ? compareRequestPrefix(this.previousRequest, messages) : undefined;
@@ -478,7 +495,7 @@ export class TurnRequester {
       if (!responseCompleted)
         throw new ProviderContractError("provider stream ended without a response_complete event");
       loop.recordModelElapsed(Math.max(1, Date.now() - modelStartedAt));
-      loop.recordUsage(usage);
+      recordUsageOnce();
       // Output-limit truncation: both text and tool calls may be incomplete. The endpoint can still
       // supply arguments that "parse", and executing them would add semantically incomplete side
       // effects, so every call in a truncated message is failed as a whole, and the truncation flag
@@ -616,7 +633,7 @@ export class TurnRequester {
       const aborted = isAbortError(error) || this.ports.getAbortSignal()?.aborted;
       // Usage already received before a mid-stream failure must be booked too, otherwise the token
       // budget would systematically under-count.
-      loop.recordUsage(usage);
+      recordUsageOnce();
       // A non-cancellation model error is reported by the outer `error` event.
       // Emitting assistant_abort as well makes the TUI show the same failure
       // twice: once as a bracketed assistant suffix and once as an Error block.

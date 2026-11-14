@@ -54,8 +54,8 @@ export function truncateUtf8(value: string, maxBytes: number): string {
   return output;
 }
 
-export function formatRecentFile(file: RecentFile): string {
-  const byteLimit = Math.floor(CONTEXT_LIMITS.recentFileTokens * CONTEXT_LIMITS.charactersPerToken);
+export function formatRecentFile(file: RecentFile, maxBytes?: number): string {
+  const byteLimit = Math.min(maxBytes ?? Infinity, Math.floor(CONTEXT_LIMITS.recentFileTokens * CONTEXT_LIMITS.charactersPerToken));
   const truncated = Buffer.byteLength(file.content, "utf8") > byteLimit;
   const content = truncated ? `${truncateUtf8(file.content, byteLimit)}\n(content truncated)` : file.content;
   return ["<recent-file>", `Path: ${file.path}`, `Read at: ${file.readAt}`, "Content:", content, "</recent-file>"].join(

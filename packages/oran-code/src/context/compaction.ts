@@ -1,8 +1,10 @@
+import { randomUUID } from "node:crypto";
 import { cloneMessages } from "../message-utils.js";
+import { isTruncatedFinishReason } from "../types.js";
 import type { Message, ModelProvider } from "../types.js";
 import { isAbortError } from "../utils/abort-error.js";
 import { estimatedRequestTokens, HAS_CJK_PATTERN } from "./estimator.js";
-import { automaticCompactionThreshold, CONTEXT_LIMITS } from "./limits.js";
+import { automaticCompactionThreshold, CONTEXT_LIMITS, requestInputLimit } from "./limits.js";
 import {
   isStableRequestPrefix,
   isTransientRequestMessage,
@@ -19,6 +21,7 @@ export interface ContextCompactOptions {
   provider: ModelProvider;
   tools: Record<string, unknown>[];
   contextWindow: number;
+  outputTokens?: number;
   reason: ContextCompactionReason;
   signal?: AbortSignal;
 }
@@ -45,6 +48,7 @@ export interface RecoveryCoverage {
  */
 interface SummaryCarryover {
   summary: string;
+  coverageId?: string;
   coveredMessages: number;
   droppedGroups: number;
 }
@@ -97,8 +101,16 @@ export async function compactConversation(
     // The previous summary is the anchor: carry it into the new summary as a whole and apply
     // incremental updates only to the new messages that follow the anchor.
     const carryover = readSummaryCarryover(history);
-    const fresh = carryover ? history.filter((message) => promptBlock(message) !== "context-summary") : history;
-    const summarized = await requestSummary(fresh, options.provider, options.contextWindow, options.signal, carryover);
+    const alreadyCovered = (message: Message): boolean =>
+      carryover?.coverageId !== undefined && message.metadata?.summaryCoveredBy === carryover.coverageId;
+    const fresh = history.filter((message) => promptBlock(message) !== "context-summary" && !alreadyCovered(message));
+    const outputTokens = options.outputTokens ?? options.provider.maxOutputTokens ?? CONTEXT_LIMITS.summaryMaxTokens;
+    const inputLimit = requestInputLimit(options.contextWindow, outputTokens);
+    const summaryMaxTokens = Math.min(options.provider.maxOutputTokens ?? CONTEXT_LIMITS.summaryMaxTokens, CONTEXT_LIMITS.summaryMaxTokens);
+    const summarized = !fresh.length && carryover
+      ? { summary: carryover.summary, coveredMessages: [] as Message[], droppedGroups: 0 }
+      : await requestSummary(fresh, options.provider, options.contextWindow, options.signal, carryover, summaryMaxTokens);
+    const coverageId = randomUUID();
     const totalCovered = (carryover?.coveredMessages ?? 0) + summarized.coveredMessages.length;
     const totalDroppedGroups = (carryover?.droppedGroups ?? 0) + summarized.droppedGroups;
     const totalMessages = (carryover?.coveredMessages ?? 0) + fresh.length;
@@ -111,6 +123,7 @@ export async function compactConversation(
         // Coverage stats ride along with the summary: the next compaction uses them to do an
         // incremental update and keeps accumulating.
         summaryCoverage: {
+          id: coverageId,
           coveredMessages: totalCovered,
           droppedGroups: totalDroppedGroups,
         },
@@ -131,43 +144,42 @@ export async function compactConversation(
       // instead of restoring the entire turn merely to keep a user message at the front.
       const firstNonSystemIndex = compacted.findIndex((message) => message.role !== "system");
       if (firstNonSystemIndex === -1) {
-        compacted.push({ role: "user", content: "Continue from the conversation summary above." });
+        compacted.push({ role: "user", content: "Continue from the conversation summary above.", metadata: { promptBlock: "context-recovery", contextManaged: true } });
       } else if (compacted[firstNonSystemIndex]?.role !== "user") {
         compacted.splice(firstNonSystemIndex, 0, {
           role: "user",
           content: "Continue from the conversation summary above.",
+          metadata: { promptBlock: "context-recovery", contextManaged: true },
         });
       }
       return compacted;
     };
-    let recent = selectRecentRawMessages(summarized.coveredMessages, options.contextWindow);
+    const estimate = (messages: readonly Message[], tools: readonly Record<string, unknown>[]): number =>
+      options.provider.estimateInputTokens?.(messages, tools) ?? estimatedRequestTokens(messages, tools);
+    const recentSource = [...history.filter(alreadyCovered), ...summarized.coveredMessages];
+    let recent = selectRecentRawMessages(recentSource, options.contextWindow, estimate).map((message) => ({
+      ...message, metadata: { ...message.metadata, summaryCoveredBy: coverageId },
+    }));
     let compacted = buildCompacted(recent);
 
+    let afterTokens = estimate(compacted, options.tools);
+    const threshold = options.reason === "auto"
+      ? Math.min(inputLimit, automaticCompactionThreshold(options.contextWindow, outputTokens))
+      : inputLimit;
+    // All modes must fit the next request. Never split a complete tool unit.
+    while (afterTokens >= threshold && recent.length) {
+      let dropCount = 1;
+      if (recent[0]?.role === "assistant" && recent[0].toolCalls?.length) {
+        while (recent[dropCount]?.role === "tool") dropCount += 1;
+      }
+      recent = recent.slice(dropCount);
+      compacted = buildCompacted(recent);
+      afterTokens = estimate(compacted, options.tools);
+    }
+    if (afterTokens >= threshold) {
+      throw new Error(`context remains too large after ${options.reason} compaction (${afterTokens} estimated tokens; input limit ${threshold})`);
+    }
     host.resetUsageAnchor();
-    let afterTokens = host.estimateTokens(compacted, options.tools);
-    if (options.reason === "auto") {
-      const threshold = automaticCompactionThreshold(options.contextWindow);
-      // The summary, recovery context, and minimum recent-message count can exceed the regular
-      // tail budget. Remove oldest complete tool units until the result is below the auto trigger.
-      while (afterTokens >= threshold && recent.length) {
-        let dropCount = 1;
-        if (recent[0]?.role === "assistant" && recent[0].toolCalls?.length) {
-          while (recent[dropCount]?.role === "tool") dropCount += 1;
-        }
-        recent = recent.slice(dropCount);
-        compacted = buildCompacted(recent);
-        afterTokens = host.estimateTokens(compacted, options.tools);
-      }
-      if (afterTokens >= threshold) {
-        throw new Error(`automatic compaction cannot fit the stable context below ${threshold} estimated tokens`);
-      }
-    }
-    if (options.reason === "emergency" && afterTokens >= options.contextWindow - CONTEXT_LIMITS.manualSafetyTokens) {
-      throw new Error(
-        `context remains too large after emergency compaction (${afterTokens} estimated tokens; ` +
-          `retry limit is ${options.contextWindow - CONTEXT_LIMITS.manualSafetyTokens})`,
-      );
-    }
     if (options.reason === "auto") host.resetAutomaticFailures();
     return {
       messages: compacted,
@@ -187,11 +199,19 @@ export function buildRecoveryMessage(input: {
   manifestPath: string;
   coverage?: RecoveryCoverage;
 }): string {
-  const snapshots = [...input.recentFiles]
+  const snapshotParts: string[] = [];
+  const files = [...input.recentFiles]
     .sort((left, right) => right.readAt.localeCompare(left.readAt))
-    .slice(0, CONTEXT_LIMITS.recentFileCount)
-    .map(formatRecentFile)
-    .join("\n\n");
+    .slice(0, CONTEXT_LIMITS.recentFileCount);
+  for (const file of files) {
+    const perFileBytes = Math.floor(CONTEXT_LIMITS.recoveryFileTokens * 2 / Math.max(1, files.length));
+    const snapshot = formatRecentFile(file, perFileBytes);
+    const content = [...snapshotParts, snapshot].join("\n\n");
+    if (estimatedRequestTokens([{ role: "system", content }], []) <= CONTEXT_LIMITS.recoveryFileTokens) {
+      snapshotParts.push(snapshot);
+    }
+  }
+  const snapshots = snapshotParts.join("\n\n");
   const coverageBlock = input.coverage
     ? [
         "<summary-coverage>",
@@ -199,7 +219,7 @@ export function buildRecoveryMessage(input: {
           (input.coverage.droppedGroups
             ? `; ${input.coverage.droppedGroups} oldest group(s) were dropped entirely`
             : "") +
-          ". Newer turns appear verbatim below.",
+          ". A bounded tail of covered messages is retained verbatim below.",
         "</summary-coverage>",
       ]
     : [];
@@ -212,7 +232,8 @@ export function buildRecoveryMessage(input: {
     "<context-boundary>",
     "When exact file content, error output, or user wording is needed, use read_file on the referenced source or offloaded-result path.",
     "Do not infer exact code or diagnostics from the summary. If no readable source path exists, ask the user instead of guessing.",
-    `The complete user-message archive is available at ${input.manifestPath}. Read it when exact earlier user wording is required.`,
+    "Recent file bodies are bounded read-time snapshots, not proof of the current file contents.",
+    `A best-effort user-message archive may be available at ${input.manifestPath}. Verify it is readable before relying on it for exact wording.`,
     "</context-boundary>",
     "</context-recovery>",
   ].join("\n");
@@ -232,6 +253,7 @@ function readSummaryCarryover(history: readonly Message[]): SummaryCarryover | u
     summary,
     coveredMessages: nonNegativeInteger(coverage.coveredMessages),
     droppedGroups: nonNegativeInteger(coverage.droppedGroups),
+    ...(typeof coverage.id === "string" ? { coverageId: coverage.id } : {}),
   };
 }
 
@@ -288,10 +310,17 @@ async function requestSummary(
   contextWindow: number,
   signal?: AbortSignal,
   carryover?: SummaryCarryover,
+  maxTokens: number = CONTEXT_LIMITS.summaryMaxTokens,
 ): Promise<{ summary: string; coveredMessages: Message[]; droppedGroups: number }> {
-  const inputLimit = contextWindow - CONTEXT_LIMITS.summaryOutputTokens - CONTEXT_LIMITS.manualSafetyTokens;
+  const inputLimit = Math.min(requestInputLimit(contextWindow, maxTokens), contextWindow - CONTEXT_LIMITS.summaryOutputTokens - CONTEXT_LIMITS.manualSafetyTokens);
   if (inputLimit <= 0) throw new Error(`context_window ${contextWindow} is too small for context compaction`);
 
+  // Do not silently drop user constraints to fit the summary. Fail before a model call.
+  const verbatimUsers = [...(carryover ? extractVerbatimUserMessages(carryover.summary) : []),
+    ...messages.filter((message) => message.role === "user").map((message) => message.content ?? "")];
+  if (estimatedRequestTokens([{ role: "user", content: verbatimUsers.join("\n\n") }], []) > CONTEXT_LIMITS.summaryUserTokens) {
+    throw new Error("verbatim user history exceeds the summary budget; context was kept unchanged instead of dropping user constraints");
+  }
   let groups = groupConversation(messages);
   let droppedGroups = 0;
   let dropRound = 0;
@@ -303,13 +332,6 @@ async function requestSummary(
   for (let attempt = 0; groups.length; attempt += 1) {
     const coveredMessages = groups.flatMap((group) => cloneMessages(group));
     const request = buildSummaryRequest(coveredMessages, carryover);
-    if (estimatedRequestTokens(request, []) >= inputLimit) {
-      const dropped = dropOldestGroups(groups, dropRound);
-      groups = dropped.groups;
-      droppedGroups += dropped.count;
-      dropRound += 1;
-      continue;
-    }
     if (rejected) {
       request.push(
         { role: "assistant", content: truncateResponse(rejected.text) },
@@ -323,15 +345,26 @@ async function requestSummary(
         },
       );
     }
+    const requestTokens = provider.estimateInputTokens?.(request, []) ?? estimatedRequestTokens(request, []);
+    if (requestTokens >= inputLimit) {
+      const dropped = dropOldestGroups(groups, dropRound);
+      groups = dropped.groups;
+      droppedGroups += dropped.count;
+      dropRound += 1;
+      continue;
+    }
     try {
-      const response = await provider.complete(request, undefined, signal ? { signal } : undefined);
+      const response = await provider.complete(request, undefined, { ...(signal ? { signal } : {}), maxTokens });
+      if (response.finishReason === "model_context_window_exceeded") {
+        throw new Error("model context window exceeded during summarization; refusing to publish an incomplete summary");
+      }
       // A reply cut off by the output limit holds only part of the nine sections,
       // and the recovery path accepts whatever follows an opening <summary> tag —
       // so a half-written hand-off was stored as complete, with no Current Work,
       // Pending Tasks or next step, while the coverage metadata said the whole
       // conversation was covered. Ask again; if the last attempt is still
       // truncated, keep it but say so in the summary the model reads.
-      const truncated = response.truncated === true;
+      const truncated = response.truncated === true || isTruncatedFinishReason(response.finishReason);
       if (truncated && attempt < SUMMARY_ATTEMPTS - 1) {
         rejected = {
           text: response.text,
@@ -383,7 +416,12 @@ function serializeConversation(messages: readonly Message[]): string {
   const modifiedFiles = new Set<string>();
 
   for (const msg of messages) {
-    if (msg.role === "system") continue;
+    if (msg.role === "system") {
+      // This is quoted history, not a new instruction or an operator authority upgrade.
+      if (msg.content?.trim()) parts.push(`[Context notification ${JSON.stringify(promptBlock(msg) ?? "system")}]:
+${msg.content}`);
+      continue;
+    }
     if (msg.role === "user") {
       const text = typeof msg.content === "string" ? msg.content.trim() : "";
       if (text) parts.push(`[User]:\n${text}`);

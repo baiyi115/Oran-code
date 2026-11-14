@@ -16,6 +16,9 @@ export const CONTEXT_LIMITS = Object.freeze({
    * request's real ceiling.
    */
   summaryOutputTokens: 20_000,
+  summaryMaxTokens: 8_192,
+  summaryUserTokens: 8_000,
+  recoveryFileTokens: 8_000,
   automaticSafetyTokens: 13_000,
   manualSafetyTokens: 3_000,
   recentRawTokens: 12_000,
@@ -67,10 +70,18 @@ export const CONTEXT_LIMITS = Object.freeze({
 });
 
 /** Fire at 80% for large windows, or earlier when summary output and safety headroom require it. */
-export function automaticCompactionThreshold(contextWindow: number): number {
-  const headroom = contextWindow - CONTEXT_LIMITS.summaryOutputTokens - CONTEXT_LIMITS.automaticSafetyTokens;
+export function automaticCompactionThreshold(contextWindow: number, outputTokens: number = CONTEXT_LIMITS.summaryOutputTokens): number {
+  const headroom = contextWindow - Math.max(CONTEXT_LIMITS.summaryOutputTokens, outputTokens) - CONTEXT_LIMITS.automaticSafetyTokens;
   const windowBudget = Math.floor(contextWindow * CONTEXT_LIMITS.automaticWindowFraction);
   return Math.max(1, Math.min(windowBudget, headroom));
+}
+
+/** Input allowance shared by normal requests and post-compaction validation. */
+export function requestInputLimit(contextWindow: number, outputTokens: number): number {
+  if (!Number.isInteger(outputTokens) || outputTokens <= 0) throw new Error("maxTokens must be a positive integer");
+  const limit = contextWindow - outputTokens - CONTEXT_LIMITS.manualSafetyTokens;
+  if (limit <= 0) throw new Error("context window cannot fit the requested output limit and safety reserve");
+  return limit;
 }
 
 /**

@@ -57,7 +57,27 @@ export function estimatedRequestTokens(
   messages: readonly Message[],
   tools: readonly Record<string, unknown>[],
 ): number {
-  const payload = JSON.stringify({ messages, tools });
+  // Fallback for custom providers: keep one representation and omit local-only metadata.
+  const projected = messages.map((message) => ({
+    role: message.role,
+    ...(message.role === "assistant" && message.anthropicContent
+      ? { content: message.anthropicContent }
+      : {
+          content: message.content ?? "",
+          ...(message.toolCalls ? { toolCalls: message.toolCalls.map(({ id, name, arguments: input }) => ({ id, name, input })) } : {}),
+          ...(message.reasoning ? { reasoning: message.reasoning } : {}),
+          ...(message.reasoningSignature ? { signature: message.reasoningSignature } : {}),
+        }),
+    ...(message.toolCallId ? { toolCallId: message.toolCallId } : {}),
+    ...(message.name ? { name: message.name } : {}),
+    ...(message.toolResultError !== undefined ? { toolResultError: message.toolResultError } : {}),
+  }));
+  return estimatedPayloadTokens({ messages: projected, tools });
+}
+
+/** Local heuristic over a provider's wire content, not an exact tokenizer or remote call. */
+export function estimatedPayloadTokens(value: unknown): number {
+  const payload = JSON.stringify(value);
   const bytes = Buffer.byteLength(payload, "utf8");
   const cjkCharacters = payload.match(CJK_CHARACTER_PATTERN)?.length ?? 0;
   // CJK characters are counted separately with a conservative tokens-per-character factor;

@@ -8,9 +8,10 @@ import type {
   ProviderRequestOptions,
   ToolCall,
 } from "../types.js";
+import { estimatedPayloadTokens } from "../context/estimator.js";
 import { isAnthropicReplayBlock, isTruncatedFinishReason } from "../types.js";
 import { CLIENT_ID, CLIENT_USER_AGENT, PRODUCT_VERSION } from "../paths.js";
-import { ModelRequestError, boundedError, retryAfterMsFromResponse, streamErrorMessage } from "./errors.js";
+import { ModelRequestError, boundedError, retryAfterMsFromResponse, streamErrorToModelRequestError } from "./errors.js";
 import { parseSseJson, readSseEvents } from "./sse.js";
 import { appendTailReminder, completeRequestSignal } from "./common.js";
 import {
@@ -223,6 +224,13 @@ export class AnthropicProvider implements ModelProvider {
       ...(this.config.apiKey ? { "x-api-key": this.config.apiKey } : {}),
       ...this.config.headers,
     };
+  }
+
+  get maxOutputTokens(): number { return this.config.maxTokens; }
+
+  estimateInputTokens(messages: readonly Message[], tools: readonly Record<string, unknown>[]): number {
+    const { system, conversation } = toAnthropicMessages([...messages], cacheControlFor(this.config.options));
+    return estimatedPayloadTokens({ system, messages: conversation, tools: tools.map(toAnthropicTool).filter(Boolean) });
   }
 
   private payload(

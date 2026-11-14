@@ -232,6 +232,9 @@ export interface ProviderRequestOptions {
 }
 
 export interface ModelProvider {
+  readonly maxOutputTokens?: number;
+  /** Offline estimate using the same content projection as requests; no network access. */
+  estimateInputTokens?(messages: readonly Message[], tools: readonly Record<string, unknown>[]): number;
   complete(
     messages: Message[],
     tools?: Record<string, unknown>[],

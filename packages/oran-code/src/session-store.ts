@@ -308,8 +308,8 @@ export class SessionStore {
         : isMessagePrefix(before, after)
           ? messageRecords(after.slice(before.length), now)
           : [
-              compactionBoundaryRecord(after, now) ??
-                contextEditRecord(before, after, now) ?? {
+              contextEditRecord(before, after, now) ??
+                compactionBoundaryRecord(after, now) ?? {
                   type: "session-reset",
                   role: "system",
                   timestamp: now,
@@ -799,6 +799,10 @@ function truncateIncompleteToolChains(messages: readonly Message[]): Message[] {
     let assistantInsertIndex = -1;
     for (const message of result) {
       if (message.role === "assistant" && message.toolCalls?.length) {
+        if (pending.size > 0) {
+          output.splice(assistantInsertIndex);
+          changed = true;
+        }
         pending = new Set(
           message.toolCalls
             .map((call) => call.id)
@@ -936,20 +940,12 @@ function compactionBoundaryRecord(
       ? /<context-summary>\s*([\s\S]*?)\s*<\/context-summary>/u.exec(summaryMessage.content)?.[1]?.trim()
       : undefined;
   if (!summary) return undefined;
-  const retainedTail = messages
-    .slice(summaryIndex + 1)
-    .filter(
-      (message): message is Message & { role: "user" | "assistant"; content: string } =>
-        (message.role === "user" || message.role === "assistant") &&
-        typeof message.content === "string" &&
-        Boolean(message.content.trim()),
-    )
-    .map((message): Message => ({ role: message.role, content: message.content }));
+  // The existing reset form preserves full messages and remains readable by older readers.
   return {
     type: "compaction-boundary",
     role: "system",
     timestamp,
-    content: { summary, retainedTail },
+    content: { reset: cloneMessages(messages) },
   };
 }
 function isSessionJsonlRecord(value: unknown): value is SessionJsonlRecord {
@@ -1003,6 +999,11 @@ function contextEditRecord(
     if (right.role !== "tool" || typeof right.toolCallId !== "string") return undefined;
     if (left.role !== "tool" || left.toolCallId !== right.toolCallId) return undefined;
     if (typeof right.content !== "string") return undefined;
+    const { content: _leftContent, ...leftFields } = left;
+    const { content: _rightContent, ...rightFields } = right;
+    if (JSON.stringify(leftFields) !== JSON.stringify(rightFields)) return undefined;
+    // Content-only edits are keyed by call ID, so duplicate IDs require a full snapshot.
+    if (after.filter((message) => message.role === "tool" && message.toolCallId === right.toolCallId).length !== 1) return undefined;
     replacements.push({ toolCallId: right.toolCallId, content: right.content });
   }
   if (!replacements.length) return undefined;

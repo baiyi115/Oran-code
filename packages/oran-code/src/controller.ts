@@ -588,6 +588,14 @@ export class TaskController {
         if (!response.text && !response.toolCalls.length && !response.truncated) {
           throw new EmptyModelResponseError();
         }
+        if (response.finishReason === "model_context_window_exceeded") {
+          // The requester already tried one emergency compaction. Never raise the output cap here.
+          task.result = response.text ? `${response.text}\n\n[Incomplete: model context window exhausted.]` : "Model context window exhausted after emergency compaction.";
+          transitionTask(task, "failed");
+          await this.persist(task);
+          await this.emit("error", { message: "Model context window exhausted after emergency compaction; stopping with an incomplete response. No tool calls from this response were executed." });
+          return task;
+        }
         if (response.truncated) {
           // Output truncated by the limit: the content is incomplete, so it can neither be the final
           // answer nor have its tool calls executed (turn-requester already dropped every call in a

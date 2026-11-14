@@ -2,7 +2,7 @@ import { createHash, randomBytes } from "node:crypto";
 import { appendFile, mkdir } from "node:fs/promises";
 import { dirname, relative, resolve } from "node:path";
 import { projectStateRoot } from "../paths.js";
-import type { Message, ModelConfig } from "../types.js";
+import type { Message, ModelConfig, ModelProvider } from "../types.js";
 import {
   buildRecoveryMessage as composeRecoveryMessage,
   compactConversation,
@@ -51,6 +51,7 @@ export class ContextManager {
   private readonly recentFiles = new Map<string, RecentFile>();
   private readonly archivedUserOccurrences = new Set<string>();
   private usageAnchor: UsageAnchor | undefined;
+  private estimateProvider: ModelProvider | undefined;
   private automaticFailures = 0;
   private ledgerTail: Promise<void> = Promise.resolve();
   private compactionTail: Promise<void> = Promise.resolve();
@@ -154,6 +155,12 @@ export class ContextManager {
     this.recentFiles.set(key, { path, content, readAt });
   }
 
+  useProvider(provider: ModelProvider): void {
+    if (this.estimateProvider !== provider) this.resetUsageAnchor();
+    this.estimateProvider = provider;
+    this.estimateMemo = undefined;
+  }
+
   recordUsage(
     usage: Record<string, number>,
     messages: readonly Message[],
@@ -161,6 +168,7 @@ export class ContextManager {
   ): void {
     const tokens = usageTotal(usage);
     if (tokens === undefined) return;
+    this.estimateMemo = undefined;
     this.usageAnchor = { tokens, contextEstimate: this.rawEstimate(messages, tools) };
   }
 
@@ -177,7 +185,7 @@ export class ContextManager {
     ) {
       return memo.tokens;
     }
-    const tokens = estimatedRequestTokens(messages, tools);
+    const tokens = this.estimateProvider?.estimateInputTokens?.(messages, tools) ?? estimatedRequestTokens(messages, tools);
     this.estimateMemo = { messages, tools, tokens };
     return tokens;
   }
@@ -192,9 +200,10 @@ export class ContextManager {
     messages: readonly Message[],
     contextWindow: number,
     tools: readonly Record<string, unknown>[] = [],
+    outputTokens: number = CONTEXT_LIMITS.summaryOutputTokens,
   ): boolean {
     if (this.autoCompactionDisabled) return false;
-    return this.estimateTokens(messages, tools) >= automaticCompactionThreshold(contextWindow);
+    return this.estimateTokens(messages, tools) >= automaticCompactionThreshold(contextWindow, outputTokens);
   }
 
   async offloadAndSnip(messages: readonly Message[]): Promise<ContextOffloadResult> {
@@ -210,7 +219,10 @@ export class ContextManager {
   }
 
   async compact(options: ContextCompactOptions): Promise<ContextCompactResult> {
-    return this.withCompactionLock(() => compactConversation(this.compactionHost, options));
+    return this.withCompactionLock(() => {
+      this.useProvider(options.provider);
+      return compactConversation(this.compactionHost, options);
+    });
   }
 
   private readonly spillTool = (id: string, content: string): Promise<string | undefined> =>

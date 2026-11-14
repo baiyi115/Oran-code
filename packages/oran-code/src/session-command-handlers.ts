@@ -421,6 +421,8 @@ export class SessionCommandHandlers {
     const tools = await this.port.toolSchemasForCurrentMode(registry);
     const requestModel: ModelConfig = { ...this.port.model()!, reasoningEffort: this.port.reasoningEffort() };
     const contextWindow = manager.resolveContextWindow(requestModel);
+    const provider = this.port.providerFactory(requestModel);
+    manager.useProvider(provider);
     const beforeTokens = manager.estimateTokens(this.port.conversation(), tools);
     const abortController = new AbortController();
     this.port.setCompactAbortController(abortController);
@@ -435,9 +437,10 @@ export class SessionCommandHandlers {
       try {
         const compacted = await manager.compact({
           messages: this.port.conversation(),
-          provider: this.port.providerFactory(requestModel),
+          provider,
           tools,
           contextWindow,
+          outputTokens: requestModel.maxTokens,
           reason: "manual",
           signal: abortController.signal,
         });

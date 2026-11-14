@@ -317,7 +317,11 @@ function isCompleteToolUnit(unit: Message[]): boolean {
  * Budget = max(the recentRawTokens floor, window × recentRawFraction); when no window is given the
  * fixed floor applies, keeping the behaviour of existing callers unchanged.
  */
-export function selectRecentRawMessages(messages: readonly Message[], contextWindow?: number): Message[] {
+export function selectRecentRawMessages(
+  messages: readonly Message[],
+  contextWindow?: number,
+  estimate: typeof estimatedRequestTokens = estimatedRequestTokens,
+): Message[] {
   const rawMessages = messages.filter((message) => promptBlock(message) !== "context-summary");
   const tokenBudget =
     contextWindow !== undefined && contextWindow > 0
@@ -347,7 +351,7 @@ export function selectRecentRawMessages(messages: readonly Message[], contextWin
   while (start > 0 && (tokens < tokenBudget || count < CONTEXT_LIMITS.recentRawMessages)) {
     start -= 1;
     const unit = units[start]!;
-    const unitTokens = estimatedRequestTokens(unit, []);
+    const unitTokens = estimate(unit, []);
     // A single oversized unit (say one carrying 50KB of tool output) should not eat the whole
     // recent budget: once at least one unit is retained and the minimum message count is met,
     // discard this oversized unit.
