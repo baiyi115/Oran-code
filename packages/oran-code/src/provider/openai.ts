@@ -111,6 +111,7 @@ export class OpenAICompatibleProvider implements ModelProvider {
     options?: ProviderRequestOptions,
   ): AsyncGenerator<ModelStreamChunk> {
     const request = createStreamingRequest(options?.signal);
+    let echoRetry = 0;
     try {
       const send = () =>
         fetch(this.endpoint, {
@@ -119,40 +120,59 @@ export class OpenAICompatibleProvider implements ModelProvider {
           body: JSON.stringify(this.payload(messages, tools, true, options?.maxTokens)),
           signal: request.signal,
         });
-      const response = await this.postWithReasoningFallback(send);
-      const contentType = response.headers.get("content-type") ?? "";
-      if (!contentType.includes("text/event-stream") || !response.body) {
-        yield* modelResponseChunks(parseCompletion((await response.json()) as Record<string, unknown>, false));
-        return;
+      while (true) {
+        let response: Response | undefined;
+        let emittedUpdate = false;
+        const state: OpenAiStreamState = {
+          calls: new Map<number, { id?: string; name: string; arguments: string }>(),
+          emittedCalls: false,
+        };
+        try {
+          response = await this.postWithReasoningFallback(send);
+          const contentType = response.headers.get("content-type") ?? "";
+          if (!contentType.includes("text/event-stream") || !response.body) {
+            yield* modelResponseChunks(parseCompletion((await response.json()) as Record<string, unknown>, false));
+            return;
+          }
+          for await (const event of readSseEvents(response.body as AsyncIterable<Uint8Array>, options?.idleTimeoutMs, () =>
+            request.abort(),
+          )) {
+            for (const update of parseOpenAiStreamEvent(event, state)) {
+              emittedUpdate = true;
+              yield update;
+            }
+          }
+          // Some compatible implementations do not return finish_reason=tool_calls (or no
+          // finish_reason at all); if calls accumulated without being emitted by the time the stream
+          // ends, emit them all, rather than dropping them silently.
+          // When the output was cut off by the limit, however, the arguments JSON is probably
+          // incomplete and must not be emitted; the truncation flag is handled upstream as failure.
+          if (!state.emittedCalls && state.calls.size && !isTruncatedFinishReason(state.finishReason)) {
+            for (const update of openAiToolCallChunks(state)) {
+              emittedUpdate = true;
+              yield update;
+            }
+          }
+          // A missing finish_reason means a broken stream; do not synthesize a default.
+          if (state.finishReason === undefined) {
+            throw new Error("OpenAI-compatible stream ended without a finish_reason");
+          }
+          yield {
+            type: "response_complete", streamed: true, finishReason: state.finishReason,
+            ...(isTruncatedFinishReason(state.finishReason) && !state.emittedCalls && state.calls.size ? { droppedToolCalls: state.calls.size } : {}),
+          };
+          return;
+        } catch (error) {
+          const detail = error instanceof Error ? error.message : String(error);
+          // Some OpenAI-compatible endpoints send validation failures as an SSE error event
+          // after HTTP 200. Retry once only when that event arrives before any partial output,
+          // so callers never receive duplicated text or tool-call chunks.
+          if (echoRetry > 0 || emittedUpdate || this.echoesReasoning() || !isReasoningEchoDemand(detail)) throw error;
+          await response?.body?.cancel().catch(() => undefined);
+          await this.markReasoningEchoRequired();
+          echoRetry += 1;
+        }
       }
-      const state: OpenAiStreamState = {
-        calls: new Map<number, { id?: string; name: string; arguments: string }>(),
-        emittedCalls: false,
-      };
-      for await (const event of readSseEvents(response.body as AsyncIterable<Uint8Array>, options?.idleTimeoutMs, () =>
-        request.abort(),
-      )) {
-        for (const update of parseOpenAiStreamEvent(event, state)) yield update;
-      }
-      // Some compatible implementations do not return finish_reason=tool_calls (or no
-      // finish_reason at all); if calls accumulated without being emitted by the time the stream
-      // ends, emit them all, rather than dropping them silently.
-      // When the output was cut off by the limit, however, the arguments JSON is probably
-      // incomplete and must not be emitted (parsing would fail and enter a pointless retry loop);
-      // the truncation flag is handled upstream as an overall failure.
-      if (!state.emittedCalls && state.calls.size && !isTruncatedFinishReason(state.finishReason)) {
-        yield* openAiToolCallChunks(state);
-      }
-      // A missing finish_reason means a broken stream (a test locks in this contract); it is
-      // treated as a failure upstream instead of synthesizing a default for the missing
-      // terminal event.
-      if (state.finishReason === undefined) {
-        throw new Error("OpenAI-compatible stream ended without a finish_reason");
-      }
-      yield {
-        type: "response_complete", streamed: true, finishReason: state.finishReason,
-        ...(isTruncatedFinishReason(state.finishReason) && !state.emittedCalls && state.calls.size ? { droppedToolCalls: state.calls.size } : {}),
-      };
     } finally {
       request.dispose();
     }
